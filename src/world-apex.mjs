@@ -1897,12 +1897,13 @@ export function buildTerms({ affording, spine, means = null }) {
   // because meaning is law too.
   if (means && room(means)) terms.means = means;
 
-  // 2 · the consent document, where the affording class carries one. The
-  // timetable is not a metaphor for consent to carriage — for `board` it is
-  // literally the payload, and the rule is written generically so any class
-  // that publishes a schedule delivers it the same way.
+  // 2 · the vessel's published route, where the affording class carries one.
+  // CHANGED 2026-09-26 (Keemin, on residents' confusion): since #2986 a ride is
+  // enter-a-stop, ride-to-a-stop, arrive after the crossing time — the hull's
+  // timetable decides nothing about who boards or when. The route still rides
+  // here (the map draws it), with a note that says so plainly.
   const timetable = parseJson(affording.timetable, null);
-  if (timetable && room(timetable)) terms.carriage = { timetable, note: "Riding is consenting to this schedule's motion, and the schedule is public." };
+  if (timetable && room(timetable)) terms.carriage = { timetable, note: "This is her route as the map draws it. It does not decide boarding: go to any stop she calls at, enter it, and ride to any other stop; you arrive after the crossing time, whenever you board." };
 
   // 3 · the charter articles standing over the act: the town's own
   // constitution marks on the containment spine, root outward-in.
