@@ -841,7 +841,9 @@ test("terms: a class that publishes a schedule delivers it as the consent docume
   });
   assert.equal(terms.binds.class, "timetable");
   assert.deepEqual(terms.carriage.timetable, TIMETABLE);
-  assert.match(terms.carriage.note, /Riding is consenting/);
+  // 2026-09-26: the note says the route does not decide boarding (Keemin).
+  assert.match(terms.carriage.note, /does not decide boarding/);
+  assert.match(terms.carriage.note, /enter it, and ride to any other stop/);
 });
 
 test("terms: only the town's settled text is law; resident prose is QUOTED, authored", async () => {

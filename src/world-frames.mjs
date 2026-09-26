@@ -361,7 +361,10 @@ export async function boundariesOnRoad(from, toward, carriers, atMs, { carrierAt
     const terms = [];
     if (c.mobility === "derived" && service && mod) {
       const next = mod.nextDepartures(service, mod.fractionalCrossing(atMs), 1);
-      if (next?.length) terms.push(`her timetable binds — she departs ${new Date(mod.instantOf(next[0].departFc)).toISOString().slice(11, 16)}Z for ${next[0].to.markId}`);
+      // "her timetable binds — she departs …" was said here until 2026-09-26: a
+      // rider is not carried by her schedule (#2986), so her departure time is
+      // nothing a walker needs; the sentence below is the whole truth.
+      void next;
       terms.push("a walk that ends on her deck leaves you on the quay beside her, not aboard — you board through a stop's door: enter a stop she calls at, then ride");
     }
     out.push({

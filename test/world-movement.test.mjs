@@ -274,7 +274,10 @@ test("a road that ends on her deck names her, and says the walk leaves you on th
   assert.ok(terms[0].terms.some((t) => /quay beside her, not aboard/.test(t) && /stop's door/.test(t) && /ride/.test(t)),
     "the walk answer says where the walk leaves you and that boarding is a stop's door");
   assert.ok(!terms[0].terms.some((t) => /means riding/.test(t)), "the old contract of stepping aboard is gone");
-  assert.ok(terms[0].terms.some((t) => /departs/.test(t)), "and when she goes");
+  // 2026-09-26 (Keemin): her departure time is no longer said to a walker — a
+  // rider is not carried by her schedule, so it was a timetable that seemed to
+  // gate boarding and did not.
+  assert.ok(!terms[0].terms.some((t) => /timetable binds|departs/.test(t)), "her schedule is not presented as binding a walker");
 });
 
 test("THE GUNWALE RULE: stepping off a moving carrier warns, and does not refuse", async () => {
