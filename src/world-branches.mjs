@@ -14,6 +14,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -259,7 +260,44 @@ export function readAtRef(repo, ref, path, encoding = "utf8") {
 //   src/dynamic-entities.mjs:107 worldToolModule()
 //   src/world2-serve.mjs:97
 //   src/world-happened.mjs:295   latestSettlement()
+// ── THE REF MEMO (2026-09-26, the Snug Harbour night) ─────────────────────────
+//
+// A CPU profile of the live office under the party's load put 54% of the event
+// loop inside synchronous `git` calls made by `blessed` and `freshestMainRef`
+// on nearly every request — answers that change at most at a crossing. They are
+// now remembered per clone and recomputed the moment any ref they read changes:
+// the stamp is the mtime of every file a ref update rewrites (packed-refs, the
+// two main refs, the settlement tags' directory, HEAD). A few stat calls in
+// place of several git processes, and never a stale answer: a fetch, a push, a
+// new tag or a settlement's commit each touches one of those files.
+const gitDirOf = new Map();
+function refStamp(repo) {
+  let dir = gitDirOf.get(repo);
+  if (!dir) {
+    const out = git(repo, ["rev-parse", "--git-common-dir"]).trim();
+    dir = out.startsWith("/") || /^[A-Za-z]:[\\/]/.test(out) ? out : join(repo, out);
+    gitDirOf.set(repo, dir);
+  }
+  return ["packed-refs", "refs/heads/main", "refs/remotes/origin/main", "refs/tags/settlement", "refs/tags", "HEAD"]
+    .map((p) => { try { const s = statSync(join(dir, p)); return `${s.mtimeMs}:${s.size}`; } catch { return "-"; } })
+    .join("|");
+}
+const refMemo = new Map();
+function remembered(kind, repo, compute) {
+  const key = `${kind}\u0000${repo}`;
+  const stamp = refStamp(repo);
+  const hit = refMemo.get(key);
+  if (hit && hit.stamp === stamp) return hit.value;
+  const value = compute();
+  refMemo.set(key, { stamp, value });
+  return value;
+}
+
 export function freshestMainRef(repo) {
+  return remembered("freshest", repo, () => freshestMainRefUncached(repo));
+}
+
+function freshestMainRefUncached(repo) {
   const LOCAL = "refs/heads/main", ORIGIN = "refs/remotes/origin/main";
   const local = refExists(repo, LOCAL);
   const remote = refExists(repo, ORIGIN);
@@ -316,6 +354,11 @@ export function freshestMainRef(repo) {
 // Interim (Wright, #2934): retires with the read flip (POS-104), when standing
 // comes from the clearing's lock rather than from a git tag.
 export function blessed(repo) {
+  // A shallow copy, so no caller can edit the remembered answer.
+  return { ...remembered("blessed", repo, () => blessedUncached(repo)) };
+}
+
+function blessedUncached(repo) {
   const mainRefName = freshestMainRef(repo);
   const mainSha = git(repo, ["rev-parse", `${mainRefName}^{commit}`]).trim();
   let newest = null;

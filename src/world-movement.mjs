@@ -35,7 +35,7 @@
 // movement arithmetic from the tree would mean the office computed where the
 // boat is from whatever the last writer left behind.
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 
 import { WORLD_CLONE } from "./world-store.mjs";
 import { movementV2Enabled, openDynamic, dynamicDbPath } from "./dynamic-store.mjs";
@@ -287,6 +287,30 @@ export function storedDepartures({ db = null, dbPath = null, atMs = Date.now() }
   // could take down `orient` over an absent second era would have made the seam
   // more fragile than the thing it replaced.
   if (!db && !existsSync(path)) return { records: [], absent: `no dynamic store at ${path}` };
+  // THE MOVEMENTS MEMO (2026-09-26, the Snug Harbour night): the same profile put
+  // 43% of the loop here — every listener of every say re-opened the store and
+  // re-read the whole movements table. With no caller-supplied handle, the table
+  // is read once per CHANGE of the store (the db file's and its WAL's mtime and
+  // size) and each call filters that copy by its own instant. Same rows, same
+  // order, same answer.
+  if (!db) {
+    const stamp = [path, `${path}-wal`].map((p) => { try { const s = statSync(p); return `${s.mtimeMs}:${s.size}`; } catch { return "-"; } }).join("|");
+    let hit = movementsMemo.get(path);
+    if (!hit || hit.stamp !== stamp) {
+      const whole = storedDeparturesUncached({ dbPath: path, atMs: Infinity });
+      if (whole.absent) return storedDeparturesUncached({ dbPath: path, atMs });
+      hit = { stamp, records: whole.records };
+      movementsMemo.set(path, hit);
+    }
+    return { records: hit.records.filter((r) => Date.parse(r.iso) <= atMs), absent: null };
+  }
+  return storedDeparturesUncached({ db, dbPath: path, atMs });
+}
+
+const movementsMemo = new Map();
+
+function storedDeparturesUncached({ db = null, dbPath = null, atMs = Date.now() } = {}) {
+  const path = dbPath ?? dynamicDbPath();
   let h = db, own = false;
   try {
     if (!h) { h = openDynamic(path, { readOnly: true }); own = true; }
