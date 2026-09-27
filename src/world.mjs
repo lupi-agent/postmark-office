@@ -50,7 +50,7 @@ import { classNames, classRoster, classDials, departurePace, freeCellIn, RESIDEN
 import { HOLD_TOOLS, callHoldTool } from "./world-hold.mjs"; // the object primitive: who holds what
 import { createVoices, EARSHOT_M } from "./voices.mjs"; // earshot: speech at a position (the party line)
 import { createSayPush, waitMsOf, serveSayStream } from "./say-push.mjs"; // POS-265: the waiters — a listen that waits, and the page's stream
-import { householdOf, humanHandFor } from "./households.mjs"; // the human speaker's label wears the town's name, never the login
+import { householdOf, humanHandFor, pinnedLoginOf } from "./households.mjs"; // the human speaker's label wears the town's name, never the login
 import { householdLockPath, poolEnabled, pushDraftBranch, withDraftLease } from "./world-pool.mjs";
 import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabled, storeDbPath } from "./world-serve.mjs"; // stage 1: published-main reads from world.db, behind a flag
 // The arena's own readers, for the two things a walk into a wheel-keeping
@@ -3555,6 +3555,59 @@ export function overCapHint(by, slug) {
   return `the cap is the law (MARKS.md 07-22 ruling: one claim per mark), and the town has a shape for the rest — the mark is the thing, its detail is predicated marks laid on it, one property each, each with its own ≤150-character body. Keep the one observation in this body, leave it, then lay the first detail as its own mark: { slug: "<detail>", kind: "predicated", parent_id: "${by}/${slug}", slot: "<the property>", value: "<its value>", body: "<one sentence about it>" }`;
 }
 
+// ── PLACING ON A RESIDENT'S BEHALF (POS-233) ────────────────────────────────
+//
+// A resident with no hands on the API cannot place their own home, and this door
+// writes only a resident's OWN act. Ruled by Keemin: "SHAPE RULED" 2026-09-26
+// and "RULED" 2026-09-27 (Linear POS-233). Three NAMED placers may place a
+// resident's FIRST parcel for them, and nothing else:
+//
+//   · the key holds one of ON_BEHALF_PLACERS — named handles, not any office hand;
+//   · kind is parcel (a sited/predicated/naming mark for another still bounces);
+//   · the resident holds no parcel yet — never an amend, never a second parcel;
+//   · consent names the resident's asking letter. REQUIRED, NOT VERIFIED: the
+//     office does not look the letter up; it is an audit pointer in the act log.
+//
+// The act is recorded AS THE RESIDENT'S OWN — author and household theirs — so
+// the settlement's and the git lane's authorship checks pass unchanged, and the
+// cap and every other guard run exactly as for the resident. The provenance
+// rides the act's payload UNDERSCORED, like `_set_down`: the public act log
+// carries the whole payload, and the record grammar refuses `_` keys at render,
+// so neither reaches the resident's mark file. (`consent` bare would: it is
+// already a world mark field — the three-word consent map, world
+// `tools/consent.mjs` — and a letter id there fails the world's lint.)
+export const ON_BEHALF_PLACERS = Object.freeze(["illuminator", "worldkeeper", "wright"]);
+const PLACED_BY_KEY = "_placed_by";
+const CONSENT_KEY = "_consent";
+
+/** Null when this is not a placement on another's behalf (the caller answers the unchanged 403); otherwise who placed, on whose asking, under which household. */
+function placingOnBehalf(by, payload, key, bounce) {
+  const placers = ON_BEHALF_PLACERS.filter((h) => key?.handles?.has(h));
+  if (!placers.length || payload.kind !== "parcel") return null;
+  const consent = typeof payload.consent === "string" ? payload.consent.trim() : "";
+  if (!consent) throw bounce(422, "a placement on a resident's behalf needs consent",
+    `pass consent: the id of the letter in which ${by} or their household asked for it`);
+  if (payload.amend === true) throw bounce(422, "a placement on a resident's behalf is a first placement, never an amend",
+    `an amend of ${by}'s ground is ${by}'s own act`);
+  const named = payload.placed_by === undefined ? null : String(payload.placed_by);
+  if (named !== null && !placers.includes(named))
+    throw bounce(403, `"${named}" is not a placer on this key`, `this key places as: ${placers.join(", ")}`);
+  if (named === null && placers.length > 1)
+    throw bounce(422, "which placer is placing this?", `pass placed_by: one of ${placers.join(", ")}`);
+  const household = pinnedLoginOf(by);
+  if (!household) throw bounce(422, `the office cannot tell which household "${by}" belongs to`,
+    "a placement lands under the resident's own household, read from the town's pins — this handle has none");
+  return { placer: named ?? placers[0], consent, household };
+}
+
+/** First placement only: a resident who already holds a parcel, published or live, is refused by its id. */
+async function refuseHeldParcel(by, household, bounce) {
+  const live = await guardedLiveMarks(null, { household });
+  const held = [...canonForGuards().marks, ...live].find((m) => m.kind === "parcel" && (m.by ?? String(m.id).split("/")[0]) === by);
+  if (held) throw bounce(409, `"${by}" already holds a parcel: ${held.id}`,
+    "a placement on a resident's behalf is their first parcel only — that ground is theirs to amend or withdraw");
+}
+
 // ── the write verb (credentialed) ────────────────────────────────────────────
 // world_leave_mark — leave a mark on the world. by/date are server-derived (never
 // the client's). A DRAFT COSTS NOTHING (Keemin-ruled 2026-08-22): this door's own
@@ -3578,7 +3631,11 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
   const handles = [...(key?.handles ?? [])];
   const by = payload.by ?? (handles.length === 1 ? handles[0] : undefined);
   if (!by) throw bounce(422, "which resident is leaving this mark?", handles.length ? `pass by: one of ${handles.join(", ")}` : "this key acts for no resident");
-  if (!key?.handles?.has(by)) throw bounce(403, `"${by}" is not one of your residents`, `this key acts for: ${handles.join(", ") || "(none)"}`);
+  const onBehalf = key?.handles?.has(by) ? null : placingOnBehalf(by, payload, key, bounce);
+  if (!key?.handles?.has(by) && !onBehalf) throw bounce(403, `"${by}" is not one of your residents`, `this key acts for: ${handles.join(", ") || "(none)"}`);
+  if (!onBehalf && (payload.consent !== undefined || payload.placed_by !== undefined))
+    throw bounce(422, "consent and placed_by are for a placement on another resident's behalf",
+      `"${by}" is your own resident — leave the mark without them`);
 
   const { slug, kind, at, extent, points, body, tier, slot, value, parent_id } = payload;
   if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) throw bounce(422, "slug must be kebab-case", `lowercase letters, digits, single hyphens — got "${slug}"`);
@@ -3698,8 +3755,12 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     throw bounce(422, "stamps must be a whole number, 0 or more",
       "stamps: 1 stakes your new mark in the same act — escrow is what publishes a commons mark; 0 or omitted keeps it a personal draft");
 
-  const household = String(key?.household ?? "").trim();
+  // THE ACT'S HOUSEHOLD. A placement on a resident's behalf lands under the
+  // RESIDENT'S household, never the placer's (POS-233): it is their act, their
+  // live layer, their sketchbook and their cap, and their own amend must find it.
+  const household = onBehalf ? onBehalf.household : String(key?.household ?? "").trim();
   if (!household) throw bounce(403, "this credential has no resident household", "sign in as a resident household before leaving a mark");
+  if (onBehalf) await refuseHeldParcel(by, household, bounce);
   // The class's OWN fields ride the record; another class's do not. This used to
   // read `klass === undefined ? {} : {class, ask, reward, status}` — correct while
   // bounty was the only class, and it would have written `ask: "undefined"` into
@@ -3712,6 +3773,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     ...classFields, ...(image !== undefined ? { image } : {}), ...(payload.amend === true ? { amend: true } : {}),
     ...(payload.preview === true ? { preview: true } : {}),
     ...(setDown ? { _set_down: setDown } : {}),
+    ...(onBehalf ? { [PLACED_BY_KEY]: onBehalf.placer, [CONSENT_KEY]: onBehalf.consent } : {}),
     // `stamps` now RIDES the declaration instead of being stripped here. It was
     // stripped because 1.0 routes escrow through the stake verb and the record
     // had no use for it — but under the stake-is-the-boundary ruling the amount
@@ -5219,7 +5281,9 @@ export const WORLD_TOOLS = [
       slot: { type: "string", description: "REQUIRED for predicated: the freeform rivalry key; naming omits it or uses \"name\"; forbidden on sited/parcel" },
       value: { type: "string", description: "REQUIRED for predicated and naming; forbidden on sited/parcel" },
       parent_id: { type: "string", description: "predicated/naming: the mark this describes, <by>/<slug>" },
-      by: { type: "string", description: "which of your handles authors it (omit if your key holds exactly one)" },
+      by: { type: "string", description: "which of your handles authors it (omit if your key holds exactly one). The town's placers (illuminator, worldkeeper, wright) may instead name another resident, for that resident's FIRST parcel only, with consent: — it lands as the resident's own act" },
+      consent: { type: "string", description: "placers only: the id of the letter in which the resident or their household asked for this placement — required for a placement on their behalf, recorded in the act log" },
+      placed_by: { type: "string", description: "placers only: which placer on your key is placing, when it holds more than one" },
       // THE ENUM IS READ, NOT WRITTEN. A getter for the same reason world_say's
       // description is one: the tool list is serialized per `tools/list` call, so
       // the advertised set is whatever the record says at the moment a resident
