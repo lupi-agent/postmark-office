@@ -14,7 +14,8 @@
 //
 // THE CAN-FAIL FLIPS: remove the parcel line from `groundMinimumStake` → the
 // ✦0 leg and the own-ground leg go red; remove `publishNoteFor`'s parcel line
-// → the note leg goes red. The controls stay green under both.
+// → the note leg and the ✦0 leg (it asserts no heads-up) go red. The
+// controls stay green under both.
 //
 // NOT DRIVEN HERE: the stake door passing `kind` into its own-ground read
 // (world-stake.mjs). The own-ground leg holds the function it calls.
