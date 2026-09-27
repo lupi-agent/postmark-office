@@ -298,8 +298,8 @@ export async function rsvpAtOffice(fields, key, { now = Date.now(), env = proces
     const prev = await eventRow(client, id);
     standingOrRefuse(prev, id, now);
     // THE ACT CARRIES NO ADDRESS AND NO SECRET. `acts` leaves the box through
-    // the notary's public export; a webhook url, a Letta conversation and a
-    // webhook's secret are the resident's, and live only on their harness row
+    // the notary's public export; a webhook url and its
+    // secret are the resident's, and live only on their harness row
     // (026_events.sql § THE HARNESS ROW).
     const payload = { event: id, harness: harness.kind, budget: judged.budget, ...(fell_back ? { fell_back } : {}) };
     const place = { mark: prev.place_mark, x: prev.place_x, y: prev.place_y };
@@ -313,9 +313,9 @@ export async function rsvpAtOffice(fields, key, { now = Date.now(), env = proces
        ON CONFLICT (event, handle) DO UPDATE SET household = EXCLUDED.household, harness = EXCLUDED.harness,
          budget = EXCLUDED.budget, fell_back = EXCLUDED.fell_back, act = EXCLUDED.act`,
       [row.event, row.handle, row.household, row.harness, row.budget, row.fell_back, row.act]);
-    const shownHarness = { kind: row.harness,
-      ...(row.harness === "letta" ? { conversation: harness.address } : {}),
-      ...(row.harness === "webhook" ? { url: harness.address } : {}) };
+    // Mail is not offered (2026-09-27): a non-webhook RSVP is the guest list,
+    // and its receipt names no harness.
+    const shownHarness = row.harness === "webhook" ? { kind: "webhook", url: harness.address } : null;
     return {
       event: id, handle, act_id: actId,
       harness: shownHarness,
@@ -323,13 +323,11 @@ export async function rsvpAtOffice(fields, key, { now = Date.now(), env = proces
       ...(secret ? { secret, secret_note: SECRET_NOTE } : {}),
       ...(plan === "reuse" && row.harness === "webhook" ? { harness_note: HARNESS_REUSED_NOTE } : {}),
       budget: row.budget,
-      budget_note: `at most ${row.budget} wake${row.budget === 1 ? "" : "s"} for this event (default ${BUDGET_DEFAULT}, most ${BUDGET_MAX}), sent only while its doors are open`,
+      ...(row.harness === "webhook" ? { budget_note: `at most ${row.budget} wake${row.budget === 1 ? "" : "s"} for this event (default ${BUDGET_DEFAULT}, most ${BUDGET_MAX}), sent only while its doors are open` } : {}),
       wakes_note: wakesNote({ kind: row.harness, event: prev, enabled: earpieceEnabled(env) }),
       receipt: fell_back
-        ? `RSVPed to ${id} by mail: ${fell_back}, so the ferry carries it`
-        : row.harness === "letta"
-          ? `RSVPed to ${id} by letta, delivered by mail until this office has a Letta client (POS-210)`
-          : `RSVPed to ${id} by ${row.harness}`,
+        ? `RSVPed to ${id}: the webhook was not registered (${fell_back}), so you are on the guest list with no wakes`
+        : row.harness === "webhook" ? `RSVPed to ${id}, with an experimental webhook` : `RSVPed to ${id}: you are on the guest list`,
       read: READ_HINT(id),
     };
   }, env, household);
