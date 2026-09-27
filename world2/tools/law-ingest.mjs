@@ -267,6 +267,28 @@ export async function deriveLaw({ lawRepo }) {
     }
   }
 
+  // ── kind: predicate ────────────────────────────────────────────────────────
+  // A class's PREDICATE CHILDREN (POS-270, 2026-09-27). classes.md § the seam:
+  // "Every dial is a predicate ... a number the law carries rides a predicate
+  // child, never a frontmatter JSON". Say's and the doorstep's dials live there
+  // since 2026-08-22, and the office's `dialNumber` reads them FIRST — so a
+  // class read from this projection that carried only the class mark would
+  // answer say's earshot from the fallback. Measured at S83: 51 of 155 classes
+  // carry predicate children; every frontmatter `dials` already agrees.
+  //
+  // The same relation world-hydrate.mjs draws as a `describes` edge: a
+  // non-geometric mark nested under the class mark (its `_parentMarkId`, the
+  // loader's own), carrying a `slot`. Keyed by (class, slot), which is how the
+  // door asks; `id` rides so `dialNode` can point at the node, not guess it.
+  const isGeometric = (m) => m?.kind === "sited" || m?.kind === "parcel";
+  const classOfId = new Map(declarations.map((m) => [m.id, String(m.class)]));
+  for (const m of marks) {
+    const klass = classOfId.get(m._parentMarkId);
+    if (klass === undefined || isGeometric(m) || m.slot === undefined || m.slot === null) continue;
+    push("predicate", relPath(repo, join(m._dir, "mark.md")), `${klass}/${m.slot}`,
+      { class: klass, slot: m.slot, value: m.value ?? null, id: m.id });
+  }
+
   // ── kind: threshold ────────────────────────────────────────────────────────
   // The entry law a mark answers at its threshold — `termsAt` is the world's own
   // reader and its return value IS the row's data ("what a walker reads AT the
