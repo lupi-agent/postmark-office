@@ -59,8 +59,9 @@ import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabl
 import { arenaGroundAt, adversaryIn, arrivalOnGround, groundAtPoint } from "./arena.mjs";
 // `openDynamicReadOnly` IS GONE FROM THIS IMPORT (POS-154): `framesByHandle` was
 // its last caller here, and it opened the store for the departure read alone.
-// The remaining `openDynamic` calls are other readers' and other rows'.
-import { emissionsEnabled, openDynamic } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's flag
+// `openDynamic` left with the doors' handles (POS-269): every act this file
+// writes goes to the record, and none of them opened the store for anything.
+import { emissionsEnabled } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's flag
 import { emissionFromVoice } from "./dynamic-emissions.mjs"; // stage 2: speech also becomes an emission instance
 import { world2Enabled } from "./world2-acts.mjs"; // the write-path closure: is the shadow mirror on at all
 import { VESSEL_HANDLE, ridesTheVessel } from "./dynamic-entities.mjs"; // the aboard test, one home for two readers
@@ -1036,18 +1037,16 @@ export async function penVoiceAct(voice, spoken = null, deps = {}) {
   const stamp = deps.witnessStampAt ?? witnessStampAt;
   const append = deps.appendActFlipped ?? appendActFlipped;
   const crossing = deps.currentCrossing ? deps.currentCrossing() : currentCrossing();
-  const open = deps.openDynamic ?? openDynamic;
-  const db = open();
   try {
     const { at, witnesses } = await stamp(voice.handle, { x: voice.x, y: voice.y });
-    const row = await append(db, voiceEntry(voice, spoken, { at, witnesses, crossing }));
+    const row = await append(null, voiceEntry(voice, spoken, { at, witnesses, crossing }));
     return { ok: true, seq: row.seq ?? null, actId: row.actId ?? null };
   } catch (err) {
     if (err?.name === "PenUnreachableError")
       return { error: "bounce", defect: err.message,
         hint: "this lane's pen is the office's record (W2_PEN=say); when it cannot be reached the door refuses rather than writing anywhere else — nothing was said, and your words are safe to speak again" };
     throw err;
-  } finally { try { db.close(); } catch { /* already gone */ } }
+  }
 }
 
 const voices = createVoices({
@@ -2886,8 +2885,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const id = `${clean.by}/${clean.slug}`;
   const canon = canonForGuards();
-  const db = openDynamic();
-  try {
+  {
     // ── B1: THE READ FLIP (W2_GUARDS=1; runbook §4 B1) ──────────────────────
     // The slug collision, the move guard's `prior`, and the parcel cap all read
     // ONE live layer, so this is the one round trip that decides all three.
@@ -2895,7 +2893,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
     // sentence made true at the door: "A pen flip without a read flip produces
     // an office that writes to Postgres and validates against sqlite — a split
     // brain with a switch on it." Unflipped, `liveMarks` byte for byte.
-    const live = await guardedLiveMarks(db, { household: clean.household });
+    const live = await guardedLiveMarks(null, { household: clean.household });
     const liveById = new Map(live.map((m) => [m.id, m]));
     const priorLive = liveById.get(id) ?? null;
     const priorCanon = canon.byId.get(id) ?? null;
@@ -3179,8 +3177,8 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
     let row;
     try {
       row = laneFlipped("mark")
-        ? await appendActFlipped(db, entry)
-        : await appendJournal(db, entry);
+        ? await appendActFlipped(null, entry)
+        : await appendJournal(null, entry);
     } catch (err) {
       if (err?.name === "PenUnreachableError")
         throw bounce(503, err.message,
@@ -3244,7 +3242,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
         ...(groundRefusal ? { refused_the_stake: true } : {}),
       }),
     };
-  } finally { try { db.close(); } catch { /* already gone */ } }
+  }
 }
 
 /** withdraw, as one later entry. The terminal supersession (edit-law § withdraw) — nothing is deleted, a row says it ended. */
@@ -3252,11 +3250,10 @@ async function journalWithdraw({ by, slug, household }, { crossing = currentCros
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const id = `${by}/${slug}`;
   const canon = canonForGuards();
-  const db = openDynamic();
-  try {
+  {
     // B1: the read flip, withdraw's half — the existence check and the
     // stranding check both read the live layer (runbook §4 B1).
-    const live = await guardedLiveMarks(db, { household });
+    const live = await guardedLiveMarks(null, { household });
     const wasPublished = canon.ids.has(id);
     if (!live.some((m) => m.id === id) && !wasPublished)
       throw bounce(404, `no mark "${id}" in your world`, "ids are <by>/<slug> — you can withdraw your drafts and your published marks; check world_my_marks");
@@ -3265,7 +3262,7 @@ async function journalWithdraw({ by, slug, household }, { crossing = currentCros
     // stands on it. Canon's children count too — a published description of
     // this mark does not stop being stranded because it is not in the journal.
     const kids = [
-      ...(await guardedLiveChildrenOf(db, id, { household })).map((m) => m.id),
+      ...(await guardedLiveChildrenOf(null, id, { household })).map((m) => m.id),
       ...canon.marks.filter((m) => m.parent_id === id).map((m) => m.id),
     ];
     if (kids.length) throw bounce(409, `"${id}" still holds marks inside it`,
@@ -3294,8 +3291,8 @@ async function journalWithdraw({ by, slug, household }, { crossing = currentCros
     let row;
     try {
       row = laneFlipped("mark")
-        ? await appendActFlipped(db, entry)
-        : await appendJournal(db, entry);
+        ? await appendActFlipped(null, entry)
+        : await appendJournal(null, entry);
     } catch (err) {
       if (err?.name === "PenUnreachableError")
         throw bounce(503, err.message,
@@ -3305,7 +3302,7 @@ async function journalWithdraw({ by, slug, household }, { crossing = currentCros
     // `seq` is the ACT'S id since G1 — there is no sqlite rowid left — and
     // `log` has one answer because there is one record.
     return { id, withdrawn: true, was_published: wasPublished, effect: row.effect, seq: row.actId, crossing: row.crossing, log: row.record ?? "acts" };
-  } finally { try { db.close(); } catch { /* already gone */ } }
+  }
 }
 
 // ── THE OVER-CAP BOUNCE TEACHES THE SPLIT (#2918; Keemin, 2026-09-17) ───────
