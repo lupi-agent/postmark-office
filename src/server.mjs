@@ -2367,6 +2367,8 @@ const server = createServer((req, res) => {
   }
 });
 
+import("./world-refresher.mjs").then((m) => m.startWorldRefresher(WORLD_CLONE)); // POS-263: the world clone's git answered off the request path
+
 // The role rides the boot line because it is the one fact about a worker that
 // an operator reading `journalctl` cannot otherwise see — four processes on four
 // ports, and only this says which of them can take a letter.

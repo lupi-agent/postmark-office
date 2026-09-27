@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
 import { NEWEST_SETTLEMENT_FORMAT, newestSettlementFromRefLines } from "./settlements.mjs";
+import { answerFrom, askRefresher, replay } from "./world-refresher.mjs";
 
 const HOUSEHOLD_RE = /^[a-z0-9][a-z0-9._-]*$/i;
 const viewCache = new Map();
@@ -41,13 +42,30 @@ const viewCache = new Map();
 // world-store, since this reads the same whole-record artifact it does.
 const GIT_MAX_BUFFER = 512 * 1024 * 1024;
 
+// A plain question (no stdio, env or buffer of its own) is first put to the
+// world refresher, which answers from memory (world-refresher.mjs, POS-263).
+// Inside a write (`writing` > 0) nothing is: a write must see the refs it has
+// just moved. Without a running refresher, or for anything it will not answer,
+// this is the synchronous child it always was.
+let writing = 0;
 function git(repo, args, options = {}) {
-  return execFileSync("git", ["-C", repo, ...args], {
-    encoding: options.encoding ?? "utf8",
-    stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
-    env: options.env ?? process.env,
-    maxBuffer: options.maxBuffer ?? GIT_MAX_BUFFER,
-  });
+  const plain = writing === 0 && options.stdio == null && options.env == null && options.maxBuffer == null;
+  const encoding = options.encoding ?? "utf8";
+  const memory = plain ? askRefresher(repo, args, encoding) : null;
+  if (memory?.hit) return replay(memory.answer, repo, args);
+  try {
+    const out = execFileSync("git", ["-C", repo, ...args], {
+      encoding,
+      stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
+      env: options.env ?? process.env,
+      maxBuffer: options.maxBuffer ?? GIT_MAX_BUFFER,
+    });
+    memory?.remember({ ok: true, stdout: out });
+    return out;
+  } catch (e) {
+    memory?.remember(answerFrom(e, e.stdout, e.stderr));
+    throw e;
+  }
 }
 
 // ── REFS FROM GIT'S OWN FILES, CONTENT BY COMMIT (the Snug night, 2026-09-27) ──
@@ -257,6 +275,12 @@ export function readAtRef(repo, ref, path, encoding = "utf8") {
 // this once per window rather than once per read, which removes the same
 // subprocess storm without touching what the answer means. Fix the caller's
 // cadence, not the answer's truth.
+//
+// (POS-263: in the office, a running world refresher now answers this
+// function's git questions for READS from memory, and a read may see the refs
+// as they stood up to one refresh ago. The reasoning and the write exemption
+// are in world-refresher.mjs's header. This function still asks the same
+// questions in the same order.)
 //
 // ── IT IS ALSO THE CANON READER (2026-09-07, lane-a) ────────────────────────
 //
@@ -535,7 +559,13 @@ function freshenSharedMain(shared) {
 //     the switch tolerates the branch still being parked in another idle slot;
 //     and local `main` is advanced through the shared clone, because a worktree
 //     may not force a branch that the shared clone has checked out.
-export function ensureDraftCheckout(repo, household, { pooled = false, shared = null } = {}) {
+export function ensureDraftCheckout(repo, household, options = {}) {
+  writing++;
+  try { return seatDraftCheckout(repo, household, options); }
+  finally { writing--; }
+}
+
+function seatDraftCheckout(repo, household, { pooled = false, shared = null } = {}) {
   const branch = draftBranch(household);
   if (pooled) {
     git(repo, ["reset", "--hard", "--quiet", "HEAD"]);
@@ -775,15 +805,28 @@ export function foldedStateAtRef(repo, ref, { stakes = null } = {}) {
 // tick never advances, so a mark published at 05:45Z was "no mark" until the
 // crossing-save pulled at 12:02Z, while the same answer's `law.as_of_world` —
 // off `world.db`, hydrated from `origin/main` — already named the newer world.
+//
+// `state` is read when it is first asked for, not before (POS-263). The world
+// door's `world()` (world.mjs) asks for the ref and sha, finds its assembled
+// world already cached at that sha, and never touches `state` — but it used to
+// be read and parsed anyway: 1 MB of world-state.json through `git show` and
+// `JSON.parse`, 44 times in one GET /world/present, every one thrown away.
+// Read once per answer and kept on it, so a caller that reads it twice parses
+// it once, as before.
 export function publishedState(repo) {
   // The READ tier's ref is the newest blessing (see `blessed`); the record it
   // returns rides along so the answer can say WHICH settlement it served and
   // whether main holds a candidate ahead of it.
   const canon = blessed(repo);
+  let state;
+  let read = false;
   return {
     ref: canon.ref,
     sha: canon.sha,
-    state: readJsonAtRef(repo, canon.ref, "WORLD/world-state.json"),
+    get state() {
+      if (!read) { state = readJsonAtRef(repo, canon.ref, "WORLD/world-state.json"); read = true; }
+      return state;
+    },
     blessed: canon,
   };
 }
