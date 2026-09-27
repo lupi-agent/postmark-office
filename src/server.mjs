@@ -315,6 +315,11 @@ const RETIRED = [];
 let indexStamp = stampOf(DB_PATH);
 let reloadComplaint = null;
 
+// The journal lines below are the MAIN thread's (POS-266). A read worker runs
+// the same reloads on the same files and would say each line again, once per
+// worker, where an operator reads one office.
+const journal = IN_READ_WORKER ? { log() {}, error() {} } : console;
+
 function reloadIndex() {
   const stamp = stampOf(DB_PATH);
   if (stamp === null || stamp === indexStamp) return;   // vanished, or unchanged
@@ -327,7 +332,7 @@ function reloadIndex() {
     const why = String(e?.message ?? e).slice(0, 160);
     if (reloadComplaint !== why) {
       reloadComplaint = why;
-      console.error(`[office] ${DB_PATH} changed but would not open (${why}) — still serving as-of ${AS_OF.slice(0, 12)}, retrying every ${RELOAD_POLL_MS / 1000}s`);
+      journal.error(`[office] ${DB_PATH} changed but would not open (${why}) — still serving as-of ${AS_OF.slice(0, 12)}, retrying every ${RELOAD_POLL_MS / 1000}s`);
     }
     return;
   }
@@ -338,7 +343,7 @@ function reloadIndex() {
   db = next.handle; meta = next.meta; AS_OF = next.asOf;
   old.retiredAt = Date.now();
   RETIRED.push(old);
-  console.log(`[office] index reloaded — as-of ${AS_OF.slice(0, 12)} (was ${old.asOf.slice(0, 12)})`);
+  journal.log(`[office] index reloaded — as-of ${AS_OF.slice(0, 12)} (was ${old.asOf.slice(0, 12)})`);
   announce("index");
 }
 
@@ -351,13 +356,13 @@ function sweepRetired(now = Date.now()) {
     // A borrower still holding after five minutes is not a slow request, it is a
     // leak — and an index kept open forever by one is the worse of the two bugs.
     if (idx.refs > 0)
-      console.error(`[office] closing the index as-of ${idx.asOf.slice(0, 12)} with ${idx.refs} request(s) still holding it after ${Math.round(waited / 1000)}s`);
+      journal.error(`[office] closing the index as-of ${idx.asOf.slice(0, 12)} with ${idx.refs} request(s) still holding it after ${Math.round(waited / 1000)}s`);
     try { idx.handle.close(); } catch { /* already gone */ }
     RETIRED.splice(i, 1);
     // Printed because a handle that is never released is invisible otherwise —
     // on Windows it would silently lock the file, and on any box it is the one
     // half of the swap an operator (or a test) cannot see from the outside.
-    console.log(`[office] retired index as-of ${idx.asOf.slice(0, 12)} closed`);
+    journal.log(`[office] retired index as-of ${idx.asOf.slice(0, 12)} closed`);
   }
 }
 
@@ -389,7 +394,7 @@ function reloadWorldCaches() {
   resetClassFieldsCache();   // world-frames.mjs — mark id -> { class, mobility }
   resetClassCache();         // dynamic-store.mjs — the sound class's dials
   resetPlaceWordsCache();    // world.mjs        — place words folded over the marks
-  console.log(`[office] world store changed at ${path} — derived caches dropped`);
+  journal.log(`[office] world store changed at ${path} — derived caches dropped`);
   announce("world-store");
 }
 
