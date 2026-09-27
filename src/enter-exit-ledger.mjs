@@ -333,9 +333,46 @@ export async function enterExitLedgerText(repo, rows) {
  * ⚑ RENAMED from `liveJournalRows`, which named a source it no longer has. No
  * caller outside this module and its suite ever held the old name.
  */
+// ── READ ONCE PER PASSAGE, NOT ONCE PER CALL (POS-272) ──────────────────────
+//
+// Every say pays this read: `residentStandpoint`'s aboard-by-occupancy branch
+// folds occupancy out of the served ledger, and the crossing doors ask again.
+// The rows change only when a passage lands, so the read is kept under the
+// passage set's HIGH-WATER MARK — `max(id)` and `count(*)` over exactly the
+// rows the read returns — and re-read when either moves.
+//
+// THE COUNT IS THE EXACT HALF. `acts` is append-only (the `acts_append_only`
+// trigger refuses UPDATE and DELETE), so the row set changes only by growing
+// and the count moves with every change. `max(id)` alone would miss a passage
+// whose identity was drawn before a later one but committed after it: the
+// later id is already the maximum when the earlier row appears.
+//
+// Scoped to the passage rows, not to every act: keyed on the whole table, each
+// say (the commonest act by far) would throw the memo away.
+//
+// A mark that cannot be read is no memo, never a stale answer: the full read
+// runs as before, and its own failure is still named below.
+let _passages = null;   // { mark, rows }
+
+/** Forget the kept passages — for suites that swap the record under the office. */
+export function __forgetPassages() { _passages = null; }
+
+async function passageMark(live, env) {
+  const got = await actsQuery(
+    `SELECT max(id) AS hw, count(*) AS n FROM acts
+      WHERE action = ANY($1) AND payload->>'_ledger' IS NULL`,
+    [live.PASSAGE_ACTIONS], env);
+  const r = got?.[0];
+  if (!r || r.n == null) return null;
+  return `${env.WORLD2_PG_URL}|${r.hw ?? "none"}|${r.n}`;
+}
+
 export async function livePassageRows({ env = process.env } = {}) {
   try {
     const live = await import("../world2/tools/live-reads.mjs");
+    let mark = null;
+    try { mark = await passageMark(live, env); } catch { mark = null; }
+    if (mark && _passages?.mark === mark) return { rows: _passages.rows, unread: null };
     const rows = await actsQuery(
       `SELECT id, at, crossing, actor, action, payload FROM acts
         WHERE action = ANY($1) AND payload->>'_ledger' IS NULL ${live.PASSAGE_ORDER_SQL}`,
@@ -352,7 +389,12 @@ export async function livePassageRows({ env = process.env } = {}) {
     // journal order and the flipped pen writes `acts` first, so id ascends with
     // seq under both pens — while `journal_seq` is NULL on every flipped row and
     // would sort the live era's newest crossings to the front of it.
-    return { rows: rows.map((r) => ({ seq: Number(r.id), payload: r.payload })), unread: null };
+    const out = rows.map((r) => ({ seq: Number(r.id), payload: r.payload }));
+    // Kept under the mark read BEFORE the rows: a passage landing between the
+    // two reads is in these rows and moves the next mark, so the next call
+    // reads again rather than keeping an answer older than its key.
+    _passages = mark ? { mark, rows: out } : null;
+    return { rows: out, unread: null };
   } catch (e) {
     return { rows: [], unread: `the passage record could not be read (${String(e?.message ?? e).slice(0, 160)}) — everything below is the FROZEN ERA ONLY, and any passage made since is missing from this answer rather than absent from the town` };
   }

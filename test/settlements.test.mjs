@@ -103,3 +103,48 @@ test("a directory that is not a repo answers empty rather than throwing", () => 
   assert.deepEqual(settlements(notRepo), { current: null, recent: [] });
   assert.deepEqual(settlements("Z:/no/such/place"), { current: null, recent: [] });
 });
+
+// ── ONE for-each-ref, the SAME rows as the per-tag reading (POS-272) ────────
+//
+// The door used to spend two spawns per tag: `rev-parse --short <tag>^{commit}`
+// and `log -1 --format=%cI <tag>`. It now spends one `for-each-ref` for the
+// list. The per-tag reading is restated here as the falsifier: the two must
+// hand back identical rows, lightweight and annotated, including a commit
+// dated in a zone that is not UTC (`%cI` keeps the committer's own offset, and
+// so must the one read).
+const perTag = (repo) => {
+  const g = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  return g("tag", "--list", "settlement/S*").split("\n").map((s) => s.trim()).filter((t) => SETTLEMENT_TAG.test(t)).map((tag) => ({
+    tag,
+    sha: g("rev-parse", "--short", `${tag}^{commit}`).trim() || null,
+    date: g("log", "-1", "--format=%cI", tag).trim() || null,
+  }));
+};
+const byTag = (rows) => [...rows].sort((a, b) => a.tag.localeCompare(b.tag));
+
+test("one for-each-ref reads the same rows the per-tag spawns read", () => {
+  const repo = mkdtempSync(join(tmpdir(), "settle-one-"));
+  const g = (env, ...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  g({}, "init", "-q", "-b", "main");
+  g({}, "config", "user.email", "t@example.com");
+  g({}, "config", "user.name", "T");
+  g({ GIT_COMMITTER_DATE: "2026-08-08T18:00:00+05:30" }, "commit", "-q", "--allow-empty", "-m", "one");
+  g({}, "tag", "settlement/S9");                                        // lightweight, off-UTC commit
+  g({ GIT_COMMITTER_DATE: "2026-08-09T06:00:00Z" }, "commit", "-q", "--allow-empty", "-m", "two");
+  g({}, "tag", "-a", "settlement/S10", "-m", "blessed");               // annotated
+  g({}, "tag", "settlement/Sx");                                        // under the prefix, not a settlement
+  g({}, "tag", "v1");                                                   // not under it at all
+
+  const rows = readSettlementTags(repo);
+  assert.deepEqual(byTag(rows), byTag(perTag(repo)));
+  assert.equal(rows.length, 2, "only settlement/S<n> tags are rows");
+  assert.equal(rows.find((r) => r.tag === "settlement/S9").date, "2026-08-08T18:00:00+05:30", "the committer's own zone, as %cI gives it");
+});
+
+test("the world clone's own tags: one for-each-ref agrees with the per-tag reading", (t) => {
+  const clone = process.env.WORLD_CLONE;
+  if (!clone) return t.skip("WORLD_CLONE is not set — the fixture above still holds the rule");
+  const rows = readSettlementTags(clone);
+  if (!rows.length) return t.skip("this clone carries no settlement tags");
+  assert.deepEqual(byTag(rows), byTag(perTag(clone)));
+});

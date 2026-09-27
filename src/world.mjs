@@ -614,8 +614,18 @@ export async function residentStandpoint(handle, w = null) {
   // BOTH ERAS. A resident set down ashore at the freeze has that record in the
   // store and nowhere else; reading the ledger alone puts them back at the berth
   // they left.
+  //
+  // FROM THE KEPT POSITIONS when this office keeps them (POS-272). Every say
+  // paid this derivation — both eras, re-read, for one resident — and every
+  // answer below reads only that resident's GOVERNING record (and the vessel's,
+  // for the narration): `whereIs` takes the last record, and `movementStandpoint`
+  // folds a history whose frame has been null since POS-247, so one record or
+  // the whole history lands on the same point. `position-projection.mjs`'s
+  // equality falsifier holds the projection to the derivation;
+  // `test/standpoint-from-the-kept-positions.test.mjs` holds this answer to it.
+  const projected = positionsProjected();
   let departures = [];
-  try { departures = await departuresNow(WORLD_CLONE); }
+  try { departures = projected ? await positionProjection.departures() : await departuresNow(WORLD_CLONE); }
   catch { /* no ledger and no store — ground is still an honest answer */ }
 
   // ── ABOARD BY OCCUPANCY (#2986, Keemin-ruled 2026-09-19) ──────────────────
@@ -669,6 +679,9 @@ export async function residentStandpoint(handle, w = null) {
       const v2 = await movementStandpoint(handle, world_, {
         repo: WORLD_CLONE,
         recordsOf: (h) => departures.filter((d) => d.handle === h),
+        // The projection already holds era two, so the store is not read again
+        // for a question it has answered (`heardFromV2`'s own seam, POS-264).
+        ...(projected ? { storeRecordsOf: async () => [] } : {}),
       });
       if (v2) return v2;
     } catch (e) {

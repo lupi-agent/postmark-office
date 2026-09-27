@@ -560,12 +560,15 @@ export function dedupeRecords(records) {
  * change: the ceremony needed a fallback because a declaration could be absent,
  * and a frame cannot be — the world is the default.
  *
- * `recordsOf(handle)` is injected. Returns null when the flag's machinery cannot
+ * `recordsOf(handle)` is injected. `storeRecordsOf(handle, atMs)` replaces the
+ * store read the way it does in `heardFromV2` below: `residentStandpoint` over
+ * the positions projection (POS-272) already holds era two and passes
+ * `async () => []`. Returns null when the flag's machinery cannot
  * answer (no carrier in this world, no engine), which is the caller's signal to
  * use the derivation it has always used.
  */
 export async function movementStandpoint(handle, worldState, {
-  repo = WORLD_CLONE, atMs = Date.now(), recordsOf = null,
+  repo = WORLD_CLONE, atMs = Date.now(), recordsOf = null, storeRecordsOf = null,
 } = {}) {
   const { service, mod, carriers } = await vesselServiceFrom(worldState, { repo });
   if (!service || !mod) return null;
@@ -584,7 +587,9 @@ export async function movementStandpoint(handle, worldState, {
   }
 
   const ledgerRecords = recordsOf ? (await recordsOf(handle)) ?? [] : [];
-  const storeRecords = await storedRecordsFor(handle, { atMs });
+  const storeRecords = storeRecordsOf
+    ? (await storeRecordsOf(handle, atMs)) ?? []
+    : await storedRecordsFor(handle, { atMs });
   const records = recordsAcrossEras(ledgerRecords, storeRecords);
   if (!records.length) return null;
 

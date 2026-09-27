@@ -259,7 +259,35 @@ export function townSummary(db, meta) {
 // and every one of those wants EVERY resident. A budget decides how much gets
 // said; it must not decide what is true, so the bound lives one level up in
 // `residentPage`, never here.
+//
+// READ ONCE PER CHANGE, NOT ONCE PER CALL (POS-272). Every MCP world call asks
+// for the roll (`mcp.mjs § rollFor`), and each ask parsed every resident's card.
+// The rows change only when the index does, so they are kept per HANDLE under
+// the handle's own change stamp: `PRAGMA data_version` moves when another
+// connection commits (a rehydrate writing the file under a read handle), and
+// `total_changes()` moves when this connection writes (the suites, which
+// build their index through the handle they then read). Either moving re-reads.
+// A handle that cannot answer both — not sqlite, or a stub — is never kept.
+// Each caller gets its own copies of the rows, so no reader can edit another's.
+const _rolls = new WeakMap();   // db handle -> { stamp, rows }
+
+function rollStamp(db) {
+  try {
+    const v = db.prepare("PRAGMA data_version").get()?.data_version;
+    const c = db.prepare("SELECT total_changes() AS c").get()?.c;
+    return Number.isFinite(Number(v)) && Number.isFinite(Number(c)) && v != null && c != null ? `${v}|${c}` : null;
+  } catch { return null; }
+}
+
 export function residentList(db) {
+  const stamp = rollStamp(db);
+  const kept = stamp ? _rolls.get(db) : null;
+  const rows = kept?.stamp === stamp ? kept.rows : readRoll(db);
+  if (stamp && kept?.rows !== rows) _rolls.set(db, { stamp, rows });
+  return rows.map((r) => ({ ...r }));
+}
+
+function readRoll(db) {
   return db.prepare("SELECT handle, json FROM residents ORDER BY handle").all()
     // A row whose handle could never have been admitted at the door is not a
     // resident, whatever a directory listing put in the table. `_archived` is
