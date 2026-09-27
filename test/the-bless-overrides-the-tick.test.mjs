@@ -227,8 +227,8 @@ test("HYDRATE --ref blessed: the store stands on the blessed sha and stamps the 
 });
 
 test("the tick asks for the blessing by name", () => {
-  const tick = readFileSync(new URL("../deploy/office-tick.sh", import.meta.url), "utf8");
-  assert.match(tick, /world-hydrate\.mjs --world "\$WORLD_CLONE" --ref blessed /, "deploy/office-tick.sh hydrates --ref blessed");
+  const tick = readFileSync(new URL("../deploy/office-rehydrate.sh", import.meta.url), "utf8");
+  assert.match(tick, /world-hydrate\.mjs --world "\$WORLD_CLONE" --ref blessed /, "deploy/office-rehydrate.sh hydrates --ref blessed");
   assert.doesNotMatch(tick, /--ref origin\/main/, "the old ref is gone from the tick");
 });
 

@@ -1,8 +1,11 @@
 [Unit]
-Description=Rehydrate the postmark office index (offset from the site extractor)
+Description=Rehydrate the postmark office's read indexes (office.db, world.db)
 
 [Timer]
-OnCalendar=*:07,22,37,52
+# :09/:24/:39/:54 — two minutes after postmark-office-keep.timer, which pulls
+# the town clone and fetches the world's tags this reads. Before the 2026-09-27
+# split (POS-268) this timer ran the whole tick at :07/:22/:37/:52.
+OnCalendar=*:09,24,39,54
 Persistent=true
 
 [Install]

@@ -1,0 +1,16 @@
+[Unit]
+Description=Postmark office — pull the clones, catch the mint up, write the settlements row, publish the panes
+
+[Service]
+Type=oneshot
+# Runs as the office user: the clones, the stamp key and the panes webroot are
+# meepo's. This User= line is load-bearing — the 2026-07-09 tick outage was a
+# repo copy of the tick's unit drifting rootward from the live one.
+User=meepo
+EnvironmentFile=/etc/postmark-office.env
+WorkingDirectory=/srv/postmark-office
+# The keeping half of the old office tick (POS-268 split it, 2026-09-27). It
+# touches neither office.db nor world.db; postmark-office-rehydrate does that,
+# two minutes later, from the clones this pulled. The ferry, the pen and both
+# halves share the one town lock.
+ExecStart=/bin/sh /srv/postmark-office/deploy/office-keep.sh

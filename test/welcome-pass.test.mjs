@@ -255,7 +255,7 @@ test("the day comes from the town's clock, not the box's", () => {
 // BEFORE the verify — where its rows are sealed and pushed by the commit that is
 // already there. Nothing in a unit test can observe a shell script's order.
 test("the tick runs the welcome pass after the append and before the verify", () => {
-  const sh = readFileSync(new URL("../deploy/office-tick.sh", import.meta.url), "utf8");
+  const sh = readFileSync(new URL("../deploy/office-keep.sh", import.meta.url), "utf8");
   const append = sh.indexOf("stamp-mint.mjs --append");
   const pass = sh.indexOf("deploy/welcome-pass.mjs");
   const verify = sh.indexOf("stamp-verify.mjs");
@@ -266,7 +266,7 @@ test("the tick runs the welcome pass after the append and before the verify", ()
 });
 
 test("a refused bundle cannot strand the mint pass's own rows", () => {
-  const sh = readFileSync(new URL("../deploy/office-tick.sh", import.meta.url), "utf8");
+  const sh = readFileSync(new URL("../deploy/office-keep.sh", import.meta.url), "utf8");
   const line = sh.split(/\r?\n/).findIndex((l) => l.includes("deploy/welcome-pass.mjs"));
   const around = sh.split(/\r?\n/).slice(line - 1, line + 4).join("\n");
   assert.match(around, /\|\|\s*echo/,
