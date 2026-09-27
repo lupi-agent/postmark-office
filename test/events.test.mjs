@@ -271,7 +271,7 @@ test("a second host of a STANDING event's title is refused and pointed at the am
 const echoing = (seen) => async (url, init) => { seen.push({ url, body: JSON.parse(init.body) }); return { status: 200, text: async () => JSON.parse(init.body).nonce }; };
 const silent = (seen) => async (url, init) => { seen.push({ url, body: JSON.parse(init.body) }); return { status: 200, text: async () => "ok" }; };
 
-test("falsifier · a webhook that echoes lands as webhook; one that does not lands as mail and says so; both show the budget", async () => {
+test("falsifier · a webhook that echoes lands as webhook; one that does not lands on the guest list and says so", async () => {
   const { rsvps, harnesses } = setup();
   const { event } = await hostAtOffice(HOST(Date.now()), WRIGHT);
   const seen = [];
@@ -281,7 +281,8 @@ test("falsifier · a webhook that echoes lands as webhook; one that does not lan
   assert.equal(seen.length, 1, "the url is challenged exactly once"); assert.match(seen[0].body.nonce, /^[0-9a-f]{32}$/);
 
   const no = await rsvpAtOffice({ event: event.id, harness: { kind: "webhook", url: "https://hooks.example.org/deaf" } }, WRIGHT, { fetchImpl: silent([]) });
-  assert.equal(no.harness.kind, "mail"); assert.equal(no.fell_back, FELL_BACK_NO_ECHO);
+  assert.equal(no.harness, null); assert.equal(no.fell_back, FELL_BACK_NO_ECHO);
+  assert.match(no.receipt, /the webhook was not registered .* so you are on the guest list with no wakes/);
   assert.equal(no.budget, BUDGET_DEFAULT);
   // an unechoed URL is never registered: nothing a later wake could read
   assert.equal(harnesses.has("wright"), false);
@@ -289,20 +290,18 @@ test("falsifier · a webhook that echoes lands as webhook; one that does not lan
   assert.equal(rsvps.get(`${event.id} wright`).harness, "mail");
 });
 
-test("rsvp · mail needs nothing; letta names its conversation; a budget past the dial and a private url are refused by name", async () => {
+test("rsvp · no harness is the guest list; letta is refused by name (removed 2026-09-27); a budget past the dial and a private url are refused by name", async () => {
   const { pen } = setup();
   const { event } = await hostAtOffice(HOST(Date.now()), WRIGHT);
   const m = await rsvpAtOffice({ event: event.id }, ERRANT);
-  assert.equal(m.harness.kind, "mail"); assert.equal(m.budget, 6);
-  const l = await rsvpAtOffice({ event: event.id, harness: { kind: "letta", conversation: "conv-4f2a" } }, ERRANT);
-  assert.deepEqual(l.harness, { kind: "letta", conversation: "conv-4f2a" });
-  // the receipt says how the wakes really come (Keemin 2026-09-27): letta is mail
-  // for now, and a flag that is off is said out loud
-  assert.match(l.receipt, /delivered by mail until this office has a Letta client/);
-  assert.match(l.wakes_note, /woken by mail for now/);
-  assert.match(m.wakes_note, /^The earpiece is switched off/);
-  assert.doesNotMatch(m.budget_note, /when the office has it switched on/);
+  // mail is not offered (Keemin 2026-09-27): the receipt names no harness and
+  // promises nothing but the guest list
+  assert.equal(m.harness, null); assert.equal(m.budget, 6);
+  assert.match(m.receipt, /you are on the guest list$/);
+  assert.match(m.wakes_note, /^You are on the guest list\. Nothing is sent to you/);
+  assert.equal(m.budget_note, undefined, "a guest-list RSVP carries no wake budget note");
   const n = pen.rows().length;
+  await refusedWith(rsvpAtOffice({ event: event.id, harness: { kind: "letta", conversation: "conv-4f2a" } }, ERRANT), 422, /letta is not offered/);
   await refusedWith(rsvpAtOffice({ event: event.id, budget: 61 }, ERRANT), 422, /1 to 60/);
   await refusedWith(rsvpAtOffice({ event: event.id, harness: { kind: "webhook", url: "https://127.0.0.1/x" } }, ERRANT), 422, /private address/);
   await refusedWith(rsvpAtOffice({ event: event.id, harness: { kind: "webhook", url: "http://hooks.example.org/x" } }, ERRANT), 422, /https/);
@@ -310,13 +309,13 @@ test("rsvp · mail needs nothing; letta names its conversation; a budget past th
   assert.equal(pen.rows().length, n);
 });
 
-test("the act carries no address: a webhook url and a letta conversation never reach `acts` (the table the notary exports)", async () => {
+test("the act carries no address: a webhook url never reaches `acts` (the table the notary exports)", async () => {
   const { pen } = setup();
   const { event } = await hostAtOffice(HOST(Date.now()), WRIGHT);
   await rsvpAtOffice({ event: event.id, harness: { kind: "webhook", url: "https://hooks.example.org/secret-path" } }, ERRANT, { fetchImpl: echoing([]) });
-  await rsvpAtOffice({ event: event.id, harness: { kind: "letta", conversation: "conv-private-77" } }, WRIGHT);
+  await rsvpAtOffice({ event: event.id, harness: { kind: "webhook", url: "https://hooks.example.org/private-77" } }, WRIGHT, { fetchImpl: echoing([]) });
   const text = JSON.stringify(pen.rows());
-  assert.doesNotMatch(text, /secret-path|conv-private-77/);
+  assert.doesNotMatch(text, /secret-path|private-77/);
 });
 
 test("the public read carries no harness, url, conversation or budget — only who RSVPed", async () => {
@@ -324,10 +323,10 @@ test("the public read carries no harness, url, conversation or budget — only w
   const now = Date.now();
   const { event } = await hostAtOffice(HOST(now), WRIGHT);
   await rsvpAtOffice({ event: event.id, harness: { kind: "webhook", url: "https://hooks.example.org/secret-path" }, budget: 7 }, ERRANT, { fetchImpl: echoing([]) });
-  await rsvpAtOffice({ event: event.id, harness: { kind: "letta", conversation: "conv-private-77" } }, WRIGHT);
+  await rsvpAtOffice({ event: event.id, harness: { kind: "webhook", url: "https://hooks.example.org/private-77" } }, WRIGHT, { fetchImpl: echoing([]) });
   for (const read of [await calendarAtOffice({}, { now }), await calendarAtOffice({ event: event.id }, { now })]) {
     const text = JSON.stringify(read);
-    assert.doesNotMatch(text, /secret-path|conv-private-77|harness|budget|webhook|letta/);
+    assert.doesNotMatch(text, /secret-path|private-77|harness|budget|webhook/);
   }
   const one = await calendarAtOffice({ event: event.id }, { now });
   assert.deepEqual(one.event.rsvps, { total: 2, residents: ["errant", "wright"] });
@@ -392,7 +391,7 @@ test("falsifier · a webhook that echoes: the secret rides the receipt once, the
   assert.doesNotMatch(JSON.stringify(again), new RegExp(SECRET_A));
 });
 
-test("rotation · a different url is challenged again and re-mints, stamping rotated_at; letta stores its conversation with no secret; mail stores nothing and leaves the row alone", async () => {
+test("rotation · a different url is challenged again and re-mints, stamping rotated_at; mail stores nothing and leaves the row alone", async () => {
   const { harnesses } = setup();
   const now = Date.now();
   const { event } = await hostAtOffice(HOST(now), WRIGHT);
@@ -412,21 +411,18 @@ test("rotation · a different url is challenged again and re-mints, stamping rot
   assert.equal(harnesses.get("errant").address, "https://hooks.example.org/two");
 
   const mail = await rsvpAtOffice({ event: event.id }, ERRANT);
-  assert.equal(mail.harness.kind, "mail");
+  assert.equal(mail.harness, null);
   assert.equal(harnesses.get("errant").secret, SECRET_B, "a mail RSVP touched the harness row");
 
-  const l = await rsvpAtOffice({ event: event.id, harness: { kind: "letta", conversation: "conv-4f2a" } }, WRIGHT);
-  assert.equal(l.secret, undefined);
-  assert.deepEqual((({ kind, address, secret }) => ({ kind, address, secret }))(harnesses.get("wright")), { kind: "letta", address: "conv-4f2a", secret: null });
   const m = await rsvpAtOffice({ event: event.id }, { household: "pica", handles: new Set(["pica"]) });
-  assert.equal(m.harness.kind, "mail");
+  assert.equal(m.harness, null);
   assert.equal(harnesses.has("pica"), false, "a mail RSVP stored a harness row");
 });
 
 test("the row policy · the harness row is read and written only inside a transaction that declared the resident's household", async () => {
   const { pen, harnesses } = setup();
   const { event } = await hostAtOffice(HOST(Date.now()), WRIGHT);
-  await rsvpAtOffice({ event: event.id, harness: { kind: "letta", conversation: "c-1" } }, ERRANT);
+  await rsvpAtOffice({ event: event.id, harness: { kind: "webhook", url: "https://hooks.example.org/c-1" } }, ERRANT, { fetchImpl: echoing([]) });
   // every query that named the table ran after solo:errant was declared
   const asked = pen.asked();
   const touches = asked.map((q, i) => [q, i]).filter(([q]) => /household_harnesses/.test(q));
@@ -438,11 +434,11 @@ test("the row policy · the harness row is read and written only inside a transa
   }
   assert.deepEqual(pen.state.householdKeys, ["solo:errant"]);
   // another household's row is invisible to this one: seed one and read as errant
-  harnesses.set("pica", { handle: "pica", household: "solo:pica", kind: "letta", address: "c-pica", secret: null, registered_at: "x", rotated_at: null });
-  const again = await rsvpAtOffice({ event: event.id, handle: "errant", harness: { kind: "letta", conversation: "c-pica" } }, ERRANT);
-  assert.equal(again.harness.conversation, "c-pica");
-  assert.equal(harnesses.get("pica").address, "c-pica", "errant's write reached pica's row");
-  assert.equal(harnesses.get("errant").address, "c-pica");
+  harnesses.set("pica", { handle: "pica", household: "solo:pica", kind: "webhook", address: "https://hooks.example.org/pica", secret: "p".repeat(64), registered_at: "x", rotated_at: null });
+  const again = await rsvpAtOffice({ event: event.id, handle: "errant", harness: { kind: "webhook", url: "https://hooks.example.org/pica" } }, ERRANT, { fetchImpl: echoing([]) });
+  assert.equal(again.harness.url, "https://hooks.example.org/pica");
+  assert.equal(harnesses.get("pica").secret, "p".repeat(64), "errant's write reached pica's row");
+  assert.equal(harnesses.get("errant").address, "https://hooks.example.org/pica");
 });
 
 test("the secret never enters a log line or an error: a failing write after the mint answers the pen's fixed sentence", async () => {
@@ -473,7 +469,7 @@ test("rebuild · the tables equal what the act log alone derives — and a hand-
   await hostAtOffice({ event: a.event.id, title: "The Snug Harbour, opened" }, WRIGHT);
   const b = await hostAtOffice({ ...HOST(now, { at: { x: 1, y: 2 } }), title: "Reading by the lamp" }, WRIGHT);
   await cancelAtOffice({ event: b.event.id }, WRIGHT);
-  await rsvpAtOffice({ event: a.event.id, harness: { kind: "letta", conversation: "c1" } }, ERRANT);
+  await rsvpAtOffice({ event: a.event.id, harness: { kind: "webhook", url: "https://hooks.example.org/c1" } }, ERRANT, { fetchImpl: echoing([]) });
   await rsvpAtOffice({ event: a.event.id, budget: 3 }, ERRANT);   // a second RSVP replaces the first
   const acts = await eventActs(pen);
   assert.equal(acts.length, 6);

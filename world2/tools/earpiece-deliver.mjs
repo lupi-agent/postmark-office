@@ -58,6 +58,15 @@ export const STATE_DEFAULT = "/srv/postmark-earpiece/state.json";
 export const MAIL_STOPPED = "no mail pen was handed to this run, so no letter was written";
 export const mailStopped = async () => ({ ok: false, detail: MAIL_STOPPED });
 
+// MAIL IS OFF (Keemin, 2026-09-27: "let's maximize the undone here -- can we just
+// have it not show up in the office and site as an option for now?"). Mail and
+// Letta are no longer offered on the RSVP, and a run handed no pen (sendMail:
+// null, the box's run unless EARPIECE_MAIL=1) sends only webhooks: a wake that
+// would have been a letter is counted `mail-off` and writes no row, charges
+// nothing and is not retried. The letter machinery stays for a later ruling.
+export const MAIL_FLAG = "EARPIECE_MAIL";
+export const mailEnabled = (env = process.env) => String(env?.[MAIL_FLAG] ?? "").trim() === "1";
+
 const iso = (t) => new Date(t).toISOString();
 
 /**
@@ -69,7 +78,7 @@ const iso = (t) => new Date(t).toISOString();
  *   earshotM   the say lane's earshot, for an event at a bare point
  */
 export async function runEarpiece({ now = Date.now(), env = process.env, store, fetchImpl = globalThis.fetch,
-  sendMail = mailStopped, sleep, withinFn = null, earshotM = null } = {}) {
+  sendMail = null, sleep, withinFn = null, earshotM = null } = {}) {
   const at = iso(now);
   if (!earpieceEnabled(env)) return { at, status: "disabled", why: `${KILL_FLAG} is not 1 — nothing was read and nothing was sent` };
 
@@ -77,8 +86,8 @@ export async function runEarpiece({ now = Date.now(), env = process.env, store, 
   const open = events.filter((e) => inWindow(e, now));
   const outside_window = events.filter((e) => !open.includes(e)).map((e) => e.id);
   const counts = { delivered: 0, failed: 0, fell_back: 0, "budget-exhausted": 0, coalescing: 0, "nothing-new": 0, "already-exhausted": 0,
-    "before-the-crossing": 0, "this-crossing": 0 };
-  const announcing = { delivered: 0, failed: 0, fell_back: 0, announced: 0, coalescing: 0, "at-the-crossing": 0 };
+    "before-the-crossing": 0, "this-crossing": 0, "mail-off": 0 };
+  const announcing = { delivered: 0, failed: 0, fell_back: 0, announced: 0, coalescing: 0, "at-the-crossing": 0, "mail-off": 0 };
   const said = await store.announced(now);
   if (!open.length && !said.announcements.length) return { at, status: "idle", outside_window, counts };
 
@@ -157,6 +166,7 @@ export async function runEarpiece({ now = Date.now(), env = process.env, store, 
       return { ...base, harness: rsvp.harness, wake_n: Number(rsvp.budget), status: "budget-exhausted", budget_left: 0,
         detail: `the budget of ${rsvp.budget} is spent; nothing more is sent for this event` };
     }
+    if (d.route.kind !== "webhook" && !sendMail) { counts["mail-off"] += 1; return null; }
     const envelope = buildEnvelope({ event, place: taps.get(rsvp.event).place, since: d.since, news: d.news,
       budget_left: d.budget_left, wake_n: d.wake_n, now });
     let status, detail;
@@ -179,6 +189,7 @@ export async function runEarpiece({ now = Date.now(), env = process.env, store, 
   // and the act it carries, and never charged.
   const announce = async ({ base, rsvp, event, announcement, d }) => {
     if (d.act === "none") { announcing[d.why] += 1; return null; }
+    if (d.route.kind !== "webhook" && !sendMail) { announcing["mail-off"] += 1; return null; }
     const envelope = buildAnnouncementEnvelope({ event, place: placeOf(event), announcement, now });
     let status, detail;
     if (d.route.kind === "webhook") {
@@ -243,7 +254,7 @@ async function main(argv) {
   const db = existsSync(dbPath) ? new DatabaseSync(dbPath) : null;
   const odb = townLogEnabled() && existsSync(odbPath) ? (await import("../../src/oauth.mjs")).openOauthDb(odbPath) : null;
   const townClone = process.env.TOWN_CLONE ?? join(ROOT, "town-clone");
-  const sendMail = penMailPort({ db, clone: existsSync(townClone) ? townClone : null, odb });
+  const sendMail = mailEnabled() ? penMailPort({ db, clone: existsSync(townClone) ? townClone : null, odb }) : null;
   try {
     const out = await runEarpiece({ store: pgStore(), withinFn: verbs?.pointWithinMark ?? null, earshotM: EARSHOT_M, sendMail });
     writeState(state, out);

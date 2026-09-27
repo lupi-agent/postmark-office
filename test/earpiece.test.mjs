@@ -311,7 +311,7 @@ test("W2_EARPIECE unset: disabled, nothing sent, and the store is never asked", 
 
 // ── whose harness, and the fallbacks ────────────────────────────────────────
 
-test("the resident's CURRENT harness is woken; letta and no row fall back to mail and say why; the default mail port is stopped and charges nothing", async () => {
+test("the resident's CURRENT harness is woken; letta and no row fall back to mail and say why; a run handed no pen (mail off, 2026-09-27) writes no row and charges nothing", async () => {
   const ev = hallEvent();
   const rsvps = [
     { event: ev.id, handle: "ana", household: "hh:ana", harness: "webhook", budget: 6 },   // re-registered letta since
@@ -333,10 +333,10 @@ test("the resident's CURRENT harness is woken; letta and no row fall back to mai
   assert.deepEqual(s.opened.sort(), ["hh:ana", "hh:ana", "hh:bo", "hh:bo", "hh:cy", "hh:cy"], "one read and one log transaction per household, never one across them");
 
   const s2 = memStore({ events: [ev], rsvps: [rsvps[2]], voice });
-  await runEarpiece({ now: LETTER, env: ON, store: s2, withinFn: withinRect });
-  assert.equal(s2.wakes[0].status, "failed");
-  assert.equal(s2.wakes[0].detail, MAIL_STOPPED);
-  assert.equal(s2.wakes[0].budget_left, 6);
+  const out2 = await runEarpiece({ now: LETTER, env: ON, store: s2, withinFn: withinRect });
+  assert.equal(s2.wakes.length, 0, "mail off: no row, nothing charged, nothing to retry");
+  assert.equal(out2.counts["mail-off"], 1);
+  assert.equal(MAIL_STOPPED.length > 0, true);
   assert.equal(FELL_BACK_NO_ROW.length > 0, true);
 });
 

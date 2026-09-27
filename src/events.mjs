@@ -71,7 +71,10 @@ export const SECRET_NOTE = "shown once; not shown again — keep it where your h
 export const HARNESS_REUSED_NOTE = "this webhook is already registered for you: not challenged again, and its secret is not shown again";
 
 export const PHASES = Object.freeze(["announced", "doors-open", "underway", "ended"]);
-export const HARNESS_KINDS = Object.freeze(["letta", "webhook", "mail"]);
+// Letta was removed from the RSVP 2026-09-27 (Keemin: "letta was scope creep and
+// we should remove it from the site and office for now"). A resident's older
+// letta row is read as mail by the earpiece (earpiece.mjs § routeFor).
+export const HARNESS_KINDS = Object.freeze(["webhook", "mail"]);
 
 const DAY_MS = 86_400_000;
 
@@ -255,7 +258,6 @@ export function judgeAnnouncement(text) {
 // behind it. A name that RESOLVES to one of these is not caught here (that is a
 // resolver-level guard, named in the lane's report as not built).
 const PRIVATE_HOST = /^(localhost|.*\.localhost|.*\.local|.*\.internal|0\.0\.0\.0|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|\[::1?\]|\[f[cd][0-9a-f:]*\]|\[fe80:[0-9a-f:]*\])$/i;
-const CONVERSATION_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 
 /** Judge `harness` and `budget`. Returns `{ harness: { kind, address }, budget }`. */
 export function judgeRsvp({ harness, budget }) {
@@ -267,18 +269,14 @@ export function judgeRsvp({ harness, budget }) {
     b = n;
   }
   const h = harness ?? { kind: "mail" };
-  if (typeof h !== "object" || Array.isArray(h)) throw refuse(422, "harness must be an object", 'harness: { kind: "mail" } | { kind: "letta", conversation } | { kind: "webhook", url }', { field: "harness" });
+  if (typeof h !== "object" || Array.isArray(h)) throw refuse(422, "harness must be an object", 'harness: { kind: "mail" } | { kind: "webhook", url }', { field: "harness" });
   const kind = String(h.kind ?? "").trim();
-  if (!HARNESS_KINDS.includes(kind)) throw refuse(422, `harness.kind is one of: ${HARNESS_KINDS.join(", ")}`, "mail needs nothing (the ferry carries it); letta names a conversation; webhook names a url", { field: "harness" });
-  const allowed = { mail: [], letta: ["conversation"], webhook: ["url"] }[kind];
+  if (kind === "letta") throw refuse(422, "letta is not offered", "RSVP by mail (nothing to run), or by a webhook for wakes during the event", { field: "harness" });
+  if (!HARNESS_KINDS.includes(kind)) throw refuse(422, `harness.kind is one of: ${HARNESS_KINDS.join(", ")}`, "mail needs nothing (the ferry carries it); webhook names a url", { field: "harness" });
+  const allowed = { mail: [], webhook: ["url"] }[kind];
   const extra = Object.keys(h).filter((k) => k !== "kind" && !allowed.includes(k));
   if (extra.length) throw refuse(422, `a ${kind} harness does not take: ${extra.join(", ")}`, allowed.length ? `it takes: ${allowed.join(", ")}` : "it takes nothing but its kind", { field: "harness" });
   if (kind === "mail") return { harness: { kind, address: null }, budget: b };
-  if (kind === "letta") {
-    const c = String(h.conversation ?? "").trim();
-    if (!CONVERSATION_RE.test(c)) throw refuse(422, "a letta harness names its conversation", "conversation: the id your Letta conversation already has — letters, digits, . _ : -", { field: "harness" });
-    return { harness: { kind, address: c }, budget: b };
-  }
   let u;
   try { u = new URL(String(h.url ?? "")); } catch { throw refuse(422, "a webhook harness names its url", "url: an https:// address that echoes the nonce it is sent", { field: "harness" }); }
   if (u.protocol !== "https:") throw refuse(422, "a webhook url is https", `got ${u.protocol}//`, { field: "harness" });
@@ -317,7 +315,7 @@ export async function challengeWebhook(url, nonce, { fetchImpl = globalThis.fetc
 //   reuse     the row already holds this kind and this address. No challenge,
 //             and no secret on the receipt.
 //   register  no row, or a different address or kind. A webhook is challenged
-//             first; a letta conversation is recorded as it is.
+//             first.
 //
 // `existing` is the row the household's own transaction can see, or null.
 export function harnessPlan(existing, harness) {

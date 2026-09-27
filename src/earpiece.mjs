@@ -17,11 +17,11 @@
 // ── THE TRANSPORT (RULED, Wright 2026-09-25, on Keemin's "will leave it to you";
 // ── disclosed on POS-208/209) ──────────────────────────────────────────────
 //
-// A signed webhook POST; a Letta message when the office holds a Letta client
-// and credentials; mail as the fallback. MEASURED 2026-09-25: the office holds
-// no Letta client (`git grep -i letta -- src deploy` names only the harness
-// kind itself), so in v0 a `letta` harness is delivered by mail and the log
-// says why (`FELL_BACK_NO_LETTA`). POS-210 is the adapter.
+// A signed webhook POST, and mail as the fallback. The 09-25 ruling also named
+// a Letta message; the office never held a Letta client, and Keemin removed the
+// letta harness from the RSVP on 2026-09-27 ("letta was scope creep"). A
+// resident's older letta row is delivered by mail and the log says why
+// (`FELL_BACK_NO_LETTA`). POS-210 is parked in the Backlog.
 //
 // ── WHOSE HARNESS ───────────────────────────────────────────────────────────
 //
@@ -105,7 +105,7 @@ export const WINDOW_PHASES = Object.freeze(["doors-open", "underway"]);
 export const WAKE_STATUSES = Object.freeze(["delivered", "failed", "fell_back", "budget-exhausted"]);
 export const CHARGED = Object.freeze(["delivered", "fell_back"]);
 
-export const FELL_BACK_NO_LETTA = "no Letta client in this office; POS-210's adapter";
+export const FELL_BACK_NO_LETTA = "letta is no longer offered, removed 2026-09-27; a letter from postmark-pen instead";
 export const FELL_BACK_NO_ROW = "no harness registered for this resident; a letter from postmark-pen, on the crossing";
 export const FELL_BACK_NO_ANSWER = `the webhook did not answer on ${ANNOUNCE_WEBHOOK_TRIES} runs; a letter from postmark-pen instead`;
 
@@ -305,6 +305,7 @@ export function decideAnnouncement({ announcement, rsvp, harness, history, now,
 export function routeFor(rsvp, harness) {
   if (rsvp.harness === "mail") return { kind: "mail", fell_back: null };
   if (!harness) return { kind: "mail", fell_back: FELL_BACK_NO_ROW };
+  // An older letta row (the kind was removed 2026-09-27) is read as mail.
   if (harness.kind === "letta") return { kind: "mail", fell_back: FELL_BACK_NO_LETTA, harness_kind: "letta" };
   if (harness.kind === "webhook") return { kind: "webhook", url: harness.address, secret: harness.secret };
   return { kind: "mail", fell_back: FELL_BACK_NO_ROW };
@@ -488,21 +489,12 @@ export function wakesNote({ kind, event, enabled }) {
   const open = event.doors_open ?? event.starts;
   const live = `${utc(new Date(ms(open)).toISOString())} to ${utc(new Date(ms(event.ends)).toISOString())}`;
   const what = "what was said at the place and who walked in or out since your last wake";
-  let body;
-  if (kind === "webhook") {
-    body = `Your webhook is woken live while the doors are open (${live}), at most once every ${EARPIECE_COALESCE_MIN} minutes, with ${what}, signed with your secret. Five minutes with nothing new send nothing.`;
-  } else {
-    const sails = mailSailings(event);
-    const afterEnd = sails.length === 1 && ms(sails[0]) >= ms(event.ends);
-    const lead = kind === "letta"
-      ? "This office has no Letta client yet (POS-210), so a Letta RSVP is woken by mail for now: "
-      : "By mail: ";
-    body = `${lead}one letter per ferry crossing (00:00 and 12:00 UTC) while the event is on, with ${what}. `
-      + (afterEnd
-        ? `This event opens and ends between two crossings, so that is one letter, sailing ${utc(sails[0])}, after it has ended. For wakes during the event, RSVP with a webhook.`
-        : `This event's letters sail ${sails.map(utc).join(", ")}; a crossing with nothing new sends none.`);
+  // Mail and Letta are not offered (Keemin, 2026-09-27); an RSVP without a
+  // webhook is the guest list, and attending is being there.
+  if (kind !== "webhook") {
+    return `You are on the guest list. Nothing is sent to you: come to the place while the doors are open (${live}) and listen with world { read: "say" }. The host's announcements are on the event's calendar entry.`;
   }
-  const announce = " A host's announcements reach you the same way and do not count against your budget.";
+  const body = `EXPERIMENTAL: your webhook is woken live while the doors are open (${live}), at most once every ${EARPIECE_COALESCE_MIN} minutes, with ${what}, signed with your secret. Five minutes with nothing new send nothing. A host's announcements reach it too and do not count against your budget.`;
   const off = enabled ? "" : "The earpiece is switched off in this office right now: your RSVP is recorded, and no wakes are sent until it is switched on. When it is on: ";
-  return off + body + announce;
+  return off + body;
 }
