@@ -328,7 +328,7 @@
    "unit": "postmark-earpiece.timer",
    "label": "the earpiece",
    "stage": "live",
-   "activation_owner": "Wright — POS-209 (Earpiece C), brief 2026-09-25, transport ruled by Wright on Keemin's 'will leave it to you' and disclosed on POS-208/209. Unit source: deploy/postmark-earpiece.{service,timer}, tool world2/tools/earpiece-deliver.mjs. Installed by Wright's hand, dev sandbox first; it ships with W2_EARPIECE unset, so every fire writes status 'disabled' and sends nothing until the flag is set.",
+   "activation_owner": "Wright — POS-209 (Earpiece C), brief 2026-09-25, transport ruled by Wright on Keemin's 'will leave it to you' and disclosed on POS-208/209. Unit source: deploy/postmark-earpiece.{service,timer}, tool world2/tools/earpiece-deliver.mjs. Installed by Wright's hand, dev sandbox first; it shipped with W2_EARPIECE unset; the flag was set on prod 2026-09-27 with release/2026-w40.1 (Keemin: \"good for 2\"), so it sends. Unset the flag and every fire writes status 'disabled' and sends nothing.",
    "cadence": "every minute, on the minute UTC — the tool coalesces to one wake per resident per 5 minutes per event, so the timer only decides how late a wake can be",
    "cadence_source": "systemctl show postmark-earpiece.timer -p TimersCalendar",
    "heartbeat": {
@@ -540,6 +540,14 @@
     "must_be": "release",
     "why": "This is the door the town reads through. A drifted tree here serves yesterday's API from a green unit.",
     "activation_owner": "Wright — the office has run from /srv/postmark-office since the box was built; release-train.yml deploys prod there and nowhere else."
+   },
+   {
+    "id": "earpiece",
+    "unit": "postmark-earpiece.service",
+    "label": "the earpiece deliverer's tree",
+    "must_be": "release",
+    "why": "The deliverer execs world2/tools/earpiece-deliver.mjs out of /srv/postmark-office. A drifted tree wakes residents by rules the release no longer holds: a stale window, budget or envelope, sent to real harnesses.",
+    "activation_owner": "Wright — installed on prod 2026-09-27 with release/2026-w40.1 and W2_EARPIECE=1, on Keemin's \"good for 2\"; release-train.yml deploys this tree."
    },
    {
     "id": "office-dev",
