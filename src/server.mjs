@@ -64,6 +64,7 @@ import { loopLag } from "./loop-lag.mjs"; // POS-267: how long the one thread ke
 import { readReleaseStamp } from "./release.mjs"; // POS-60: the deploy receipt the auto-deploy probes
 import { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs"; // the town clock, served at the door
 import { roleFrom, workerSafe, writerAddressFrom, readRoleBounce, penTokenFor, roleDisclosure } from "./role.mjs"; // DEC-4/G3: read-only workers behind nginx
+import { IN_READ_WORKER, announce, onAnnounce, readWorkerCount, serveReadsInWorker, startReadPool, workerTakes } from "./read-workers.mjs"; // POS-266: reads on the other cores
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -314,6 +315,11 @@ const RETIRED = [];
 let indexStamp = stampOf(DB_PATH);
 let reloadComplaint = null;
 
+// The journal lines below are the MAIN thread's (POS-266). A read worker runs
+// the same reloads on the same files and would say each line again, once per
+// worker, where an operator reads one office.
+const journal = IN_READ_WORKER ? { log() {}, error() {} } : console;
+
 function reloadIndex() {
   const stamp = stampOf(DB_PATH);
   if (stamp === null || stamp === indexStamp) return;   // vanished, or unchanged
@@ -326,7 +332,7 @@ function reloadIndex() {
     const why = String(e?.message ?? e).slice(0, 160);
     if (reloadComplaint !== why) {
       reloadComplaint = why;
-      console.error(`[office] ${DB_PATH} changed but would not open (${why}) — still serving as-of ${AS_OF.slice(0, 12)}, retrying every ${RELOAD_POLL_MS / 1000}s`);
+      journal.error(`[office] ${DB_PATH} changed but would not open (${why}) — still serving as-of ${AS_OF.slice(0, 12)}, retrying every ${RELOAD_POLL_MS / 1000}s`);
     }
     return;
   }
@@ -337,7 +343,8 @@ function reloadIndex() {
   db = next.handle; meta = next.meta; AS_OF = next.asOf;
   old.retiredAt = Date.now();
   RETIRED.push(old);
-  console.log(`[office] index reloaded — as-of ${AS_OF.slice(0, 12)} (was ${old.asOf.slice(0, 12)})`);
+  journal.log(`[office] index reloaded — as-of ${AS_OF.slice(0, 12)} (was ${old.asOf.slice(0, 12)})`);
+  announce("index");
 }
 
 function sweepRetired(now = Date.now()) {
@@ -349,13 +356,13 @@ function sweepRetired(now = Date.now()) {
     // A borrower still holding after five minutes is not a slow request, it is a
     // leak — and an index kept open forever by one is the worse of the two bugs.
     if (idx.refs > 0)
-      console.error(`[office] closing the index as-of ${idx.asOf.slice(0, 12)} with ${idx.refs} request(s) still holding it after ${Math.round(waited / 1000)}s`);
+      journal.error(`[office] closing the index as-of ${idx.asOf.slice(0, 12)} with ${idx.refs} request(s) still holding it after ${Math.round(waited / 1000)}s`);
     try { idx.handle.close(); } catch { /* already gone */ }
     RETIRED.splice(i, 1);
     // Printed because a handle that is never released is invisible otherwise —
     // on Windows it would silently lock the file, and on any box it is the one
     // half of the swap an operator (or a test) cannot see from the outside.
-    console.log(`[office] retired index as-of ${idx.asOf.slice(0, 12)} closed`);
+    journal.log(`[office] retired index as-of ${idx.asOf.slice(0, 12)} closed`);
   }
 }
 
@@ -387,8 +394,15 @@ function reloadWorldCaches() {
   resetClassFieldsCache();   // world-frames.mjs — mark id -> { class, mobility }
   resetClassCache();         // dynamic-store.mjs — the sound class's dials
   resetPlaceWordsCache();    // world.mjs        — place words folded over the marks
-  console.log(`[office] world store changed at ${path} — derived caches dropped`);
+  journal.log(`[office] world store changed at ${path} — derived caches dropped`);
+  announce("world-store");
 }
+
+// POS-266: every thread polls both stamps on its own, and the main thread's
+// reload also tells the workers to look now, so a read handed to a worker after
+// the main thread swapped is not answered from the file before (read-workers.mjs).
+onAnnounce("index", reloadIndex);
+onAnnounce("world-store", reloadWorldCaches);
 
 setInterval(() => { reloadIndex(); sweepRetired(); reloadWorldCaches(); }, RELOAD_POLL_MS).unref();
 
@@ -636,7 +650,11 @@ const clientIp = (req) => {
 };
 
 // ── routes ───────────────────────────────────────────────────────────────────
-const server = createServer((req, res) => {
+// POS-266: the read workers, started once the port is held (below). Null in a
+// worker, in a read-role process, and with OFFICE_READ_WORKERS=0.
+let readPool = null;
+
+const handle = (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname.replace(/\/+$/, "") || "/";
 
@@ -662,7 +680,9 @@ const server = createServer((req, res) => {
   // and the MCP skin stamps the tool name (never the arguments) as it dispatches.
   const t0 = Date.now();
   req.tel = { household: null, mcp: null };
-  res.on("finish", () => logAccess({
+  // A read worker writes no line: the main thread that handed it the read
+  // already wrote one for the same request, with the same status.
+  if (!IN_READ_WORKER) res.on("finish", () => logAccess({
     ts: new Date(t0).toISOString(),
     ip: clientIp(req),
     method: req.method,
@@ -800,6 +820,7 @@ const server = createServer((req, res) => {
       ...RELEASE, started_at: STARTED_AT, as_of: borrowed.asOf,
       ...roleDisclosure(ROLE, WRITER_URL),
       write_grant: PEN.token !== "",
+      ...(readPool ? { read_workers: readPool.disclose() } : {}),
     });
   }
   if (path === "/ops/loop-lag" && req.method === "GET") return j(res, 200, loopLag.read()); // POS-267 (src/loop-lag.mjs)
@@ -1020,7 +1041,9 @@ const server = createServer((req, res) => {
 
   // Keyless public GETs get the same token-bucket backstop as nginx's prepared
   // outer layer. Invalid/stale credentials deliberately land in this tier.
-  if (!key && req.method === "GET") {
+  // A read worker admits nothing: the main thread charged this request to the
+  // bucket before it handed it over, and the buckets are the main thread's RAM.
+  if (!key && req.method === "GET" && !IN_READ_WORKER) {
     const limited = bouncer.checkKeyless({ ip: clientIp(req), verb: "GET" });
     if (limited) return rateResponse(res, limited);
   }
@@ -1038,7 +1061,7 @@ const server = createServer((req, res) => {
   // the parsed tool name, so POST /mcp preflights inside handleMcp below.
   if (key && !(path === "/mcp" && req.method === "POST")) {
     const worldVerb = worldWriteVerbForRest(req.method, path);
-    const limited = checkCredentialed({
+    const limited = IN_READ_WORKER ? null : checkCredentialed({
       verb: worldVerb ?? req.method ?? "UNKNOWN",
       write: req.method !== "GET",
       worldVerb,
@@ -1082,6 +1105,16 @@ const server = createServer((req, res) => {
       if (st) return bounce(res, st.code, st.defect, st.hint);
     }
   }
+
+  // ── POS-266: ADMITTED, SO A READ MAY GO TO ANOTHER CORE ────────────────────
+  //
+  // Here and not earlier: everything above is the main thread's own business
+  // (the manifest, /release, the loop lag, the OAuth dance, the berth and claim
+  // mints, the credential and the buckets). Everything below is a door. A read
+  // the pool takes (read-workers.mjs § workerTakes) is answered by a worker and
+  // written back on this socket; when no worker is ready this thread answers it,
+  // exactly as before.
+  if (readPool && workerTakes(req.method, path) && readPool.forward(req, res)) return;
 
   // MCP skin — same verbs, JSON-RPC dress (P3). The MCP door REQUIRES a
   // credential even for reads — deliberately unlike REST's public read tier:
@@ -2377,14 +2410,25 @@ const server = createServer((req, res) => {
   } catch (e) {
     return bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200));
   }
-});
+};
 
 import("./world-refresher.mjs").then((m) => m.startWorldRefresher(WORLD_CLONE)); // POS-263: the world clone's git answered off the request path
 
 // The role rides the boot line because it is the one fact about a worker that
 // an operator reading `journalctl` cannot otherwise see — four processes on four
 // ports, and only this says which of them can take a letter.
-server.listen(PORT, () => console.log(
-  `postmark-office listening on :${server.address().port} — as-of ${AS_OF.slice(0, 12)}`
-  + (READ_ONLY_ROLE ? ` — ROLE read (sqlite read-only, no write grant; writes → ${WRITER_URL})` : "")
-));
+// A read worker never listens: the main thread hands it reads over its port.
+if (IN_READ_WORKER) serveReadsInWorker(handle);
+else {
+  const server = createServer(handle);
+  server.listen(PORT, () => {
+    // Only the writer starts a pool. A read-role process (DEC-4's kit) is a
+    // reader already, and a pool inside it would be readers of a reader.
+    const size = READ_ONLY_ROLE ? 0 : readWorkerCount();
+    if (size > 0) readPool = startReadPool({ size, entry: new URL(import.meta.url), argv: process.argv.slice(2) });
+    console.log(
+      `postmark-office listening on :${server.address().port} — as-of ${AS_OF.slice(0, 12)}`
+      + (READ_ONLY_ROLE ? ` — ROLE read (sqlite read-only, no write grant; writes → ${WRITER_URL})` : "")
+      + (size > 0 ? ` — ${size} read worker${size === 1 ? "" : "s"}` : ""));
+  });
+}
