@@ -340,10 +340,12 @@ const ROW_COLUMNS = "crossing, actor, action, object, at_anchor, at_dx, at_dy, w
  * unhandled, which reads downstream as a successful write of nothing. Every
  * call site awaits, and the deletion's own falsifier pins that.
  *
- * ⚑ `db` IS STILL TAKEN AND STILL UNUSED HERE, deliberately: every caller holds
- * an open dynamic store for its own reads on the same line, and removing the
- * parameter would be a signature churn across six doors for no behaviour. The
- * arena is the one caller that still WRITES sqlite, through its own named
+ * ⚑ `db` IS STILL TAKEN AND STILL UNUSED HERE. The doors pass `null` since
+ * POS-269: each used to open the dynamic store in write mode only to hand the
+ * handle over, and that open was a WAL pragma, the whole DDL and a lock on every
+ * say, walk, crossing, ride, stance and mark, taken for nothing. The parameter
+ * stays because some forty test and tool call sites pass a store positionally.
+ * The arena is the one caller that still WRITES sqlite, through its own named
  * function below.
  *
  * Returns the row as recorded. `seq` is `null` — there is no sqlite rowid any

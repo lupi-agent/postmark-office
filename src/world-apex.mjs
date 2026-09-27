@@ -373,9 +373,8 @@ export function rideDeps() {
       // rejection is unhandled — a door reporting success over a lost act,
       // which is the exact failure the awaited write was ruled to end.
       const { appendJournal, CLASS_RIDE } = await import("./world-journal.mjs");
-      const db = openDynamic();
-      try {
-        return await appendJournal(db, {
+      {
+        return await appendJournal(null, {
           crossing: entry.crossing, actor: entry.handle, action: "ride", object: entry.object,
           cls: CLASS_RIDE, at: null, witnesses: null,
           // THE PAYLOAD IS EXACTLY THE BRIEF'S SIX FIELDS. The summary sentence
@@ -386,7 +385,7 @@ export function rideDeps() {
           effect: entry.effect,
           household: worldHouseholdOf(entry.handle),
         });
-      } finally { try { db.close(); } catch { /* already gone */ } }
+      }
     },
   };
 }

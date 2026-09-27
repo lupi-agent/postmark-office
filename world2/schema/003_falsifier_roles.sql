@@ -70,6 +70,29 @@ lawful AS (
     -- wake, narrowed by its row policy to the resident's own household; INSERT
     -- only, because a log line is never edited or removed.
     ('office_api',   'earpiece_wakes',   'INSERT'),
+    -- 028_office_paperwork.sql, oauth.db and roles.db moved into the store
+    -- (POS-271). Each grant is a statement oauth.mjs or roles.mjs runs today.
+    -- The DELETEs are lawful because none of this is the record: an expired or
+    -- rotated credential has to stop resolving, and deletion is how it stops.
+    -- The audit table is INSERT only. Row level security keeps every other
+    -- role out.
+    ('office_api',   'oauth_clients',    'INSERT'),
+    ('office_api',   'oauth_pending',    'INSERT'),
+    ('office_api',   'oauth_pending',    'UPDATE'),
+    ('office_api',   'oauth_pending',    'DELETE'),
+    ('office_api',   'oauth_codes',      'INSERT'),
+    ('office_api',   'oauth_codes',      'DELETE'),
+    ('office_api',   'oauth_tokens',     'INSERT'),
+    ('office_api',   'oauth_tokens',     'DELETE'),
+    ('office_api',   'oauth_berths',     'INSERT'),
+    ('office_api',   'oauth_berths',     'UPDATE'),
+    ('office_api',   'oauth_key_claims', 'INSERT'),
+    ('office_api',   'oauth_key_claims', 'UPDATE'),
+    ('office_api',   'oauth_key_claims', 'DELETE'),
+    ('office_api',   'office_roles',     'INSERT'),
+    ('office_api',   'office_roles',     'UPDATE'),
+    ('office_api',   'office_roles',     'DELETE'),
+    ('office_api',   'office_role_audit', 'INSERT'),
     ('clearing_job', 'claims',           'UPDATE'),
     ('clearing_job', 'windows',          'INSERT'),
     ('clearing_job', 'windows',          'UPDATE'),

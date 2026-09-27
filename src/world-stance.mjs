@@ -72,7 +72,7 @@
 // all, so the write bounces by name when the flag is off; the reads degrade to
 // canon-only rather than failing.
 
-import { openDynamic, singleLogEnabled } from "./dynamic-store.mjs";
+import { singleLogEnabled } from "./dynamic-store.mjs";
 import { WORLD_CLONE } from "./world-store.mjs"; // the standing-scoped inbox door defaults to the office's own world checkout
 import { worldFreezeBounce } from "./freeze.mjs";
 import { appendActFlipped, appendJournal, laneFlipped } from "./world-journal.mjs";
@@ -1212,9 +1212,8 @@ async function answerSetDown({ repo, on, stance, by, key, target, sd, dbPath, wi
 
   const stamp = witnessStamp ? await witnessStamp(by) : { at: { anchor: null, dx: null, dy: null }, witnesses: { source: "unread", reason: "no witness reader supplied", list: [] } };
   const setDown = { act_id: drop.seq == null ? null : String(drop.seq), by: setter, at: stood };
-  const db = openDynamic(dbPath ?? undefined);
   let row;
-  try {
+  {
     const entry = {
       crossing, actor: by, household: resolvedWorldHousehold(key) ?? null,
       action: ACTION_STANCE, object: on, cls: CLASS_STANCE,
@@ -1225,14 +1224,14 @@ async function answerSetDown({ repo, on, stance, by, key, target, sd, dbPath, wi
         : `the author's house refuses ${setter}'s set-down — canon keeps it where ${madeBy} put it`,
     };
     try {
-      row = laneFlipped("stance") ? await appendActFlipped(db, entry) : await appendJournal(db, entry);
+      row = laneFlipped("stance") ? await appendActFlipped(null, entry) : await appendJournal(null, entry);
     } catch (err) {
       if (err?.name === "PenUnreachableError")
         throw bounce(503, err.message,
           "this door's pen is the office's record; when it cannot be reached the door refuses rather than writing anywhere else — your stance is safe to speak again");
       throw err;
     }
-  } finally { try { db.close(); } catch { /* already gone */ } }
+  }
 
   const amend = stance === "welcomed"
     ? await hold.fileAuthorsAmend({ thing: on, stood, key, actor: setter, actId: drop.seq ?? null, writtenAt: drop.written_at ?? null,
@@ -1344,8 +1343,7 @@ export async function declareStanceViaOffice(repo, args = {}, key = null, { dbPa
 
   const stamp = witnessStamp ? await witnessStamp(by) : { at: { anchor: null, dx: null, dy: null }, witnesses: { source: "unread", reason: "no witness reader supplied", list: [] } };
 
-  const db = openDynamic(dbPath ?? undefined);
-  try {
+  {
     // THE SUPERSEDED COURTESY READS THE WHOLE RECORD, NOT ONE STORE.
     //
     // This computed `prior` from `readJournal(db)` alone — the live sqlite
@@ -1391,8 +1389,8 @@ export async function declareStanceViaOffice(repo, args = {}, key = null, { dbPa
     let row;
     try {
       row = laneFlipped("stance")
-        ? await appendActFlipped(db, entry)
-        : await appendJournal(db, entry);
+        ? await appendActFlipped(null, entry)
+        : await appendJournal(null, entry);
     } catch (err) {
       if (err?.name === "PenUnreachableError")
         throw bounce(503, err.message,
@@ -1416,7 +1414,7 @@ export async function declareStanceViaOffice(repo, args = {}, key = null, { dbPa
       effect: row.effect,
       note: "the door writes; the crossing judges — your word is recorded now and read at the next settlement",
     };
-  } finally { try { db.close(); } catch { /* already gone */ } }
+  }
 }
 
 // ── the door's schema ────────────────────────────────────────────────────────

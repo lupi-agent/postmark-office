@@ -362,9 +362,11 @@ test("END TO END — the same three walks, both lanes, and the ledger comes out 
   assert.equal(readFileSync(join(on.clone, WALK_LEDGER), "utf8"), WALK_HEADER,
     "nothing was written anywhere — a refusal leaves the record exactly as it was");
 
-  const rows = (() => { const db = openDynamic(dbFor, { readOnly: true }); try { return readJournal(db); } finally { db.close(); } })();
-  assert.deepEqual(rows, [],
-    "and NOTHING reached the sqlite journal either — G1 deleted that INSERT, so a refused walk has no consolation copy");
+  // POS-269: the walk door no longer opens the dynamic store at all, so the
+  // strongest form of "nothing reached the sqlite journal" is that there is no
+  // file for it to have reached.
+  assert.equal(existsSync(dbFor), false,
+    "and NO sqlite store was even created — G1 deleted the INSERT and POS-269 the open, so a refused walk has no consolation copy");
 });
 
 test("FLAG OFF — materializing is a no-op when nothing declared itself into the journal", () => {
