@@ -440,7 +440,7 @@ const CHUNK = 500;
  * — that is what makes a webhook that fires twice harmless, and what lets the
  * red-proof restore itself by simply running again.
  */
-export async function writeLaw(client, { lawSha, rows, identities }) {
+export async function writeLaw(client, { lawSha, rows, identities, blessed = false }) {
   await client.query("BEGIN");
   try {
     await client.query("DELETE FROM law_projection WHERE law_sha = $1", [lawSha]);
@@ -457,6 +457,16 @@ export async function writeLaw(client, { lawSha, rows, identities }) {
       await client.query(
         `INSERT INTO law_projection (kind, path, key, data, law_sha) VALUES ${values.join(", ")}`, params);
     }
+
+    // ⚑ A BLESSED RUN STOPS HERE (POS-270, 2026-09-27). The office's class reads
+    // ask law_projection at the NEWEST BLESSING — "the bless overrides the tick"
+    // (Keemin, 2026-09-18, postmark#2934) — and main runs ahead of the tag between
+    // a crossing and its blessing, so the blessed sha needs its own rows. Those
+    // rows are the whole of a blessed run: `identities` is the CURRENT roster and
+    // `projection_heads['world-law']` is the clearing's pin, and both belong to
+    // the main run. A blessed run that moved either would hand the clearing an
+    // older rulebook than the one it had.
+    if (blessed) { await client.query("COMMIT"); return; }
 
     // identities carries NO law_sha (it is the CURRENT roster, not a per-sha
     // projection — see 001_tables.sql), and law_ingester is its only writer per
@@ -504,13 +514,16 @@ async function main() {
   const lawRepo = argOf("--law-repo");
   const declared = argOf("--sha");
   if (!lawRepo || !declared) {
-    console.error("usage: law-ingest.mjs --law-repo <checkout> --sha <law_sha> [--dry-run] [--json]");
+    console.error("usage: law-ingest.mjs --law-repo <checkout> --sha <law_sha> [--blessed] [--dry-run] [--json]");
     process.exit(2);
   }
   const lawSha = assertSha(lawRepo, declared);
   const { rows, identities } = await deriveLaw({ lawRepo });
   const census = censusOf(rows);
-  const summary = { repo: LAW_REPO_KEY, law_sha: lawSha, rows: rows.length, identities: identities.length, census };
+  const blessed = flag("--blessed");
+  const summary = blessed
+    ? { repo: LAW_REPO_KEY, law_sha: lawSha, blessed: true, rows: rows.length, census }
+    : { repo: LAW_REPO_KEY, law_sha: lawSha, rows: rows.length, identities: identities.length, census };
 
   if (flag("--dry-run")) {
     console.log(flag("--json") ? JSON.stringify(summary, null, 2)
@@ -521,9 +534,14 @@ async function main() {
   const { default: pg } = await import("pg");
   const client = new pg.Client();               // PGHOST/PGDATABASE/PGUSER/PGPASSWORD
   await client.connect();
-  try { await writeLaw(client, { lawSha, rows, identities }); }
+  try { await writeLaw(client, { lawSha, rows, identities, blessed }); }
   finally { await client.end(); }
 
+  if (blessed) {
+    console.log(flag("--json") ? JSON.stringify(summary, null, 2)
+      : `ingested blessed law ${lawSha}\n  law_projection: ${rows.length} (${JSON.stringify(census)})\n  identities and projection_heads['${LAW_REPO_KEY}'] untouched (the main run's)`);
+    return;
+  }
   console.log(flag("--json") ? JSON.stringify(summary, null, 2)
     : `ingested law ${lawSha}\n  law_projection: ${rows.length} (${JSON.stringify(census)})\n  identities: ${identities.length}\n  projection_heads['${LAW_REPO_KEY}'] = ${lawSha}`);
 }

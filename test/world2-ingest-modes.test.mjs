@@ -190,9 +190,11 @@ function runShipped(mode) {
   // A refresh-clone that always succeeds, printing a 40-char sha on its last line.
   const SHA = "0".repeat(40);
   writeFileSync(join(ops, "world2-refresh-clone.sh"), `#!/bin/bash\necho ${SHA}\n`);
-  // A `node` that records its argv and exits 0 — the pen that did not really run.
+  // A `node` that records which pen it was asked to run and exits 0 — the pen
+  // that did not really run. A `--blessed` run is logged with its flag, so the
+  // law mode's two law-ingest runs can be told apart (POS-270).
   const log = join(dir, "calls.log");
-  writeFileSync(join(bin, "node"), `#!/bin/bash\nprintf '%s\\n' "$1" >> ${JSON.stringify(log)}\necho stubbed-pen-ok\nexit 0\n`);
+  writeFileSync(join(bin, "node"), `#!/bin/bash\ncase " $* " in *" --blessed "*) printf '%s --blessed\\n' "$1" ;; *) printf '%s\\n' "$1" ;; esac >> ${JSON.stringify(log)}\necho stubbed-pen-ok\nexit 0\n`);
   for (const f of ["world2-refresh-clone.sh", "world2-ingest.sh", "world2-lib.sh"]) chmodSync(join(ops, f), 0o755);
   chmodSync(join(bin, "node"), 0o755);
 
@@ -235,11 +237,12 @@ test("EXECUTED: `law` invokes law-ingest.mjs and never stamp-ingest.mjs", (t) =>
   }
   const { code, pens, state } = runShipped("law");
   assert.equal(code, 0, "the law mode did not exit 0 against a stubbed tree where both pens succeed");
-  assert.deepEqual(pens, ["world2/tools/law-ingest.mjs"],
-    `the law mode invoked ${pens.length} pen(s): ${pens.join(", ")} — anything but law-ingest alone ` +
-    "re-adopts the rail the founder parked on 2026-08-31");
+  assert.deepEqual(pens, ["world2/tools/law-ingest.mjs", "world2/tools/law-ingest.mjs --blessed"],
+    `the law mode invoked ${pens.length} pen(s): ${pens.join(", ")} — anything but law-ingest (main, then ` +
+    "the blessed sha) re-adopts the rail the founder parked on 2026-08-31 or drops the office's blessed law");
   assert.equal(state.mode, "law");
   assert.equal(state.law.sha, "0".repeat(40));
+  assert.equal(state.law_blessed.sha, "0".repeat(40), "the blessed run's receipt is missing from the law state");
   assert.equal(state.stamp, undefined,
     "the law mode's state carries a `stamp` line for a pen that did not run — a zero-exit line " +
     "that reads like a receipt is worse than no line");
@@ -264,6 +267,7 @@ test("EXECUTED: no argument invokes both pens, law first — the parked unit's b
   assert.equal(state.mode, "both");
   assert.equal(state.status, "ok");
   assert.ok(state.law && state.stamp, "a bare run's state lost a pen's line");
+  assert.equal(state.law_blessed, undefined, "the parked unit's bare run grew a blessed pass it never had");
 });
 
 test("EXECUTED: an unknown mode exits 2 and writes no state at all", (t) => {
