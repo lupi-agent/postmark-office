@@ -3075,7 +3075,10 @@ export const WORLD_READ_FIELDS = Object.freeze({
   // exactly what it does today. So the room's cursor rides where a read's own
   // fields ride — in `args:` — and says what it is.
   say: { text: { type: "string", description: "refused — a read never performs; speak with do: \"say\"" },
-         since: { type: "number", description: "the `latest` stamp from your previous say-read — you hear only voices newer than it, and the room's shape rides either way. Milliseconds, and NOT the top-level since_crossing: (a crossing number, which buys `happened`)." } },
+         since: { type: "number", description: "the `latest` stamp from your previous say-read — you hear only voices newer than it, with the counts, and each list only when it changed (`unchanged` names the ones held back). Milliseconds, and NOT the top-level since_crossing: (a crossing number, which buys `happened`)." },
+         // POS-265: world_say's retry key guards a voice; a read speaks none, so
+         // it is refused here by name rather than carried to a listen.
+         nonce: { type: "string", description: "refused — a read speaks nothing, so a retry key has nothing to guard; pass it on do: \"say\" with your text" } },
   walk: { who: { type: "string", description: "one resident to find, by handle: their x, y, mark_id, moving and toward from the whole roll (not bounded by your radius), or null with a sentence when they are not out or no resident has that handle" } },
   "leave-mark": { mark: { type: "string", description: "one mark to look into — <by>/<slug>" },
                   depth: { type: "number", description: "how far down to descend into that mark" },
@@ -3144,6 +3147,7 @@ export async function readDomainFor(action, fields, key, oriented, ctx = {}) {
   switch (action) {
     case "say": {
       if (fields?.text) return { error: "bounce", code: 422, defect: "a read never performs", hint: `to speak, use do: — world { do: "say", args: { text: … } }. read: "say" only listens.` };
+      if (fields?.nonce != null) return { error: "bounce", code: 422, defect: "a read speaks nothing, so a nonce has nothing to guard", hint: `a nonce is the retry key of a say — world { do: "say", args: { text: …, nonce: … } }. read: "say" only listens.` };
       // ⚑ THE CURSOR TRAVELS (#2559). This call was `{}` — the flat tool takes
       // three fields, `handle` rides in from `call` itself, `text` is refused by
       // name above, and `since` was simply dropped. So the one field left was

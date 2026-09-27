@@ -48,6 +48,9 @@ const ROOT = join(HERE, "..");
 // `sayDialsDisclosure()` is the sentence a surface can print. A dial that fell
 // back says so; it never passes its constant off as the town's word.
 import { dialNode, dialNumber } from "./world-classes.mjs";
+// One cap for every retry key, beside the rows (town-journal.mjs § NONCE_MAX) —
+// the say's nonce is bounded by the same number the send's is.
+import { NONCE_MAX } from "./town-journal.mjs";
 
 // The class the dials hang on. Named once, beside the reader, for the same
 // reason STRIDE_CLASS_NAME is: the slow-walk bug was a lookup asking for a
@@ -301,6 +304,9 @@ export function createVoices({
   let bytes = 0;              // the live log's size, tracked so append stays one syscall
   let loadedFrom = null;
   const presence = new Map(); // handle -> { at, x, y, how } — spoke OR listened here
+  const sent = new Map();     // handle -> { latest, at, lists } — the lists the last reply carried (THE DELTA, below)
+  const spentNonces = new Map(); // "<handle> <nonce>" -> the instant that voice was spoken (THE RETRY KEY, below)
+  const nonceInFlight = new Map(); // "<handle> <nonce>" -> the say still being spoken under it
   // THE PRESENCE MAP is RAM (see lastPresent below): it records that a handle
   // spoke or listened here, and it is evicted by `presenceMs` below.
   //
@@ -551,12 +557,80 @@ export function createVoices({
       } else out.conversation = convo;
     }
     // the cursor: echo this back as `since` on your next call to receive only
-    // what is new — the room's shape (participants, counts) always rides
+    // what is new — the counts always ride, the lists when they changed
     out.latest = convo ? convo.latest_ms : (within.length ? within.at(-1).at : t);
     if (out.voices.length === 0 && !Number.isFinite(since))
       out.note = convo
         ? "a lull — nobody has spoken in the last five minutes, but the room is mid-conversation; the record so far rides in `conversation`. Say something."
         : "nobody within earshot has spoken in the last five minutes — say something, or call again in a minute or two. Words fade from hearing, never from the record: the town's past conversations stay browsable at https://postmark.town/conversations/";
+    return delta(handle, out, { since, t, heard: within, convo, present: Boolean(present) });
+  }
+
+  // ── THE DELTA (POS-265, the Snug night) ─────────────────────────────────────
+  //
+  // `since` already filtered the two voice arrays; the lists rode whole on every
+  // call. Measured on a 45-listener room (docs/2026-09-27/rail/pos-265): the full
+  // reply is ~12.9 KB, the since reply ~4.5 KB, and of that 4.5 KB the listeners
+  // and the participants — ~1.5 KB — were byte-identical a minute later, while
+  // every new line rode twice, once heard in `voices` and again in the record.
+  // Forty agents lingering at a minute each is that, forty times a minute.
+  //
+  // So a reply to a caller who passed `since` carries what is new and a small
+  // header: `where`, `latest`, `spoke`, the counts (`listener_count`, and the
+  // conversation's `voice_count`), and each heavy list ONLY WHEN IT CHANGED since
+  // the reply that handed out that stamp. A list held back is NAMED in
+  // `unchanged` — an absent field is never left to be read as an empty room. To
+  // ask for everything again, call without `since`: that reply is the full one,
+  // byte for byte what it has always been, because a field that disappears from
+  // a reply is a contract change and only the caller who passed the cursor asked
+  // for the change.
+  //
+  // WHAT "CHANGED SINCE THAT STAMP" IS MEASURED AGAINST: the lists this module
+  // last handed THIS handle, kept beside the stamp they rode with. The cursor is
+  // a millisecond number the caller echoes and carries no digest, so the office
+  // remembers what it sent. A stamp that is not the one remembered (a restart
+  // emptied the map, the entry aged out past the presence window, the handle
+  // polled from a second client in between) is answered with the lists in full:
+  // when in doubt the reply over-tells, never under-tells.
+  //
+  // ⚠ THE ONE CASE IT CAN UNDER-TELL, named: two clients polling as the SAME
+  // handle, from the same stamp, while a list changes between their calls — the
+  // map keeps one entry per handle, so the later client's lists become the
+  // yardstick for the earlier one. Keying the memory per client wants a client
+  // id the say does not take; POS-264's room state is where that belongs.
+  function delta(handle, out, { since, t, heard, convo, present }) {
+    const lists = {
+      listeners: JSON.stringify(out.listeners),
+      ...(present ? { at_the_door: JSON.stringify(out.at_the_door) } : {}),
+      ...(convo ? { participants: JSON.stringify(convo.participants) } : {}),
+    };
+    const prior = sent.get(handle);
+    sent.set(handle, { latest: out.latest, at: t, lists });
+    for (const [h, s] of sent) if (t - s.at > presenceMs) sent.delete(h);
+    if (!Number.isFinite(since)) return out;
+
+    const same = (k) => prior?.latest === since && prior.lists[k] !== undefined && prior.lists[k] === lists[k];
+    const unchanged = [];
+    const listenerCount = out.listeners.length;
+    if (same("listeners")) { delete out.listeners; unchanged.push("listeners"); }
+    if (present && same("at_the_door")) { delete out.at_the_door; unchanged.push("at_the_door"); }
+    if (out.conversation) {
+      const { participants, note, ...room } = out.conversation;
+      // A line the ear carried is already in `voices`; the record adds only what
+      // the ear missed (a chained speaker beyond earshot, a line older than the fade).
+      const caught = new Set(heard.map((v) => `${v.handle} ${v.at}`));
+      const record = room.record.filter((v) => !caught.has(`${v.handle} ${v.at_ms}`));
+      out.conversation = {
+        ...room,
+        ...(same("participants") ? {} : { participants }),
+        record,
+        ...(record.length === room.record.length ? {} : { note: "the lines you heard are in `voices`; this record carries only what your ear missed" }),
+        ...(room.record.length === 0 && out.voices.length === 0 ? { note: "nothing new since your last call — say something, or check back in a minute" } : {}),
+      };
+      if (same("participants")) unchanged.push("participants");
+    }
+    out.listener_count = listenerCount;
+    if (unchanged.length) out.unchanged = unchanged;
     return out;
   }
 
@@ -578,7 +652,67 @@ export function createVoices({
   // absent from the line this module writes: the voices log's shape is ruled
   // and durable, and a listener's needs are not a reason to change what the
   // town's speech record contains.
-  async function say(handle, text, { standAs = handle, since = null, household = null } = {}) {
+  // ── THE RETRY KEY (POS-265; the send's seam, town-mail.mjs § THE IDEMPOTENCY
+  // SEAM, followed register for register) ──────────────────────────────────
+  //
+  // The Snug night, 00:28Z brownout: clients retried says that had timed out
+  // and two landed twice in the room's record — caelan-rhys's entrance at 00:35Z
+  // and again at 00:38Z, errant's Q12 question twice at 00:38Z. Three minutes
+  // apart is past the 15-second flood rule, so nothing refused the second.
+  //
+  // `nonce` is the caller's own retry key. The same nonce from the same speaker
+  // inside the window returns the FIRST say's receipt and records nothing: no
+  // log line, no pen, no listener, no presence touch. Like the send it is
+  // checked BEFORE the fence — a retry must end where the first call ended, and
+  // the flood rule would otherwise refuse the very retry that most needs its
+  // receipt ("you just spoke"). Two registers, as the send has them: `spent`
+  // answers "was this nonce spoken BEFORE?", the in-flight map "is it being
+  // spoken RIGHT NOW?" — `standing` and the pen are awaited before the line
+  // lands, and that await is where a second call carrying the same nonce
+  // would otherwise walk past the first. A bounce spends nothing.
+  //
+  // ⚠ WHERE THE SPENT NONCE LIVES, and the gap that leaves. The send reads its
+  // nonces back off the town-log rows it writes. A voice's durable line (the
+  // voices log, ruled and durable) does not carry a nonce, and the world's
+  // `acts` table has no column for one until 027_act_nonce.sql — so the say's
+  // spent register is this process's memory, for `closeMs` (a retry into the
+  // same conversation). A restart between the first say and its retry forgets
+  // the nonce and the retry speaks again; the log line and the acts column are
+  // the two places a durable register could live, and choosing between them is
+  // a shape question left for Wright, not taken here.
+  //
+  // The receipt is re-derived rather than replayed: the room is the room NOW,
+  // the way the send recomputes the crossing that would otherwise lie. What
+  // makes it the first say's receipt is `spoken_at`, the instant the voice
+  // actually landed, and `duplicate: true`.
+  async function say(handle, text, { standAs = handle, since = null, household = null, nonce = null } = {}) {
+    const key = String(nonce ?? "").trim() || null;
+    if (key && Buffer.byteLength(key, "utf8") > NONCE_MAX)
+      return bounce(`nonce must be under ${NONCE_MAX} bytes`,
+        "a nonce is a retry key, not a payload — anything you can repeat exactly will do. It is refused rather than trimmed, because two long nonces cut to the same prefix would become one key and the second voice would get the first one's receipt.");
+    // NO NONCE, NO SEAM: the say a caller always got, byte for byte.
+    if (!key) return speak(handle, text, { standAs, since, household });
+    const slot = `${handle} ${key}`;
+    const running = nonceInFlight.get(slot);
+    if (running) {
+      const first = await running.catch(() => null);
+      if (first && !first.error) return { ...first, duplicate: true,
+        note: "this nonce was already in flight when your call arrived — a voice carrying it was mid-speech, and this is that voice's receipt. NOTHING WAS SAID A SECOND TIME." };
+    }
+    const t = now();
+    const spentAt = spentNonces.get(slot);
+    if (spentAt != null && t - spentAt <= closeMs) {
+      const here = await standing(standAs);
+      const room = here.bounce ? { spoke: true } : await reply(handle, here, t, true, since);
+      return { ...room, duplicate: true, nonce: key, spoken_at: new Date(spentAt).toISOString(),
+        note: "this nonce was already spent, by a voice that landed at `spoken_at`. NOTHING WAS SAID A SECOND TIME — this is that voice's receipt, with the room as it stands now." };
+    }
+    const p = speak(handle, text, { standAs, since, household, nonce: key });
+    nonceInFlight.set(slot, p);
+    try { return await p; } finally { nonceInFlight.delete(slot); }
+  }
+
+  async function speak(handle, text, { standAs, since, household, nonce = null }) {
     const t = now();
     const body = String(text ?? "").trim();
     if (!body) return bounce("nothing to say", "pass text: to speak, or call with no arguments to listen");
@@ -602,7 +736,11 @@ export function createVoices({
     }
     append(voice, { standAs, household });
     touch(handle, here.at, t, "spoke");
-    return reply(handle, here, t, true, since);
+    if (!nonce) return reply(handle, here, t, true, since);
+    spentNonces.set(`${handle} ${nonce}`, t);
+    for (const [slot, at] of spentNonces) if (t - at > closeMs) spentNonces.delete(slot);
+    return { ...(await reply(handle, here, t, true, since)), nonce,
+      idempotent: `retry this exact call with the same nonce and you will get this receipt back rather than a second voice — for the next ${Math.round(closeMs / 60000)} minutes, while this office stays up` };
   }
 
   // The page's read: every conversation in the world, live ones first. Served

@@ -333,7 +333,7 @@ test("world_say's description carries the fade, the linger, the disclosure, and 
   assert.match(tool.description, /500 characters, one voice every 15 seconds/);
   assert.match(tool.inputSchema.properties.text.description, /omit to listen without speaking/);
   assert.match(tool.description, /pass it back as since: on your next call/, "the linger economy is taught");
-  assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), ["handle", "since", "text"]);
+  assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), ["handle", "nonce", "since", "text"]);
 });
 
 test("the presence sentence rides the flag — the door never describes a listeners it isn't deriving", async () => {
@@ -466,8 +466,11 @@ test("INVARIANT since-lingering: the cursor filters both arrays to strictly-newe
   await store.say("rei", "third");
   const inc = await store.hear("wright", { since: full.latest });
   assert.deepEqual(inc.voices.map((v) => v.said), ["third"], "hearing filtered to newer");
-  assert.deepEqual(inc.conversation.record.map((v) => v.said), ["third"], "record filtered to newer");
-  assert.equal(inc.conversation.voice_count, 3, "the room's shape still rides full");
+  // MOVED by POS-265: a line the ear carried is not repeated in the record — the
+  // delta's record holds only what the ear missed, and says where the rest went.
+  assert.deepEqual(inc.conversation.record, [], "the heard line is not repeated in the record");
+  assert.match(inc.conversation.note, /the lines you heard are in `voices`/);
+  assert.equal(inc.conversation.voice_count, 3, "the room's count still rides");
   assert.ok(inc.latest > full.latest);
 
   const quiet = await store.hear("wright", { since: inc.latest });
@@ -475,6 +478,151 @@ test("INVARIANT since-lingering: the cursor filters both arrays to strictly-newe
   assert.deepEqual(quiet.conversation.record, []);
   assert.match(quiet.conversation.note, /nothing new since your last call/);
   assert.equal(quiet.latest, inc.latest, "the cursor holds steady through silence");
+});
+
+// ── POS-265: the retry key and the delta ─────────────────────────────────────
+//
+// The Snug night's brownout: a client retried a say that had timed out and the
+// voice landed twice, three minutes apart — past the flood rule, so nothing
+// refused the second. The nonce follows the send's seam (town-mail.mjs § THE
+// IDEMPOTENCY SEAM): a spent register, an in-flight register, bounces spend
+// nothing, and an over-long key is refused rather than trimmed.
+
+const lines = (path) => readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+
+test("POS-265 nonce: the same nonce three minutes later returns the first say's receipt and records nothing", async () => {
+  const { store, tick, path } = bench({ caelan: { x: 0, y: 0 }, wright: { x: 10, y: 0 } });
+  const first = await store.say("caelan", "an entrance", { nonce: "enter-1" });
+  assert.equal(first.spoke, true);
+  assert.equal(first.nonce, "enter-1");
+  assert.match(first.idempotent, /same nonce/);
+  tick(3 * MIN);
+  const again = await store.say("caelan", "an entrance", { nonce: "enter-1" });
+  assert.equal(again.spoke, true, "the voice DID land — the retry is told so");
+  assert.equal(again.duplicate, true);
+  assert.equal(again.spoken_at, new Date(T0).toISOString(), "the first say's instant");
+  assert.match(again.note, /NOTHING WAS SAID A SECOND TIME/);
+  assert.equal(lines(path).length, 1, "one line in the record, not two");
+  assert.equal(again.conversation.voice_count, 1);
+});
+
+test("POS-265 nonce: a retry inside the flood window gets its receipt, not 'you just spoke'", async () => {
+  const { store, tick, path } = bench({ errant: { x: 0, y: 0 } });
+  await store.say("errant", "Q12?", { nonce: "q12" });
+  tick(2_000);
+  const again = await store.say("errant", "Q12?", { nonce: "q12" });
+  assert.ok(!again.error, JSON.stringify(again));
+  assert.equal(again.duplicate, true);
+  assert.equal(lines(path).length, 1);
+});
+
+test("POS-265 nonce: a fresh nonce speaks; another speaker's same nonce speaks; the window closes", async () => {
+  const { store, tick, path } = bench({ rei: { x: 0, y: 0 }, wright: { x: 10, y: 0 } });
+  await store.say("rei", "one", { nonce: "k" });
+  tick(16_000);
+  const other = await store.say("wright", "mine", { nonce: "k" });
+  assert.equal(other.duplicate, undefined, "a nonce is the speaker's own");
+  const fresh = await store.say("rei", "two", { nonce: "k2" });
+  assert.equal(fresh.duplicate, undefined);
+  tick(31 * MIN);
+  const late = await store.say("rei", "one again, honestly", { nonce: "k" });
+  assert.equal(late.duplicate, undefined, "past the window the word is free again");
+  assert.deepEqual(lines(path).map((l) => l.text), ["one", "mine", "two", "one again, honestly"]);
+});
+
+test("POS-265 nonce: two overlapping calls with one nonce speak once (the in-flight register)", async () => {
+  const path = join(DIR, `voices-${++logN}.jsonl`);
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const store = createVoices({
+    standpoint: async (handle) => { await gate; return { handle, placed: true, x: 0, y: 0 }; },
+    place: async () => "the Snug",
+    logPath: path,
+    now: () => T0,
+  });
+  const a = store.say("caelan", "an entrance", { nonce: "enter-1" });
+  const b = store.say("caelan", "an entrance", { nonce: "enter-1" });
+  release();
+  const [ra, rb] = await Promise.all([a, b]);
+  assert.equal(ra.spoke, true);
+  assert.equal(rb.duplicate, true, JSON.stringify(rb).slice(0, 200));
+  assert.equal(lines(path).length, 1, "the await is where the second call would have walked past the first");
+});
+
+test("POS-265 nonce: a bounce spends nothing, and an over-long nonce is refused, never trimmed", async () => {
+  const { store, path } = bench({ rei: { x: 0, y: 0 } });
+  const long = await store.say("rei", "x".repeat(501), { nonce: "k" });
+  assert.equal(long.error, "bounce");
+  const ok = await store.say("rei", "shorter now", { nonce: "k" });
+  assert.equal(ok.duplicate, undefined, "the bounced call spoke nothing, so its nonce was never spent");
+  assert.equal(lines(path).length, 1);
+  const huge = await store.say("rei", "hello", { nonce: "n".repeat(201) });
+  assert.equal(huge.error, "bounce");
+  assert.match(huge.defect, /nonce must be under 200 bytes/);
+});
+
+test("POS-265 nonce: no nonce, no seam — the reply carries no nonce fields", async () => {
+  const { store } = bench({ rei: { x: 0, y: 0 } });
+  const r = await store.say("rei", "plain");
+  for (const k of ["nonce", "idempotent", "duplicate", "spoken_at"]) assert.equal(k in r, false, k);
+});
+
+// The delta. A three-resident room with the presence layer injected, so all
+// three heavy lists (listeners, at_the_door, participants) are in play.
+function presenceRoom() {
+  const at = { rei: { x: 0, y: 0 }, wright: { x: 10, y: 0 }, moss: { x: 20, y: 0 } };
+  const b = bench(at);
+  const store = createVoices({
+    standpoint: async (handle) => ({ handle, placed: true, ...at[handle] }),
+    place: async () => "the Snug",
+    logPath: join(DIR, `voices-${++logN}.jsonl`),
+    now: () => b.clock.t,
+    nearby: b.byPosition,
+  });
+  return { store, tick: b.tick };
+}
+
+test("POS-265 delta: without since the reply is the whole room, byte for byte the old shape", async () => {
+  const { store, tick } = presenceRoom();
+  await store.say("rei", "hello");
+  tick(16_000);
+  const full = await store.hear("wright");
+  assert.deepEqual(Object.keys(full), ["where", "listeners", "voices", "spoke", "at_the_door", "conversation", "latest"]);
+  assert.deepEqual(Object.keys(full.conversation), ["started", "participants", "voice_count", "latest_ms", "record", "note"]);
+});
+
+test("POS-265 delta: with since, unchanged lists are held back and named; the counts and the header ride", async () => {
+  const { store, tick } = presenceRoom();
+  await store.say("rei", "first");
+  tick(16_000);
+  const full = await store.hear("wright");
+  assert.deepEqual(full.listeners, ["moss", "rei"]);
+  tick(16_000);
+  await store.say("rei", "second");
+  const inc = await store.hear("wright", { since: full.latest });
+  assert.deepEqual(inc.voices.map((v) => v.said), ["second"]);
+  assert.equal("listeners" in inc, false, "the listeners did not change");
+  assert.equal(inc.listener_count, 2, "but the count rides");
+  assert.equal("participants" in inc.conversation, false);
+  assert.equal(inc.conversation.voice_count, 2);
+  assert.deepEqual(inc.unchanged, ["listeners", "at_the_door", "participants"], "rei was already at the door");
+  assert.equal("at_the_door" in inc, false);
+  assert.equal(inc.where.place, "the Snug");
+  assert.ok(inc.latest > full.latest);
+
+  // moss speaks for the first time: the participants changed, so they ride whole
+  tick(16_000);
+  await store.say("moss", "hello both");
+  const inc2 = await store.hear("wright", { since: inc.latest });
+  assert.deepEqual(inc2.conversation.participants, ["rei", "moss"]);
+  assert.deepEqual(inc2.at_the_door, ["moss", "rei"], "moss came to the door by speaking");
+  assert.deepEqual(inc2.unchanged, ["listeners"]);
+
+  // a stamp this office did not hand out (a restart, a second client): everything rides
+  const cold = await store.hear("wright", { since: inc.latest - 1 });
+  assert.ok(Array.isArray(cold.listeners), "when in doubt the reply over-tells");
+  assert.ok(Array.isArray(cold.conversation.participants));
+  assert.equal(cold.unchanged, undefined);
 });
 
 // ── issue #5 §2: silence reads as absence ────────────────────────────────────
