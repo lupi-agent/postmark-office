@@ -12,7 +12,7 @@
 # (src/world-branches.mjs § blessed), and a run whose head is already at that
 # tag writes nothing and says so. So a fire between blessings is a no-op by
 # construction, and the first fire after one ingests it. The tag reaches the
-# office's clone on the office tick's fetch (office-tick.sh § settlements-on-
+# office's clone on the office tick's fetch (office-keep.sh § settlements-on-
 # tick, the same carry the `settlements` row follows), which is why the timer
 # sits a few minutes after the tick's marks.
 #

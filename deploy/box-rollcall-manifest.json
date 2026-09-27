@@ -103,13 +103,24 @@
    "label": "the office's read index",
    "stage": "live",
    "activation_owner": "Keemin — part of the original box standup, enabled in DEPLOY.md § One-time setup's own enable line; unit added 2026-08-01 c8e62f9",
-   "cadence": "every 15 minutes at :07, :22, :37, :52 — offset from the site extractor",
+   "cadence": "every 15 minutes at :07, :22, :37, :52 while the box runs the pre-split unit (which runs the whole tick through the transitional deploy/office-tick.sh); :09, :24, :39, :54 once the POS-268 split's unit files are installed, two minutes after postmark-office-keep.timer",
    "cadence_source": "systemctl show postmark-office-rehydrate.timer -p TimersCalendar",
    "heartbeat": {
     "kind": "unit_trigger",
     "stale_after_minutes": 45
    },
    "stale_means": "The office serves a frozen X-Postmark-As-Of: every door answers 200 with yesterday's town. This is the exact failure found BY HAND on 2026-08-25 (one distinct as-of across 40 minutes and three tick slots). The allowance is three ticks — one missed tick is noise, three is a stuck rehydrate. site-sentinel's office_as_of probe watches the OUTCOME of this from outside; this row watches the runner."
+  },
+  {
+   "unit": "postmark-office-keep.timer",
+   "label": "the office's keeping tick (clones, mint, settlements row, panes)",
+   "stage": "parked",
+   "activation_owner": "Not yet adopted — the keeping half of the office tick, split out of the rehydrate unit on 2026-09-27 (POS-268, lane jetto-retire-sqlite-reads). Adopted by whoever installs the split's unit files; until then the pre-split rehydrate unit runs this work through deploy/office-tick.sh.",
+   "parked_because": "Its unit files are new and not yet on the box. The work itself is NOT parked: the installed postmark-office-rehydrate unit still runs deploy/office-tick.sh, which now calls office-keep.sh then office-rehydrate.sh.",
+   "adopt_command": "sudo cp deploy/postmark-office-keep.{service,timer} deploy/postmark-office-rehydrate.{service,timer} /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now postmark-office-keep.timer && sudo systemctl restart postmark-office-rehydrate.timer — then flip this row to live and delete deploy/office-tick.sh",
+   "cadence": "none while parked (the unit file carries :07/:22/:37/:52, the old tick's clock)",
+   "cadence_source": "the unit file — disabled with no next fire is this row's healthy state until adoption",
+   "stale_means": "not judged while parked. Once live: the town clone stops pulling (the write pen and declare read a stale town), the mint catch-up and welcome pass stop, the settlements row stops following the keeper's tag, and the panes freeze."
   },
   {
    "unit": "postmark-harbor-watch.timer",
@@ -628,6 +639,14 @@
     "must_be": "release",
     "why": "The tick rehydrates the door's own caches; a stale tree rehydrates them into the shape the old code expected.",
     "activation_owner": "Wright — WorkingDirectory=/srv/postmark-office in deploy/postmark-office-rehydrate.service."
+   },
+   {
+    "id": "office-keep",
+    "unit": "postmark-office-keep.service",
+    "label": "the office keeping tick's tree",
+    "must_be": "release",
+    "why": "It runs the release's own mint, welcome pass, settlements tool and panes publisher; a stale tree writes the ledger and the panes in the shape the old code expected.",
+    "activation_owner": "Wright — WorkingDirectory=/srv/postmark-office in deploy/postmark-office-keep.service."
    },
    {
     "id": "harbor-watch",

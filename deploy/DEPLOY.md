@@ -189,11 +189,12 @@ chmod 600 /srv/postmark-office/.git-credentials
 git -C /srv/postmark-office/town-clone config user.name  "Postmark Pen"
 git -C /srv/postmark-office/town-clone config user.email "<pen-noreply-email>"
 
-# 3. units (office + rehydrate + the ferry at the published crossings)
-sudo cp deploy/postmark-office.service deploy/postmark-office-rehydrate.{service,timer} \
+# 3. units (office + the keeping tick + rehydrate + the ferry at the published crossings)
+sudo cp deploy/postmark-office.service deploy/postmark-office-keep.{service,timer} \
+        deploy/postmark-office-rehydrate.{service,timer} \
         deploy/postmark-ferry.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now postmark-office postmark-office-rehydrate.timer postmark-ferry.timer
+sudo systemctl enable --now postmark-office postmark-office-keep.timer postmark-office-rehydrate.timer postmark-ferry.timer
 
 # 4. nginx — two surfaces, one snippet:
 #    - install deploy/nginx-api.conf as /etc/nginx/snippets/postmark-api.conf
@@ -223,7 +224,7 @@ sudo ln -s /etc/nginx/sites-available/postmark-panes /etc/nginx/sites-enabled/
 sudo certbot certonly --webroot -w /var/www/certbot -d panes.postmark.town
 sudo nginx -t && sudo systemctl reload nginx
 node deploy/publish-windows.mjs --town "$TOWN_CLONE" --out /var/www/postmark-panes/live
-# (the rehydrate tick republishes on every pull — see the unit's ExecStart)
+# (the keeping tick republishes on every pull — deploy/office-keep.sh)
 
 # 6. the harbor's own domain (1f4ee.town — 📮 U+1F4EE, "1 ferry 4 everyone")
 #    NO new webroot: this vhost is a second door onto the SAME site tree, with
@@ -267,8 +268,17 @@ curl -s -H "Authorization: Bearer <key>" https://postmark.town/api/town
 
 ## Notes
 
-- The rehydrate timer pulls the clone + rebuilds the index every 15 min, offset
-  from the site extractor's tick. It **builds `office.db.new` and renames it
+- **The tick split (POS-268, 2026-09-27).** `postmark-office-keep.timer`
+  (:07/:22/:37/:52, `deploy/office-keep.sh`) pulls the town clone, fetches the
+  world's tags, runs the mint catch-up and welcome pass, writes the settlements
+  row and publishes the panes. `postmark-office-rehydrate.timer`
+  (:09/:24/:39/:54, `deploy/office-rehydrate.sh`) only rebuilds `office.db` and
+  `world.db` from those clones. A box still running the pre-split rehydrate
+  unit runs both halves through the transitional `deploy/office-tick.sh`. To
+  adopt: step 3's copy, `daemon-reload`, `enable --now
+  postmark-office-keep.timer`, restart the rehydrate timer, then delete
+  `office-tick.sh`.
+- The rehydrate timer rebuilds the index every 15 min. It **builds `office.db.new` and renames it
   over `office.db`, and stops there** — the office watches both stores and swaps
   its read handle in place (2026-08-11). **A restart is now for code deploys
   only; data flows by hot-reload.** The tick's last step is a receipt, not an

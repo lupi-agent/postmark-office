@@ -192,7 +192,7 @@ test("a row in the table with no tag behind it is `extra` — the verify reds on
 
 import { readFileSync } from "node:fs";
 
-const tick = () => readFileSync(new URL("../deploy/office-tick.sh", import.meta.url), "utf8");
+const tick = () => readFileSync(new URL("../deploy/office-keep.sh", import.meta.url), "utf8");
 
 test("the tick runs the backfill AFTER the world fetch and OUTSIDE the lock", () => {
   const sh = tick();
@@ -202,10 +202,10 @@ test("the tick runs the backfill AFTER the world fetch and OUTSIDE the lock", ()
   assert.ok(fetch !== -1 && unlock !== -1 && run !== -1, "the tick must carry all three: the world fetch, the lock's close, the backfill");
   assert.ok(fetch < run, "a backfill before the fetch reads yesterday's tags — the tag rides this fetch");
   assert.ok(unlock < run, "inside the lock the backfill's Postgres round-trip lengthens every write-path wait");
-  // and the backfill precedes the derivation, so a slow store cannot be hidden
-  // behind a slow hydrate when someone reads the journal for the ordering
-  const hydrate = sh.indexOf("node src/hydrate.mjs");
-  assert.ok(run < hydrate, "the receipt line belongs beside the fetch it follows, before the long derivation");
+  // and no derivation shares its unit: since the 2026-09-27 split (POS-268) the
+  // long hydrate runs on the rehydrate unit, so a slow hydrate can never hide or
+  // delay the settlements receipt
+  assert.equal(sh.indexOf("node src/hydrate.mjs"), -1, "the keeping tick must not hydrate — that is office-rehydrate.sh's unit");
 });
 
 test("the tick's backfill is the prod apply, quiet, on the clone the fetch moved", () => {
@@ -223,5 +223,5 @@ test("a refused or unreachable store cannot stop the tick's real work", () => {
   const around = sh.slice(at, at + 5).join("\n");
   assert.match(around, /^if settled=/m, "the run must be the condition of an `if`, never a bare command under `set -e`");
   assert.match(around, /NOT written \(non-fatal\)/, "the failure branch says so out loud and continues");
-  assert.match(around, /\[office-tick\] settlements: \$settled/, "the success branch prints the tool's receipt line into the journal");
+  assert.match(around, /\[office-keep\] settlements: \$settled/, "the success branch prints the tool's receipt line into the journal");
 });
