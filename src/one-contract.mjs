@@ -72,6 +72,13 @@ export const FIELD_ALIASES = Object.freeze({
 // rows (town-updates.mjs § paperDoor). Every other act still refuses a nonce
 // BY NAME: the world acts until `027_act_nonce.sql` gives their store a place
 // to keep one, and the household acts that write no town-log row at all.
+//
+// THE SAY IS THE ONE WORLD ACT THAT TAKES IT (POS-265), and not from this
+// list: world_say's schema is its door's own — `since` and `handle` already
+// stand there — so the nonce is declared beside them and every door that
+// speaks reads it from the one schema. The say keeps its spent nonces in the
+// voices module's memory, not the acts table (voices.mjs § THE RETRY KEY says
+// what that costs); the other world acts still wait for 027.
 const NONCE = Object.freeze(["nonce"]);
 export const DOOR_FIELDS = Object.freeze({
   send_letter: NONCE,

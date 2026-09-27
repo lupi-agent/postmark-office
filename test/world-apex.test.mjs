@@ -1167,12 +1167,34 @@ test("envelope: an unknown field bounces BY NAME against the target's own schema
 // key now; a world act's receipt is a row in the store's `acts` table, which has
 // no column for one until 027_act_nonce.sql installs — so the world door still
 // refuses it BY NAME, the MCP half of test/one-contract.test.mjs's plain-API leg.
+// NARROWED by POS-265: the say takes a nonce now, on world_say's own schema,
+// and keeps its spent nonces in the voices module (voices.mjs § THE RETRY KEY).
+// Every other world act still refuses it by name.
 test("envelope: a nonce on a world act bounces by name — the world's store keeps no retry key yet", async () => {
   on();
-  const r = await worldApex({ do: "say", args: { text: "hello", nonce: "w-k1" } }, KEY_ALPHA);
-  assert.equal(r.error, "bounce");
-  assert.equal(r.code, 422);
-  assert.match(r.defect, /does not take: nonce/);
+  // walk, granted ambiently to the resident class (the fixture's own ground
+  // affords only say, which takes the nonce now)
+  const residentLaw = [
+    { id: "the-town/resident", by: "the-town", kind: "sited", tier: "constitution", at: { x: 2200, y: 2200 }, extent: { w: 10, h: 10 },
+      body: "A household's living voice.",
+      props: { class: "resident", class_version: 5, ambient: true, actions: [{ action: "walk", residue: "the-town/sound" }] } },
+  ];
+  const path = join(repo, "apex-world-nonce-walk.db");
+  buildStore([...MARKS, ...residentLaw], path);
+  await withStore(path, async () => {
+    const r = await worldApex({ do: "walk", args: { x: 1, y: 1, nonce: "w-k1" } }, KEY_ALPHA);
+    assert.equal(r.error, "bounce");
+    assert.equal(r.code, 422);
+    assert.match(r.defect, /does not take: nonce/);
+  });
+});
+
+test("envelope: the say's nonce rides through the apex to the say (POS-265)", async () => {
+  on();
+  // empty-handed, so this listens and costs no one the 15-second flood rule
+  const r = await worldApex({ do: "say", args: { nonce: "w-k1" } }, KEY_ALPHA);
+  assert.ok(!r.error, JSON.stringify(r).slice(0, 300));
+  assert.equal(r.did, "say");
 });
 
 test("envelope: a non-object args is refused plainly", async () => {
@@ -1292,8 +1314,10 @@ test("PARITY · an unknown envelope field on a shadow read bounces BY NAME, with
   assert.equal(r.error, "bounce");
   assert.equal(r.code, 422);
   assert.equal(r.defect, 'unknown argument "bogus" for world { read: "say" }');
-  assert.equal(r.hint, "this read takes: text, since", "and the hint names what this shadow does answer to");
-  assert.deepEqual(r.accepted, ["text", "since"]);
+  // `nonce` (POS-265) is declared the way `text` is: named here, then answered
+  // by the shadow's own teaching refusal rather than the generic one.
+  assert.equal(r.hint, "this read takes: text, since, nonce", "and the hint names what this shadow does answer to");
+  assert.deepEqual(r.accepted, ["text", "since", "nonce"]);
 });
 
 // ── #2559 · THE SHADOW CARRIES THE CURSOR IT WAS HANDED ─────────────────────
@@ -1374,6 +1398,13 @@ test("PARITY · `text` on a say-read still meets the TEACHING bounce, not the ge
   const teaching = await worldApex({ read: "say", args: { text: "smuggled" } }, KEY_ALPHA);
   assert.match(teaching.defect, /a read never performs/);
   assert.equal(teaching.card.action, "say", "the law still rides the refusing path");
+});
+
+test("POS-265 · a nonce on a say-read is refused by name — a read speaks nothing for it to guard", async () => {
+  on();
+  const r = await worldApex({ read: "say", args: { nonce: "k" } }, KEY_ALPHA);
+  assert.equal(r.code, 422);
+  assert.match(r.defect, /a read speaks nothing, so a nonce has nothing to guard/);
 });
 
 test("PARITY · a documented envelope field answers exactly as before", async () => {
