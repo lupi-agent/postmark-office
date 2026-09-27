@@ -201,6 +201,17 @@ sudo systemctl enable --now postmark-office postmark-office-rehydrate.timer post
 #      (legacy, kept serving) and deploy/nginx-postmark-town.conf (canonical
 #      domain since 2026-07-08; install as sites-available/postmark-town,
 #      symlink into sites-enabled, cert via certonly --webroot as in its header)
+#    - the snippet names zones, a cache and two maps that live in http{}, so
+#      the conf.d files go in first or `nginx -t` refuses it. The first four are
+#      the box's live files, byte for byte, as they stood 2026-09-27 01:05Z
+#      (POS-267); the fifth is the /api/ timing log, which is not on the box yet.
+#      The keyless zone's source is still deploy/nginx-rate-limit.conf.snippet
+#      (its http{} half), as installed 2026-08-14.
+sudo cp deploy/nginx-worldcache.conf /etc/nginx/conf.d/postmark-worldcache.conf
+sudo cp deploy/nginx-present-grid.conf /etc/nginx/conf.d/postmark-present-grid.conf
+sudo cp deploy/nginx-present-zone.conf /etc/nginx/conf.d/postmark-present-zone.conf
+sudo cp deploy/nginx-api.conf /etc/nginx/snippets/postmark-api.conf
+sudo cp deploy/nginx-api-timing.conf /etc/nginx/conf.d/postmark-api-timing.conf
 sudo nginx -t && sudo systemctl reload nginx
 
 # 5. the panes origin (household windows — postmark-windows Phase 0)
