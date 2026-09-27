@@ -29,9 +29,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 const {
@@ -121,7 +122,7 @@ test("a derived row is walkEntry's shape, field for field, beside a mirrored act
     assert.equal(r.at_dy, null);
     assert.equal(r.witnesses, null);
     assert.equal(r.household, null);
-    assert.equal(r.journal_seq, null);
+    assert.equal("journal_seq" in r, false, "migration 025 dropped acts.journal_seq");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -433,4 +434,21 @@ test("the gate reads the clause the doors use, not a flag — and the shipped cl
   assert.equal(orderClauseCarriesInstant("ORDER BY at, acts.id"), true);
   // And it is not fooled by the word inside a quoted literal.
   assert.equal(orderClauseCarriesInstant("ORDER BY ((payload->>'at_anchor') IS NULL), acts.id"), false);
+});
+
+// THE INSERT NAMES ONLY COLUMNS THE SCHEMA STILL HAS (2026-09-27). The apply
+// failed on prod with "column journal_seq of relation acts does not exist":
+// migration 025 dropped it that morning, and no test read the INSERT's columns.
+test("the apply's INSERT names no column a migration has dropped from acts", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const schema = join(here, "..", "world2", "schema");
+  const dropped = new Set();
+  for (const f of readdirSync(schema).filter((n) => n.endsWith(".sql"))) {
+    const sql = readFileSync(join(schema, f), "utf8");
+    for (const m of sql.matchAll(/ALTER TABLE acts DROP COLUMN (?:IF EXISTS )?(\w+)/gi)) dropped.add(m[1]);
+  }
+  assert.ok(dropped.has("journal_seq"), "the check can see 025's drop");
+  const tool = readFileSync(join(here, "..", "world2", "tools", "backfill-departures.mjs"), "utf8");
+  const cols = /INSERT INTO acts \(([^)]*)\)/.exec(tool)[1].split(",").map((c) => c.trim());
+  assert.deepEqual(cols.filter((c) => dropped.has(c)), []);
 });

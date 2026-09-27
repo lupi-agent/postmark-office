@@ -270,7 +270,8 @@ export function departureRowFrom(m) {
     },
     effect: WALK_EFFECT,
     household: null,                             // the caller's resolved key: not in a movement row
-    journal_seq: null,                           // the mirror's own value on this path
+    // No journal_seq: migration 025 dropped the column (2026-09-27). This path
+    // always wrote it NULL; the pairing key is payload._backfill_seq.
   };
 }
 
@@ -497,11 +498,11 @@ if (isMain) {
           await client.query(
             `INSERT INTO acts (at, crossing, actor, action, object,
                                at_anchor, at_dx, at_dy, witnesses, class,
-                               payload, effect, household, journal_seq)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+                               payload, effect, household)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
             [r.at, r.crossing, r.actor, r.action, r.object,
               r.at_anchor, r.at_dx, r.at_dy, r.witnesses, r.class,
-              JSON.stringify(r.payload), r.effect, r.household, r.journal_seq]);
+              JSON.stringify(r.payload), r.effect, r.household]);
           wrote++;
         }
         await client.query("COMMIT");
