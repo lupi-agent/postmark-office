@@ -50,6 +50,51 @@ function git(repo, args, options = {}) {
   });
 }
 
+// ── REFS FROM GIT'S OWN FILES, CONTENT BY COMMIT (the Snug night, 2026-09-27) ──
+// The live profile at 01:26Z: 44% of the office's thread was synchronous git
+// spawned per LISTENER of every say (heardBy -> world() -> publishedState ->
+// readJsonAtRef, walkLedgerAtMain -> mainRef/refExists/readAtRef). Every one of
+// those reads a file AT A REF, and a file at a fixed commit never changes. So a
+// named ref is resolved to its sha by reading the ref file git itself writes
+// (a loose ref, else packed-refs), and content is cached by (sha, path). When a
+// ref moves, git rewrites that file, the sha changes, and the next read is a
+// cache miss: never stale, never a second answer. Anything this cannot resolve
+// from disk (a worktree's .git file, HEAD, a peeled tag) falls through to git.
+const SHA_RE = /^[0-9a-f]{40}$/;
+const packedCache = new Map(); // repo -> { stamp, map }
+function packedRefs(gitDir) {
+  const p = join(gitDir, "packed-refs");
+  let st;
+  try { st = statSync(p); } catch { return new Map(); }
+  const stamp = `${st.mtimeMs}:${st.size}`;
+  const hit = packedCache.get(p);
+  if (hit && hit.stamp === stamp) return hit.map;
+  const map = new Map();
+  for (const line of readFileSync(p, "utf8").split("\n")) {
+    if (!line || line[0] === "#" || line[0] === "^") continue;
+    const [sha, name] = line.trim().split(" ");
+    if (SHA_RE.test(sha) && name) map.set(name, sha);
+  }
+  packedCache.set(p, { stamp, map });
+  return map;
+}
+// The sha a ref points at, read from disk; undefined when the disk cannot say
+// (fall through to git), null when the ref certainly does not exist.
+export function refShaFromDisk(repo, ref) {
+  if (SHA_RE.test(ref)) return ref;
+  if (typeof ref !== "string" || !ref.startsWith("refs/") || ref.includes("..") || /[\^~:]/.test(ref)) return undefined;
+  const gitDir = join(repo, ".git");
+  try { if (!statSync(gitDir).isDirectory()) return undefined; } catch { return undefined; }
+  const loose = join(gitDir, ref);
+  if (existsSync(loose)) {
+    const t = readFileSync(loose, "utf8").trim();
+    return SHA_RE.test(t) ? t : undefined; // a symbolic ref: let git answer
+  }
+  return packedRefs(gitDir).get(ref) ?? null;
+}
+const CONTENT_CAP = 400;
+const contentCache = new Map(); // "repo\0sha\0path\0encoding" -> content, insertion-ordered for eviction
+
 export function resolvedWorldHousehold(key) {
   const household = String(key?.household ?? "").trim();
   if (!household || key?.visitor || !(key?.handles instanceof Set) || key.handles.size === 0)
@@ -64,6 +109,9 @@ export function draftBranch(household) {
 }
 
 export function refExists(repo, ref) {
+  const disk = refShaFromDisk(repo, ref);
+  if (disk === null) return false;
+  if (disk !== undefined && ref.startsWith("refs/heads/") || disk !== undefined && ref.startsWith("refs/remotes/")) return true;
   try {
     git(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
     return true;
@@ -179,7 +227,15 @@ export function draftRefForKey(repo, key) {
 }
 
 export function readAtRef(repo, ref, path, encoding = "utf8") {
-  return git(repo, ["show", `${ref}:${path.replace(/\\/g, "/")}`], { encoding });
+  const rel = path.replace(/\\/g, "/");
+  const sha = refShaFromDisk(repo, ref);
+  if (!sha) return git(repo, ["show", `${ref}:${rel}`], { encoding });
+  const key = `${repo}\0${sha}\0${rel}\0${encoding}`;
+  if (contentCache.has(key)) return contentCache.get(key);
+  const out = git(repo, ["show", `${sha}:${rel}`], { encoding });
+  contentCache.set(key, out);
+  if (contentCache.size > CONTENT_CAP) contentCache.delete(contentCache.keys().next().value);
+  return out;
 }
 
 // THE FRESHEST published main. `mainRef` prefers the local branch because that
@@ -409,7 +465,11 @@ export function materializeAtRef(repo, ref, subdir, cacheRoot = ENGINE_CACHE) {
   // ^{commit}: a settlement tag is an ANNOTATED tag object, and a cache keyed on
   // the tag object rather than the commit it blesses would be keyed on a thing
   // no `git log` can find (settlements.mjs:120 learned the same lesson).
-  const sha = git(repo, ["rev-parse", `${ref}^{commit}`]).trim();
+  // A branch or remote-tracking ref points at a commit already, so its sha comes
+  // from git's own ref file (refShaFromDisk, the w39.14 relief) with no process;
+  // a tag still asks git, because a cache key must be the PEELED commit.
+  const onDisk = /^refs\/(heads|remotes)\//.test(ref) ? refShaFromDisk(repo, ref) : undefined;
+  const sha = onDisk || git(repo, ["rev-parse", `${ref}^{commit}`]).trim();
   const dir = join(cacheRoot, `${sha}--${subdir.replace(/[^\w.-]/g, "_")}`);
   const stamp = join(dir, ".materialized");
   if (existsSync(stamp)) return dir;

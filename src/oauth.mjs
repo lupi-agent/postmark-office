@@ -118,6 +118,32 @@ export const sweepClaims = (odb) =>
 // cover handles not yet pinned. Read fresh — tiny file, low volume, and it
 // means a new resident is recognized the moment the clone updates.
 
+// THE LOGIN INDEX (the Snug night, 2026-09-27): matching a login used to parse
+// every resident's row on every authenticated request, ~10% of the office's
+// thread in the live profile. The login -> handles map is built once per change
+// of the residents table (a cheap count-and-length stamp, no JSON parsed) and of
+// the pins, per db handle. Everything else below, the harbor stamp included,
+// is still recomputed on every lookup, so it falls off the moment the
+// Registrar lands a handle ashore, exactly as before.
+const loginIndexes = new WeakMap(); // db -> { stamp, map }
+function loginIndex(db, pinnedHandles) {
+  const st = db.prepare("SELECT count(*) AS n, total(length(json)) AS l, max(rowid) AS r FROM residents").get();
+  const stamp = `${st.n}:${st.l}:${st.r}:${[...pinnedHandles].sort().join(",")}`;
+  const hit = loginIndexes.get(db);
+  if (hit && hit.stamp === stamp) return hit.map;
+  const map = new Map();
+  for (const r of db.prepare("SELECT handle, json FROM residents").all()) {
+    if (pinnedHandles.has(r.handle)) continue; // pins are authoritative
+    const d = JSON.parse(r.json);
+    const bound = (d.github ?? d.address?.data?.github ?? "").toLowerCase();
+    if (!bound) continue;
+    if (!map.has(bound)) map.set(bound, []);
+    map.get(bound).push(r.handle);
+  }
+  loginIndexes.set(db, { stamp, map });
+  return map;
+}
+
 export function householdFor(clone, db, ghId, ghLogin) {
   const handles = new Set();
   const pinsPath = join(clone, "tools", "github-ids.json");
@@ -132,14 +158,7 @@ export function householdFor(clone, db, ghId, ghLogin) {
     } catch { /* unreadable pins -> fall through to logins */ }
   }
   const login = (ghLogin ?? "").toLowerCase();
-  if (login) {
-    for (const r of db.prepare("SELECT handle, json FROM residents").all()) {
-      if (pinnedHandles.has(r.handle)) continue; // pins are authoritative
-      const d = JSON.parse(r.json);
-      const bound = (d.github ?? d.address?.data?.github ?? "").toLowerCase();
-      if (bound === login) handles.add(r.handle);
-    }
-  }
+  if (login) for (const h of loginIndex(db, pinnedHandles).get(login) ?? []) handles.add(h);
   if (!handles.size) return null;
   // The arrival-ladder stamp (Keemin-ruled 2026-08-16): a household none of
   // whose handles stand in the residents index lives at the HARBOR — read +

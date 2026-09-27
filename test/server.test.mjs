@@ -882,3 +882,14 @@ test("POST /mcp answers with content-length and no chunked framing", async () =>
   // ⚑ THE FLIP: drop `content-length` from the reply's headers in mcp.mjs and the
   //   transfer-encoding line reads "chunked".
 });
+
+// GET /world/find — the plain twin of world { read: "find" } (2026-09-26). The
+// empty query is refused by name before the world is read, so this office with
+// no world clone still answers it; the finding itself is world-find.test.mjs's.
+test("GET /world/find with no q → 422, naming q", async () => {
+  for (const path of ["/world/find", "/world/find?q=", "/world/find?q=%20%20"]) {
+    const res = await get(path, null);
+    assert.equal(res.status, 422, path);
+    assert.match((await res.json()).defect, /`q` is empty/, path);
+  }
+});
