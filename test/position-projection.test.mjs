@@ -28,9 +28,11 @@
 // ── THE FLIP (run after the commit; the red line goes in the report) ─────────
 //
 // In `src/position-projection.mjs § governingOf`, keep each handle's FIRST
-// record instead of its last (`if (!out.has(d.handle)) out.set(...)`). RECORD
-// and PLACED go red: a resident who walked twice is answered from the leg they
-// superseded.
+// record instead of its last (`if (!out.has(d.handle)) out.set(...)`). RECORD,
+// PLACED, PRESENCE and DOOR go red: a resident who walked twice is answered from
+// the leg they superseded. HEARING stays green under that flip, and that is the
+// POS-247 fact it pins rather than a gap: no walk record can frame a voice, so
+// which record the fold is handed cannot move one.
 //
 // Run: WORLD_CLONE=<world clone> node --test test/position-projection.test.mjs
 
