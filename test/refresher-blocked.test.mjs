@@ -88,7 +88,7 @@ const HOLDER = WINDOWS
 
 const POLLER = `const [url, ms] = [process.argv[1], Number(process.argv[2])];
   const lat = []; const end = Date.now() + ms;
-  (async () => { await (await fetch(url)).text();   // the first fetch loads fetch itself, in the poller; not the door's time
+  (async () => { await (await fetch("data:,warm")).text();   // loads fetch itself in the poller, off the clock and off the door
     while (Date.now() < end) { const t = performance.now(); try { await (await fetch(url)).text(); } catch {} lat.push(performance.now() - t); await new Promise((r) => setTimeout(r, 50)); }
     lat.sort((a, b) => a - b);
     console.log(JSON.stringify({ n: lat.length, max: lat.at(-1), p50: lat[Math.floor(lat.length / 2)], top: lat.slice(-5).map((x) => +x.toFixed(1)) })); })();`;
