@@ -236,3 +236,12 @@ test("THE DOOR: both reads are on the household door's list, declare their field
   const anon = await householdApex({ read: "needs-you" }, null, { db, clone: scratch, meta, asOf: AS_OF });
   assert.equal(anon.code, 401);
 });
+
+test("NO DOCKET IS SAID: an office with no docket store does not pass off its zero as the docket's", async () => {
+  const { readers } = worldReaders();
+  readers.claimEffects = async () => ({ readable: true, events: [], store: "none" });
+  const h = await houseBundle({ household: HOUSE }, ctx({ readers }));
+  assert.equal(h.outcomes.count, 0);
+  assert.equal(h.outcomes.store, "none");
+  assert.match(h.outcomes.note, /no docket store/);
+});

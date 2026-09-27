@@ -131,7 +131,7 @@ async function standsOf(handles, readers = {}) {
         ? { x: r.x, y: r.y, mark_id: r.mark_id ?? null, moving: r.moving ?? false, toward: r.toward ?? null }
         : null;
     }
-    return { at: roll?.at ?? null, byHandle: out };
+    return { at: roll?.at ?? null, byHandle: out, ...(roll?.disclosed?.length ? { disclosed: roll.disclosed } : {}) };
   } catch (e) {
     return { unavailable: `the walkers roll could not be read (${String(e?.message ?? e).slice(0, 160)}) — where they stand is unknown here, not nowhere`, byHandle: {} };
   }
@@ -168,6 +168,10 @@ async function outcomesOf(handles, { stances, key, nowMs, readers = {} }) {
       ...(effects.readable === false
         ? { unavailable: effects.reason ?? "the docket store could not be read — that is not the same as nothing having happened to this house" }
         : {}),
+      // A zero from an office with no docket and a zero the docket answered are
+      // different facts, and a page must be able to tell them apart.
+      ...(effects.store ? { store: effects.store } : {}),
+      ...(effects.store === "none" ? { note: "this office keeps no docket store, so there is nothing here for a crossing to have decided — not a read that found nothing" } : {}),
       events,
     };
   } catch (e) {
@@ -279,6 +283,8 @@ export async function houseBundle({ household = null } = {}, ctx = {}) {
     outcomes: { serves: "household.outcomes", scope: ashore, ...outcomes },
     stakes: { serves: "household.stakes", scope: ashore, ...stakes },
     stands: { from: "the walkers roll (GET /world/walkers), read once for the house", at: stands.at ?? null,
+      null_means: "the roll places this resident nowhere: no walk on record and no ground of their own",
+      ...(stands.disclosed ? { disclosed: stands.disclosed } : {}),
       ...(stands.unavailable ? { unavailable: stands.unavailable } : {}) },
     last_active: "per resident, the newest commit touching their own pages in the town repo, inbox arrivals excluded (the office index's last_active) — a say in the world is not counted",
     residents,
