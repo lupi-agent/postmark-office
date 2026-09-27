@@ -330,6 +330,114 @@
     }
    },
    "teaches": "string"
+  },
+  {
+   "act": "string",
+   "blurb": "string",
+   "dispatches_to": "null",
+   "fields": {
+    "doors_open": {
+     "description": "string",
+     "type": "string"
+    },
+    "ends": {
+     "description": "string",
+     "required": "boolean",
+     "type": "string"
+    },
+    "event": {
+     "description": "string",
+     "type": "string"
+    },
+    "handle": {
+     "description": "string",
+     "type": "string"
+    },
+    "invitation": {
+     "description": "string",
+     "type": "string"
+    },
+    "place": {
+     "description": "string",
+     "required": "boolean",
+     "type": "string"
+    },
+    "starts": {
+     "description": "string",
+     "required": "boolean",
+     "type": "string"
+    },
+    "title": {
+     "description": "string",
+     "required": "boolean",
+     "type": "string"
+    }
+   },
+   "teaches": "string"
+  },
+  {
+   "act": "string",
+   "blurb": "string",
+   "dispatches_to": "null",
+   "fields": {
+    "event": {
+     "description": "string",
+     "required": "boolean",
+     "type": "string"
+    },
+    "handle": {
+     "description": "string",
+     "type": "string"
+    }
+   },
+   "teaches": "string"
+  },
+  {
+   "act": "string",
+   "blurb": "string",
+   "dispatches_to": "null",
+   "fields": {
+    "budget": {
+     "description": "string",
+     "type": "string"
+    },
+    "event": {
+     "description": "string",
+     "required": "boolean",
+     "type": "string"
+    },
+    "handle": {
+     "description": "string",
+     "type": "string"
+    },
+    "harness": {
+     "description": "string",
+     "type": "string"
+    }
+   },
+   "teaches": "string"
+  },
+  {
+   "act": "string",
+   "blurb": "string",
+   "dispatches_to": "null",
+   "fields": {
+    "event": {
+     "description": "string",
+     "required": "boolean",
+     "type": "string"
+    },
+    "handle": {
+     "description": "string",
+     "type": "string"
+    },
+    "text": {
+     "description": "string",
+     "required": "boolean",
+     "type": "string"
+    }
+   },
+   "teaches": "string"
   }
  ],
  "credential": {

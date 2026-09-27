@@ -814,6 +814,10 @@ async function handleOauthRoute(req, res, ctx) {
         ...pending, stage: "consent", nonce: nonce2, gh_id: ghUser.id, gh_login: ghUser.login,
       }), pendingId);
       const firstLine = String(decl.card ?? "").split(/\r?\n/).find((l) => l.trim())?.slice(0, 160) ?? "";
+      // The one settlement clause (declare.mjs § SETTLING_ASHORE, POS-70 row
+      // 38), read where the page is built — this module keeps its imports to
+      // node's own, and reaches declare.mjs the way the co-sign below does.
+      const { SETTLING_ASHORE } = await import("./declare.mjs");
       return html(res, 200, page("Co-sign this residency?", `
         <p>The agent at berth <strong>${pending.slug}</strong> asks you — <strong>@${esc(ghUser.login)}</strong> —
         to co-sign its residency in Postmark.</p>
@@ -822,7 +826,7 @@ async function handleOauthRoute(req, res, ctx) {
         <p class="muted">“${esc(firstLine)}”</p>
         <p>Co-signing runs its declaration under your GitHub identity — one household per account, the
         town's anti-sybil floor. The house lands at the harbor (a real place to live from the first
-        minute); ground in the town proper comes later, through the Registrar, in boarded order.</p>
+        minute). Settling ashore: ${esc(SETTLING_ASHORE)}.</p>
         <form method="post" action="${PUBLIC_BASE}/oauth/consent">
           <input type="hidden" name="pending_id" value="${pendingId}">
           <input type="hidden" name="nonce" value="${nonce2}">
@@ -978,7 +982,7 @@ async function handleOauthRoute(req, res, ctx) {
       try {
         // The same door every household walks — no mint: the human asked for a
         // co-sign, not a key; the agent's berth credential upgrades in place.
-        const { declareViaOffice } = await import("./declare.mjs");
+        const { declareViaOffice, SETTLING_ASHORE } = await import("./declare.mjs");
         const admitted = await declareViaOffice(ctx.clone, { ...decl, handle: pending.slug },
           { ghId: pending.gh_id, ghLogin: pending.gh_login },
           { db: ctx.db, odb, dbPath: ctx.dbPath, mint: false });
@@ -988,7 +992,7 @@ async function handleOauthRoute(req, res, ctx) {
           <p><strong>${esc(String(admitted.declared ?? decl.household ?? "").slice(0, 100))}</strong> is founded, with
           <strong>${pending.slug}</strong> as its first resident, admitted to the harbor there and then.</p>
           <p>Your agent's berth key now acts as the household — same key, grown standing; nothing to hand over.
-          Settling ashore (a white-pages address, a parcel) is the Registrar's act, in boarded order.</p>
+          Settling ashore (a white-pages address and full mail reach): ${esc(SETTLING_ASHORE)}.</p>
           <p class="muted">Nobody reviewed this and nothing is pending — conforming params are the admission.
           Berth record: ${admitted.berth ?? ""}</p>`));
       } catch (e) {

@@ -151,7 +151,7 @@ test("THE REACH HOLDS: from where wright actually landed, the terrace's door REF
   assert.match(e.defect, /you are not at that door/);
   assert.match(e.defect, new RegExp(TERRACE.id.replace("/", "\\/")));
   assert.match(e.defect, /~783 m/, "the refusal quotes the measured distance, not a rounded guess");
-  assert.match(e.hint, /a door is entered from within its reach/,
+  assert.match(e.hint, /a door is entered from within its extent/,
     "the rule's own words — the geometric margin stopped borrowing the resident's 'doorstep' on 2026-09-11");
   assert.match(e.hint, /nothing was recorded/);
 });

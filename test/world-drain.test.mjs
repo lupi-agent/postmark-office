@@ -32,8 +32,18 @@ import { openDynamic } from "../src/dynamic-store.mjs";
 import { markRecord } from "../src/mark-record.mjs";
 import {
   ACTION_AMEND, ACTION_LEAVE, ACTION_WITHDRAW, CLASS_FRAME, CLASS_MARK, WORLD_ANCHOR,
-  appendJournal, filedPathOfAt, journalHead, pathFor, readJournal, resetPathIndex,
+  filedPathOfAt, journalHead, pathFor, readJournal, resetPathIndex,
 } from "../src/world-journal.mjs";
+// ── THE ROWS ARE SEEDED, NOT WRITTEN BY A DOOR (G1 / POS-156) ───────────────
+//
+// This suite's whole subject is THE DRAIN. G1 deleted the general journal
+// INSERT -- the write path writes the RECORD now -- so no door fills this table
+// any more, and the population the drain reads is PUT THERE by this file, in
+// the office's own row shape. The drain itself is untouched by G1 and its
+// retirement is G2's (`world2-acts.mjs`: "its replacement exists
+// (state-log-from-store.mjs); the retirement is G2's"), so it is live code owed
+// exactly these tests. Nothing below claims a door wrote these rows.
+import { seedJournalRow } from "./journal-seed.mjs";
 import { DRAIN_CURSOR, drain, drainStatus, fileFramer, logLine, planDrain, writeJournalWindow } from "../src/world-drain.mjs";
 
 const sweep = (d) => { try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch { /* litter */ } };
@@ -101,7 +111,7 @@ const leave = (db, { id, household = "alpha", kind = "sited", at = { x: 5, y: 5 
   witnesses = { source: "presence", list: [{ handle: "gamma", anchor: "the-town/town-square", dx: 8, dy: 0 }] } }) => {
   const by = String(id).split("/")[0];
   const slug = String(id).split("/").slice(1).join("/");
-  return appendJournal(db, {
+  return seedJournalRow(db, {
     crossing, actor: by, household, action, object: id, cls: CLASS_MARK,
     at: standing, witnesses,
     payload: action === ACTION_WITHDRAW
@@ -135,7 +145,7 @@ function seedJournal(dbPath) {
     leave(db, { id: "alpha/first-draft", body: "the first thing alpha said" });
     leave(db, { id: "beta/their-draft", household: "beta", body: "beta said a thing too" });
     leave(db, { id: "alpha/first-draft", action: ACTION_AMEND, body: "said better on reflection" });
-    appendJournal(db, {
+    seedJournalRow(db, {
       crossing: 145, actor: "alpha", household: "alpha", action: "enter",
       object: "the-town/town-square", cls: CLASS_FRAME,
       at: { anchor: "the-town/town-square", dx: 0, dy: -20 },

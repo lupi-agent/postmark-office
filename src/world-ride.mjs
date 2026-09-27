@@ -308,19 +308,47 @@ export function rideRefusal({ to, origin = null, service = null } = {}) {
  * the enter door's, because it is true of every ground that lends anything.
  * This function is only what a VEHICLE adds, and it is here rather than there so
  * that adding a second lending class costs a function and not an `if`.
+ *
+ * ⚑ WITH NO ORIGIN, MEASURE FROM THE STOP BEING KNOCKED AT (POS-161).
+ * `rideOrigin` folds an origin out of a RIDE, so on the terms call — `enter`
+ * without `accept`, where nobody has entered anything — it answers null and
+ * every distance and every minute answered null with it. That made the one
+ * answer a rider reads BEFORE deciding to board the one answer that could not
+ * tell them how far anything was. The stop they are knocking at is where they
+ * are standing, so it is the honest thing to measure from — and the office
+ * already says so a hundred lines down: `transportAt` has quoted ride times
+ * from the mark underfoot since § 11. Two answers at one wharf disagreed
+ * (a transport line offering the Pando landing at ~233 min, beside a ground
+ * block whose Pando row read null); now they do not.
+ *
+ * `your_origin` STAYS NULL, and that is not an oversight. An origin is a RIDE's
+ * concept — what a redeclared destination is measured from, what an exit
+ * deposits you at — and nobody has entered. `measured_from` is the separate,
+ * smaller fact: which stop these numbers were taken from. An instrument must
+ * say which thing it measured, so the block names it rather than leaving a
+ * reader to infer it from whichever stop is missing off the list.
  */
-export function vehicleGroundExtras({ service, entryStop = null, standingRide = null, nowMs = Date.now() } = {}) {
+export function vehicleGroundExtras({ service, entryStop = null, standingRide = null, nowMs = Date.now(), knockedAt = null } = {}) {
   const stops = stopsOfService(service);
   const vessel = vesselIdOf(service);
   const origin = rideOrigin({ entryStop, standingRide, nowMs }).stop;
-  const from = origin ? anchorOfStop(origin, service) : null;
+  // THE STOP THESE NUMBERS ARE TAKEN FROM: the origin when a ride's fold gives
+  // one, else the knocked stop when it is a stop this vehicle calls at. A mark
+  // on her ground that is NOT on the timetable measures nothing and keeps the
+  // nulls it has always had — `anchorOfStop` would answer null for it anyway,
+  // and a field naming a mark whose anchor was never used would be a worse
+  // answer than no field at all.
+  const measuredFrom = origin ?? (isVehicleStop(knockedAt, service) ? String(knockedAt) : null);
+  const from = measuredFrom ? anchorOfStop(measuredFrom, service) : null;
   const pace = Number(service?.pace);
   return {
-    // EVERY STOP BUT THE ONE YOU ARE BOUND FROM — her own berth included, since
-    // the ruling makes it the ride home. The filter is the refusal's own
-    // condition (`to === origin`) rather than a second rule beside it.
+    // EVERY STOP BUT THE ONE THESE NUMBERS ARE TAKEN FROM — her own berth
+    // included, since the ruling makes it the ride home. With an origin the
+    // filter is the refusal's own condition (`to === origin`) rather than a
+    // second rule beside it; with none it is that same sentence one step
+    // earlier, because you cannot ride to the stop you are knocking at.
     stops: stops
-      .filter((s) => s.markId !== origin)
+      .filter((s) => s.markId !== measuredFrom)
       .map((s) => {
         const d = from ? straightLineM(from, s.at) : null;
         const ms = d == null ? null : rideMillis(d, pace);
@@ -331,7 +359,49 @@ export function vehicleGroundExtras({ service, entryStop = null, standingRide = 
         };
       }),
     your_origin: origin,
+    measured_from: measuredFrom,
     standing_ride: standingRide ?? null,
+  };
+}
+
+/**
+ * THE RIDER'S OWN BLOCK — what you are in, how you got in, what stands, and how
+ * you get out. Pure over (vessel, service, acts, clock).
+ *
+ * ── WHY IT IS HERE AND NOT WHERE IT WAS (POS-169) ───────────────────────────
+ *
+ * This composition lived inside `world-apex.mjs § vehicleFrameExtras`, which
+ * gathers its three inputs from the store, the clone and the world fold and
+ * cannot be called without all three. That was survivable while the block had
+ * ONE reader — the frame block, which a resident meets by standing somewhere.
+ * `world { read: "ride" }` is a second reader, and a falsifier for it could not
+ * hand the decision a standing ride at all: `actsOfActor` reads Postgres, and
+ * `actsQuery` answers `null` for "the register was not asked", which lands as
+ * `[]`. A suite with no store could only ever have entered the ashore arm and
+ * reported green about the two arms it never reached.
+ *
+ * So the DECISION moves and the GATHERS stay. Both readers call this; neither
+ * owns the shape. One owner for the block, gathered twice.
+ *
+ * ONE INSTANT, THREADED. The three clock reads underneath (`arrivedNotice`,
+ * `depositAt`, and the stop distances' `rideOrigin`) took `Date.now()`
+ * separately where this block was composed before, so a block could in
+ * principle be assembled across a ride's own arrival and say two things about
+ * one moment. `nowMs` is one parameter and all three read it.
+ */
+export function rideBlockFrom({ vesselId, service = null, acts = [], nowMs = Date.now() } = {}) {
+  const { entryStop, standingRide } = rideStateFrom(acts, { vesselId });
+  const arrived = arrivedNotice(standingRide, nowMs);
+  const where = depositAt({ entryStop, standingRide, nowMs });
+  return {
+    vehicle: vesselId,
+    entered_via: entryStop,
+    ride: standingRide ?? null,
+    ...(arrived ? { arrived } : {}),
+    ...(service ? { can_ride_to: vehicleGroundExtras({ service, entryStop, standingRide, nowMs }).stops } : {}),
+    how_to_leave: where.stop
+      ? `world { do: "exit" } sets you down at ${where.stop}${where.arrived ? " — your ride has come due" : ", the stop you came in through, because no ride of yours has come due"}. Staying aboard is allowed; nothing shoves you off.`
+      : "world { do: \"exit\" } steps you out of her where she is. This office cannot say which stop you came in through, so it will not set you down anywhere you cannot prove you came from.",
   };
 }
 

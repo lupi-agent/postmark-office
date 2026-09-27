@@ -62,6 +62,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
+import { soloHouseIndex, soloHouseOf, isSolo } from "../../src/solo-adoption.mjs";
 
 /** The check name this writes into `claims.refusal_check` — the prefix `causeOf` splits on. */
 export const PARCEL_CAP_CHECK = "parcel-cap";
@@ -196,9 +197,91 @@ export function parcelCapLines({ refused = [], admitted = [] } = {}, law) {
   return lines;
 }
 
-/** Standing parcels per household, at this store. The grain is `marks.household`. */
-export async function heldParcelsByCred(q) {
+/**
+ * Standing parcels per household, at this store. The grain is `marks.household`.
+ *
+ * ── THE COUNT IS PER HOUSE, NOT PER SPELLING (POS-160 RULING 4) ─────────────
+ *
+ * `GROUP BY household` counts STRINGS. `marks.household` is written by
+ * `materialize.mjs § ownerHouseholdFor` out of `identities`, which carries
+ * whatever spelling the world repo's copy held when each row landed — measured
+ * 2026-09-22, 173 of 190 handles `gh:<id>` and 17 `hh:<slug>`, and
+ * umbraliminalis wearing both at once because a ledger re-key reached its first
+ * resident and not its other seven.
+ *
+ * So a house holding three parcels under three spellings counted as three
+ * households holding one each, and the cap — 3 per household — admitted a
+ * FOURTH. That is the cap's quietest possible failure: the claim is granted at
+ * the close with a receipt saying it was lawful, and the sweep refuses it twelve
+ * hours later, which is the exact gap (POS-98 box 4, the S71 instance) this
+ * whole file exists to have closed.
+ *
+ * THE STORE NEVER RE-SPELLS A ROW — three guards refuse it (022's retirement
+ * header) — so the fold happens HERE, on the way out: every spelling resolves
+ * through `household-deriver.mjs`, the office's one walk, to ONE house, and the
+ * counts are summed per house. A row the deriver cannot name keeps its own
+ * string as its key, unchanged and uncounted-with-anything: that is the
+ * refuse-rather-than-guess rule, and a `solo:` row genuinely is its own house.
+ *
+ * @param resolve `(household) => slug | null`, the deriver bound to the caller's
+ *                registry. Omitted, the counts are per RAW SPELLING exactly as
+ *                before — the pre-024 answer, which is only correct on a store
+ *                whose marks wear one spelling.
+ */
+export async function heldParcelsByCred(q, { resolve = null } = {}) {
   const { rows } = await q(
     "SELECT household, COUNT(*)::int AS n FROM marks WHERE kind = 'parcel' AND status = 'standing' GROUP BY household");
-  return new Map(rows.map((r) => [r.household, r.n]));
+  const held = new Map();
+  for (const r of rows) {
+    const slug = typeof resolve === "function" ? resolve(r.household) : null;
+    const key = slug ? `hh:${slug}` : r.household;
+    held.set(key, (held.get(key) ?? 0) + r.n);
+  }
+  return held;
+}
+
+/**
+ * The same fold, for the candidate side. `parcelCapRefusals` looks each
+ * candidate's `cred` up in the map above, so the two must be folded by the SAME
+ * rule or the lookup misses and every count reads zero — which would refuse
+ * nothing at all, the loudest wrong answer wearing the quietest code.
+ */
+export const credOf = (household, resolve = null) => {
+  const slug = typeof resolve === "function" ? resolve(household) : null;
+  return slug ? `hh:${slug}` : household;
+};
+
+// ── THE COUNT AFTER ADOPTION (POS-212) ──────────────────────────────────────
+//
+// POS-160 pinned it: "a `solo:` parcel is READ by the house and not COUNTED at
+// its cap" (test/household-spellings.test.mjs FALSIFIER 3d), because
+// `resolveHouse` answers `unknown` for a `solo:` key and this fold keys an
+// unknown spelling by its own string. Keemin's ruling (2026-09-23) closes the
+// gap in order: adopt first — the ceremony, then ONE batch — and COUNT AFTER.
+//
+// THE FLIP IS A STORE FACT, NOT A FLAG. `world2/tools/adopt-solo.mjs` writes one
+// `solo-counted` act after its last house commits; `soloCountedAt` reads it.
+// A flag is a setting that can be true on prod before the batch has run there,
+// and the count must never flip on a store that still holds unadopted `solo:`
+// parcels — that would refuse a resident's new parcel against holdings the
+// ruling said to grandfather first. An append-only act can exist only where the
+// batch ran, and nothing un-sets it.
+//
+// WHAT "COUNTED" MEANS: a `solo:<x>` row is folded into the ONE house whose
+// spelling set holds `solo:<x>` (`src/solo-adoption.mjs § soloHouseIndex`, the
+// inverse of the set #166's policy reads). A spelling no house holds, or two
+// houses hold, keeps its own string — refuse-rather-than-guess, as before.
+export { soloCountedAt } from "../../src/solo-adoption.mjs";
+
+/**
+ * `resolve` widened to fold `solo:` spellings into their house — the resolver
+ * `heldParcelsByCred` and `credOf` take once the count counts. PURE.
+ */
+export function countingSolo(resolve, registry, pins = {}) {
+  const idx = soloHouseIndex(registry, pins);
+  return (hh) => {
+    const slug = typeof resolve === "function" ? resolve(hh) : null;
+    if (slug) return slug;
+    return isSolo(hh) ? soloHouseOf(idx, hh) : null;
+  };
 }

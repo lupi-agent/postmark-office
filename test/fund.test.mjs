@@ -25,10 +25,12 @@ import { execFileSync } from "node:child_process";
 import { WHAT_THIS_BUYS } from "../src/funding.mjs";
 import { verifyUsdcPayment, INTAKE, USDC, TRANSFER_TOPIC, MIN_CONF } from "../src/usdc-witness.mjs";
 import { fundVerify, fundGuards, intakeDisclosure } from "../src/fund.mjs";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 
 // The aligned town engine — the same tip the door's parser is pinned to.
-const TOWN = "G:/postmark/seam-overnight/town-clone";
-const ENGINE = await import(`file:///${TOWN}/tools/stamp-mint.mjs`);
+const TOWN = townClone();
+const ENGINE = TOWN ? await import(townModuleUrl("tools", "stamp-mint.mjs")) : null;
+const SKIP = !TOWN && NO_TOWN;
 
 // ── a hand-built Base chain ─────────────────────────────────────────────────
 const pad32 = (addr) => "0x" + "0".repeat(24) + addr.replace(/^0x/, "").toLowerCase();
@@ -106,7 +108,7 @@ const caught = async (fn) => { try { await fn(); return null; } catch (e) { retu
 
 // ── THE WITNESS — its four checks, each driven into its refusal ─────────────
 
-test("the witness verifies exactly four things, and each one can refuse", async () => {
+test("the witness verifies exactly four things, and each one can refuse", { skip: SKIP }, async () => {
   // LAW (verify-usdc-payment.mjs, the operator's tool, ported): "this tool
   //      verifies exactly four things and names what it cannot see — 1. the tx
   //      exists on Base and SUCCEEDED (status 0x1), 2. it emits a USDC Transfer
@@ -144,7 +146,7 @@ test("the witness verifies exactly four things, and each one can refuse", async 
   assert.match((await verifyUsdcPayment({ txhash: "0xnope" })).refused, /not a transaction hash/);
 });
 
-test("an unreachable chain is DISCLOSED, never refused — a refusal would call a real payment fake", async () => {
+test("an unreachable chain is DISCLOSED, never refused — a refusal would call a real payment fake", { skip: SKIP }, async () => {
   // LAW `the-town/the-disclosure`: refuse or disclose absent inputs, never
   //     quietly substitute. A payment the town cannot SEE is not a payment that
   //     did not happen, and telling a patron otherwise is the one lie this door
@@ -157,7 +159,7 @@ test("an unreachable chain is DISCLOSED, never refused — a refusal would call 
 
 // ── THE DOOR — the happy path, and the three bounces ────────────────────────
 
-test("the happy path: a witnessed payment lands as a real pot-receipt row", async () => {
+test("the happy path: a witnessed payment lands as a real pot-receipt row", { skip: SKIP }, async () => {
   // LAW § 10: "Mint-at-entry, never at spend: a dollar mints (or doesn't)
   //           exactly once, when it crosses the seam."
   const town = seamTown({ pots: { ec2: { target_usd_per_epoch: 150 } }, gifts: [{ handle: "paz", n: 10 }] });
@@ -185,11 +187,11 @@ test("the happy path: a witnessed payment lands as a real pot-receipt row", asyn
     { pot: receipt.pot, usd: receipt.usd, from: receipt.from, ref: receipt.ref, rail: receipt.rail },
     { pot: "ec2", usd: 100, from: "paz", ref: `usdc:base:${HASH}`, rail: "usdc" },
   );
-  const { verifyStampLedger } = await import(`file:///${TOWN}/tools/stamp-verify.mjs`);
+  const { verifyStampLedger } = TOWN ? await import(townModuleUrl("tools", "stamp-verify.mjs")) : {};
   assert.equal(verifyStampLedger(town.repo).ok, true, "and the whole ledger still verifies");
 });
 
-test("the same hash twice BOUNCES — one dollar, one mint chance", async () => {
+test("the same hash twice BOUNCES — one dollar, one mint chance", { skip: SKIP }, async () => {
   // LAW § 10: "Mint-at-entry, never at spend: a dollar mints (or doesn't)
   //           exactly once, when it crosses the seam."
   // ECONOMY-DIALS law_side.keeping._exclusions: "a receipt ref is unique
@@ -226,7 +228,7 @@ test("the same hash twice BOUNCES — one dollar, one mint chance", async () => 
   assert.equal(refs.length, 1);
 });
 
-test("a payment past the pot's posted need BOUNCES, and the bounce names the headroom (D5)", async () => {
+test("a payment past the pot's posted need BOUNCES, and the bounce names the headroom (D5)", { skip: SKIP }, async () => {
   // LAW D5 (Keemin, 2026-08-21): "intake refuses dollars past a pot's posted
   //         target, mechanically (recording tool / door bounce), except pots
   //         explicitly marked uncapped. Conversion's cap-at-1 stays as backstop."
@@ -257,7 +259,7 @@ test("a payment past the pot's posted need BOUNCES, and the bounce names the hea
   assert.equal(ok.headroom_after, 0);
 });
 
-test("a pot marked uncapped is D5's own exception — a standing box takes what arrives", async () => {
+test("a pot marked uncapped is D5's own exception — a standing box takes what arrives", { skip: SKIP }, async () => {
   // LAW D5: "... except pots explicitly marked uncapped."
   const town = seamTown({ pots: { box: { target_usd_per_epoch: null, uncapped: true } }, gifts: [{ handle: "paz", n: 10 }] });
   const rec = await call(town, { txhash: HASH, pot: "box", handle: "paz" }, {
@@ -270,7 +272,7 @@ test("a pot marked uncapped is D5's own exception — a standing box takes what 
 
 // ── the guards that answer BEFORE the chain is consulted ────────────────────
 
-test("the door refuses an unknown pot, a stranger, and the treasury — before touching the chain", async () => {
+test("the door refuses an unknown pot, a stranger, and the treasury — before touching the chain", { skip: SKIP }, async () => {
   // LAW § 8: a payer earns holo "only as a town household"; and the reserved
   //     `treasury` pot "takes direct-to-town receipts, never stakes or closes".
   const town = seamTown({ pots: { ec2: {} }, gifts: [{ handle: "paz", n: 10 }] });
@@ -293,7 +295,7 @@ test("the door refuses an unknown pot, a stranger, and the treasury — before t
   assert.equal(consulted, 0, "none of these needed the chain — the patron learns the answer first");
 });
 
-test("a draft pot takes no dollars — opening one is the founder's word", async () => {
+test("a draft pot takes no dollars — opening one is the founder's word", { skip: SKIP }, async () => {
   const town = seamTown({ pots: { draft: { status: "draft" } }, gifts: [{ handle: "paz", n: 10 }] });
   const g = fundGuards({
     engine: ENGINE, entries: entriesOf(town.repo), clone: town.repo,
@@ -304,7 +306,7 @@ test("a draft pot takes no dollars — opening one is the founder's word", async
   assert.match(g.defect, /is draft, not open/);
 });
 
-test("THE CENTS: whole dollars are recorded, the remainder is disclosed, sub-dollar is refused", async () => {
+test("THE CENTS: whole dollars are recorded, the remainder is disclosed, sub-dollar is refused", { skip: SKIP }, async () => {
   // The ledger's receipt grammar is `usd: [1-9]\d*` — whole dollars. USDC is not.
   // This is the v0 answer and it is FLAGGED, not ruled: record the floor, say
   // out loud what the cents did, and never silently swallow either.
@@ -327,7 +329,7 @@ test("THE CENTS: whole dollars are recorded, the remainder is disclosed, sub-dol
   assert.match(dust.hint, /it is not lost/, "even a refusal about dust tells the patron where their money went");
 });
 
-test("every answer this door gives carries the two sentences the money moment owes", async () => {
+test("every answer this door gives carries the two sentences the money moment owes", { skip: SKIP }, async () => {
   // Keemin's word (seam night): every holo surface carries "a record of
   // contribution, not a promise of profit"; and the scope-extension's second
   // line for money surfaces.
@@ -354,7 +356,7 @@ const POT_ADDRESS = "0x182085453b5bc2c8cf4cd6f712102cc3dc485fca";
 const OTHER_POT_ADDRESS = "0xc0ffee0000000000000000000000000000000002";
 const MAP = new Map([[POT_ADDRESS, "ec2"], [OTHER_POT_ADDRESS, "soup"]]);
 
-test("the witness reports WHICH address a tx paid, and the pot that address names", async () => {
+test("the witness reports WHICH address a tx paid, and the pot that address names", { skip: SKIP }, async () => {
   // LAW (deploy/intake-addresses.json, verbatim): "WHICH POT A USDC ARRIVAL
   //     PAYS, read off the address it landed on. An ERC-20 transfer carries no
   //     memo, so the ONLY way the chain can name a pot is for the pot to have
@@ -386,7 +388,7 @@ test("the witness reports WHICH address a tx paid, and the pot that address name
   assert.match(foreign.refused, /no USDC Transfer to the town's intake address/);
 });
 
-test("a tx paying TWO town intake addresses is refused, not resolved in favour of either", async () => {
+test("a tx paying TWO town intake addresses is refused, not resolved in favour of either", { skip: SKIP }, async () => {
   // LAW `the-town/the-disclosure`: refuse or disclose absent inputs, never
   //     quietly substitute. Two of the town's addresses paid in one tx is two
   //     different answers to "which pot did you mean", and choosing between
@@ -401,7 +403,7 @@ test("a tx paying TWO town intake addresses is refused, not resolved in favour o
   assert.match(both.refused, /it will not choose/);
 });
 
-test("THE GRANDFATHER RULE: a claim on a mapped pot still verifies against the SHARED address", async () => {
+test("THE GRANDFATHER RULE: a claim on a mapped pot still verifies against the SHARED address", { skip: SKIP }, async () => {
   // LAW (deploy/intake-addresses.json `_never`, verbatim): "Do NOT map the
   //     shared intake address to a pot to make the queue go away. That would
   //     make the office decide where a stranger's money went, which is the one
@@ -435,7 +437,7 @@ test("THE GRANDFATHER RULE: a claim on a mapped pot still verifies against the S
   assert.equal(own.to_pot, "ec2", "the chain named the pot, and it agreed with the claim");
 });
 
-test("THE CROSS CASE: paying pot A's address while claiming pot B bounces by name", async () => {
+test("THE CROSS CASE: paying pot A's address while claiming pot B bounces by name", { skip: SKIP }, async () => {
   // LAW (deploy/intake-addresses.json, verbatim): "From that moment the chain
   //     itself names the pot". The grandfather union is deliberately NOT
   //     symmetric — no published instruction ever pointed a soup-payer at ec2's
@@ -460,7 +462,7 @@ test("THE CROSS CASE: paying pot A's address while claiming pot B bounces by nam
     "a bounced cross-claim writes no row");
 });
 
-test("the money moment publishes the POT'S address, derived from the map and hardcoded nowhere", async () => {
+test("the money moment publishes the POT'S address, derived from the map and hardcoded nowhere", { skip: SKIP }, async () => {
   // LAW (deploy/intake-addresses.json `_how_to_use_it`, verbatim): "When the
   //     founder mints a per-pot intake address, add one row per pot here (and
   //     only then)."
@@ -479,7 +481,7 @@ test("the money moment publishes the POT'S address, derived from the map and har
     assert.equal(a[k], b[k], `${k} is one copy, not one per pot`);
 });
 
-test("a pot the map names TWICE publishes NO address — never a guessed one", () => {
+test("a pot the map names TWICE publishes NO address — never a guessed one", { skip: SKIP }, () => {
   // LAW `the-town/the-disclosure`: refuse or disclose absent inputs, never
   //     quietly substitute. Two addresses for one pot cannot happen from the
   //     file's own instructions ("add one row per pot here"), which is exactly
@@ -494,7 +496,7 @@ test("a pot the map names TWICE publishes NO address — never a guessed one", (
   assert.equal(d.caption, "a record of contribution, not a promise of profit");
 });
 
-test("THE ADDRESS LIVES IN THE MAP AND NOWHERE ELSE in the office's source", () => {
+test("THE ADDRESS LIVES IN THE MAP AND NOWHERE ELSE in the office's source", { skip: SKIP }, () => {
   // LAW (deploy/intake-addresses.json `_how_to_use_it`, verbatim): "add one row
   //     per pot here (and only then)". A second copy of a per-pot address in a
   //     source file is a second place that can drift, on the surface where

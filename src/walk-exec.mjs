@@ -22,7 +22,7 @@ import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { penCommit } from "./write.mjs";
-import { openDynamic, singleLogEnabled } from "./dynamic-store.mjs";
+import { singleLogEnabled } from "./dynamic-store.mjs";
 import { CLASS_MOVE, appendActFlipped, appendJournal, laneFlipped, settleShadowPens } from "./world-journal.mjs";
 import { departurePace } from "./world-classes.mjs";
 
@@ -123,34 +123,40 @@ async function main() {
   if (singleLogEnabled()) {
     const { departures: dep, unrecognized: unrec } = parseWalkLedger(withThisWalk);
     const mine = dep.filter((d) => d.handle === p.handle).pop();
-    const db = openDynamic();
     let seq = null;
-    let flipped = false;
     const entry = {
       crossing: at, actor: p.handle, action: "walk", object: p.targetMarkId ?? null,
       cls: CLASS_MOVE, at: null, witnesses: null,
       payload: { ledger: LEDGER_NAME, lines: [line], toward: p.toward, pace },
       effect: "the walk is declared; the record receives it at the save",
     };
-    try {
+    {
       // LANE THREE OF THE PEN FLIP on the flag-off arm (W2_PEN=walk; runbook C3):
       // here the journal IS the 1.0 pen, so appendActFlipped's own ordering —
       // Postgres first, awaited, the journal row after — is the whole shape.
       // An unreachable pen is the ruled refusal and nothing was written.
-      if (laneFlipped("walk")) {
-        try { const row = await appendActFlipped(db, entry); seq = row.seq; flipped = true; }
-        catch (e) {
-          if (e?.name === "PenUnreachableError")
-            return err(503, e.message, "this lane's pen is the office's record (W2_PEN=walk); when it cannot be reached the door refuses rather than writing anywhere else — you are exactly where you were, and the walk is safe to declare again");
-          throw e;
-        }
-      } else {
-        seq = appendJournal(db, entry).seq;
+      // ── BOTH ARMS REFUSE NOW (G1 / POS-156, RULING 3) ───────────────────
+      //
+      // The unflipped arm was `appendJournal(db, entry).seq` — a sqlite row
+      // written here and a Postgres copy queued behind it. The sqlite row is
+      // gone, so that call awaits the record and throws exactly as the flipped
+      // one does, and this door's refusal is one sentence for both. It names no
+      // flag: `W2_PEN` decides which function writes, not whether the record is
+      // the record.
+      try {
+        const row = laneFlipped("walk")
+          ? await appendActFlipped(null, entry)
+          : await appendJournal(null, entry);
+        seq = row.actId;   // the record's own sequence; there is no sqlite rowid left
+      } catch (e) {
+        if (e?.name === "PenUnreachableError")
+          return err(503, e.message, "this door's pen is the office's record; when it cannot be reached the door refuses rather than writing anywhere else — you are exactly where you were, and the walk is safe to declare again");
+        throw e;
       }
-    } finally { try { db.close(); } catch { /* already gone */ } }
+    }
     return answer({ line, at, position: positionAt(mine, at), commit: null, pushed: false, push_error: null,
                     pace, ...(dialFallback ? { dial_fallback: true } : {}),
-                    log: flipped ? "acts" : "journal", seq,
+                    log: "acts", seq,
                     settles: "at the save — this walk spends no commit of its own (WORLD_SINGLE_LOG)",
                     ledger_lines: dep.length, ledger_unrecognized: unrec.length });
   }

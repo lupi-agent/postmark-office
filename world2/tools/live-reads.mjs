@@ -115,10 +115,41 @@
 //   era-then-id vs by-instant    0 of 73
 //   journal era, id vs instant   0 of 72 (786 of 786 rows monotone in `at`)
 //
-// So the order is ERA FIRST, then row id inside each era — which restores the
-// record's own append order, because each era's rows were inserted in that
-// era's file order. `DEPARTURE_ORDER_SQL` is that clause and the endpoints use
-// it; `departureRecords` asserts it was applied rather than trusting the caller.
+// So the order is ERA FIRST — and inside the non-ledger era, THE INSTANT, then
+// row id. `DEPARTURE_ORDER_SQL` is that clause and the endpoints use it;
+// `departureRecords` asserts it was applied rather than trusting the caller.
+//
+// ── THE INSTANT KEY (ruled 2026-09-21, POS-154) ─────────────────────────────
+//
+// "A departure's order is its INSTANT, never its insertion id." The same order
+// the runbook's D6 replay already uses for the holding rows (`at, id`,
+// POS-153/162) — one law, not a new one.
+//
+// WHAT FORCED IT. `acts` held no departure between 2026-08-27T09:57:00.374Z and
+// 2026-08-31T03:35:20.069Z; 438 walks lived only in `dynamic.db/movements`, and
+// `acts.id` is `GENERATED ALWAYS AS IDENTITY` with that window's ids long spent
+// on the 729 other acts that DID land there. A backfilled row can therefore
+// only be APPENDED, above every walk September filed — and under `id` alone
+// that made an 08-29 walk the governing record for the 41 of 52 actors in the
+// gap who have walked since. No guard could see it: the rows ARE id-ascending.
+//
+// WHY IT IS SAFE. A no-op on the record as it stands, measured twice, in two
+// eras: the `world2_dev` table above (era-then-id vs by-instant, 0 of 73), and
+// POS-154 over prod's 2,397 non-ledger departure acts — zero instant inversions
+// among 2,396 adjacent id-ascending pairs, zero governing departures moved.
+//
+// WHY THE `CASE`. The ledger era keeps `acts.id` alone, because it is the one
+// era whose file order is genuinely not its instants: the 08-08 sailing filed
+// every passenger at 18:00:00.000Z and those lines were appended after walks
+// stamped 18:16. Sorting that era by instant would silently re-decide which leg
+// governs a resident — the exact harm this whole section exists to prevent, in
+// the other direction. `world2-live-reads.test.mjs § latest wins is LAST IN
+// ARRAY ORDER` is that case, and it stays green because of the `CASE`.
+//
+// ONE OWNER. The keys below are the single description of this order: the SQL
+// clause is built from their `sql`, and `assertDepartureOrder` is driven by
+// their `of`. A second copy of an ordering is how a guard comes to bless an
+// order the query never asked for.
 //
 // ── WHAT IS **NOT** HERE, AND WHY (the honest list) ─────────────────────────
 //
@@ -337,8 +368,42 @@ export function publicWalker(handle, p) {
 // happened on this falsifier's first run against `world2_dev`, and the guard
 // below is what said so. A qualified name is always an expression against the
 // table, so it cannot be captured by an alias.
-export const DEPARTURE_ORDER_SQL =
-  "ORDER BY ((payload->>'_ledger') IS NULL), acts.id";
+/** `acts.at` as a number, whichever face the driver hands it in (pg gives a Date). */
+const instantOf = (row) => {
+  const t = row?.at instanceof Date ? row.at.getTime() : Date.parse(String(row?.at));
+  return Number.isFinite(t) ? t : null;
+};
+
+/**
+ * THE ONE DESCRIPTION OF THE DEPARTURE ORDER — read by the SQL and by the guard.
+ *
+ * `of` answers `null` where the SQL answers NULL, and a NULL on both sides of a
+ * comparison is a TIE that falls through to the next key, which is what
+ * Postgres does. The mixed case (one NULL, one not) cannot arise past the era
+ * key, because that key is what separates the rows the `CASE` blanks.
+ */
+export const DEPARTURE_ORDER_KEYS = Object.freeze([
+  Object.freeze({
+    name: "era",
+    sql: "((payload->>'_ledger') IS NULL)",
+    // FALSE sorts before TRUE, so ledger-sourced rows come first — as they must.
+    of: (row) => (row?.payload?._ledger ? 0 : 1),
+  }),
+  Object.freeze({
+    name: "instant",
+    sql: "(CASE WHEN payload->>'_ledger' IS NULL THEN acts.at END)",
+    of: (row) => (row?.payload?._ledger ? null : instantOf(row)),
+  }),
+  Object.freeze({
+    name: "id",
+    sql: "acts.id",
+    of: (row) => { const n = Number(row?.id); return Number.isFinite(n) ? n : null; },
+  }),
+]);
+
+const orderSqlOf = (keys) => `ORDER BY ${keys.map((k) => k.sql).join(", ")}`;
+
+export const DEPARTURE_ORDER_SQL = orderSqlOf(DEPARTURE_ORDER_KEYS);
 
 export const DEPARTURE_ACTIONS = Object.freeze(["legacy:departure", "walk"]);
 
@@ -500,27 +565,43 @@ export function departureRecords(rows, { strict = true } = {}) {
   return { records, refusals, eras };
 }
 
+/** What a break in each key means, in that key's own words. */
+function orderViolation(name, row, prev) {
+  if (name === "era") {
+    return `departure rows are not in the record's append order: a ledger-sourced act (${row?.id}) follows a `
+      + `journal-sourced one. Query with live-reads.DEPARTURE_ORDER_SQL — ORDER BY id alone puts the `
+      + `oldest era last and hands 44 of 73 residents a governing leg from July.`;
+  }
+  if (name === "instant") {
+    return `departure rows are not instant-ascending within the non-ledger era `
+      + `(act ${row?.id} at ${row?.at instanceof Date ? row.at.toISOString() : row?.at} after act ${prev?.id}). `
+      + `Query with live-reads.DEPARTURE_ORDER_SQL — a backfilled act carries an early instant and a late id, `
+      + `so ORDER BY acts.id alone files it last and hands its actor a governing leg from inside the hole (POS-154).`;
+  }
+  return `departure rows are not id-ascending within their era (${row?.id} after ${prev?.id})`;
+}
+
 /**
- * The order guard. Ledger-sourced rows must come first, and ids must ascend
- * inside each era — which is what restores each era's own file order.
+ * The order guard — driven by `DEPARTURE_ORDER_KEYS`, so it can only ever
+ * assert the order the query actually asked for.
+ *
+ * Asserted rather than assumed, because the trap is silent: an unordered read
+ * returns rows, in an order, with no symptom a caller could see.
  */
-export function assertDepartureOrder(rows) {
-  let sawJournalEra = false;
-  let lastId = -Infinity;
+export function assertDepartureOrder(rows, keys = DEPARTURE_ORDER_KEYS) {
+  let prev = null;
   for (const row of rows) {
-    const isLedger = Boolean(row?.payload?._ledger);
-    if (isLedger && sawJournalEra) {
-      throw new Error(
-        `departure rows are not in the record's append order: a ledger-sourced act (${row.id}) follows a ` +
-        `journal-sourced one. Query with live-reads.DEPARTURE_ORDER_SQL — ORDER BY id alone puts the ` +
-        `oldest era last and hands 44 of 73 residents a governing leg from July.`);
+    const tuple = keys.map((k) => k.of(row));
+    if (prev) {
+      for (let i = 0; i < keys.length; i++) {
+        const a = prev.tuple[i], b = tuple[i];
+        if (a == null || b == null) continue;   // NULL on both sides is a tie in SQL too
+        if (b > a) break;                       // this key ascends: the row is in order
+        if (b < a) throw new Error(orderViolation(keys[i].name, row, prev.row));
+        // equal — fall through to the next key, exactly as the clause does
+      }
     }
-    if (!isLedger && !sawJournalEra) { sawJournalEra = true; lastId = -Infinity; }
-    const id = Number(row.id);
-    if (Number.isFinite(id)) {
-      if (id < lastId) throw new Error(`departure rows are not id-ascending within their era (${id} after ${lastId})`);
-      lastId = id;
-    }
+    prev = { tuple, row };
   }
 }
 
@@ -1033,8 +1114,18 @@ export function occupantsOf(occupancy) {
  * backfill's ledger rows were inserted after the journal's. Today `acts` holds
  * ONLY ledger-sourced passages (AB-P2's 158), so the clause is a no-op — which
  * is exactly when it is cheapest to get right.
+ *
+ * IT NO LONGER TAKES THE INSTANT KEY, and the narrowing is deliberate (POS-154,
+ * 2026-09-21). This constant used to BE `DEPARTURE_ORDER_SQL`, so the departure
+ * ruling would have ridden into the passage read by alias — and nobody measured
+ * passages. A crossing's enter/exit acts have a live era as well as a ledger
+ * one, so the `CASE` would begin ordering real rows by instant on the strength
+ * of a ruling that was about walks. It takes the same keys MINUS the instant,
+ * which is byte-for-byte the clause this read has always carried; re-uniting
+ * them is a measurement and a ruling of its own.
  */
-export const PASSAGE_ORDER_SQL = DEPARTURE_ORDER_SQL;
+export const PASSAGE_ORDER_KEYS = Object.freeze(DEPARTURE_ORDER_KEYS.filter((k) => k.name !== "instant"));
+export const PASSAGE_ORDER_SQL = orderSqlOf(PASSAGE_ORDER_KEYS);
 
 export function passageRecords(rows, { strict = true } = {}) {
   const passages = [];

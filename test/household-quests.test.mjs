@@ -24,11 +24,13 @@ import { DatabaseSync } from "node:sqlite";
 import { SCHEMA } from "../src/schema.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { questsRead } from "../src/household-stamps.mjs";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 
 // A real town checkout — the office imports the town's own board rule live,
 // exactly as quests.test.mjs does, so "today" is the town's day and not ours.
-const TOWN = "G:/Wright-HQ/postmark";
-const { townDay } = await import(`file:///${TOWN}/tools/quest-progress.mjs`);
+const TOWN = townClone();
+const { townDay } = TOWN ? await import(townModuleUrl("tools", "quest-progress.mjs")) : {};
+const SKIP = !TOWN && NO_TOWN;
 
 const REGISTRY = JSON.stringify({
   version: 1,
@@ -43,7 +45,11 @@ const dir = mkdtempSync(join(tmpdir(), "pm-hh-quests-"));
 // THE TWO-RESIDENT HOUSEHOLD, and the two must differ or the test proves
 // nothing: `architect` sorts first and has done nothing today; `wright` is the
 // one who wrote a letter and the one the caller names.
-const day = townDay();
+// `townDay` is the town's own, so with no checkout there is nobody to ask. The
+// whole fixture below is built from it, and every case here is skipped in that
+// state — so the fallback is a placeholder nothing reads, never a second
+// opinion about what day it is.
+const day = townDay ? townDay() : "1970-01-01";
 const db = new DatabaseSync(join(dir, "quests.db"));
 db.exec(SCHEMA);
 const put = db.prepare("INSERT INTO meta VALUES (?, ?)");
@@ -65,27 +71,27 @@ const KEY = { household: "keeminlee", handles: new Set(["architect", "wright"]) 
 const CTX = { db, meta: { quest_registry: REGISTRY, quest_day: day }, clone: TOWN, asOf: "test" };
 const send = (board) => (board.quests ?? []).find((q) => q.id === "correspond-send");
 
-test('the named resident gets THEIR board — handle at the top level', async () => {
+test('the named resident gets THEIR board — handle at the top level', { skip: SKIP }, async () => {
   const answer = await householdApex({ read: "quests", handle: "wright" }, KEY, CTX);
   assert.equal(answer.of, "wright", "the board answers for the resident who was named");
   assert.equal(send(answer).progress, 1, "wright wrote one letter today");
   assert.deepEqual(send(answer).counted, ["errant"], "and the board names who — the town door's own answer");
 });
 
-test('the named resident gets THEIR board — handle inside the envelope', async () => {
+test('the named resident gets THEIR board — handle inside the envelope', { skip: SKIP }, async () => {
   const answer = await householdApex({ read: "quests", args: { handle: "wright" } }, KEY, CTX);
   assert.equal(answer.of, "wright");
   assert.equal(send(answer).progress, 1);
 });
 
-test('the OTHER resident is still reachable by name — the fix is not a new hard-coding', async () => {
+test('the OTHER resident is still reachable by name — the fix is not a new hard-coding', { skip: SKIP }, async () => {
   const answer = await householdApex({ read: "quests", handle: "architect" }, KEY, CTX);
   assert.equal(answer.of, "architect");
   assert.equal(send(answer).progress, 0, "architect has written nobody today");
   assert.deepEqual(send(answer).counted, []);
 });
 
-test("a bare call on a several-resident key ASKS rather than picking — and says where the pots still are", async () => {
+test("a bare call on a several-resident key ASKS rather than picking — and says where the pots still are", { skip: SKIP }, async () => {
   const answer = await householdApex({ read: "quests" }, KEY, CTX);
   assert.equal(answer.error, "bounce");
   assert.equal(answer.code, 422);
@@ -97,14 +103,14 @@ test("a bare call on a several-resident key ASKS rather than picking — and say
   assert.match(answer.hint, /read: "fund"/, "and so is the money read");
 });
 
-test("a single-resident key still infers, exactly as the schema promises", async () => {
+test("a single-resident key still infers, exactly as the schema promises", { skip: SKIP }, async () => {
   const solo = { household: "solo", handles: new Set(["wright"]) };
   const answer = await householdApex({ read: "quests" }, solo, CTX);
   assert.equal(answer.of, "wright");
   assert.equal(send(answer).progress, 1);
 });
 
-test("questsRead takes a HANDLE, not a key — the guess has nowhere to grow back from", async () => {
+test("questsRead takes a HANDLE, not a key — the guess has nowhere to grow back from", { skip: SKIP }, async () => {
   // The type change IS the guard. Handed the key it used to take, the read can
   // no longer find a resident in it at all: there is no `handles` to index [0]
   // of, so a regression that reverted the call site would fail loudly here

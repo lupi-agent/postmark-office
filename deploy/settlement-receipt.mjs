@@ -104,6 +104,14 @@ const store = readJson(env("SETTLEMENT_STORE_JSON"));
 // the step necessary.
 const registry = readJson(env("SETTLEMENT_REGISTRY_JSON"));
 
+// POS-155. `--check` writes a verdict and `--write` writes a report; both land
+// here through the same file, and `STATE_LOG_MODE` is what says which one this
+// is. Read as a plain string with no default: an empty mode on a store crossing
+// means the step did not run, and inventing `sqlite` for it would put a word on
+// the receipt for a pen that never moved.
+const stateLog = readJson(env("SETTLEMENT_STATE_LOG_JSON"));
+const STATE_LOG_MODE = env("SETTLEMENT_STATE_LOG_MODE") || null;
+
 // Read once, from both places the fold's sentence reaches this side — the
 // quarantined rows' `detail` and a fold refusal's `cause`. See `refused` below.
 const refused = refusedMarks(sweep, refusal);
@@ -311,6 +319,71 @@ const receipt = {
         sketchbooks_cleared: store.sketchbooks_cleared ?? null,
       }
     : { ran: false, reason: "the store write-down did not run for this crossing" },
+
+  // THE ARCHIVE'S EVENT LOG, AND WHETHER THIS CROSSING WROTE IT (POS-155).
+  //
+  // On the receipt rather than only in a log line, for the reason the whole
+  // lane exists: the act journal `STATE/log/<c>.journal.jsonl` went dark at the
+  // swap on 2026-09-11 and NOTHING SAID SO. Eleven days of crossings published
+  // green receipts over an archive that had stopped being written, because no
+  // channel on the receipt had a word for it. A hole nobody can see on the
+  // instrument is a hole nobody finds.
+  //
+  // `mode` is which pen ran — `store` wrote, `sqlite` only looked — and it is
+  // first because every other field here means something different under each.
+  // `clean` is the CHECK's verdict and is null under `store`, where there is
+  // nothing to check against: the write is the answer.
+  //
+  // `would_write` is the size of the hole, in lines, and it is the number to
+  // read while the default is `sqlite`. A `clean: false` with `absent` against
+  // every crossing and `would_write: 38` is the archive saying exactly how much
+  // of itself is missing this window.
+  state_log: stateLog
+    ? (stateLog.refused
+        ? { ran: true, mode: STATE_LOG_MODE, refused: stateLog.refused, detail: stateLog.detail ?? null }
+        : {
+            ran: true,
+            mode: STATE_LOG_MODE,
+            // The CANDLE window this crossing closed, and the FERRY crossing
+            // values its acts fell in. Both, because they are two clocks and
+            // the receipt is the one place a reader can see that they differ:
+            // window 204's acts land in files 203 and 204, and a receipt
+            // naming only the window would read as though one file were
+            // missing. (`state-log-write.mjs § WINDOW_BOUNDARY`.)
+            window: stateLog.window ?? null,
+            files: (stateLog.crossings ?? stateLog.windows ?? []).map((c) => c.crossing),
+            clean: STATE_LOG_MODE === "store" ? null : (stateLog.clean ?? false),
+            // Under `store`: what was written and committed. `state_commit`
+            // null with lines written is the idempotent case — the same bytes
+            // were already there — and is not a failure.
+            lines: (stateLog.windows ?? []).reduce((n, c) => n + (c.lines ?? 0), 0) || null,
+            state_commit: stateLog.state_commit ?? null,
+            // Under `sqlite`: the verdict, summed across the window's files.
+            // The classes are NAMED and not totalled into one number, because
+            // `absent` and `unexplained` are the two that mean something and
+            // they mean opposite things — the first is the known hole, the
+            // second is a line the register and the file disagree about.
+            //
+            // NULL UNDER `store`, all three, and not zero. A `--write` run
+            // compares nothing, so `would_write: 0` beside it would read as
+            // "nothing was due this window" — which is the opposite of what a
+            // write that just put 38 lines on main means. A field that answers
+            // a question the run did not ask says so.
+            classes: STATE_LOG_MODE === "store" ? null : (stateLog.crossings ?? []).reduce((acc, c) => {
+              for (const [k, v] of Object.entries(c.classes ?? {})) acc[k] = (acc[k] ?? 0) + v;
+              return acc;
+            }, {}),
+            would_write: STATE_LOG_MODE === "store" ? null
+              : (stateLog.crossings ?? []).reduce((n, c) => n + (c.derived_lines ?? 0), 0),
+            first_difference: STATE_LOG_MODE === "store" ? null
+              : ((stateLog.crossings ?? []).find((c) => !c.byte_equal)?.first_difference ?? null),
+            // A household the resolver could not name is a finding, never a
+            // guess written into an archive (`state-log-rederive.mjs §
+            // householdNamerFor` returns null rather than picking one).
+            unnamed_households: [...new Set((stateLog.crossings ?? stateLog.windows ?? [])
+              .flatMap((c) => c.unnamed_households ?? []))],
+          })
+    : { ran: false },
 
   // ── THE HOUSEHOLD REGISTRY THIS CROSSING FOLDED ON ─────────────────────────
   //

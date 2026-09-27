@@ -20,15 +20,41 @@ import {
   townJournalHead, townDrainCursor, TOWN_DRAIN_CURSOR, SETTLE_THRESHOLD, townLogEnabled,
 } from "../src/town-journal.mjs";
 import { appendJournal, CLASS_MARK } from "../src/world-journal.mjs";
+// ── THE ROWS ARE SEEDED, NOT WRITTEN BY A DOOR (G1 / POS-156) ───────────────
+//
+// G1 deleted the general journal INSERT; the write path writes the RECORD now.
+// This suite's subject is the TWO-TABLE separation -- that the world's drain
+// cannot reach the town's rows -- so the world-side row it needs is PUT THERE
+// by this file, in the office's own row shape. See test/journal-seed.mjs.
+import { seedJournalRow } from "./journal-seed.mjs";
 import { DYNAMIC_SCHEMA } from "../src/dynamic-store.mjs";
 
 // The world journal's own DDL, lifted from the store's schema rather than
 // retyped — a hand-copied table in a test is a second definition of the shape
 // the code under test writes into.
 const WORLD_JOURNAL_DDL = /CREATE TABLE IF NOT EXISTS journal[\s\S]*?\);/.exec(DYNAMIC_SCHEMA)[0];
-import { planTownDrain, writeTownDrain, registryLine, advanceTownCursor } from "../src/town-drain.mjs";
+import { planTownDrain as REAL_planTownDrain, writeTownDrain as REAL_writeTownDrain, registryLine, advanceTownCursor } from "../src/town-drain.mjs";
 import { buildJoinFiles, REGISTRY_PATH } from "../src/residency.mjs";
 import { handleTaken } from "../src/declare.mjs";
+
+import { withRecordFrom } from "./registry-pool-stub.mjs";
+
+// ── POINTED AT THE RECORD (POS-158) ────────────────────────────────────────
+//
+// The registry is store-of-record, so `planTownDrain` reads it and
+// `writeTownDrain` writes membership rows into it. These two wrappers seed the
+// store from whatever registry the clone already holds — the same fixture each
+// test below was already writing — so every assertion in this file keeps
+// meaning what it meant. Without them every crossing here would answer "the
+// record is unreachable" and defer every row: correct behaviour, answering a
+// question this suite is not asking.
+//
+// EACH CALL GETS A FRESH POOL SEEDED FROM THE CLONE, and that is sound rather
+// than lucky: nothing writes the clone between a plan and its write, so the
+// store the writer sees is the store the planner saw.
+const planTownDrain = (o, clone, opts) => withRecordFrom(clone, () => REAL_planTownDrain(o, clone, opts));
+const writeTownDrain = (clone, plan, opts) => withRecordFrom(clone, () => REAL_writeTownDrain(clone, plan, opts));
+
 
 const odb = () => {
   const db = new DatabaseSync(":memory:");
@@ -61,7 +87,7 @@ function townClone() {
 test("TWO LOGS: the town's rows live in their own table, untouched by the world's head", () => {
   const db = odb();
   const seq = appendTownJournal(db, row());
-  appendJournal(db, { actor: "wright", action: "leave-mark", cls: CLASS_MARK, household: "wright" });
+  seedJournalRow(db, { actor: "wright", action: "leave-mark", cls: CLASS_MARK, household: "wright" });
 
   // the world's head knows nothing of the town's rows, and vice versa
   const worldHead = Number(db.prepare("SELECT MAX(seq) s FROM journal").get()?.s ?? 0);
@@ -74,9 +100,12 @@ test("TWO LOGS: the town's rows live in their own table, untouched by the world'
     "a world truncate must not reach the town's rows — this is the entire reason for two tables");
 });
 
-test("THE TRIPWIRE: a join row aimed at the world log bounces at write time", () => {
+// `assert.rejects`, NOT `assert.throws`: `appendJournal` is async since the
+// store became the write (G1), so the tripwire's throw arrives as a rejection.
+// Same call, same message, same claim -- a tripwire nobody tests stops tripping.
+test("THE TRIPWIRE: a join row aimed at the world log bounces at write time", async () => {
   const db = odb();
-  assert.throws(() => appendJournal(db, { actor: "x", action: "declare", cls: "join", household: "h" }),
+  await assert.rejects(() => appendJournal(db, { actor: "x", action: "declare", cls: "join", household: "h" }),
     /"join" is the town log's class, not the world's/,
     "a row in the wrong log is a bug; bouncing costs a stack trace, being eaten at truncate time costs somebody their household");
   // and the reverse fence
@@ -121,13 +150,13 @@ test("…and flag-off the fourth register is not consulted at all", () => {
 // additions in the drain commit, never restatements (replay stays green)". The
 // tulip lesson: identity-over-time is recomputed from the lines in order, so
 // restating one rewrites history the signatures were taken over.
-test("APPENDS ONLY: the drain adds a dated registry line and never rewrites one", () => {
+test("APPENDS ONLY: the drain adds a dated registry line and never rewrites one", async () => {
   const db = odb(); const clone = townClone();
   appendTownJournal(db, row({ handle: "newcomer" }));
   const before = readFileSync(join(clone, "WHITE_PAGES/stamp-ledger.md"), "utf8");
 
-  const plan = planTownDrain(db, clone, { date: "2026-08-24" });
-  writeTownDrain(clone, plan, { date: "2026-08-24" });
+  const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
+  await writeTownDrain(clone, plan, { date: "2026-08-24" });
   const after = readFileSync(join(clone, "WHITE_PAGES/stamp-ledger.md"), "utf8");
 
   assert.ok(after.startsWith(before.replace(/\s*$/, "\n")),
@@ -138,11 +167,11 @@ test("APPENDS ONLY: the drain adds a dated registry line and never rewrites one"
 });
 
 // ── the drain writes what the PEN would have written ────────────────────────
-test("EQUIVALENCE: the drain's files are the pen lane's own function, not a second copy", () => {
+test("EQUIVALENCE: the drain's files are the pen lane's own function, not a second copy", async () => {
   const db = odb(); const clone = townClone();
   appendTownJournal(db, row({ handle: "twin", payload: { household: "Testers", card: "the very same card" } }));
-  const plan = planTownDrain(db, clone, { date: "2026-08-24" });
-  writeTownDrain(clone, plan, { date: "2026-08-24" });
+  const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
+  await writeTownDrain(clone, plan, { date: "2026-08-24" });
 
   const expected = buildJoinFiles({ handle: "twin", card: "the very same card", household: "Testers", ghLogin: "tester-gh" });
   for (const f of expected) {
@@ -159,13 +188,13 @@ test("EQUIVALENCE: the drain's files are the pen lane's own function, not a seco
 // ── THE TIER LINE ───────────────────────────────────────────────────────────
 // The founder, 2026-08-24: "full automation for both berth and joins (on our
 // side, their side still needs a GitHub auth or co-sign)."
-test("THE TIER LINE: only a verified id or a co-sign settles; the rest WAIT, and are told", () => {
+test("THE TIER LINE: only a verified id or a co-sign settles; the rest WAIT, and are told", async () => {
   const db = odb(); const clone = townClone();
   appendTownJournal(db, row({ handle: "verified", ghId: "999" }));
   appendTownJournal(db, row({ handle: "cosigned", ghId: null, cosignedGhId: "777" }));
   appendTownJournal(db, row({ handle: "unanchored", ghId: null, ghLogin: null }));
 
-  const plan = planTownDrain(db, clone, { date: "2026-08-24" });
+  const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
   assert.deepEqual(plan.settle.map((r) => r.handle).sort(), ["cosigned", "verified"],
     "a verified GitHub id OR a human co-sign — the registry invariants hang off that pin");
   assert.deepEqual(plan.waiting.map((w) => w.row.handle), ["unanchored"]);
@@ -173,18 +202,18 @@ test("THE TIER LINE: only a verified id or a co-sign settles; the rest WAIT, and
   assert.match(SETTLE_THRESHOLD, /full berth life/,
     "an unverified household stands at the harbor indefinitely, and nothing about its standing expires");
 
-  writeTownDrain(clone, plan, { date: "2026-08-24" });
+  await writeTownDrain(clone, plan, { date: "2026-08-24" });
   assert.equal(existsSync(join(clone, "WHITE_PAGES/unanchored/ADDRESS.md")), false,
     "the unanchored row is not settled — and it is not dropped either; it stays in the log");
   assert.equal(pendingRows(db).some((r) => r.handle === "unanchored"), true);
 });
 
 // ── DESIGN-IN 5 (the standing constraint) ───────────────────────────────────
-test("GROUND IS NOT TOUCHED: settling mints an address and a registry row, never a parcel", () => {
+test("GROUND IS NOT TOUCHED: settling mints an address and a registry row, never a parcel", async () => {
   const db = odb(); const clone = townClone();
   appendTownJournal(db, row({ handle: "grounded" }));
-  const plan = planTownDrain(db, clone, { date: "2026-08-24" });
-  const touched = writeTownDrain(clone, plan, { date: "2026-08-24" });
+  const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
+  const touched = await writeTownDrain(clone, plan, { date: "2026-08-24" });
   for (const path of touched) {
     assert.equal(/WORLD\/|parcel|marks\//.test(path), false,
       `${path}: a join has never implied a parcel — ground is the world's, on the world's own cadence`);
@@ -195,11 +224,11 @@ test("GROUND IS NOT TOUCHED: settling mints an address and a registry row, never
 });
 
 // ── the cursor ──────────────────────────────────────────────────────────────
-test("THE CURSOR IS THE TOWN'S OWN, and moves only after the record is durable", () => {
+test("THE CURSOR IS THE TOWN'S OWN, and moves only after the record is durable", async () => {
   const db = odb(); const clone = townClone();
   appendTownJournal(db, row({ handle: "first" }));
-  const plan = planTownDrain(db, clone, { date: "2026-08-24" });
-  writeTownDrain(clone, plan, { date: "2026-08-24" });
+  const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
+  await writeTownDrain(clone, plan, { date: "2026-08-24" });
   assert.equal(townDrainCursor(db), 0,
     "writeTownDrain must NOT advance it — a cursor moved before the commit is the one ordering that can lose a household");
   // AND IT CANNOT, which is stronger than must-not: writeTownDrain is handed a
@@ -207,19 +236,23 @@ test("THE CURSOR IS THE TOWN'S OWN, and moves only after the record is durable",
   // advance a cursor with. The flip for this law could not be written — every
   // attempt had to smuggle a db in from outside the signature, which is the
   // guarantee showing itself rather than a gap in the test.
-  assert.equal(writeTownDrain.length, 3, "writeTownDrain(clone, plan, { date }) — no db parameter");
-  assert.equal(/odb/.test(writeTownDrain.toString()), false, "…and no db reached from its body");
+  // THE REAL FUNCTION, NOT THIS FILE'S WRAPPER. `writeTownDrain` above is a
+  // record-pointing wrapper (§ POINTED AT THE RECORD), and asserting a shape
+  // against it would be asserting this suite's own scaffolding — which is the
+  // exact class where a test's scaffolding reads as coverage.
+  assert.equal(REAL_writeTownDrain.length, 3, "writeTownDrain(clone, plan, { date }) — no db parameter");
+  assert.equal(/odb/.test(REAL_writeTownDrain.toString()), false, "…and no db reached from its body");
   advanceTownCursor(db, plan.head);
   assert.equal(townDrainCursor(db), plan.head);
   assert.deepEqual(pendingRows(db), [], "and the drained row is no longer pending");
   assert.notEqual(TOWN_DRAIN_CURSOR, "journal_drained_through", "never the world's key");
 });
 
-test("ONE NAME, ONE CROSSING: a second row for a settled name does not write twice", () => {
+test("ONE NAME, ONE CROSSING: a second row for a settled name does not write twice", async () => {
   const db = odb(); const clone = townClone();
   appendTownJournal(db, row({ handle: "dupe" }));
   appendTownJournal(db, row({ handle: "dupe", household: "others" }));
-  const plan = planTownDrain(db, clone, { date: "2026-08-24" });
+  const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
   assert.equal(plan.settle.length, 1, "the door holds the name; the drain checks anyway, because 'unreachable' is what a drain must not assume about its input");
   assert.match(plan.skipped[0].why, /claimed earlier in this same crossing/);
 });

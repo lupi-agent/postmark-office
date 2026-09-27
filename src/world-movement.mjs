@@ -35,11 +35,14 @@
 // movement arithmetic from the tree would mean the office computed where the
 // boat is from whatever the last writer left behind.
 
-import { existsSync, statSync } from "node:fs";
-
+// NOTHING FROM `node:fs` OR `dynamic-store` IS IMPORTED HERE ANY MORE, and the
+// absence is the receipt: `existsSync`, `openDynamic`, `dynamicDbPath` and
+// `readMovements` existed in this module for `storedDepartures` alone, which
+// reads `acts` now (POS-154). A module that keeps the handle to a store it no
+// longer reads is one edit away from reading it again.
 import { WORLD_CLONE } from "./world-store.mjs";
-import { movementV2Enabled, openDynamic, dynamicDbPath } from "./dynamic-store.mjs";
-import { readMovements, VESSEL_HANDLE, worldToolModule } from "./dynamic-entities.mjs";
+import { movementV2Enabled } from "./dynamic-store.mjs";
+import { VESSEL_HANDLE, worldToolModule } from "./dynamic-entities.mjs";
 import { boundariesOnRoad, carriersFrom, carriersWithDisclosure, carrierStateAt, foldFrames, gunwaleWarning, inRect } from "./world-frames.mjs";
 
 // The flag is read from the environment on every call and never latched at
@@ -270,81 +273,222 @@ export async function vehicleStandpoint(handle, worldState, { repo = WORLD_CLONE
 // ── the store's own movement record ──────────────────────────────────────────
 
 /**
- * Every movement this entity has declared into the STORE, oldest first, in the
+ * Every movement this entity has declared into the RECORD, oldest first, in the
  * shape `walk.mjs` and `vessel.mjs` read.
  *
- * Never throws, for the reason every store read here does not: an unopenable
- * store must not be able to unplace a resident whose ledger line is sitting
- * right there in the world repo.
+ * POS-154, Everything Reads the Store: this folded the sqlite `movements` table
+ * and it reads `acts` now, through the read worker's one road
+ * (`world2-guards § storeDepartureRows`). There is no sqlite open left under it
+ * and no flag over it — a switch would be the office keeping two answers to one
+ * question.
+ *
+ * Never throws, for the reason the sqlite read did not: an unreachable record
+ * must not be able to unplace a resident whose ledger line is sitting right
+ * there in the world repo. The caller DISCLOSES `absent` instead, and it is
+ * never a silent `[]` — an office pointed at no record and a pool that will not
+ * answer both come back with a reason attached.
+ *
+ * ⚑ ASYNC NOW, and the un-awaited form is silent: `read.records` on a Promise is
+ * `undefined`, which reads downstream as "this town has never walked". The four
+ * callers await it and a source pin in `test/walkers-read-the-store.test.mjs`
+ * holds the sqlite open out.
  */
-export function storedDepartures({ db = null, dbPath = null, atMs = Date.now() } = {}) {
-  const path = dbPath ?? dynamicDbPath();
-  // FEATURE-DETECTED, NOT VERSION-MATCHED. A store written before the movements
-  // table existed, a store that will not open, a `movements` table that is not
-  // there yet: all of them mean "era two has nothing to say", which is a true
-  // sentence about a town that has not had its freeze yet. Era-1-only is the
-  // answer, and the caller discloses it — never a throw, because a reader that
-  // could take down `orient` over an absent second era would have made the seam
-  // more fragile than the thing it replaced.
-  if (!db && !existsSync(path)) return { records: [], absent: `no dynamic store at ${path}` };
-  // THE MOVEMENTS MEMO (2026-09-26, the Snug Harbour night): the same profile put
-  // 43% of the loop here — every listener of every say re-opened the store and
-  // re-read the whole movements table. With no caller-supplied handle, the table
-  // is read once per CHANGE of the store (the db file's and its WAL's mtime and
-  // size) and each call filters that copy by its own instant. Same rows, same
-  // order, same answer.
-  if (!db) {
-    const stamp = [path, `${path}-wal`].map((p) => { try { const s = statSync(p); return `${s.mtimeMs}:${s.size}`; } catch { return "-"; } }).join("|");
-    let hit = movementsMemo.get(path);
-    if (!hit || hit.stamp !== stamp) {
-      const whole = storedDeparturesUncached({ dbPath: path, atMs: Infinity });
-      if (whole.absent) return storedDeparturesUncached({ dbPath: path, atMs });
-      hit = { stamp, records: whole.records };
-      movementsMemo.set(path, hit);
-    }
-    return { records: hit.records.filter((r) => Date.parse(r.iso) <= atMs), absent: null };
-  }
-  return storedDeparturesUncached({ db, dbPath: path, atMs });
-}
-
-const movementsMemo = new Map();
-
-function storedDeparturesUncached({ db = null, dbPath = null, atMs = Date.now() } = {}) {
-  const path = dbPath ?? dynamicDbPath();
-  let h = db, own = false;
+export async function storedDepartures({ atMs = Date.now(), withActId = false } = {}) {
   try {
-    if (!h) { h = openDynamic(path, { readOnly: true }); own = true; }
-    const rows = readMovements(h, { until: atMs });
-    if (own) h.close();
-    return {
-      records: rows.map((r) => {
-        const p = JSON.parse(r.payload);
-        return {
-          // THE LEDGER'S OWN SHAPE, so a merged list is one vocabulary. `within`
-          // and `to` are the store's column names; `targetExtent` and
-          // `targetMarkId` are what walk.mjs reads. One converter, here.
-          iso: r.at, handle: r.actor,
-          from: p.from, toward: p.toward, at: p.crossing,
-          targetExtent: p.within ?? null, targetMarkId: p.to ?? null, pace: p.pace ?? null,
-          source: "store",
-        };
-      }),
-      absent: null,
-    };
+    const { storeDepartureRows } = await import("./world2-guards.mjs");
+    const { records } = await storeDepartureRows();
+    const cut = [];
+    for (const r of records) {
+      // THE CUT IS ON THE RECORD'S OWN INSTANT, never on `acts.at`. They are not
+      // the same quantity — a journal-era payload carries its own `at`, one level
+      // down — which is the reason `/world2/walks` also cuts its window on the
+      // DERIVED rows rather than in SQL.
+      const ms = Date.parse(r.iso);
+      // REFUSED BY NAME, NEVER SKIPPED. A record whose instant will not parse
+      // cannot be placed inside or outside the cut, and dropping it silently
+      // would answer with a history short by exactly the rows nobody looks for.
+      // Measured 0 of prod's 2,397 on 2026-09-21; if that ever stops being true
+      // the doors say so rather than quietly shrinking.
+      if (!Number.isFinite(ms)) {
+        return { records: [], absent: `a departure record carries an unreadable instant: ${String(r.iso).slice(0, 60)}` };
+      }
+      if (ms > atMs) continue;
+      cut.push({
+        // THE LEDGER'S OWN SHAPE, so a merged list is one vocabulary — and the
+        // port's own bookkeeping (`line`, `era`, `act_id`) is dropped here rather
+        // than passed on. `era` is the trap: the name collides with the era
+        // `recordsAcrossEras` stamps and carries a different vocabulary
+        // (`journal`/`movement-store` against `store`/`ledger`), so a
+        // pass-through would re-key `dedupeRecords` in silence.
+        iso: r.iso, handle: r.handle,
+        from: r.from, toward: r.toward, at: r.at,
+        targetExtent: r.targetExtent ?? null, targetMarkId: r.targetMarkId ?? null, pace: r.pace ?? null,
+        // LOAD-BEARING, not decoration. `recordsAcrossEras` maps era one with
+        // `era: r.source === "store" ? "store" : "ledger"`, `dedupeRecords` keys
+        // on that era, and `dynamic-presence.mjs` puts `era: "store"` in front of
+        // a resident off this exact value.
+        source: "store",
+        // OPT-IN, AND OFF BY DEFAULT, so not one of the four standing callers
+        // sees a key it did not see yesterday. `act_id` is the register's own
+        // row id and the only monotone sequence this record carries — POS-196's
+        // `storedDepartureEvents` needs it for the `<N>.jsonl` line's `seq`, and
+        // it is asked for by name rather than leaked to everybody, because the
+        // block above is a deliberate list of what this road does NOT pass on
+        // and a silent addition would make that list a lie.
+        ...(withActId ? { act_id: r.act_id ?? null } : {}),
+      });
+    }
+    return { records: cut, absent: null };
   } catch (e) {
-    if (own && h) { try { h.close(); } catch { /* already gone */ } }
-    return { records: [], absent: String(e?.message ?? e).slice(0, 160) };
+    // THE CAUSE IS CARRIED, NOT SWALLOWED. `GuardsUnreachableError` says the same
+    // ruled sentence to every resident whatever went wrong ("the office's record
+    // cannot be reached"), and it puts the real reason on `cause`. A disclosure
+    // that printed only the outer sentence would send an operator looking at the
+    // pool when the office is simply pointed at no record.
+    const why = e?.cause?.message ? `${e.message} (${e.cause.message})` : String(e?.message ?? e);
+    return { records: [], absent: why.slice(0, 200) };
   }
 }
 
 /** One entity's stored records, oldest first. The per-handle slice of the above. */
-export function storedRecordsFor(handle, opts = {}) {
-  return storedDepartures(opts).records.filter((r) => r.handle === handle);
+export async function storedRecordsFor(handle, opts = {}) {
+  return (await storedDepartures(opts)).records.filter((r) => r.handle === handle);
 }
 
 /** The single governing record — the last one. Kept for surfaces that want only that. */
-export function storedDepartureFor(handle, opts = {}) {
-  return storedRecordsFor(handle, opts).at(-1) ?? null;
+export async function storedDepartureFor(handle, opts = {}) {
+  return (await storedRecordsFor(handle, opts)).at(-1) ?? null;
+}
+
+// ── POS-196 · THE WORLD REPO'S DEPARTURE RECORD, RENDERED FROM THE STORE ─────
+//
+// `STATE/log/<N>.jsonl` is the world repo's departure record and the only live
+// source the three world-repo readers have (`tools/movement-records.mjs §
+// storeRecords`, and `boarding-flip-disclosure.mjs` /
+// `position-seed-manifest.mjs` through it). It was written from
+// `dynamic.db/movements` — the REVERSE-MIRROR copy, stamped
+// `"source":"dynamic.db/movements"` on all 2,857 of its lines — so when G1
+// removed that mirror the record would have stopped and the readers fallen back
+// to the frozen ledger era.
+//
+// This is the same record rendered from `acts`, through POS-154's one road, so
+// the swap is a change of WRITER and not of meaning. It emits world.db's
+// `events` row shape — exactly what `dynamic-entities.mjs § readMovements`
+// emitted — so `mergedDepartureEvents`, `governingAt`, `buildSave` and every
+// replay read the two eras through one vocabulary and the seam stays invisible.
+//
+// ⚑ THE SWAP IS WIRED (POS-156 part 0, 2026-09-22). Both write paths that
+// rendered the live era from the mirror now render it from here:
+// `tools/crossing-save.mjs`'s `<N>.jsonl` half and `src/dynamic-entities.mjs §
+// refreshEntities`. `crossing-save --check` diffs the rendered window against
+// the file on `RECORD_READ_FIELDS`; `test/pos-156-the-record-is-written-from-
+// the-store.test.mjs` pins which table each write path reads.
+//
+// IT WAS HELD FOR TWO LANES, and the reason is worth keeping: POS-196 built
+// this renderer and could not wire it because the register held no departure
+// INSTANT — `acts.at` was the MIRROR's clock, taken after the resident
+// declared, and `acts.crossing` is a different read that reconstructs the true
+// instant exactly ZERO times across the record's own 2,808 live door-written
+// lines. `at` is the first field every world reader reads. POS-198 closed it:
+// `world.mjs § walkViaOffice` reads the declaration clock ONCE and hands the
+// same string to both pens, so `acts.at` is the departure's own instant. Rows
+// written before that carry the mirror's clock; `world2/tools/
+// backfill-departures.mjs` was always correct on this point (`at: m.at`).
+
+/**
+ * What the register cannot give back, named once so a `--check` line and a PR
+ * table say the same words. The shape is POS-155's (`world2/tools/
+ * state-log-write.mjs § GAP_CLASSES`) because it is the same problem one file
+ * over, and a second vocabulary for it would be the third copy of a merge rule.
+ */
+export const DEPARTURE_GAPS = Object.freeze({
+  at: "STOP:at — the recorded instant and the register's disagree, and `at` is the field `storeRecords` reads first and the key `mergedRecords` orders and cuts on, so this outranks every other gap in the one line a reader gets. CLOSED FOR ROWS WRITTEN SINCE POS-198 (2026-09-22): `world.mjs § walkViaOffice` reads the declaration clock ONCE and hands the same string to both pens, so `acts.at` is the departure's own instant. IT REMAINS THE CLASS FOR OLDER ROWS: before that, `walkEntry` passed no `writtenAt` and `world-journal.mjs § normalizeRow` stamped `acts.at` with the MIRROR's clock, taken after the resident declared — and `acts.crossing` is a different read of the same door call, which reconstructs the instant exactly ZERO times across the record's own 2,808 live door-written lines (windows 120–204: median −203 ms, 235 missing by more than a second, the worst by 10.6 hours). `world2/tools/backfill-departures.mjs` is the one older path whose acts DO carry it (`at: m.at`).",
+  seq: "gap:seq — no store source for the `movements` rowid; this is the register's own act id, which is the same monotone quantity the old `seq` was (dynamic-entities.mjs § readMovements: \"here it is the store's own sequence\").",
+  declared_by: "gap:declared_by — the departure act carries no declarer. `walkEntry`'s payload has five keys and none is it, and `world2/tools/backfill-departures.mjs § departureRowFrom` SELECTs the column and drops it. The act's own actor stands for it, which is what the live write path puts in that column (2,829 of 2,829 door-written lines); the 28 that differ are the 2026-08-10 `ledger-freeze` one-off, in windows 119/120.",
+  note: "gap:note — the departure act carries no note. The record's grammar already makes the key conditional, and the only 28 lines that carry one are the same freeze backfill.",
+  source: "gap:source — the allowed stamp diff: `\"acts\"` where the mirror wrote `\"dynamic.db/movements\"`. No world reader reads it; it is the line's own provenance.",
+  unexplained: "UNEXPLAINED — not one of the named gaps.",
+});
+
+/**
+ * THE FIELDS THE WORLD ACTUALLY READS, measured read-only in the world clone at
+ * `origin/main` @ `17fa4195` (POS-196 finding 4). `tools/movement-records.mjs §
+ * storeRecords` keeps `ev.type === "departure"` and takes these and nothing
+ * else; `boarding-flip-disclosure.mjs` and `position-seed-manifest.mjs` inherit
+ * it through `storeRecords` rather than opening the directory themselves.
+ *
+ * Byte-equality is judged HERE and not on the whole line, because a record is
+ * equal when every reader of it cannot tell — and `seq`, `declared_by`, `note`
+ * and `source` have no reader in that repo.
+ */
+export const RECORD_READ_FIELDS = Object.freeze([
+  "at", "type", "actor",
+  "payload.from", "payload.toward", "payload.crossing",
+  "payload.within", "payload.to", "payload.pace",
+]);
+
+/**
+ * The store's departures in world.db's `events` row shape, oldest first.
+ *
+ * Returns `{ events, absent }` and NEVER throws, for `storedDepartures`' own
+ * reason: an unreachable register must not be able to write an empty window
+ * over a good one. `absent` is a sentence; the caller decides whether it is a
+ * disclosure or a refusal, and `crossing-save` treats it as a refusal because
+ * the thing it would otherwise commit is a public file.
+ *
+ * ⚑ ERA ONE IS NOT HERE, and it must not be. `storeDepartureRows` filters
+ * `payload->>'_ledger'`, and the caller already holds the founding era from
+ * `readDepartureEvents` (world.db's hydrated ledger). Returning it here would
+ * hand `mergedDepartureEvents` the same departure twice under two era tags,
+ * where latest-wins would pick whichever sorted last.
+ *
+ * ⚑ NOT POINTED AT A REGISTER IS NOT AN EMPTY RECORD. `world2Enabled()` false
+ * is this office having no register at all — the same condition `movementV2Enabled()`
+ * false named on the old road, and the same answer `world2-guards §
+ * standsRowsFromStore` gives it ("null is 'I could not look', never 'the answer
+ * is none'"). It comes back as `absent`, never as `[]`, so no caller can read
+ * "no register" as "nobody has walked".
+ */
+export async function storedDepartureEvents({ atMs = Date.now() } = {}) {
+  const { world2Enabled } = await import("./world2-acts.mjs");
+  if (!world2Enabled()) {
+    return { events: [], absent: "WORLD2_PG/WORLD2_PG_URL are unset — this office is not pointed at the record, which is not the same as a record with no departures in it" };
+  }
+  const { records, absent } = await storedDepartures({ atMs, withActId: true });
+  if (absent) return { events: [], absent };
+  return { events: records.map(departureEventOf), absent: null };
+}
+
+/**
+ * ONE RECORD → ONE `<N>.jsonl` DEPARTURE LINE, in the record's own grammar.
+ *
+ * The grammar is finding 1's, measured on all 2,870 departure lines in the
+ * world clone: top keys `at,type,actor,seq,payload` and payload keys
+ * `from,toward,crossing,within,to,pace,declared_by,source`, in that order on
+ * every one of them. Key ORDER is part of the bytes, so the object literal's
+ * order is the record's order and neither may be sorted.
+ *
+ * `payload` is a STRING here because that is what `readMovements` handed back
+ * and what `departureFromEvent` and `buildSave` both already parse — one
+ * vocabulary, and the seam stays a change of pen.
+ */
+export function departureEventOf(r) {
+  return {
+    seq: r.act_id == null ? null : Number(r.act_id),   // DEPARTURE_GAPS.seq
+    at: r.iso,                                          // DEPARTURE_GAPS.at — the STOP
+    actor: r.handle,
+    type: "departure",
+    payload: JSON.stringify({
+      from: r.from,
+      toward: r.toward,
+      crossing: r.at,
+      within: r.targetExtent ?? null,
+      to: r.targetMarkId ?? null,
+      pace: r.pace ?? null,
+      declared_by: r.handle,                            // DEPARTURE_GAPS.declared_by
+      source: "acts",                                   // DEPARTURE_GAPS.source
+    }),
+  };
 }
 
 /**
@@ -416,12 +560,15 @@ export function dedupeRecords(records) {
  * change: the ceremony needed a fallback because a declaration could be absent,
  * and a frame cannot be — the world is the default.
  *
- * `recordsOf(handle)` is injected. Returns null when the flag's machinery cannot
+ * `recordsOf(handle)` is injected. `storeRecordsOf(handle, atMs)` replaces the
+ * store read the way it does in `heardFromV2` below: `residentStandpoint` over
+ * the positions projection (POS-272) already holds era two and passes
+ * `async () => []`. Returns null when the flag's machinery cannot
  * answer (no carrier in this world, no engine), which is the caller's signal to
  * use the derivation it has always used.
  */
 export async function movementStandpoint(handle, worldState, {
-  repo = WORLD_CLONE, atMs = Date.now(), recordsOf = null, db = null, dbPath = null,
+  repo = WORLD_CLONE, atMs = Date.now(), recordsOf = null, storeRecordsOf = null,
 } = {}) {
   const { service, mod, carriers } = await vesselServiceFrom(worldState, { repo });
   if (!service || !mod) return null;
@@ -440,7 +587,9 @@ export async function movementStandpoint(handle, worldState, {
   }
 
   const ledgerRecords = recordsOf ? (await recordsOf(handle)) ?? [] : [];
-  const storeRecords = storedRecordsFor(handle, { db, dbPath, atMs });
+  const storeRecords = storeRecordsOf
+    ? (await storeRecordsOf(handle, atMs)) ?? []
+    : await storedRecordsFor(handle, { atMs });
   const records = recordsAcrossEras(ledgerRecords, storeRecords);
   if (!records.length) return null;
 
@@ -519,8 +668,14 @@ export async function movementStandpoint(handle, worldState, {
  *
  * Returns `{ x, y, frame }` — the point to hear it from — or null, meaning
  * "heard where it was spoken", the ordinary case for everyone ashore.
+ *
+ * `storeRecordsOf(handle, spokenMs)` replaces the per-voice store read, which
+ * is the default. A caller that already holds era two — the positions
+ * projection (POS-264), whose governing records ride in through `recordsOf` —
+ * passes `async () => []`, so the record is not read once per voice to answer a
+ * question it has already answered.
  */
-export async function heardFromV2(voice, worldState, { repo = WORLD_CLONE, atMs = Date.now(), db = null, dbPath = null, recordsOf = null } = {}) {
+export async function heardFromV2(voice, worldState, { repo = WORLD_CLONE, atMs = Date.now(), recordsOf = null, storeRecordsOf = null } = {}) {
   const { service, mod, carriers } = await vesselServiceFrom(worldState, { repo });
   if (!service || !mod || !carriers.length) return null;
   const spokenMs = Number(voice?.at);
@@ -530,13 +685,16 @@ export async function heardFromV2(voice, worldState, { repo = WORLD_CLONE, atMs 
   // WHICH FRAME THE SPEAKER WAS IN WHEN THEY SPOKE — not now. A voice records
   // where it happened; the question is what it was riding at that instant.
   const ledgerRecords = recordsOf ? (await recordsOf(voice.handle)) ?? [] : [];
-  const storeRecords = storedRecordsFor(voice.handle, { db, dbPath, atMs: spokenMs });
+  const storeRecords = storeRecordsOf
+    ? (await storeRecordsOf(voice.handle, spokenMs)) ?? []
+    : await storedRecordsFor(voice.handle, { atMs: spokenMs });
   const records = recordsAcrossEras(ledgerRecords, storeRecords).filter((r) => Date.parse(r.iso) <= spokenMs);
 
   let frame = null, local = null;
   if (records.length) {
     const walk = (await vesselServiceFrom(worldState, { repo })).walk;
     const fold = await foldFrames(records, { carriers, carrierAt, walk, atMs: spokenMs });
+    // ⚑ The voice-via-frame path: unreachable since POS-247 (2026-09-26): no walk creates a frame; the ledger is the only way aboard. Removed with the fold's frame machinery in w41.
     frame = fold.frameCarrier; local = fold.local;
   }
 
@@ -568,12 +726,12 @@ export async function heardFromV2(voice, worldState, { repo = WORLD_CLONE, atMs 
  * before the step. Plus the gunwale warning when the step leaves a moving
  * carrier. Both are DISCLOSURE, never refusal: v0 water does not block.
  */
-export async function roadTerms({ handle, from, toward, worldState, repo = WORLD_CLONE, atMs = Date.now(), recordsOf = null, db = null, dbPath = null }) {
+export async function roadTerms({ handle, from, toward, worldState, repo = WORLD_CLONE, atMs = Date.now(), recordsOf = null }) {
   const { service, mod, carriers } = await vesselServiceFrom(worldState, { repo });
   if (!service || !mod || !carriers.length) return null;
   const carrierAt = carrierReader(worldState, { repo, service, mod });
 
-  const here = await movementStandpoint(handle, worldState, { repo, atMs, recordsOf, db, dbPath });
+  const here = await movementStandpoint(handle, worldState, { repo, atMs, recordsOf });
   const frameCarrier = here?.frame ? carriers.find((c) => c.id === here.frame) ?? null : null;
 
   const crossings = await boundariesOnRoad(from, toward, carriers, atMs, { carrierAt, mod, service });

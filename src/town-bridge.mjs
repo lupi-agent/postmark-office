@@ -247,7 +247,12 @@ export const drainLine = (r) =>
  * only on something the drain genuinely cannot survive, because the ferry chain
  * is `&&`-joined and a throw here holds the mail.
  */
-export function runTownDrain(odb, {
+// ASYNC SINCE POS-158, and the reason is one line deeper: the registry is
+// store-of-record, so `planTownDrain` reads the record and `writeTownDrain`
+// writes rows to it. Neither can be synchronous any more, and a drain that
+// pretended to be would be handing its caller a promise dressed as a report.
+// Every caller awaits; the ferry chain is `&&`-joined shell and is unaffected.
+export async function runTownDrain(odb, {
   db = null, clone, doors = TOWN_DOORS, date = null, now = Date.now(),
   // `lockHeld` is injectable so the refusal below is a branch a falsifier can
   // actually reach: /usr/bin/flock exists on the box and on nothing else, so a
@@ -307,7 +312,7 @@ export function runTownDrain(odb, {
       remaining: 0, note: "nothing pending" });
 
   // ── the joins, folded once over the whole crossing ───────────────────────
-  const plan = planTownDrain(odb, clone, { date: stamp });
+  const plan = await planTownDrain(odb, clone, { date: stamp });
   // planTownDrain computes its head over the SAME pending read, so a mismatch
   // means the log moved under us — which, under the lock, cannot happen. It is
   // asserted rather than assumed because the cursor is about to be set from it.
@@ -441,7 +446,36 @@ export function runTownDrain(odb, {
         updates: [], letters: [], remaining: rows.length });
   }
 
-  const touched = writeTownDrain(clone, plan, { date: stamp });
+  const touched = await writeTownDrain(clone, plan, { date: stamp });
+
+  // A DRAIN THAT REFUSED TO RENDER MUST NOT READ AS A QUIET CROSSING (POS-158).
+  // The settled rows are in the RECORD either way — that is the durable half,
+  // and the cursor is right to move past them. What can fail is the RENDERING:
+  // `drainRegistry` refuses rather than shrink the registry, so if the town's
+  // files hold a house the record does not, this crossing writes its rows and
+  // leaves the two files un-re-rendered. That is a state a person has to clear
+  // (`registry-drain --ingest-missing --reason "…"`), so it rides the report
+  // rather than sitting in a return value nobody prints.
+  const registryRefused = touched.refused ?? null;
+  if (registryRefused) log(`drain: the registry did not re-render — ${registryRefused}`);
+
+  // ── THE STALLED ROWS HOLD THE CURSOR (POS-158, review 2/6) ───────────
+  //
+  // A membership write that could not reach the record defers its row rather
+  // than throwing, because a membership write must never block the town
+  // (`src/town-drain.mjs` § THE RECORD FIRST, THE CARDS SECOND) — the ferry
+  // chain is `&&`-joined, and a throw here stopped the mail.
+  //
+  // Deferring is only half of that, and the gangway's own paragraph above says
+  // why the other half is not optional: `waiting` is a pile in a REPORT, and
+  // this function advances the cursor to the last PENDING row regardless of
+  // which pile a row landed in. A stalled row walked past is a household lost
+  // while the report prints the word that promises it was kept. So the cursor
+  // does not move at all while any row stalled, exactly as it does not while
+  // the gangway holds one.
+  const stalledRows = touched.stalled ?? [];
+  if (stalledRows.length)
+    log(`drain: ${stalledRows.length} row(s) could not reach the record and are still pending — the cursor is held`);
 
   // The join files are the only bytes the bridge itself put on disk, so they
   // are the only ones it commits. Every door below commits its own work through
@@ -548,11 +582,13 @@ export function runTownDrain(odb, {
   }
 
   // ── the cursor, LAST — and not at all while the gangway holds a row ──────
-  if (!gangwayHold) advanceTownCursor(odb, head);
+  if (!gangwayHold && !stalledRows.length) advanceTownCursor(odb, head);
 
   return done({
     ran: true, date: stamp, drained: rows.length, counts, head,
     cursor: townDrainCursor(odb), commit, first_idea: firstIdea, ...gangwayFields,
+    ...(registryRefused ? { registry_refused: registryRefused } : {}),
+    ...(stalledRows.length ? { store: stalledRows.map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })) } : {}),
     settled: plan.plans.map(({ row }) => row.handle),
     waiting: plan.waiting.map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })),
     // JOIN ROWS ONLY. planTownDrain reads the WHOLE pending log and files every

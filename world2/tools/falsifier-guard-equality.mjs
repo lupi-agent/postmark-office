@@ -117,13 +117,13 @@ try {
   claimsMod = await import("../../src/world2-claims.mjs");
 } catch (e) { die(`this office's own modules cannot be imported: ${e.message}`); }
 
-const { appendJournal, liveMarks, liveChildrenOf, readJournal, replayDrafts, pathFor, CLASS_MARK } = journalMod;
+const { appendJournal, normalizeRow, liveMarks, liveChildrenOf, readJournal, replayDrafts, pathFor, CLASS_MARK } = journalMod;
 const { liveHolder, holdingsOf } = holdMod;
 const { readAttachments, declareAttachment } = entitiesMod;
 const { openDynamic } = storeMod;
 const { attachmentsFromState } = rebuildMod;
 const { withHousehold, docketSettled } = claimsMod;
-for (const [n, f] of Object.entries({ appendJournal, liveMarks, liveChildrenOf, replayDrafts, liveHolder, readAttachments, declareAttachment, attachmentsFromState, withHousehold }))
+for (const [n, f] of Object.entries({ appendJournal, normalizeRow, liveMarks, liveChildrenOf, replayDrafts, liveHolder, readAttachments, declareAttachment, attachmentsFromState, withHousehold }))
   if (typeof f !== "function") die(`this office exports no ${n} — the oracle this falsifier judges against is missing`);
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -136,9 +136,49 @@ for (const [n, f] of Object.entries({ appendJournal, liveMarks, liveChildrenOf, 
 // two different questions, which is the mistake E2 made in the live lane and
 // which is worth not repeating.
 //
-// So the population is WRITTEN, through 1.0's own `appendJournal` — the one
-// function that feeds both pens ("mirrorAct(row, seq); submitClaimFromJournal(row,
-// seq)"). Neither side is arranged; each is what its own pen made of one call.
+// So the population is WRITTEN.
+//
+// ── IT TAKES TWO WRITES NOW, AND THAT IS G1 (POS-156, 2026-09-22) ────────
+//
+// It used to take ONE: `appendJournal` wrote the sqlite journal row and fanned
+// the same row out to the Postgres pens, so a single call filled both sides of
+// the A/B and neither side was arranged. G1 deleted that journal INSERT --
+// `appendJournal` writes the RECORD and only the record now -- and the one call
+// stopped feeding 1.0's arm.
+//
+// It did not fail loudly. It filled `claims` and left the journal empty, so the
+// comparison ran with a full docket against nothing and reported the port
+// drawing marks "1.0's overlay does not" -- six findings and, underneath them,
+// the line that actually says it: "compared nothing: G1_a, G2_a, G4_a, G1_b,
+// G2_b, G4_b -- a green here is unearned".
+//
+// So the script writes BOTH eras explicitly, because the one function that used
+// to write both no longer does. Neither side is arranged any more than it was:
+// the store's row is what the live pen makes of the declaration, and the
+// journal's row is `normalizeRow`'s -- the office's ONE row shape, imported
+// rather than restated, so the two sides cannot drift into disagreeing about
+// what a row is.
+//
+// ⛑ THE JOURNAL WRITE IS THIS FILE'S, and it is not a door's. No pen in the
+// office writes that table any more except the arena's (`appendArenaRow`). This
+// falsifier writes it because 1.0's live layer IS that table and 1.0's readers
+// are the oracle it judges the port against; when those readers go (G2, with
+// `liveMarks` and `draftsForKey`), this file goes with them and the two-write
+// population goes too.
+
+/** 1.0's arm of the population: one row into the sqlite journal, in the office's own shape. */
+const JOURNAL_COLUMNS = "crossing, actor, action, object, at_anchor, at_dx, at_dy, witnesses, class, payload, effect, household, written_at";
+function seedJournalRow(db, entry) {
+  const row = normalizeRow(entry);
+  const res = db.prepare(
+    `INSERT INTO journal (${JOURNAL_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.crossing, row.actor, row.action, row.object,
+    row.at_anchor, row.at_dx, row.at_dy,
+    row.witnesses, row.class, row.payload, row.effect,
+    row.household, row.written_at);
+  return { seq: Number(res.lastInsertRowid), ...row };
+}
 //
 // The script exercises every branch the four guards actually read:
 //
@@ -173,7 +213,14 @@ for (const [n, f] of Object.entries({ appendJournal, liveMarks, liveChildrenOf, 
 // `solo:gh:9000001` — a spelling of a spelling. Both happened on run 1, and both
 // were the harness rather than the port.
 const JOURNAL_HOUSEHOLD = { a: "guards-alfa", b: "guards-bravo" };
-const HOUSEHOLD_KEY = { a: "gh:9000001", b: "gh:9000002" };
+// POS-160: the resolved key is the house's SLUG. `householdKeyFor` reads the
+// REGISTRY (households + household_pins) rather than `identities`, so the
+// scratch seeds both below and they say the same thing — a harness that said it
+// one way in one table and another way in another is how a port gets blamed for
+// a fixture. The old spelling was `gh:9000001` / `gh:9000002`.
+const HOUSEHOLD_SLUG = { a: "guards-alfa-house", b: "guards-bravo-house" };
+const HOUSEHOLD_KEY = { a: `hh:${HOUSEHOLD_SLUG.a}`, b: `hh:${HOUSEHOLD_SLUG.b}` };
+const HOUSEHOLD_GH_ID = { a: 9000001, b: 9000002 };
 const ACTORS = { a: "guards-alfa", b: "guards-bravo" };
 
 const SCRIPT = [
@@ -214,6 +261,30 @@ async function plantPopulation(ownerClient, dbPath) {
       "INSERT INTO identities (handle, household, status) VALUES ($1,$2,'resident') ON CONFLICT (handle) DO UPDATE SET household = EXCLUDED.household",
       [handle, HOUSEHOLD_KEY[k]]);
 
+  // THE REGISTRY, which is what `householdKeyFor` reads since POS-160 — the
+  // store-of-record 019 made these three tables into, rather than the world
+  // repo's copy projected into `identities`. The floor applies 019/020/021 to
+  // this lane's database, so the tables are HERE and EMPTY, and an empty
+  // registry makes every claim `solo:<handle>` and G2 red for a reason that is
+  // the harness's rather than the port's — which is the same sentence the
+  // `identities` seed above was written to prevent, one table over.
+  //
+  // One house per actor, listing that actor, pinned to the same id the old
+  // `gh:` key named. Both roads the deriver walks (residents[] and the pin)
+  // therefore reach the same door, which is the scratch stating one fact once.
+  for (const [k, handle] of Object.entries(ACTORS)) {
+    await ownerClient.query(
+      `INSERT INTO households (slug, ord, name, accounts, residents, since, declared_by)
+       VALUES ($1, $2, $3, $4::jsonb, $5, '2026-08-28', 'falsifier-guard-equality scratch')
+       ON CONFLICT (slug) DO UPDATE SET residents = EXCLUDED.residents, accounts = EXCLUDED.accounts`,
+      [HOUSEHOLD_SLUG[k], k === "a" ? 0 : 1, `Guards ${k.toUpperCase()}`,
+       JSON.stringify([{ login: handle, id: HOUSEHOLD_GH_ID[k] }]), [handle]]);
+    await ownerClient.query(
+      `INSERT INTO household_pins (handle, login, gh_id, pinned) VALUES ($1, $2, $3, '2026-08-28')
+       ON CONFLICT (handle) DO UPDATE SET login = EXCLUDED.login, gh_id = EXCLUDED.gh_id`,
+      [handle, handle, HOUSEHOLD_GH_ID[k]]);
+  }
+
   // an open window — the docket pen refuses without one ("no open window — the
   // candle is dark"), and that refusal would be swallowed by its own queue.
   await ownerClient.query(
@@ -248,7 +319,7 @@ async function plantPopulation(ownerClient, dbPath) {
 
   const db = openDynamic(dbPath);
   for (const step of SCRIPT) {
-    appendJournal(db, {
+    const entry = {
       crossing: SCRATCH_WINDOW + 0.5,
       actor: ACTORS[step.who],
       household: JOURNAL_HOUSEHOLD[step.who],
@@ -259,7 +330,16 @@ async function plantPopulation(ownerClient, dbPath) {
       cls: CLASS_MARK,
       payload: step.payload,
       effect: "written by falsifier-guard-equality's population script",
-    });
+    };
+    // THE RECORD FIRST, AND AWAITED. `appendJournal` is async since G1 (RULING
+    // 3: the store is the write, and it refuses rather than answering over a
+    // lost act). Un-awaited, the loop finished before a single row had landed
+    // and every guard below read a store still being written -- the same class
+    // of defect as comparing against a docket that has not settled, which the
+    // block after this loop exists to prevent.
+    await appendJournal(db, entry);
+    // AND 1.0's ARM, which that call no longer feeds.
+    seedJournalRow(db, entry);
   }
   // THE AWAITED WRITE. The docket pen is fire-and-forget on a serial queue;
   // reading `claims` before it settles would compare 1.0's finished journal

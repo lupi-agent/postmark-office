@@ -13,8 +13,11 @@
 // — so this composes the same pieces rather than opening a second road.
 //
 // WHAT IT WRITES, and the discipline that makes it trustworthy: NOTHING OF ITS
-// OWN. The three files come from residency.mjs's `buildJoinFiles`, the registry
-// diff from its `planRegistryJoin`, the serialization from `serializeRegistry`.
+// OWN. The three files come from residency.mjs's `buildJoinFiles` and the
+// membership judgment from its `planRegistryJoin`. Since POS-158 the registry
+// is not a file this drain writes at all: it writes the ROWS, through
+// `src/ceremony.mjs § joinHousehold`, and `tools/registry-drain.mjs` renders
+// the town's two files from the record in the same act.
 // The drain-side equivalence the round was held to is not a test that two
 // implementations agree — there is only one implementation, and the drain is a
 // second CALLER of it. A row's drain output is what the pen lane would have
@@ -38,15 +41,17 @@ import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 
 import {
-  buildJoinFiles, gangwayState, planRegistryJoin, serializeRegistry, REGISTRY_PATH,
+  buildJoinFiles, gangwayState, planRegistryJoin,
 } from "./residency.mjs";
+// The record's readers and the ceremony (POS-158). `ceremony.mjs` is safe to
+// import statically here: it reaches `residency.mjs` through
+// `tools/registry-drain.mjs`, and nothing in that graph reaches back to this
+// file, so there is no cycle to close.
+import { loadRegistry } from "./registry-store.mjs";
+import { mintHousehold, joinHousehold, collectingDrain, NO_DRAIN } from "./ceremony.mjs";
 import {
   ensureTownJournal, pendingRows, rowIsSettleable, townDrainCursor, TOWN_DRAIN_CURSOR, SETTLE_THRESHOLD,
 } from "./town-journal.mjs";
-
-const readJson = (clone, rel) => {
-  try { return JSON.parse(readFileSync(join(clone, rel), "utf8")); } catch { return null; }
-};
 
 // ── THE GANGWAY REACHES THE SETTLEMENT ROAD ────────────────────────────────
 //
@@ -79,6 +84,18 @@ const readJson = (clone, rel) => {
 export const GANGWAY_HELD = (state) =>
   `the gangway is ${state} (HARBOR/GANGWAY.md) — the town is not taking arrivals, so this row settles when it lowers; nothing about it expires and nothing is lost by waiting`;
 
+// The other `waiting` sentence, and it belongs to the same pile for the same
+// reason: the row is lawful, its household is real, and the only thing wrong
+// with it is that this office could not reach the record this minute.
+/** A membership write that could not reach the record — same pile, same promise. */
+export const STORE_WRITE_FAILED = (e) =>
+  `this office could not write the town's record for this row (${String(e?.defect ?? e?.message ?? e).slice(0, 160)}) — `
+  + "nothing was written for it and it is still pending; the next crossing settles it. "
+  + "Nothing about it expires and nothing is lost by waiting.";
+
+export const UNREACHABLE_RECORD =
+  "this office could not read the town's record at this crossing, so nothing was settled and nothing was written — the row is still pending and the next crossing settles it; nothing about it expires and nothing is lost by waiting";
+
 /**
  * What this crossing WOULD settle, decided before anything is written.
  *
@@ -87,9 +104,29 @@ export const GANGWAY_HELD = (state) =>
  * to. Every row lands in exactly one of three piles, and the third is the one
  * the founder's tier line creates.
  */
-export function planTownDrain(odb, clone, { date }) {
+export async function planTownDrain(odb, clone, { date }) {
   const rows = pendingRows(odb);
-  const registry = readJson(clone, REGISTRY_PATH) ?? { schema_version: 1, households: {} };
+  // THE REGISTRY, FROM THE RECORD (POS-158). This used to read the clone's
+  // `tools/households.json` with an `?? { households: {} }` fallback, and that
+  // fallback was the dangerous half: against an empty registry every account is
+  // unknown and every house is available, so a crossing would fold `created`
+  // over rows whose houses already stand and mint duplicates of live rows —
+  // over the WHOLE pending log at once, unattended, at 00:00 UTC.
+  //
+  // `null` is therefore a refusal and not an emptiness. A crossing that cannot
+  // read the roll settles NOBODY and holds its cursor: every row stays pending
+  // and the next crossing, against a reachable record, settles them in their
+  // own order. Nothing is lost by waiting, which is the same shape the gangway
+  // already puts held rows in.
+  const registry = await loadRegistry();
+  if (registry === null)
+    return {
+      settle: [], waiting: rows.filter((r) => r.act === "declare-household" || r.act === "request-residency")
+        .map((row) => ({ row, why: UNREACHABLE_RECORD })),
+      skipped: [], plans: [], registry: null, unreachable: true,
+      gangway: { state: gangwayState(clone), held: 0 },
+      head: rows.length ? rows[rows.length - 1].seq : townDrainCursor(odb),
+    };
   const gangway = gangwayState(clone);
   const gangwayOpen = gangway === "open";
 
@@ -226,7 +263,7 @@ export function drainPenReady(clone) {
  * household, and it is the same discipline the world drain keeps (its truncate
  * and its cursor advance are one transaction, after the refs are written).
  */
-export function writeTownDrain(clone, plan, { date }) {
+export async function writeTownDrain(clone, plan, { date, drainWith = collectingDrain }) {
   const touched = [];
   const put = (rel, content) => {
     const abs = join(clone, rel);
@@ -248,7 +285,97 @@ export function writeTownDrain(clone, plan, { date }) {
     signedLedgerLines = signedRegistryLines(clone, bare);
   }
 
-  for (const { row } of plan.plans) {
+  // ── THE RECORD FIRST, THE CARDS SECOND (POS-158, review 2/6) ────────
+  //
+  // These two blocks used to run the other way round, and the order was the
+  // whole defect. A store failure between the plan and the write threw out of
+  // this function, out of `runTownDrain`, out of the tool — and the ferry chain
+  // is `&&`-joined, so a membership write failing stopped the TOWN'S MAIL. The
+  // ruling is that a membership write must never block the town.
+  //
+  // Writing the record first is what makes the deferral honest rather than
+  // cosmetic. With the cards written first, a failed store write left an
+  // ADDRESS card standing for a resident the record cannot account for — the
+  // broken covenant `src/declare-exec.mjs` names, reached by the other door.
+  // Now a row that cannot reach the record produces NO bytes at all: it is
+  // simply not settled this crossing, exactly like a row the gangway held.
+  //
+  // WHAT A FAILURE COSTS: one crossing's wait. The row stays pending, the
+  // cursor is held for it (`src/town-bridge.mjs` § THE STALLED ROWS HOLD THE
+  // CURSOR), the report names it under `store`, and the next crossing settles
+  // it. Nothing expires and nothing is lost — the same promise the gangway's
+  // held rows and the tier line's deferred rows already carry.
+  const stalled = [];
+  const landed = [];
+  const { drain } = drainWith({ clone });
+
+  for (const { row, plan: p } of plan.plans) {
+    if (!p) { landed.push({ row, plan: p }); continue; }
+    try {
+      // `created` IS THE EXCEPTION AND IT IS KEPT. Almost every row reaching
+      // here belongs to a house that already stands — the declare door mints at
+      // its own co-sign, and so does `requestResidency`. The one road that
+      // still arrives houseless is a join opened while this office could not
+      // reach the record (`residency.mjs` warns and opens the PR anyway, on the
+      // founder's 2026-08 call that a seam flicker must not turn anybody away).
+      // That row founds its house here rather than never.
+      if (p.action === "created")
+        await mintHousehold({
+          slug: p.slug,
+          name: p.houseLine,
+          coSign: { ghId: row.ghId, ghLogin: row.ghLogin },
+          // The siblings only — `joinHousehold` on the next line adds this
+          // row's own handle, so the two calls compose to the plan's
+          // `[...siblings, handle]` and the mint means the same thing here as
+          // it does at the door (`src/residency.mjs` § THE HOUSE FOUNDS
+          // HOLDING ITS SIBLINGS).
+          residents: [...(p.siblings ?? [])],
+          since: date,
+          declaredBy: p.registry.households[p.slug].declared_by,
+          drain: NO_DRAIN,
+        });
+      // `chosen` TAKES THE SAME ROAD, AND FOR THE SAME ONE REASON (POS-197). A
+      // provisional house's human chooses its key at the door, at the co-sign
+      // (`requestResidency`), and by the time the Registrar merges, the record
+      // already holds the chosen key and this plan comes back `appended`. The
+      // row that still arrives here `chosen` is the flicker road again: the
+      // door could not read the record, so the house did not choose there. It
+      // chooses here rather than never, through the same ceremony.
+      //
+      // A HOUSE THAT ALREADY CHOSE IS NOT REFUSED HERE. At the door that
+      // refusal is the answer; at the crossing the Registrar has already
+      // admitted this resident, and a refusal would stall the row — and hold
+      // the cursor — on every crossing forever over a nameplate. So an
+      // `already` plan mints nothing and joins the house under the key it chose
+      // (`p.slug` is that key for an `already` plan), which is what `appended`
+      // did before this branch existed.
+      else if (p.action === "chosen" && !p.already)
+        await mintHousehold({
+          slug: p.to,
+          name: p.houseLine,
+          coSign: { ghId: row.ghId, ghLogin: row.ghLogin },
+          since: date,
+          declaredBy: p.registry.households[p.slug].declared_by,
+          drain: NO_DRAIN,
+        });
+      await joinHousehold({
+        slug: p.slug,
+        handle: row.handle,
+        coSign: { ghId: row.ghId, ghLogin: row.ghLogin },
+        pinnedOn: date,
+        drain: NO_DRAIN,
+      });
+      landed.push({ row, plan: p });
+    } catch (e) {
+      // NAMED, NEVER SWALLOWED. The sentence is the row's own `why`, in the
+      // same shape `planTownDrain` gives an unreachable record, so an operator
+      // reading the report cannot tell which half of the crossing deferred it
+      // and does not need to.
+      stalled.push({ row, why: STORE_WRITE_FAILED(e) });
+    }
+  }
+
+  for (const { row } of landed) {
     // The pen lane's own three files, from the pen lane's own function.
     for (const f of buildJoinFiles({
       handle: row.handle,
@@ -262,17 +389,45 @@ export function writeTownDrain(clone, plan, { date }) {
     })) put(f.path, f.content);
   }
 
-  if (plan.plans.length) {
-    put(REGISTRY_PATH, serializeRegistry(plan.registry));
+  if (landed.length) {
+    // ONE DRAIN FOR THE WHOLE CROSSING, after the last row that landed — so the
+    // town's history carries one registry commit per crossing, exactly as it
+    // did when this was a single `put(REGISTRY_PATH, …)`, rather than one per
+    // settled resident. Every mint above defers (`NO_DRAIN`) for that reason.
+    const drained = await drain();
+    // A REFUSED DRAIN IS NOT A SILENT ONE. `drainRegistry` refuses rather than
+    // shrink the registry (its § THE DRAIN NEVER SHRINKS), and a crossing that
+    // wrote its rows into the record and then could not render them must say
+    // so where a person reads it — the ferry's report — rather than return a
+    // short list of touched paths that looks like an ordinary quiet crossing.
+    if (drained?.refused) touched.refused = drained.refused;
+    for (const rel of drained?.changed ?? []) touched.push(rel);
     // and the ledger's appended lines — one per settled resident, dated, SIGNED
     // (#2040: the bare append was the office's one unsigned ledger writer; the
     // seal chain is the clone's own stamp-mint's, computed above, before any write).
+    //
+    // ONE LINE PER ROW THAT ACTUALLY LANDED. The lines are signed before any
+    // byte is written (§ THE SIGNING COMES FIRST), over the WHOLE plan, so a
+    // row that stalled at the store has a signed line here that must NOT be
+    // appended: the ledger is append-only and replayed, and a `registry:` line
+    // for a resident the record does not hold would turn that replay red at the
+    // next crossing. They are selected by position against `plan.plans`, which
+    // is the order they were signed in.
     if (signedLedgerLines) {
-      const prior = readFileSync(ledgerAbs, "utf8");
-      writeFileSync(ledgerAbs, prior.replace(/\s*$/, "\n") + signedLedgerLines.join("\n") + "\n");
-      touched.push(ledgerRel);
+      const keep = new Set(landed.map(({ row }) => row.seq));
+      const lines = signedLedgerLines.filter((_, i) => keep.has(plan.plans[i].row.seq));
+      if (lines.length) {
+        const prior = readFileSync(ledgerAbs, "utf8");
+        writeFileSync(ledgerAbs, prior.replace(/\s*$/, "\n") + lines.join("\n") + "\n");
+        touched.push(ledgerRel);
+      }
     }
   }
+  // The stalled rows ride OUT, on the array, for the same reason `refused`
+  // does: `runTownDrain` is what holds the cursor and writes the report, and a
+  // deferral that did not reach it would be a row dropped under a sentence
+  // promising it was kept.
+  if (stalled.length) touched.stalled = stalled;
   return touched;
 }
 

@@ -4,6 +4,11 @@
 //   node tools/crossing-save.mjs [--at <iso>] [--world <clone>] [--state <dir>]
 //                                [--db <path>] [--no-refresh] [--no-commit]
 //                                [--prune] [--json]
+//   node tools/crossing-save.mjs --check [--window <N>[,<N>…]] [--world <clone>]
+//
+// `--check` (POS-196) renders the departure record from the REGISTER and diffs
+// it against `STATE/log/<N>.jsonl` on disk, on the fields the world repo
+// actually reads. It writes nothing. Exit 1 is its verdict, not its health.
 //
 // The model is a game's save, and THE CROSSING IS THE SAVE TICK — the cadence is
 // the town's existing heartbeat, not a new clock. dynamic.db's live layer
@@ -62,15 +67,15 @@ import { dirname, join, resolve } from "node:path";
 
 import { penCommit } from "../src/write.mjs";
 import { WORLD_CLONE } from "../src/world-store.mjs";
-import { movementV2Enabled, openDynamic, putMeta, getMeta } from "../src/dynamic-store.mjs";
+import { openDynamic, putMeta, getMeta } from "../src/dynamic-store.mjs";
+import { world2Enabled } from "../src/world2-acts.mjs";
 import {
   readDepartureEvents, governingAt, entityFromDeparture, byHandle,
-  refreshEntities, readEntities, readAttachments, readMovements,
+  refreshEntities, readEntities, readAttachments,
   mergedDepartureEvents, walkModule,
 } from "../src/dynamic-entities.mjs";
+import { DEPARTURE_GAPS, RECORD_READ_FIELDS, storedDepartureEvents } from "../src/world-movement.mjs";
 import { emissionsBetween, pruneEmissions } from "../src/dynamic-emissions.mjs";
-import { readJournal } from "../src/world-journal.mjs";
-import { enterExitLedgerText } from "../src/enter-exit-ledger.mjs";
 
 const argOf = (name, fallback = null) => { const i = process.argv.indexOf(name); return i !== -1 ? process.argv[i + 1] : fallback; };
 const flag = (name) => process.argv.includes(name);
@@ -186,6 +191,203 @@ export function buildSave({ crossing, boundaryMs, fromMs, toMs, crossingMs, even
 // and it is the world's own tools/walk.mjs, which this pure builder must not
 // reach for. (The no-literals law, applied to a duration.)
 
+// ═════════════════════════════════════════════════════════════════════════════
+// POS-196 · `--check`: THE RECORD ON DISK AGAINST THE RECORD IN THE REGISTER
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// G1 removes `dynamic.db/movements`, and the departure half of this tool is the
+// world repo's ONLY live writer of that record. Before the write may move to
+// the register, the two have to be shown to agree — on the fields that are
+// actually READ, which is the whole of `movement-records.mjs § storeRecords`
+// and its two callers, and not on the fields nobody in that repo opens.
+//
+// The shape is POS-155's (`world2/tools/state-log-write.mjs --check`): render
+// the window, diff it against the file, class every difference, and let an
+// UNEXPLAINED one outrank a known gap in the one line a reader gets.
+//
+// ⚑ IT WRITES NOTHING AND COMMITS NOTHING. `--check` is the instrument Wright
+// runs by hand on the box; three windows clean is what earns the swap.
+//
+// ⚑ THE PAIRING KEY IS `(actor, payload.crossing)`, NOT `at` AND NOT `seq`,
+// because those two are exactly the quantities under measurement — pairing on a
+// field that is expected to differ reports every line as a pair of orphans and
+// the real disagreements drown. `crossing` is safe to pair on because ONE
+// variable fills it on both sides: `world.mjs § walkViaOffice` computes
+// `fractionalCrossing()` once and hands it to `declareMovement`'s `crossing`
+// and to `walkEntry`'s `crossing` alike. Unique across the last ten windows'
+// 218 lines, 218 distinct keys.
+
+/** The store-era lines of one `<N>.jsonl`. Era one carries `line_no` and no `source`, and is not this record's half. */
+export const storeEraLines = (lines) => lines.filter((l) => {
+  const p = l.payload ?? {};
+  return p.source === "dynamic.db/movements" || p.source === "acts";
+});
+
+const departureKey = (l) => `${l.actor}|${(l.payload ?? {}).crossing}`;
+
+const valueAt = (line, path) => {
+  const [head, tail] = path.split(".");
+  const v = tail ? (line[head] ?? {})[tail] : line[head];
+  return v === undefined ? null : v;
+};
+
+/**
+ * Two departure lines, field by field. `read` is the verdict that decides the
+ * exit code — every field `RECORD_READ_FIELDS` names, compared as bytes
+ * (`JSON.stringify`, so `{x,y}` key order counts too). The rest are classed and
+ * reported so an operator can see the shape of what is left over.
+ */
+export function compareDepartureLine(fileLine, derivedLine) {
+  const causes = [];
+  for (const path of RECORD_READ_FIELDS) {
+    const a = JSON.stringify(valueAt(fileLine, path));
+    const b = JSON.stringify(valueAt(derivedLine, path));
+    if (a !== b) causes.push({ field: path, read: true, file: a, derived: b });
+  }
+  const gapped = [
+    ["seq", fileLine.seq, derivedLine.seq],
+    ["payload.declared_by", (fileLine.payload ?? {}).declared_by, (derivedLine.payload ?? {}).declared_by],
+    ["payload.note", (fileLine.payload ?? {}).note ?? null, (derivedLine.payload ?? {}).note ?? null],
+    ["payload.source", (fileLine.payload ?? {}).source, (derivedLine.payload ?? {}).source],
+  ];
+  for (const [field, a, b] of gapped) {
+    if (JSON.stringify(a) !== JSON.stringify(b)) causes.push({ field, read: false, file: JSON.stringify(a), derived: JSON.stringify(b) });
+  }
+  return causes;
+}
+
+/**
+ * Which named gap a difference falls in. Anything this does not recognise is
+ * `unexplained`, and that word is the point of the check: a known gap is a cost
+ * already measured and written down, and anything else is a finding.
+ */
+export function gapClassOf(cause) {
+  if (cause.field === "at") return "at";
+  if (cause.field === "seq") return "seq";
+  if (cause.field === "payload.declared_by") return "declared_by";
+  if (cause.field === "payload.note") return "note";
+  if (cause.field === "payload.source") return "source";
+  return "unexplained";
+}
+
+/** Pair the two sides on the key, oldest first. Nothing is dropped; an unpaired line on either side is named. */
+export function pairDepartures(fileLines, derivedLines) {
+  const byKey = new Map(derivedLines.map((l) => [departureKey(l), l]));
+  const paired = [], onlyInFile = [];
+  for (const f of fileLines) {
+    const k = departureKey(f);
+    const d = byKey.get(k);
+    if (!d) { onlyInFile.push(f); continue; }
+    byKey.delete(k);
+    paired.push({ key: k, file: f, derived: d });
+  }
+  return { paired, onlyInFile, onlyInDerived: [...byKey.values()] };
+}
+
+/**
+ * ONE WINDOW, CHECKED.
+ *
+ * The horizon is the file's OWN declared window (`<N>.meta.json`'s
+ * `covers_from` / `covers_to`), applied to both sides — POS-155's rule, for its
+ * reason: the derivation and the file must be cut at the same instant or every
+ * line outside the overlap is reported as a finding that is really a boundary.
+ *
+ * With no meta on disk the crossing's own bounds stand in, and the check says
+ * which of the two it used rather than leaving a reader to guess.
+ */
+export async function checkDepartureWindow({ crossing, stateDir, crossingStartMs, crossingMs }) {
+  const logPath = join(stateDir, "log", `${crossing}.jsonl`);
+  const metaPath = join(stateDir, "log", `${crossing}.meta.json`);
+  if (!existsSync(logPath)) {
+    return { crossing, refused: "no-file", detail: `${logPath} does not exist — the record is dark for this crossing`, path: logPath };
+  }
+
+  let fromMs = crossingStartMs, toMs = crossingStartMs + crossingMs, horizon = "the crossing's own bounds (no meta on disk)";
+  if (existsSync(metaPath)) {
+    try {
+      const m = JSON.parse(readFileSync(metaPath, "utf8"));
+      const a = Date.parse(m.covers_from), b = Date.parse(m.covers_to);
+      if (Number.isFinite(a) && Number.isFinite(b)) { fromMs = a; toMs = b; horizon = `${m.covers_from} … ${m.covers_to} (the file's own meta)`; }
+    } catch { /* an unreadable meta is not a reason to refuse; the crossing's bounds stand in and the horizon says so */ }
+  }
+
+  const all = [], unparsed = [];
+  for (const raw of readFileSync(logPath, "utf8").split("\n")) {
+    if (!raw.trim()) continue;
+    try { all.push(JSON.parse(raw)); } catch { unparsed.push(raw.slice(0, 80)); }
+  }
+  const fileDepartures = all.filter((l) => l.type === "departure");
+  const fileLines = storeEraLines(fileDepartures);
+  const ledgerEra = fileDepartures.length - fileLines.length;
+
+  const { events, absent } = await storedDepartureEvents({ atMs: toMs });
+  if (absent) return { crossing, refused: "register", detail: absent, path: logPath };
+
+  const inWindow = (iso) => { const t = Date.parse(iso); return t >= fromMs && t < toMs; };
+  const derivedLines = events.filter((e) => inWindow(e.at)).map((e) => ({
+    at: e.at, type: "departure", actor: e.actor, seq: e.seq,
+    payload: typeof e.payload === "string" ? JSON.parse(e.payload) : e.payload,
+  }));
+
+  const { paired, onlyInFile, onlyInDerived } = pairDepartures(fileLines, derivedLines);
+
+  const classes = {};
+  let firstUnexplained = null, firstKnown = null, firstRead = null;
+  const note = (k, text, read) => {
+    classes[k] = (classes[k] ?? 0) + 1;
+    if (k === "unexplained") { if (!firstUnexplained) firstUnexplained = text; return; }
+    if (read && !firstRead) firstRead = text;
+    if (!firstKnown) firstKnown = text;
+  };
+  for (const p of paired) {
+    for (const c of compareDepartureLine(p.file, p.derived)) {
+      const k = gapClassOf(c);
+      note(k, `${p.key} · ${DEPARTURE_GAPS[k] ?? DEPARTURE_GAPS.unexplained} · field ${c.field}: file ${c.file}, register ${c.derived}`, c.read);
+    }
+  }
+  for (const l of onlyInFile) note("unexplained", `${departureKey(l)} · ${DEPARTURE_GAPS.unexplained} · in the file, not in the register`, true);
+  for (const l of onlyInDerived) note("unexplained", `${departureKey(l)} · ${DEPARTURE_GAPS.unexplained} · in the register, not in the file`, true);
+  for (const raw of unparsed) note("unexplained", `a line the file holds that is not JSON (${raw}) · ${DEPARTURE_GAPS.unexplained}`, true);
+
+  // THE VERDICT IS THE READ FIELDS, and the rank is unexplained → read → known.
+  // The `source` stamp differs on every line by construction once the writer
+  // moves, so leading with "the first difference in order" would bury the one
+  // line a reader needs under a cost the town has already accepted.
+  const readEqual = paired.every((p) => !compareDepartureLine(p.file, p.derived).some((c) => c.read))
+    && onlyInFile.length === 0 && onlyInDerived.length === 0 && unparsed.length === 0;
+
+  return {
+    crossing, path: logPath, horizon,
+    file_lines: fileLines.length, ledger_era: ledgerEra, derived_lines: derivedLines.length,
+    paired: paired.length, only_in_file: onlyInFile.length, only_in_register: onlyInDerived.length,
+    unparsed: unparsed.length,
+    read_equal: readEqual,
+    read_fields: RECORD_READ_FIELDS,
+    classes,
+    first_difference: firstUnexplained ?? firstRead ?? firstKnown ?? null,
+    // AN EMPTY WINDOW IS NOT CLEAN. Nothing was compared, so nothing was shown,
+    // and a check that answers "green, I looked at nothing" is the starving
+    // crossing one layer down.
+    note: (fileLines.length || derivedLines.length) ? null
+      : "the window holds no store-era departures on either side — nothing to compare, which is not the same as equal",
+  };
+}
+
+/** Every window asked for, and the run's one-word verdict. */
+export async function checkDepartures({ crossings, stateDir, crossingStartMs, crossingMs }) {
+  const windows = [];
+  for (const c of crossings) {
+    windows.push(await checkDepartureWindow({ crossing: c, stateDir, crossingStartMs: crossingStartMs(c), crossingMs }));
+  }
+  const compared = windows.filter((w) => !w.refused && !w.note);
+  return {
+    windows,
+    clean: compared.length > 0 && compared.every((w) => w.read_equal) && windows.every((w) => !w.refused),
+    compared: compared.length,
+    read_fields: RECORD_READ_FIELDS,
+  };
+}
+
 const writeIfChanged = (path, text) => {
   mkdirSync(dirname(path), { recursive: true });
   if (existsSync(path) && readFileSync(path, "utf8") === text) return false;
@@ -210,6 +412,35 @@ async function main() {
   const crossing = Math.floor(walk.fractionalCrossing(saveMs));
   const boundaryMs = crossingStartMs(crossing);
 
+  // ── `--check`: READ ONLY, AND IT LEAVES BEFORE ANY STORE IS OPENED ────────
+  // The instrument runs against the register and the files on disk. It opens no
+  // `dynamic.db`, takes no lock, writes nothing and commits nothing — so it is
+  // safe to run on the box while the save's own timer is armed. Its exit code
+  // is its VERDICT, not its health: 1 means the two records disagree on a field
+  // the world reads, which is a finding and not a fault in the tool.
+  if (flag("--check")) {
+    const arg = argOf("--window", null);
+    const crossings = arg
+      ? arg.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n))
+      : [crossing - 1, crossing].filter((n) => n >= 0);
+    if (!crossings.length) return die(2, "check-window", `unreadable --window: ${arg}`);
+    const out = await checkDepartures({ crossings, stateDir: STATE_DIR, crossingStartMs, crossingMs });
+    if (JSON_OUT) console.log(stableJson(out));
+    else {
+      for (const w of out.windows) {
+        if (w.refused) { console.log(`crossing ${w.crossing}: REFUSED ${w.refused} — ${w.detail}`); continue; }
+        console.log(`crossing ${w.crossing}: ${w.read_equal ? "EQUAL" : "DIFFERS"} on the read fields — ` +
+          `${w.paired} paired, ${w.file_lines} in the file (${w.ledger_era} era one), ${w.derived_lines} in the register`);
+        console.log(`  horizon: ${w.horizon}`);
+        if (w.note) console.log(`  ${w.note}`);
+        for (const [k, n] of Object.entries(w.classes)) console.log(`  ${n} × ${DEPARTURE_GAPS[k] ?? k}`);
+        if (w.first_difference) console.log(`  first: ${w.first_difference}`);
+      }
+      console.log(`\n${out.clean ? "CLEAN" : "NOT CLEAN"} — ${out.compared} window(s) compared on ${out.read_fields.join(", ")}`);
+    }
+    process.exit(out.clean ? 0 : 1);
+  }
+
   const db = openDynamic(DB_PATH ?? undefined);
 
   // The store and the save must share ONE clock, or the replay check compares
@@ -229,7 +460,35 @@ async function main() {
   // into ONE ordered list before anything is built, so the log lines, the
   // snapshot's governing departures and the replay all read one vocabulary and
   // the seam is invisible to every one of them.
-  const storeMovements = movementV2Enabled() ? readMovements(db, { until: saveMs }) : [];
+  //
+  // ── THE RECORD IS WRITTEN FROM THE REGISTER (POS-196's held swap, POS-156) ─
+  //
+  // This read was `readMovements(db)` — `dynamic.db/movements`, the
+  // REVERSE-MIRROR copy G1 removes, and the source stamped on all 2,857 of the
+  // record's store-era lines. It is `storedDepartureEvents` now: the same
+  // departures rendered from `acts`, in this file's own `events` row shape, so
+  // `mergedDepartureEvents`, `buildSave` and every replay read one vocabulary
+  // and the swap is a change of WRITER, not of meaning. The rendered lines are
+  // stamped `"source":"acts"` — the one allowed diff, which no world reader
+  // reads (`RECORD_READ_FIELDS`).
+  //
+  // POS-196 built this renderer and held the swap on one measured STOP: the
+  // register had no departure INSTANT, and `at` is the first field every world
+  // reader reads and the key `mergedRecords` orders and cuts on. POS-198 closed
+  // it — one clock read in `walkViaOffice`, handed to both pens.
+  //
+  // ⚑ `absent` IS A REFUSAL HERE, never an empty list. The thing this tool
+  // would otherwise commit is a PUBLIC FILE: an unreachable register that read
+  // as `[]` would write a window holding only the frozen era over a good one
+  // and push it. `world2Enabled()` false is the other case and it is not a
+  // failure — an office pointed at no register has no live era at all, exactly
+  // as `movementV2Enabled()` false meant before.
+  let storeMovements = [];
+  if (world2Enabled()) {
+    const stored = await storedDepartureEvents({ atMs: saveMs });
+    if (stored.absent) { db.close(); return die(4, "register", stored.absent); }
+    storeMovements = stored.events;
+  }
   const departureEvents = storeMovements.length ? mergedDepartureEvents(read.events, storeMovements) : read.events;
 
   const attachments = readAttachments(db);
@@ -312,11 +571,21 @@ async function main() {
   // (World 2.0's database migration supersedes this seam. Until then the
   // passage record has exactly one writer, and it is the reader.)
   //
-  // What remains is a READ: the same derivation the door performs, counted for
-  // the report so the operator can still see the record moving. It writes no
-  // file, commits nothing, and does not truncate the journal.
-  const derivedActs = (await enterExitLedgerText(CLONE, readJournal(db)))
-    .split("\n").filter((l) => l.startsWith("- ")).length;
+  // ── AND THE REPORT'S COUNT IS GONE TOO (G1 / POS-156, 2026-09-22) ────────
+  //
+  // What remained here was a READ: `enterExitLedgerText(CLONE, readJournal(db))`,
+  // counted for the report so the operator could see the record moving. Its
+  // source was the sqlite journal's frame rows, and G1 deletes the INSERT that
+  // filled them — so the number it printed would be the FROZEN ERA's 155 lines
+  // on every run for ever, a count that cannot move, reported as "the record
+  // moving". A stale instrument is worse than none: it answers.
+  //
+  // It is deleted rather than re-pointed. The live era HAS a reader and it is
+  // not this tool: POS-194 moved `servedEnterExitLedger` onto `acts`
+  // (`enter-exit-ledger.mjs § livePassageRows`), and the
+  // `/world/enter-exit-ledger` door and the viewer read it there. A second
+  // count derived on the save's own clock would be a second answer to a
+  // question that already has an owner.
 
   // A STATE directory outside the clone is a legitimate thing to write (tests
   // do it), but it is not something the pen can commit — and a save that
@@ -371,7 +640,7 @@ async function main() {
     // says how many acts the read would serve, because a number that stops
     // moving is how the two-day staleness was finally noticed, and losing the
     // number would be trading one silence for another.
-    enter_exit_ledger: { written: false, derived_acts: derivedActs, where: "derived at read time from the frozen era + the office journal; the committed copy is the frozen era by the world repo's own law (#2152)" },
+    enter_exit_ledger: { written: false, where: "derived at read time from the frozen era + the REGISTER (POS-194, `livePassageRows`); the committed copy is the frozen era by the world repo's own law (#2152). The `derived_acts` count this used to carry read the sqlite journal and went with G1 — ask the door, which owns that derivation" },
     prune,
   };
   db.close();
@@ -384,7 +653,7 @@ async function main() {
   console.log(`  files    ${written.length ? written.length + " changed" : "no change — the save is idempotent"}`);
   console.log(`  commit   ${commit ?? (flag("--no-commit") ? "skipped (--no-commit)" : (inClone ? "nothing to commit" : "skipped — STATE/ is outside the world clone"))}${pushed ? " · pushed" : ""}${push_error ? ` · PUSH FAILED: ${push_error}` : ""}`);
   console.log(`  world    ${String(read.as_of_world).slice(0, 12)} hydrated ${read.hydrated_at}${read.fresh === false ? "  (the walk ledger has MOVED since — disclosed in this report)" : ""}`);
-  console.log(`  passages ${derivedActs} in the derived record · NOT written — the save has no pen here (#2152)`);
+  console.log("  passages · NOT written — the save has no pen here (#2152); the derived record is the door's (GET /world/enter-exit-ledger)");
   for (const d of read.disclosed) console.log(`  DISCLOSED ${d}`);
   if (prune) console.log(`  prune    ${prune.refused ?? `${prune.pruned} faded emission(s) dropped (occurrence saved through ${prune.horizon})`}`);
 }

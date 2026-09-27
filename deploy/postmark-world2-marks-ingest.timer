@@ -1,0 +1,23 @@
+[Unit]
+Description=World 2.0 marks ingest poll, every 15 minutes — acts only on a new blessing (POS-142)
+
+[Timer]
+# :12/:27/:42/:57 — five minutes after the office tick's :07/:22/:37/:52, because
+# the tick's fetch is what carries a fresh `settlement/S<n>` tag into the
+# office's world clone (office-tick.sh § settlements-on-tick). The keeper blesses
+# at :20 after a 06:00/18:00 crossing, the :22 tick fetches the tag, and this
+# fire at :27 ingests it. Off the law pen's :04/:19/:34/:49 and the candle's :45,
+# so the two store pens and the clearing never contend for the same minute.
+#
+# A fire with no new blessing is a no-op that still writes its state file — the
+# heartbeat proves the pen is alive between blessings, not only on the two days
+# a week something changes.
+OnCalendar=*-*-* *:12,27,42,57:00 UTC
+RandomizedDelaySec=45
+# A missed fire is repaired by the next one (the ingest reads the head it left
+# and the newest tag), so a catch-up burst at boot buys nothing.
+Persistent=false
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

@@ -418,6 +418,75 @@ export function classifyCrossing({ servedCrossing, officeCrossing, nowMs, graceM
   };
 }
 
+// ── §2c THE BUILD THAT PUBLISHED WITH PROBLEMS (POS-180, 2026-09-21) ────────
+//
+// Every other freshness probe here asks "is the site CURRENT?". This one asks
+// a question none of them can: the site is current, and something inside it is
+// not. On 2026-09-21 the town shed a bulletin entry, the entry door 404'd, and
+// the site build refused to publish at all — every page on postmark.town froze
+// for thirty minutes over one deleted entry. POS-166 and POS-180 make that a
+// DROP instead of an outage: the build publishes, the shed thing leaves, a
+// 404'd resident keeps the row they had, and the build writes down what it
+// could not get.
+//
+// The founder's ruling is the whole design of this probe: "We just need to know
+// this happened, not block things on it." A drop that nothing can see is not a
+// fix, it is a silence — and until this probe existed, `problems` was assembled
+// by the site's fetch and written only to a build log nobody reads on a
+// schedule. This is the half that makes the drop safe.
+//
+// WHY STALE AND NOT DOWN. The site is up, fresh, and serving. What is wrong is
+// that one row in it is held over from an earlier build, or one entry the town
+// still names is missing. DOWN would say the site is unreachable, which is
+// false, and a probe that cries outage over a shed handle is the alarm a reader
+// learns to ignore. STALE is already this file's word for "what is served is
+// behind what it should be", it is already in BAD so it alarms and reminds, and
+// it is the true sentence here. No new severity is invented for it.
+//
+// FOUR STATES, AND THE DEPLOY-ORDER TRAP IS THE THIRD ONE.
+//   a list with rows  the build published and could not get these things.
+//   an empty list     the build asked for everything and got it.
+//   `problems: null`  a POS-180 stamper that could not read its own manifest.
+//                     Unread, never clean — UNKNOWN, the same way every other
+//                     null on that stamp is read.
+//   NO KEY AT ALL     an older stamper. This is not a fault and MUST NOT red:
+//                     the two repos deploy independently, so between the office
+//                     shipping this probe and the site shipping the field,
+//                     every build.json prod serves is keyless. A probe that
+//                     alarmed there would page the founder for the duration of
+//                     an ordinary rollout, about a site that is working. INFO
+//                     is this file's existing word for a probe that is counted,
+//                     never alarmed and never silent, and it is exactly right
+//                     while the field is not adopted yet.
+export function classifyProblems({ haveStamp = false, problems = undefined } = {}) {
+  if (!haveStamp) {
+    return { verdict: "UNKNOWN", reason: "the deployed site serves no /build.json at all, so it cannot say what its build could not get" };
+  }
+  if (problems === undefined) {
+    return { verdict: "INFO", reason: "this build's stamp predates the `problems` field (postmark-site tools/build-stamp.mjs, POS-180) — an older build is still being served, which is an ordinary rollout and not a fault" };
+  }
+  if (problems === null) {
+    return { verdict: "UNKNOWN", reason: "the build stamp carries `problems: null` — the build could not read its own town manifest, so it cannot say what it failed to get; unread is never clean" };
+  }
+  if (!Array.isArray(problems)) {
+    return { verdict: "UNKNOWN", reason: `the build stamp's \`problems\` is a ${typeof problems}, not a list — the stamp cannot be read on this point` };
+  }
+  if (problems.length === 0) {
+    return { verdict: "OK", reason: "the build that published this site got everything it asked the office for" };
+  }
+  // NAMED, NOT COUNTED. A reader who is paged at 3am needs the entity and the
+  // door, because the action differs completely: a shed handle is nothing to do,
+  // a resident whose card has been 404ing for a week is an office bug. The
+  // count leads so the shape of the failure is readable at a glance, and the
+  // lines follow so it is actionable without a second lookup.
+  const shown = problems.slice(0, 3).map((p) => String(p).slice(0, 200));
+  const more = problems.length - shown.length;
+  return {
+    verdict: "STALE",
+    reason: `the site published with ${problems.length} problem${problems.length > 1 ? "s" : ""} its build could not get: ${shown.join(" · ")}${more > 0 ? ` · and ${more} more` : ""}`,
+  };
+}
+
 /** "1h12m" / "45m" / "3d 2h" — short enough to read inside a sentence. */
 export function humanDuration(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "an unknown time";
@@ -950,6 +1019,15 @@ export async function tick({
     officeCrossing, nowMs, graceMs: config.crossingGrace,
   });
   probes.push({ key: "site_crossing", label: "the crossing the site is showing", kind: "fresh", verdict: cr.verdict, reason: cr.reason });
+
+  // §2c — WHAT THE BUILD THAT PUBLISHED THIS SITE COULD NOT GET. Outside the
+  // `if (!stamp)` branch for the same reason §2b is: an absent stamp is a
+  // condition this probe must speak about in its own words, not one it should
+  // vanish into. `stamp.problems` is `undefined` when the key is absent (an
+  // older stamper) and `null` when a POS-180 stamper could not read its own
+  // manifest, and those are two different sentences — see classifyProblems.
+  const pr = classifyProblems({ haveStamp: Boolean(stamp), problems: stamp ? stamp.problems : undefined });
+  probes.push({ key: "site_build_problems", label: "what the site's build could not get", kind: "fresh", verdict: pr.verdict, reason: pr.reason });
 
   if (!stamp) {
     notes.push(`no build stamp at ${config.buildStamp} — the site's own freshness cannot be read until the site repo emits one (see tools/build-stamp.mjs in postmark-site)`);

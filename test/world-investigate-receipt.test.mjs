@@ -26,8 +26,10 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const SOURCE_WORLD = "G:/Postmark/repo-clones/wright/postmark-world";
-const HAVE_SOURCE = existsSync(join(SOURCE_WORLD, "WORLD", "world-state.json"));
+import { NO_WORLD, worldClone } from "./fixture-paths.mjs";
+
+const SOURCE_WORLD = worldClone();
+const HAVE_SOURCE = !!SOURCE_WORLD && existsSync(join(SOURCE_WORLD, "WORLD", "world-state.json"));
 
 const repo = mkdtempSync(join(tmpdir(), "pm-receipt-fixture-"));
 const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
@@ -75,7 +77,7 @@ if (HAVE_SOURCE) {
   process.env.WORLD_CLONE = repo;
 }
 
-const skip = HAVE_SOURCE ? false : `no world clone at ${SOURCE_WORLD} — this fixture needs the town's real engine and skeleton`;
+const skip = HAVE_SOURCE ? false : (SOURCE_WORLD ? `the world clone at ${SOURCE_WORLD} carries no WORLD/world-state.json — this fixture needs the town's real engine and skeleton` : NO_WORLD);
 const door = async () => (await import("../src/world.mjs")).worldInvestigate;
 
 test("RED CONTROL: the fixture is the shape — canon holds one mark, the sketchbook holds the other, neither knows the third", { skip }, () => {

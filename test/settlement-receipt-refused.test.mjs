@@ -157,13 +157,23 @@ test("THE BRIEF'S CONTROL: a clean report leaves the receipt exactly as it was",
   // A new key on an ordinary night reaches every consumer downstream, so the
   // list is asserted rather than the one field: adding a second key quietly is
   // the same defect as adding this one.
+  //
+  // `state_log` joined it on 2026-09-22 (POS-155), and this guard is what made
+  // that a decision rather than a side effect — it went red on the commit that
+  // added the channel, which is the whole reason it is a list.
   assert.deepEqual(Object.keys(r), [
     "at", "status", "town_sha", "world_from", "world_to", "source", "by_hand",
     "sketchbook_ghosts", "sketchbook_kept_undelivered", "sketchbook_resets",
-    "as_of", "drain", "store", "registry", "surveyed", "surveyed_reading",
+    "as_of", "drain", "store", "state_log", "registry", "surveyed", "surveyed_reading",
     "retired", "channels", "quarantined", "isolated", "harm", "suite",
     "class", "next_step", "refusal", "detail",
   ]);
+
+  // AND ON AN ORDINARY CROSSING IT SAYS THE STEP DID NOT RUN, rather than
+  // being absent. `ran: false` and a missing key read the same to a human and
+  // differently to every consumer downstream — which is the distinction this
+  // channel exists to make about the archive in the first place.
+  assert.deepEqual(r.state_log, { ran: false });
 });
 
 test("a FOLD REFUSAL's cause names its mark too — the other half of the same grammar", () => {

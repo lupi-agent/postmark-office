@@ -86,7 +86,11 @@ const { world2MyMarks } = await import("../src/world2-serve.mjs");
 
 // ── the fixture store ───────────────────────────────────────────────────────
 
-const HOUSEHOLD = "gh:pos104";
+// POS-160: the door's key is the house's SLUG now, so the fixture spells it
+// the way the store will. Nothing about WHICH LISTS this suite is about moved —
+// the same handle, the same rows, the same three lists — only the spelling of
+// the one string they are all scoped by, which is the lane's whole point.
+const HOUSEHOLD = "hh:pos104";
 const TOWN_SHA = "610c43e7e5a7fabbcd340812b574c41ac31702f1";
 // A handle nothing else in the suite uses: `world2-claims.mjs` keeps a
 // process-wide `householdKeys` cache, and a shared handle would let one test's
@@ -139,8 +143,29 @@ function fixturePool({ marks = PUBLISHED_ROWS, claims = CLAIM_ROWS, escrow = ESC
   const asked = [];
   const answer = async (sql, params) => {
     asked.push({ sql: String(sql).replace(/\s+/g, " ").trim(), params });
-    if (/current_setting\('app\.household'/.test(sql)) return { rows: [{ declared: HOUSEHOLD }] };
+    // THE TWO SESSION SETTINGS (POS-160 RULING 4). `app.household` is the one
+    // current spelling; `app.household_keys` is the SET the store's four draft
+    // policies compare against (`024_household_spellings.sql`), and
+    // `guard-reads.mjs § assertHouseholdDeclared` refuses a read on a
+    // connection that declared only the first — because the store never
+    // re-spells a row, so a guard reading one spelling sees part of a house and
+    // PERMITS on the rest of it. This house wears one spelling, so its set is
+    // one long; the shape is what the stub has to answer.
+    if (/current_setting\('app\.household'/.test(sql))
+      return { rows: [{ declared: HOUSEHOLD, keys: [HOUSEHOLD] }] };
+    if (/current_setting\('app\.household_keys'/.test(sql)) return { rows: [{ keys: [HOUSEHOLD] }] };
     if (/FROM identities WHERE handle/i.test(sql)) return { rows: [{ household: HOUSEHOLD }] };
+    // THE REGISTRY, which is what `householdKeyFor` reads since POS-160. One
+    // house, slugged `pos104`, listing the one handle this suite uses — the
+    // same statement the `identities` line above makes, in the vocabulary the
+    // resolver now asks in.
+    if (/FROM households/i.test(sql)) return { rows: [{
+      slug: HOUSEHOLD.replace(/^hh:/, ""), ord: 0, name: null, human: null,
+      accounts: [], residents: ["pos104-wright"], since: null, member_of: null,
+      declared_by: null, formerly: [], provisional: false,
+    }] };
+    if (/FROM household_pins/i.test(sql)) return { rows: [] };
+    if (/FROM registry_meta/i.test(sql)) return { rows: [{ key: "schema_version", value: 1 }] };
     if (/FROM identities WHERE household/i.test(sql)) return { rows: [{ handle: "pos104-wright" }] };
     if (/FROM projection_heads/i.test(sql)) return { rows: townSha ? [{ sha: townSha }] : [] };
     if (/FROM escrow_projection/i.test(sql)) return { rows: escrow };
@@ -263,9 +288,25 @@ test("THE SCOPING IS THE POLICY'S: the live read declared the household before a
   const p = fixturePool();
   await world2MyMarks(KEY, { p });
   const declared = p.asked.findIndex((a) => /set_config\('app\.household'/.test(a.sql));
+  const keysAt = p.asked.findIndex((a) => /set_config\('app\.household_keys'/.test(a.sql));
   const claimsAt = p.asked.findIndex((a) => /FROM claims/i.test(a.sql));
   assert.ok(declared !== -1, "the live read ran on an undeclared connection — 007's policy would be the only strap left");
   assert.ok(declared < claimsAt, "the declaration must precede the read it scopes");
+  // BOTH settings, since POS-160 RULING 4. `024_household_spellings.sql`'s four
+  // policies compare against `app.household_keys`, so a connection carrying
+  // only `app.household` is read by a policy looking at NOTHING — every draft
+  // invisible, the guard finding no collision, and a duplicate permitted.
+  assert.ok(keysAt !== -1, "the spelling set was never declared — the draft policies would answer against NULL");
+  assert.ok(keysAt < claimsAt, "the spelling set must precede the read it scopes");
+  // And it carries THIS house's key FIRST, then the rest of its own history:
+  // the set is every spelling of ONE house. The `solo:` tail arrived with the
+  // POS-160 follow-up (RULING 4's RED 1) — `pos104-wright` is this fixture
+  // house's own resident, so `solo:pos104-wright` is a spelling of THIS house
+  // and of no other. Asserted whole rather than by a prefix, so a set that
+  // grew a neighbour's spelling reds here.
+  assert.deepEqual(p.asked[keysAt].params, [`${HOUSEHOLD},solo:pos104-wright`]);
+  assert.ok(p.asked[keysAt].params[0].startsWith(`${HOUSEHOLD},`),
+    "the house's live key is the first spelling in the set, whatever else rides behind it");
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

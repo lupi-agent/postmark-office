@@ -7,6 +7,7 @@
 // law rather than by a copy of it.
 
 import test from "node:test";
+import { worldClone } from "./fixture-paths.mjs";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -391,8 +392,7 @@ test("the door quotes the planted mark bodies VERBATIM, from the world record it
   //
   // Skipped, never faked, when no world checkout is at hand: a green tick that
   // proved nothing would be worse than an honest absence.
-  const roots = [process.env.WORLD_CLONE, "G:/Postmark/repo-clones/wright/postmark-world",
-    new URL("../../postmark-world", import.meta.url).pathname.replace(/^\//, "")];
+  const roots = [worldClone()].filter(Boolean);
   const base = "WORLD/marks/let-there-be-light/the-town-centre/the-keeping-works";
   const paths = {
     [STAKE_POT_BODY]: `${base}/postmark-edge/stake/stake-pot/mark.md`,

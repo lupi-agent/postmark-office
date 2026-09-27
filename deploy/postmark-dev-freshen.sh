@@ -20,14 +20,32 @@
 # Remote-tracking refs only; no local branches, no working-tree change.
 #
 # Repo copy of record: postmark-office deploy/postmark-dev-freshen.sh
+#
+# FAILS LOUD (2026-09-22, POS-192). The `set -euo pipefail` above never reached
+# the work: everything below runs in the `bash -c` child that flock starts, and
+# a child shell does not inherit -e. So when 1,918 root-owned files under
+# world-clone and town-clone refused `git reset` (Permission denied), the loop
+# carried on, the echo printed "stood back", and the unit exited 0 for as long
+# as nobody looked. The child now sets its own `-euo pipefail`: the first failed
+# git ends it with git's own exit code, flock returns that code, and exec makes
+# it this script's — so the unit reads failed, the roll-call's freshen row sees
+# Result=exit-code, and the success line prints only after every step succeeded.
+# `switch ... || true` stays tolerated on purpose: the reset after it is the
+# stand-back, and it is the step that must not fail silently.
+#
+# POSTMARK_DEV_ROOT and POSTMARK_DEV_FLOCK exist for test/box-rollcall.test.mjs
+# only; the unit sets neither, so the box runs the defaults below.
 set -euo pipefail
-LOCK=/srv/postmark-office-dev/town.lock
-exec /usr/bin/flock -x -w 120 "$LOCK" bash -c '
-  for c in /srv/postmark-office-dev/world-clone /srv/postmark-office-dev/town-clone; do
+DEV="${POSTMARK_DEV_ROOT:-/srv/postmark-office-dev}"
+FLOCK="${POSTMARK_DEV_FLOCK:-/usr/bin/flock}"
+exec "$FLOCK" -x -w 120 "$DEV/town.lock" bash -c '
+  set -euo pipefail
+  dev=$1
+  for c in "$dev/world-clone" "$dev/town-clone"; do
     git -C "$c" fetch -q --tags --force origin
     git -C "$c" switch -q main 2>/dev/null || true
     git -C "$c" reset -q --hard refs/tags/sandbox/seed
   done
-  git -C /srv/postmark-office-dev/world-clone fetch -q --prune origin "+refs/heads/draft/*:refs/remotes/origin/draft/*"
+  git -C "$dev/world-clone" fetch -q --prune origin "+refs/heads/draft/*:refs/remotes/origin/draft/*"
   echo "dev clones stood back on sandbox/seed (+ world draft/* refs)"
-'
+' freshen "$DEV"

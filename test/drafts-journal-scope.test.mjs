@@ -54,7 +54,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { readJournal, appendJournal, CLASS_MARK, ACTION_LEAVE } from "../src/world-journal.mjs";
+import { readJournal, CLASS_MARK, ACTION_LEAVE } from "../src/world-journal.mjs";
+// ── THE ROWS ARE SEEDED, NOT WRITTEN BY A DOOR (G1 / POS-156) ───────────────
+//
+// G1 deleted the general journal INSERT; the write path writes the RECORD now.
+// What this suite is about is a READER of the sqlite journal, which is live
+// code whose retirement is G2's -- so the population it reads is PUT THERE by
+// this file, in the office's own row shape. Nothing below claims a door wrote
+// these rows. See test/journal-seed.mjs.
+import { seedJournalRow } from "./journal-seed.mjs";
 import { openDynamic } from "../src/dynamic-store.mjs";
 import { resolvedWorldHousehold } from "../src/world-branches.mjs";
 
@@ -65,7 +73,7 @@ const dbPath = join(scratch, "dynamic.db");
 const db = openDynamic(dbPath);
 after(() => { try { db.close(); } catch { /* already gone */ } });
 
-const leave = (household, actor, id) => appendJournal(db, {
+const leave = (household, actor, id) => seedJournalRow(db, {
   crossing: 174, actor, action: ACTION_LEAVE, object: id, cls: CLASS_MARK,
   payload: { by: actor, slug: String(id).split("/")[1], kind: "thing", body: "a mark" },
   household,

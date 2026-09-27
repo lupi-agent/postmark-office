@@ -1,0 +1,80 @@
+-- 022 — RETIRED. THE STORE NEVER RESPELLS A ROW.
+--       (postmark POS-160, w40 · superseded by 024_household_spellings.sql)
+--
+-- THIS FILE DOES NOTHING. It keeps its name and its number because a migration
+-- directory is read in order by people and by `test/registry-grants.test.mjs`,
+-- and a hole in that order is a question every future reader has to answer
+-- again from scratch. The answer is here instead.
+--
+-- ── WHAT IT WAS GOING TO DO ─────────────────────────────────────────────────
+--
+-- POS-160 made the household key the house's SLUG. `householdKeyFor` answered
+-- `gh:<id>` out of `identities` before that ship and answers `hh:<slug>` after
+-- it, and 007's draft row policy is a STRING EQUALITY:
+--
+--   CREATE POLICY claims_read ON claims FOR SELECT
+--     USING (status <> 'draft' OR household = current_setting('app.household', true));
+--
+-- so a resident whose rows were written under `gh:<id>` would stop seeing their
+-- own drafts, stop being able to edit them, and stop being able to delete them
+-- — all four of 007's policies compare the same string — with every mechanism
+-- in 007 working exactly as written.
+--
+-- THE DEFECT IS REAL. This file's answer to it was to UPDATE `claims.household`
+-- and `marks.household` in place, through a CTE that mapped every spelling to
+-- its house.
+--
+-- ── WHY IT CANNOT RUN: THREE GUARDS, EACH BY ITS OWN LAW ────────────────────
+--
+-- MEASURED on the dev sandbox 2026-09-22, Wright's hand, a real Postgres.
+--
+--   `acts_append_only`     002_grants.sql. An earlier draft of this file also
+--                          re-spelled `acts`. The FIRST run was silent, because
+--                          the alias table was empty and the UPDATE matched
+--                          nothing. The SECOND — once 019's registry was seeded
+--                          — raised `acts is append-only (World 2.0 rule: an
+--                          act is never edited)` and took the whole transaction
+--                          with it, rolling back `claims` and `marks` too. So
+--                          "I ran it once and it was fine" was never proof;
+--                          `test/registry-grants.test.mjs` is the lint that is.
+--
+--   `claims_update_guard`  007_private_drafts.sql. EVERY lawful transition it
+--                          permits — compose, submit, retract — carries
+--                          `NEW.household IS NOT DISTINCT FROM OLD.household`.
+--                          A claim's household never changes.
+--
+--   `marks_id_is_fixed`    the same rule, one table over.
+--
+-- Three guards is not three accidents. It is the store saying in three places
+-- that A ROW'S HOUSEHOLD SPELLING IS FIXED FOR ITS LIFE — which is exactly what
+-- this file's own third paragraph said about itself before it contradicted it:
+-- "earlier lines keep their spellings, because history is not rewritten."
+-- `src/household-deriver.mjs` says the same from the read side: "`formerly` is
+-- the one alias mechanism, and THIS FILE is the one place it is read."
+--
+-- ── SO THE FIX MOVED TO THE READ SIDE (RULING 4, PROVISIONAL) ───────────────
+--
+-- A house declares EVERY SPELLING IT HAS EVER CARRIED and the policy compares
+-- against the set:
+--
+--   `src/household-deriver.mjs § houseKeysOf`    builds the set
+--   `src/household-deriver.mjs § sessionKeysFor` what a session declares
+--   `src/world2-claims.mjs § withHousehold`      puts it on the connection
+--   `world2/schema/024_household_spellings.sql`  `= ANY(app.household_keys)`
+--
+-- Nothing in the store is rewritten, by anything, ever. The INSTALL order loses
+-- its "022 before the first crossing" line: there is no backfill to window.
+--
+-- RULING 4 is PROVISIONAL — Keemin's veto before Sunday's deploy reverts it
+-- (docs/2026-09-22/design-notes/g1-overnight-rulings.md § RULING 4). If it is
+-- vetoed, THIS FILE IS NOT THE FALLBACK. The three guards refuse it whatever
+-- anyone rules, and a replacement would have to answer them first.
+--
+-- ── IT IS SAFE TO RUN, AND SAFE TO HAVE RUN ────────────────────────────────
+--
+-- `SELECT 1;` and nothing else, so a runbook that still lists this file, or a
+-- box that applies the directory in order, does no harm and needs no edit.
+-- A store where the OLD 022 already ran is also fine: it re-spelled rows into
+-- `hh:<slug>`, which is the first entry of every house's set.
+
+SELECT 1;

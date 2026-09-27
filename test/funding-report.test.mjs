@@ -23,15 +23,19 @@ import { railHealth, anomalies, render, readyToWitness, witnessCommand, STALE_MI
 import { stripeQueue } from "../tools/funding-report.mjs";
 import { decide, decodeSession, OUTSIDE_FROM, HANDLE_FIELD } from "../tools/stripe-watch.mjs";
 import { townLoginHands } from "../src/household-logins.mjs";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const TOWN = [resolve(HERE, "..", "town-clone"), "G:/postmark/seam-overnight/town-clone"]
+const TOWN = [townClone()].filter(Boolean)
   .find((p) => existsSync(join(p, "tools", "stamp-mint.mjs")));
 
 // The town engine, imported once — the same one the fixture copies into each
 // throwaway repo, so the falsifiers below read households through the town s own
 // resolver rather than a second answer.
-const ENGINE = await import(`file:///${TOWN}/tools/stamp-mint.mjs`);
+// Guarded: a top-level await import of a clone that is not there takes the
+// whole module down at load, and its cases then neither pass nor fail.
+const ENGINE = TOWN ? await import(townModuleUrl("tools", "stamp-mint.mjs")) : null;
+const SKIP = !TOWN && NO_TOWN;
 
 const NOW = Date.UTC(2026, 7, 26, 12, 0, 0);
 const minsAgo = (m) => new Date(NOW - m * 60_000).toISOString();
@@ -77,7 +81,7 @@ const foldOf = (repo) => foldFunding(parseLedgerText(readFileSync(join(repo, "WH
 // A DEAD WATCHER IS THE LOUDEST ANOMALY
 // ════════════════════════════════════════════════════════════════════════════
 
-test("a rail that has not ticked is reported as one, and its silence is refused as evidence", () => {
+test("a rail that has not ticked is reported as one, and its silence is refused as evidence", { skip: SKIP }, () => {
   // LAW (tools/usdc-watch.mjs, on an unreachable chain, verbatim): "a silent
   //     empty report from a blind watcher is indistinguishable from a quiet day,
   //     and the second one is a lie." A report built on a stale watcher's
@@ -97,7 +101,7 @@ test("a rail that has not ticked is reported as one, and its silence is refused 
   assert.notEqual(never.note, stale.note);
 });
 
-test("the rendered report carries the warning banner whenever any rail is down, and not when none is", () => {
+test("the rendered report carries the warning banner whenever any rail is down, and not when none is", { skip: SKIP }, () => {
   const down = render({
     now: NOW, pots: [], potsInvalid: [], fold: foldFunding([]), anomalyRows: [],
     rails: [railHealth("stripe-watch", {}, { now: NOW }), railHealth("usdc-watch", { last_run: minsAgo(1) }, { now: NOW })],
@@ -117,7 +121,7 @@ test("the rendered report carries the warning banner whenever any rail is down, 
 // EVERY STUCK ROW SAYS WHAT UNSTICKS IT
 // ════════════════════════════════════════════════════════════════════════════
 
-test("every anomaly, from every source, carries a rule AND what resolves it", () => {
+test("every anomaly, from every source, carries a rule AND what resolves it", { skip: SKIP }, () => {
   const rows = anomalies({
     fold: { invalid: [{ row_kind: "pot-receipt", line: "- 2026-08-01 · pot-receipt · pot: keep · …", reason: "a space after the colon" }] },
     potsInvalid: [{ row_kind: "pot-file", line: "WHITE_PAGES/pot-x.json", reason: "unparseable JSON" }],
@@ -144,7 +148,7 @@ test("every anomaly, from every source, carries a rule AND what resolves it", ()
   assert.match(unclaimed.resolves, /PROPOSED, NOT ENABLED/);
 });
 
-test("a clean town says so plainly, and the clean sentence is not reachable while anything is stuck", () => {
+test("a clean town says so plainly, and the clean sentence is not reachable while anything is stuck", { skip: SKIP }, () => {
   const clean = render({
     now: NOW, pots: [], potsInvalid: [], fold: foldFunding([]), anomalyRows: [],
     rails: [railHealth("x", { last_run: minsAgo(1) }, { now: NOW })],
@@ -162,7 +166,7 @@ test("a clean town says so plainly, and the clean sentence is not reachable whil
   assert.match(stuck, /0xc/);
 });
 
-test("`Needs a person` sits above the rails and above the books", () => {
+test("`Needs a person` sits above the rails and above the books", { skip: SKIP }, () => {
   // The founder's own test for this lane: read it in sixty seconds and have zero
   // matching work, only vetoes. A report you have to search for the broken thing
   // fails that whether or not the broken thing is in it. (`Ready to witness` sits
@@ -181,7 +185,7 @@ test("`Needs a person` sits above the rails and above the books", () => {
 // THE BOOKS
 // ════════════════════════════════════════════════════════════════════════════
 
-test("the pot file's received_usd and the ledger's rows are disclosed SIDE BY SIDE, never reconciled", () => {
+test("the pot file's received_usd and the ledger's rows are disclosed SIDE BY SIDE, never reconciled", { skip: SKIP }, () => {
   // LAW (src/funding.mjs § TEACH.receipts, verbatim): "the pot file's received
   //     and this sum are two clocks, disclosed side by side, never silently
   //     reconciled".
@@ -202,7 +206,7 @@ test("the pot file's received_usd and the ledger's rows are disclosed SIDE BY SI
   assert.match(md, /\| 2026-08-01 \| stripe \| paz \| \$10 \|/);
 });
 
-test("a pot file that will not read is surfaced by name rather than dropped from the books", () => {
+test("a pot file that will not read is surfaced by name rather than dropped from the books", { skip: SKIP }, () => {
   // LAW (src/funding.mjs, verbatim): "A file that will not parse, or misses a
   //     money field, is surfaced invalid — a pot with no target is not a smaller
   //     pot, it is not a pot."
@@ -220,7 +224,7 @@ test("a pot file that will not read is surfaced by name rather than dropped from
   assert.match(md, /Pot files that will not read/);
 });
 
-test("a card payment in the grace window is shown with the typo the operator must catch", () => {
+test("a card payment in the grace window is shown with the typo the operator must catch", { skip: SKIP }, () => {
   const md = render({
     now: NOW, pots: [], potsInvalid: [], fold: foldFunding([]), anomalyRows: [],
     rails: [railHealth("x", { last_run: minsAgo(1) }, { now: NOW })],
@@ -237,7 +241,7 @@ test("a card payment in the grace window is shown with the typo the operator mus
   assert.match(md, /patron@example\.test/, "and how to reach them inside the window");
 });
 
-test("a table cell can never break the table, however the reason was worded", () => {
+test("a table cell can never break the table, however the reason was worded", { skip: SKIP }, () => {
   // A reason carrying a pipe would silently shear a row into gibberish, and a
   // report that mangles the one line explaining why money is stuck is worse than
   // no report.
@@ -257,7 +261,7 @@ test("a table cell can never break the table, however the reason was worded", ()
 // STAGE A — one command per payment, and it must actually work
 // ════════════════════════════════════════════════════════════════════════════
 
-test("THE PRINTED COMMAND ACTUALLY RECORDS THE PAYMENT — run, not asserted", async () => {
+test("THE PRINTED COMMAND ACTUALLY RECORDS THE PAYMENT — run, not asserted", { skip: SKIP }, async () => {
   // Stage A's entire write path is a line this report prints and a person pastes.
   // A report that printed a plausible-looking command nobody had ever executed
   // would be [[states-with-no-receipt]] in its purest form: the founder would
@@ -301,7 +305,7 @@ test("THE PRINTED COMMAND ACTUALLY RECORDS THE PAYMENT — run, not asserted", a
   assert.equal(readFileSync(join(town.repo, "WHITE_PAGES", "stamp-ledger.md"), "utf8").split("pot-receipt").length - 1, 1, "one payment, one receipt");
 });
 
-test("a payload that could break out of its own quoting is REFUSED, never printed", () => {
+test("a payload that could break out of its own quoting is REFUSED, never printed", { skip: SKIP }, () => {
   // The command is single-quoted in the shell, so a single quote in the payload
   // would end the quoting and hand the rest of the line to the shell. Pots,
   // handles, refs and dates cannot contain one — and this says so rather than
@@ -311,7 +315,7 @@ test("a payload that could break out of its own quoting is REFUSED, never printe
     /refusing to print an unquotable command/);
 });
 
-test("STAGE A HAS NO TIMER, so a fresh payment is listed anyway — and says the operator is the window", () => {
+test("STAGE A HAS NO TIMER, so a fresh payment is listed anyway — and says the operator is the window", { skip: SKIP }, () => {
   // The grace window is a STAGE B mechanism. In Stage A nothing will ever witness
   // a held session later, so hiding it behind a clock would hide it forever. Both
   // are listed; the fresh one carries what the window was for.
@@ -331,7 +335,7 @@ test("STAGE A HAS NO TIMER, so a fresh payment is listed anyway — and says the
   assert.ok(ready.every((r) => r.command.includes("fund-exec.mjs")));
 });
 
-test("`Ready to witness` is the first section — it is the founder's actual work", () => {
+test("`Ready to witness` is the first section — it is the founder's actual work", { skip: SKIP }, () => {
   const md = render({
     now: NOW, pots: [], potsInvalid: [], fold: foldFunding([]), anomalyRows: [],
     rails: [railHealth("x", { last_run: minsAgo(1) }, { now: NOW })],
@@ -345,7 +349,7 @@ test("`Ready to witness` is the first section — it is the founder's actual wor
   assert.match(md, /Re-running one is safe/, "and it says so, because the operator will wonder");
 });
 
-test("an UNREAD card rail is never presented as a quiet one", () => {
+test("an UNREAD card rail is never presented as a quiet one", { skip: SKIP }, () => {
   // The Stage A live read can fail (no key, refused key, Stripe down). Reporting
   // an empty card queue then is the same lie as a blind watcher reporting a quiet
   // day — usdc-watch.mjs's own words: "indistinguishable from a quiet day, and
@@ -360,7 +364,7 @@ test("an UNREAD card rail is never presented as a quiet one", () => {
   assert.match(md, /A rail that has not ticked is not a quiet rail/);
 });
 
-test("the report names the OFFICE-SIDE registry and never a town path", () => {
+test("the report names the OFFICE-SIDE registry and never a town path", { skip: SKIP }, () => {
   const md = render({
     now: NOW, pots: [], potsInvalid: [], fold: foldFunding([]), anomalyRows: [],
     rails: [railHealth("x", { last_run: minsAgo(1) }, { now: NOW })],
@@ -376,7 +380,7 @@ test("the report names the OFFICE-SIDE registry and never a town path", () => {
 // THE TWO STAGES MUST REACH THE SAME HAND
 // ════════════════════════════════════════════════════════════════════════════
 
-test("Stage A's report and Stage B's tick resolve the SAME payment to the SAME hand", () => {
+test("Stage A's report and Stage B's tick resolve the SAME payment to the SAME hand", { skip: SKIP }, () => {
   // LAW (tools/funding-report.mjs, verbatim): the queue is decided "through the
   //     WATCHER'S OWN pure resolver — one copy of the rule, so this report and
   //     the tick that may later act on it cannot disagree."
@@ -417,7 +421,51 @@ test("Stage A's report and Stage B's tick resolve the SAME payment to the SAME h
 });
 
 
-test("a payment resolved through a PIN says so on the page a person actually reads", () => {
+test("POS-183 · the report reads a EUR payment's SETTLED dollars from the journal, the late `settled` row included", { skip: SKIP }, () => {
+  // LAW (tools/stripe-watch.mjs, the header, verbatim): "A settlement held
+  //     only in this process's memory would give the report and the tick two
+  //     answers for one payment — the report would say "unsettled" over a
+  //     dollar the tick witnessed."
+  //
+  // Driven through the report's own CLI with no STRIPE_KEY, so it takes the
+  // journal branch the box's operator reads. The settlement arrives as its own
+  // row a tick after the session was first journalled, which is the case a
+  // reader of `seen` rows alone would get wrong.
+  const town = seamTown();
+  const scratch = mkdtempSync(join(tmpdir(), "report-settled-"));
+  const created = Math.floor(Date.now() / 1000) - 2 * 86_400;
+  const raw = {
+    id: "cs_live_eur000000000000000000000", object: "checkout.session", created, status: "complete", payment_status: "paid",
+    livemode: true, amount_total: 1840, currency: "eur", client_reference_id: "keep",
+    customer_details: { email: "payer@example.test" },
+    custom_fields: [{ key: HANDLE_FIELD, type: "text", text: { value: "paz" } }],
+    payment_intent: "pi_eur",
+  };
+  const pending = { ...raw, id: "cs_live_eurpending000000000000000", payment_intent: "pi_pending" };
+  const journalPath = join(scratch, "stripe-intake.jsonl");
+  writeFileSync(journalPath, [
+    { kind: "seen", at: "T0", ...decodeSession(raw) },
+    { kind: "seen", at: "T0", ...decodeSession(pending) },
+    { kind: "settled", at: "T1", session: raw.id, settled: { balance_transaction: "txn_eur", currency: "usd", amount: 2013 } },
+  ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+  const out = execFileSync(process.execPath, [
+    join(HERE, "..", "tools", "funding-report.mjs"),
+    "--clone", town.repo,
+    "--stripe-state", join(scratch, "state.json"),
+    "--stripe-journal", journalPath,
+    "--usdc-state", join(scratch, "usdc-state.json"),
+    "--usdc-report", join(scratch, "usdc-report.json"),
+  ], { encoding: "utf8", env: { ...process.env, STRIPE_KEY: "", TOWN_CLONE: "" }, maxBuffer: 16 * 1024 * 1024 });
+
+  assert.match(out, /"usd":20/, "the paste-ready command carries the settled whole dollars");
+  assert.match(out, /presented as 18\.40 EUR; it settled to \$20\.13/, "and the page says what was shown and what settled");
+  // the one still waiting on its balance transaction is named in its own currency
+  assert.match(out, /cs_live_eurpending0+ · 18\.40 EUR/);
+  assert.doesNotMatch(out, /\$18\.4\b/, "a euro amount is never printed with a dollar sign");
+});
+
+test("a payment resolved through a PIN says so on the page a person actually reads", { skip: SKIP }, () => {
   // LAW (tools/stripe-watch.mjs, the header, verbatim): "AND IT SAYS SO ON THE
   //     ROW. The pin is the only channel that pays a hand the payer did not
   //     type, so a resolution through it carries `attributed_via: "login-pin"`
@@ -480,4 +528,70 @@ test("a payment resolved through a PIN says so on the page a person actually rea
     stripe: { hold: [{ session: 'cs_p', amount_total: 500, email: null, witnesses_after: '2026-08-28T00:00:00Z', plan: { pot: 'keep', usd: 5, from: 'paz', attributed: true, attributed_via: 'handle', handle_typed: 'paz' } }] },
   });
   assert.doesNotMatch(plainHeld, /Where \*\*as\*\* differs from \*\*typed\*\*/);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// POS-218 · THE REPORT READS A CORRECTION THE WAY THE CLOSE DOES
+// ════════════════════════════════════════════════════════════════════════════
+
+test("POS-218 · a founder pot-correction re-hands the receipt on the report exactly as the close mints it — and an uncorrected outside receipt stays outside", { skip: SKIP }, () => {
+  // LAW (town tools/stamp-mint.mjs § foldPotReceipts, verbatim): "The hand is
+  //     corrected here — every reader should show who really paid". The close
+  //     reads that fold; the report must name the same payer for the same dollars.
+  const town = seamTown();
+  receipt(town, { ref: "stripe:cs_fixed", usd: 10, from: "outside:stripe", date: "2026-08-01" });
+  receipt(town, { ref: "stripe:cs_stays", usd: 5, from: "outside:stripe", date: "2026-08-02" });
+  // the founder's hand, through the town's own verb — the only writer of this row
+  execFileSync(process.execPath, [
+    join(TOWN, "tools", "epoch-close.mjs"), "--correct-hand", "--ref", "stripe:cs_fixed", "--from", "outside:stripe", "--to", "paz",
+    "--reason", "founder-directed-attribution", "--by", "keemin", "--date", "2026-08-03", "--key", town.keyFile, "--repo", town.repo,
+  ], { encoding: "utf8", stdio: "pipe" });
+
+  // the close's own answer, never run for real
+  const dry = execFileSync(process.execPath, [
+    join(TOWN, "tools", "epoch-close.mjs"), "--close", "--pot", "keep", "--epoch", "2026-08", "--date", "2026-08-31", "--dry-run", "--repo", town.repo,
+  ], { encoding: "utf8", stdio: "pipe" });
+  // one holo row per receipt the close settles, naming its payer and its ref
+  const closePayer = (ref) => dry.split(/\r?\n/).map((l) => /holo · (\S+) · \d+ · pot:keep · epoch:2026-08 · ref: (\S+)$/.exec(l.trim())).find((m) => m?.[2] === ref)?.[1];
+  assert.equal(closePayer("stripe:cs_fixed"), "paz", "the close mints the corrected receipt to the corrected hand");
+  assert.equal(closePayer("stripe:cs_stays"), "outside:stripe", "and the uncorrected one to outside");
+
+  const fold = foldOf(town.repo);
+  const { pots } = readPots(town.repo);
+  const md = render({
+    now: NOW, pots, potsInvalid: [], fold, anomalyRows: [],
+    rails: [railHealth("x", { last_run: minsAgo(1) }, { now: NOW })],
+    stripe: { hold: [] }, usdcReport: null, registry: { addresses: 0, wallet_files: 0, mapped_pots: 0 },
+  });
+  const reportPayer = (ref) => new RegExp(String.raw`^\| \S+ \| stripe \| (?:\*\*)?([^ |*]+)(?:\*\*)?[^|]* \| \$\d+ \| \`${ref}\``, "m").exec(md)?.[1];
+  assert.equal(reportPayer("stripe:cs_fixed"), closePayer("stripe:cs_fixed"), "report and close name the same payer for the corrected $10");
+  assert.equal(reportPayer("stripe:cs_stays"), closePayer("stripe:cs_stays"), "report and close name the same payer for the uncorrected $5");
+  assert.match(md, /\*\*paz\*\* \(corrected from outside:stripe, 2026-08-03 · founder-directed-attribution\) \| \$10 \|/, "the page says the hand was corrected, and from what");
+  assert.match(md, /\| 2026-08-02 \| stripe \| outside:stripe \| \$5 \|/, "an uncorrected outside receipt still prints as outside, unannotated");
+  assert.doesNotMatch(md, /Corrections that did not apply/);
+});
+
+test("POS-218 · a correction the town's rule refuses is named on the report and changes no hand", { skip: SKIP }, () => {
+  const town = seamTown();
+  receipt(town, { ref: "stripe:cs_r", usd: 10, from: "outside:stripe", date: "2026-08-01" });
+  const ledger = readFileSync(join(town.repo, "WHITE_PAGES", "stamp-ledger.md"), "utf8");
+  // unsigned rows are enough for a READ: the fold reads canonical text, and the
+  // town's CLI would refuse to write either of these (that refusal is its law)
+  const entries = parseLedgerText(ledger + [
+    "- 2026-08-02 · pot-correction · ref: stripe:cs_r · from stan to paz · founder-directed-attribution · by: keemin",
+    "- 2026-08-02 · pot-correction · ref: stripe:cs_nothing · from outside:stripe to paz · founder-directed-attribution · by: keemin",
+  ].join("\n") + "\n");
+  const town2 = ENGINE.foldPotReceipts(entries).corrections.map((c) => [c.ref, c.applied, c.refused]);
+  const fold = foldFunding(entries);
+  assert.deepEqual(fold.corrections.map((c) => [c.ref, c.applied, c.refused]), town2, "the office refuses exactly what the town refuses");
+  const { pots } = readPots(town.repo);
+  const md = render({
+    now: NOW, pots, potsInvalid: [], fold, anomalyRows: [],
+    rails: [railHealth("x", { last_run: minsAgo(1) }, { now: NOW })],
+    stripe: { hold: [] }, usdcReport: null, registry: { addresses: 0, wallet_files: 0, mapped_pots: 0 },
+  });
+  assert.match(md, /\| 2026-08-01 \| stripe \| outside:stripe \| \$10 \|/, "a stale-from correction moves no hand");
+  assert.match(md, /### Corrections that did not apply/);
+  assert.match(md, /`stripe:cs_r` — the correction says from \*\*stan\*\*, the receipt reads \*\*outside:stripe\*\*/);
+  assert.match(md, /`stripe:cs_nothing` — no receipt carries this ref/);
 });

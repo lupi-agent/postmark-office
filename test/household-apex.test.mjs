@@ -15,6 +15,7 @@ import { openOauthDb, mintBerth } from "../src/oauth.mjs";
 import { householdApex, householdStanding, paperGaps, householdDispatchToolFor, cosignUrlFor } from "../src/household-apex.mjs";
 import { fixtureDb } from "./fixture.mjs";
 import { DatabaseSync } from "node:sqlite";
+import { REFUSALS } from "../src/ceremony.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "postmark-household-"));
 const odb = openOauthDb(join(dir, "oauth.db"));
@@ -103,7 +104,15 @@ test("begin: a declaration without its parts bounces naming the part", async () 
   mintBerth(odb, "half-ready");
   const key = { berth: true, slug: "half-ready", household: null, handles: new Set() };
   const noHouse = await householdApex({ do: "begin", args: { card: "words" } }, key, { odb });
-  assert.match(noHouse.defect, /names the household/);
+  // THE CEREMONY'S OWN SENTENCE, NOT THIS DOOR'S (POS-158). This used to read
+  // `/names the household/` — a wording that belonged to this door alone, while
+  // the declaration door said something else and POS-188's form was about to
+  // say a third thing. One vocabulary lives in `src/ceremony.mjs § REFUSALS`,
+  // and the assertion is IDENTITY rather than a regex: two doors that happen to
+  // spell the same sentence are two laws one edit apart.
+  assert.equal(noHouse.defect, REFUSALS.NO_HOUSE.defect);
+  assert.equal(noHouse.refusal, REFUSALS.NO_HOUSE, "the same frozen object, not an equal-looking one");
+  assert.equal(noHouse.code, 422);
   const noCard = await householdApex({ do: "begin", args: { household: "H" } }, key, { odb });
   assert.match(noCard.defect, /carries your card/);
 });

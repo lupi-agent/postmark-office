@@ -28,68 +28,61 @@
 //   WORLD2_PG_URL      postgres://office_api:<pw>@localhost:5432/world2_dev
 //   (read per call like WORLD_SINGLE_LOG — a test flips it between cases)
 
-// ── THE EXPIRY IS PER LANE (DEC-2, ruled by the founder 2026-08-29 evening) ──
+// ── THE MIRROR'S EXPIRY MACHINERY IS GONE (G1 / POS-156, 2026-09-22) ─────
 //
-// It was one constant for the whole store, and that constant contradicted a
-// standing founder ruling. PARITY MATRIX P-143, verbatim:
+// `MIRROR_EXPIRES`, `LANE_MIRROR` and the five functions over them
+// (`mirrorExpiresFor`, `laneMirrorExpired`, `expiredLanes`, `exemptLanes`,
+// `mirrorExpiryLine`, `mirrorExpired`) were the pressure mechanism on a shim:
+// per-lane backstop dates that RED a falsifier if a lane was still mirroring
+// past them. DEC-2's own rule said what ends a lane's obligation -- "DELETING
+// its row from LANE_MIRROR", ports landed and deletion ruled, never a clock
+// running out -- and this file said where that happened: the map "is deleted
+// whole by G1 (POS-156), with the journal INSERT".
 //
-//   "**NONE, by ruling — the lane stays sqlite-first.** No read port; the future
-//    combat system is a hardened 2.0-native rebuild, not a port ... The 09-30
-//    reverse-mirror expiry does NOT apply to an unflipped lane"
+// That is this change. Every governed lane's read ports have landed -- frame
+// and the ride's entry stop in POS-152, hold in POS-153 and POS-162, walkers in
+// POS-154, occupancy in POS-194, the stance candidates in POS-195 -- and the
+// INSERT the map was pressuring is deleted in the same commit. A death clock
+// outliving the thing it was counting down is furniture, which is rule 5
+// pointed the other way.
 //
-// The cutover runbook (§8) named the disagreement: "`MIRROR_EXPIRES` is global.
-// ... `falsifier-acts-parity.mjs` reads one constant for the whole store and
-// reds on 2026-10-01 regardless of lane. The ruling and the mechanism disagree,
-// and the mechanism is what will fire." The founder ruled DEC-2's recommendation
-// as written, verbatim:
-//
-//   "**Make the expiry per-lane** — a lane in `FLIP_REFUSED` *by ruling* is
-//    exempt; a lane refused by *unreadiness* is not. Do not simply move the
-//    date. ... Moving a shim's death date is the mechanism by which shims become
-//    furniture (rule 5). Per-lane keeps the falsifier honest for the six lanes
-//    it should govern."
-//
-// WHAT ENDS A LANE'S MIRROR OBLIGATION: that lane's read ports landing and its
-// deletion being ruled (rule 6) — recorded by DELETING its row from LANE_MIRROR
-// below, which is a thing a human does with a ruling in hand. Never a store-wide
-// clock running out. The date a governed lane carries is a BACKSTOP, not the
-// closure: it reds if the lane is still mirroring past it, which is the pressure
-// rule 5 asks for and the reason moving a date is not the fix.
-//
-// UNREADINESS BUYS NO EXEMPTION. `mark` is refused in `FLIP_REFUSED`
-// (world-journal.mjs) because its candle half is not wired — that is
-// unreadiness, so it is governed here exactly like the five wired lanes. DEC-2's
-// "the six lanes it should govern" is C1–C6 of the runbook's lane table
-// (stance · hold · walk · say · frame · mark); the arena is the row beneath them
-// and the only exemption, because its refusal is a RULING and not a to-do.
-
-/** The governed lanes' shared backstop. Keemin may move it; it may not vanish. */
-export const MIRROR_EXPIRES = "2026-09-30";
+// THE ARENA'S EXEMPTION DID NOT LIVE HERE AND DOES NOT DIE HERE. `LANE_MIRROR.
+// arena.expires` was null carrying P-143's words, and the ruling itself is
+// unchanged and now carried where the exception actually is: `FLIP_REFUSED` in
+// `world-journal.mjs`, and `appendArenaRow`, the one sqlite INSERT G1 leaves
+// standing, which refuses any other class by name. An exemption stated at the
+// code that implements it is stronger than one stated in a map beside it.
 
 /**
- * ONE ROW PER LANE, in world2-pen.mjs's `laneOf` vocabulary.
+ * THE LANES EXEMPT BY RULING — the one thing the deleted map carried that
+ * OUTLIVES it, kept because a live tool reads it and a ruling is not a shim.
  *
- * `expires: null` is an exemption BY RULING and must carry the ruling's own
- * words — nothing else may be exempt, and a lane that is merely unready is not.
- * Removing a row entirely is how a lane's obligation ENDS (ports + rule 6's
- * deletion, together). A lane absent from this map is governed by the shared
- * backstop: an unnamed lane must never buy immortality by being unnamed.
+ * `world2/tools/state-log-rederive.mjs § classifyAbsence` asks which lanes may
+ * be ABSENT from the register without that absence being a finding. That
+ * question survives G1 whole: it is about the arena, and the arena's exemption
+ * is P-143, which no deletion of this lane's touches.
+ *
+ * It used to be derived from `LANE_MIRROR` by reading which rows had a null
+ * expiry — a map about the REVERSE MIRROR's death clock, which G1 deleted along
+ * with the INSERT it was pressuring. The answer was never really about expiry
+ * dates, so it is stated directly now:
+ *
+ *   P-143, RULED (Keemin, 2026-08-29 party night: "we can just keep the arena
+ *   on sqlite for now") — the lane stays sqlite-first, no read port, the
+ *   hardened rebuild lands 2.0-native instead. Lifting this is a founder ruling
+ *   PLUS the arena read ports, together.
+ *
+ * ⛑ A LANE IS NOT EXEMPT BY BEING ABSENT FROM THIS LIST. That was `LANE_MIRROR`'s
+ * own fail-closed rule ("an unnamed lane must never buy immortality by being
+ * unnamed") and it is the same here: this names the exemptions, and everything
+ * not named is governed.
  */
-export const LANE_MIRROR = Object.freeze({
-  stance: Object.freeze({ expires: MIRROR_EXPIRES }),
-  hold: Object.freeze({ expires: MIRROR_EXPIRES }),
-  walk: Object.freeze({ expires: MIRROR_EXPIRES }),
-  say: Object.freeze({ expires: MIRROR_EXPIRES }),
-  frame: Object.freeze({ expires: MIRROR_EXPIRES }),
-  mark: Object.freeze({ expires: MIRROR_EXPIRES }),
-  arena: Object.freeze({
-    expires: null,
-    ruling: 'P-143, RULED (Keemin, 2026-08-29 party night: "we can just keep the '
-      + 'arena on sqlite for now") — the lane stays sqlite-first, no read port, '
-      + "the hardened rebuild lands 2.0-native instead. Lifting this is a founder "
-      + "ruling PLUS the arena read ports, together.",
-  }),
-});
+export const EXEMPT_LANES = Object.freeze(["arena"]);
+
+/** The lanes exempt by ruling — what a red must say it did NOT count. */
+export function exemptLanes(lanes = EXEMPT_LANES) {
+  return [...lanes];
+}
 
 // ── WHEN EACH LANE'S PEN FLIPPED — DATES AS DATA, NOT AS PROSE ───────────────
 //
@@ -107,8 +100,11 @@ export const LANE_MIRROR = Object.freeze({
 // had no journal row to carry a seq). The only thing that separates a flipped
 // row from a mirror row of the same lane is WHEN — so the moment each lane's pen
 // flipped is a fact the store needs written down, and this is where it lives:
-// beside LANE_MIRROR, which is already the one home for per-lane truth about the
-// shim. A falsifier that carried these dates in its own argv would make every
+// here. (It used to sit beside `LANE_MIRROR`, "the one home for per-lane truth
+// about the shim"; G1 deleted that map with the journal INSERT it was
+// pressuring, and these dates OUTLIVE it -- they are a fact about `W2_PEN` on a
+// box, not about a shim's death clock, and the flipped-era acts they date still
+// exist.) A falsifier that carried these dates in its own argv would make every
 // operator re-type them, and a date re-typed is a date eventually mistyped.
 //
 // THE VALUE IS THE SERVICE-RESTART MOMENT, from that lane's own flip report —
@@ -176,79 +172,16 @@ export function flippedLanesAt(lanes = LANE_FLIPPED_AT) {
   return Object.keys(lanes).filter((lane) => laneFlippedAt(lane, lanes) !== null);
 }
 
-// THE BACKSTOP IS A TOWN DAY, NOT A WIRE DAY (2026-08-30, the v1 settlement
-// sweep of every dated derivation). This was `.toISOString().slice(0, 10)`, so
-// the whole 20:00–23:59 ET stretch of a lane's LAST lawful day already read as
-// tomorrow: `laneMirrorExpired` went true four hours before the town's own
-// 2026-09-30 was over, and `mirrorExpiryLine` would have told an operator six
-// lanes were past a backstop they were still inside. Same defect, same shape,
-// same night as town-bridge's `townDayOf` (the 00:00Z gift blackout) and
-// ops.townDay — every dated derivation in this repo now reads TOWN_TZ.
-//
-// A day STRING passes through untouched and that asymmetry is the point: "2026-
-// 09-30" is ALREADY a day somebody wrote down, and re-deriving it through a
-// timezone would move it — `new Date("2026-09-30")` is midnight UTC, which is
-// 2026-09-29 in town. A day is only derived from an INSTANT.
-const dayOf = (today) =>
-  typeof today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(today)
-    ? today
-    : new Intl.DateTimeFormat("en-CA", { timeZone: process.env.TOWN_TZ ?? "America/New_York" })
-        .format(today instanceof Date ? today : new Date(today));
-
-/**
- * A lane's backstop date, or null when it is exempt by ruling.
- *
- * EXEMPTION IS AN EXPLICIT `null` AND NOTHING ELSE. A lane absent from the map,
- * and a row that simply never said, both fall back to the shared backstop —
- * nothing becomes immortal by omission, which is the failure this function
- * exists to make impossible. (The can-fail proof in both falsifiers asserts it:
- * a row of `{}` is governed, not exempt.)
- */
-export function mirrorExpiresFor(lane, lanes = LANE_MIRROR) {
-  const row = Object.prototype.hasOwnProperty.call(lanes, lane) ? lanes[lane] : null;
-  return row && row.expires !== undefined ? row.expires : MIRROR_EXPIRES;
-}
-
-/** Has THIS lane's mirror passed its own backstop? An exempt lane: never. */
-export function laneMirrorExpired(lane, today = new Date(), lanes = LANE_MIRROR) {
-  const expires = mirrorExpiresFor(lane, lanes);
-  return expires !== null && dayOf(today) > expires;
-}
-
-/** The governed lanes past their backstop, named — what a red must list. */
-export function expiredLanes(today = new Date(), lanes = LANE_MIRROR) {
-  return Object.keys(lanes).filter((lane) => laneMirrorExpired(lane, today, lanes));
-}
-
-/** The lanes exempt by ruling — what a red must say it did NOT count. */
-export function exemptLanes(lanes = LANE_MIRROR) {
-  return Object.keys(lanes).filter((lane) => mirrorExpiresFor(lane, lanes) === null);
-}
-
-/**
- * The one sentence both falsifiers append to a GREEN, so the two tools cannot
- * drift into describing the same expiry two ways (this file's own LEDGER_PAYLOAD
- * lesson: one home for a serialization, or two readers disagree in a way that
- * still parses). Says how many lanes are governed, when the soonest falls, and
- * names every exemption — a green that hid the exemptions would read as though
- * the arena were being checked.
- */
-export function mirrorExpiryLine(lanes = LANE_MIRROR) {
-  const governed = Object.keys(lanes).filter((lane) => mirrorExpiresFor(lane, lanes) !== null);
-  const exempt = exemptLanes(lanes);
-  const exemptPart = exempt.length ? `; exempt by ruling: ${exempt.join(", ")}` : "";
-  if (!governed.length) return `No lane still owes a mirror — every governed row is closed${exemptPart}.`;
-  const soonest = governed.map((lane) => mirrorExpiresFor(lane, lanes)).sort()[0];
-  return `${governed.length} lane(s) still mirroring, none past its backstop (soonest ${soonest}: `
-    + `${governed.filter((lane) => mirrorExpiresFor(lane, lanes) === soonest).join(", ")})${exemptPart}.`;
-}
-
 const state = {
   queue: Promise.resolve(),
   written: 0,
   failed: 0,
   lastError: null,
   pool: null,
+  // The stance read's SECOND credential, deliberately not `pool` — see
+  // § THE STANCE READ'S OWN CREDENTIAL at the foot of this file. `office_api`
+  // and `stance_reader` must never share a connection.
+  stancePool: null,
 };
 
 export function world2Enabled(env = process.env) {
@@ -288,18 +221,16 @@ export function mirrorAct(row, seq, env = process.env) {
       // at crossing 157 — certified history — while the pen's insertAct would
       // have refused or re-stamped them. One guard, both pens: a row that may
       // not file through the door may not file through the mirror either.
-      const { lateCrossingGuard } = await import("./world2-pen.mjs");
+      const { lateCrossingGuard, actsInsert } = await import("./world2-pen.mjs");
       const guarded = lateCrossingGuard(row, { env });
       const household = guarded.household == null ? null : await householdKeyFor(p, guarded.household);
-      await p.query(
-        `INSERT INTO acts (at, crossing, actor, action, object,
-                           at_anchor, at_dx, at_dy, witnesses, class,
-                           payload, effect, household, journal_seq)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-        [guarded.written_at, guarded.crossing, guarded.actor, guarded.action, guarded.object,
-         guarded.at_anchor, guarded.at_dx, guarded.at_dy, guarded.witnesses, guarded.class,
-         guarded.payload, guarded.effect, household, seq],
-      );
+      // `acts.journal_seq` IS DROPPED (G1 / POS-156, migration 025). This path
+      // is the ARENA's now -- the one lane that still writes a sqlite row and
+      // so the one caller that still HAS a seq -- and even here the column has
+      // no job: nothing pairs the two stores any more, and the arena's seq is
+      // its identity inside its own fold, not a key into the record.
+      const { text, values } = actsInsert(guarded, household);
+      await p.query(text, values);
       state.written += 1;
     } catch (err) {
       state.failed += 1;
@@ -311,38 +242,24 @@ export function mirrorAct(row, seq, env = process.env) {
   return state.queue;
 }
 
-/** Status for the office's status answer + the parity falsifier's preamble. */
+/**
+ * Status for the office's status answer.
+ *
+ * `expires` and `lane_expiry` are GONE with the map that fed them (G1). They
+ * answered "when does this shim's backstop fire", and there is no shim: this
+ * queue is the ARENA's path now, the one lane exempt by ruling, and an
+ * exemption has no expiry by definition. A field left behind answering `null`
+ * for every lane would read as "nothing is owed" rather than "nothing is
+ * governed", which are different sentences.
+ */
 export function mirrorStatus() {
   const { written, failed, lastError } = state;
-  // `expires` keeps its scalar shape and meaning — the governed lanes' shared
-  // backstop — so no reader of this answer changes; `lane_expiry` is the
-  // per-lane truth added beside it (DEC-2), null where a lane is exempt.
-  return {
-    enabled: world2Enabled(), written, failed, lastError,
-    expires: MIRROR_EXPIRES,
-    lane_expiry: Object.fromEntries(
-      Object.keys(LANE_MIRROR).map((lane) => [lane, mirrorExpiresFor(lane)])),
-  };
+  return { enabled: world2Enabled(), written, failed, lastError };
 }
 
 /** Await everything queued (tests + graceful shutdown). */
 export function mirrorSettled() {
   return state.queue;
-}
-
-/**
- * The shim's own death (rule 5): call from the falsifier/test suite.
- *
- * Store-wide, and now a DERIVED answer rather than a clock reading: true when
- * ANY GOVERNED lane has passed its own backstop. A lane exempt by ruling can
- * never make this true, which is P-143 holding; and once every governed lane's
- * row has been removed (ports landed, deletion ruled), this is false past any
- * date, because there is no longer a shim to outlive its death. Callers wanting
- * to say WHICH lanes should use `expiredLanes()` — a red that cannot name the
- * lane is the defect DEC-2 fixed.
- */
-export function mirrorExpired(today = new Date(), lanes = LANE_MIRROR) {
-  return expiredLanes(today, lanes).length > 0;
 }
 
 /**
@@ -367,4 +284,86 @@ export async function actsQuery(text, params = [], env = process.env) {
   const p = await pool(env);
   const { rows } = await p.query(text, params);
   return rows;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE STANCE READ'S OWN CREDENTIAL (POS-195, RULING 2, 2026-09-22)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Every other pool in this office is built from ONE connection string,
+// `WORLD2_PG_URL`, role `office_api`. That is deliberate and it stays: one door,
+// one credential, and the 2026-09-22 measurement counted the four copies of the
+// idiom as a finding handed up rather than a licence to add a fifth.
+//
+// THIS IS THE FIFTH, AND IT IS A DIFFERENT KIND. The other four are four spellings
+// of the same credential; this is a SECOND credential, and the separation is the
+// whole security property. `stance_reader` may see another household's draft
+// (023_stance_reader.sql § the carve). `office_api` may not, and must not learn
+// how — so the two cannot share a pool, and the env key that carries the second
+// is read in exactly one place, here.
+//
+// WHY IT SITS BESIDE `actsQuery` RATHER THAN IN `world-stance.mjs`. The same
+// reason the read ports borrow this pool: the office should learn the word
+// "pool" once per table, not once per caller. Putting it here also means the one
+// grep that finds every credential this office holds (`WORLD2_.*_URL` in
+// `src/`) finds this one, which is not true of a pool opened in a door file.
+//
+// ── ABSENT IS `unreachable`, AND NEVER THE JOURNAL ──────────────────────────
+//
+// `actsQuery` returns `null` for "not asked" because its caller has a 1.0 arm to
+// fall back to. THIS READ HAS NONE, by ruling: the sqlite arm is deleted from
+// `worldForStances`, not flagged. So the absence of `WORLD2_STANCE_URL` is a
+// state the door must SAY, not one it can paper over — a stance read that
+// quietly answered "no candidates" because a credential was missing is the
+// #2454 shape (a door showing a world in which the thing never happened), and
+// here it would silently delete the-late-welcome on the first crossing.
+//
+// Hence a tagged answer rather than `null`: `{ unreachable: "<why>" }` or
+// `{ rows }`. A caller cannot mistake one for the other by forgetting a check,
+// which is what `null` invites.
+//
+// ── NO `WORLD2_PG=1` GATE, AND THAT IS NOT AN OVERSIGHT ─────────────────────
+//
+// `world2Enabled` asks for the mirror flag because the ACTS mirror is a shim
+// that ships with its own death (rule 5) and must be switchable off. This read
+// is not a shim — it is the only source `worldForStances` has after G1 — so its
+// one condition is whether the credential exists. Gating it on the mirror flag
+// would mean turning the mirror off silently empties the stance inbox.
+
+/** Test seam: hand the module a stance pool. Never used by the office. */
+export function __setStancePoolForTest(p) { state.stancePool = p; }
+
+const STANCE_URL_KEY = "WORLD2_STANCE_URL";
+
+async function stancePool(env = process.env) {
+  if (state.stancePool) return state.stancePool;
+  const { default: pg } = await import("pg");
+  state.stancePool = new pg.Pool({ connectionString: env[STANCE_URL_KEY], max: 2 });
+  return state.stancePool;
+}
+
+/**
+ * Read `claims` as `stance_reader` — the ONE reader of the draft carve.
+ *
+ * Returns `{ rows }` when it asked, `{ unreachable: "<sentence>" }` when it
+ * could not. Never throws and never falls back: a caller that gets
+ * `unreachable` must say so at its door.
+ */
+export async function stanceQuery(text, params = [], env = process.env) {
+  if (!env[STANCE_URL_KEY]) {
+    return { unreachable:
+      `the stance read has no credential — ${STANCE_URL_KEY} is not set on this office. It is the only source for ` +
+      `whether an unpublished sketch stands on your ground (the-late-welcome), and this read will not substitute the ` +
+      `1.0 journal for it: that arm was deleted by ruling, not flagged. Set ${STANCE_URL_KEY} to stance_reader's ` +
+      `credential (world2/schema/023_stance_reader.sql) and restart the office.` };
+  }
+  try {
+    const p = await stancePool(env);
+    const { rows } = await p.query(text, params);
+    return { rows };
+  } catch (e) {
+    return { unreachable:
+      `the stance read could not reach the store (${String(e?.message ?? e).slice(0, 160)}) — the candidate list is ` +
+      `unknown, which is a different fact from "nothing awaits your word" and is said rather than rounded to it` };
+  }
 }

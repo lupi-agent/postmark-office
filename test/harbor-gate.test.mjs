@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { harborGated, HARBOR_ALLOWED, HARBOR_BOUNCE, harborWritesOpen } from "../src/harbor-gate.mjs";
+import { SETTLING_ASHORE } from "../src/declare.mjs";
 import { householdFor } from "../src/oauth.mjs";
 
 const harborKey = { household: "newhuman", handles: new Set(["newcomer"]), harbor: true };
@@ -45,10 +46,13 @@ test("REACTIVATION IS ONE ENV VAR: HARBOR_WRITES=1 opens every gated door", () =
   }
 });
 
-test("the bounce names the whole truth: read, quay, settlement in boarded order, no letter needed", () => {
+// POS-70 row 38 (2026-09-24): the hint said settlement "arrives in boarded
+// order through the Registrar", which stopped being true on 2026-09-21. It reads
+// the one settlement clause now (declare.mjs § SETTLING_ASHORE).
+test("the bounce names the whole truth: read, quay, the one settlement clause, no letter needed", () => {
   assert.equal(HARBOR_BOUNCE.code, 403);
   assert.match(HARBOR_BOUNCE.hint, /quay/);
-  assert.match(HARBOR_BOUNCE.hint, /boarded order/);
+  assert.ok(HARBOR_BOUNCE.hint.includes(SETTLING_ASHORE), "the hint reads the one settlement clause");
   assert.doesNotMatch(HARBOR_BOUNCE.hint, /write them a letter/, "harbor households cannot send letters — the hint must not ask for one");
 });
 

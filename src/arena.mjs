@@ -75,7 +75,7 @@
 
 import { createHash } from "node:crypto";
 import { foldEncounter, pendingHostileTurns, hostileAct, timedOut, TURN_ENDING, WHEEL_GATED } from "./encounter.mjs";
-import { appendJournal, readJournal } from "./world-journal.mjs";
+import { appendArenaRow, readJournal, CLASS_ARENA_ACT } from "./world-journal.mjs";
 import { openDynamic, openDynamicReadOnly, singleLogEnabled } from "./dynamic-store.mjs";
 import { readAttachments } from "./dynamic-entities.mjs";
 import { holdingsOf } from "./world-hold.mjs";
@@ -84,7 +84,10 @@ import { heldEntries } from "./world-grants.mjs";
 
 /** The journal class an arena act rides. NOT a town class — `appendJournal`'s
  *  tripwire refuses those, and an arena act is world-side by construction. */
-export const CLASS_ARENA_ACT = "arena-act";
+// The row class, declared in `world-journal.mjs` beside the one sqlite INSERT
+// G1 left standing (`appendArenaRow` refuses every other class by name) and
+// re-exported here, where the arena's own readers look for it.
+export { CLASS_ARENA_ACT };
 
 /** The five verbs a portal ground lends. The order is the class marks' own. */
 export const ARENA_VERBS = Object.freeze(["strike", "cast", "guard", "lift", "loot"]);
@@ -806,7 +809,7 @@ const now = () => new Date().toISOString();
 
 /** One arena act, appended with the ground on it so the fold can find it. */
 function appendAct(dyn, { ground, actor, action, object = null, payload = {}, effect = null, household = null, crossing = null, at = null, witnesses = null, writtenAt = now() }) {
-  return appendJournal(dyn, {
+  return appendArenaRow(dyn, {
     crossing, actor, household, action, object,
     cls: CLASS_ARENA_ACT, at, witnesses,
     payload: { ...payload, ground },

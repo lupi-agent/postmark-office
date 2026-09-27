@@ -61,15 +61,33 @@ if (DATE && !/^\d{4}-\d{2}-\d{2}$/.test(DATE)) {
 const db = existsSync(DB_PATH) ? new DatabaseSync(DB_PATH) : null;
 const odb = openOauthDb(ODB_PATH);
 
+// ── AWAITED, AND THE EXIT MOVED OUT OF THE `try` (POS-158) ─────────────────
+//
+// `runTownDrain` became async when the registry became store-of-record: the
+// planner reads the record and the writer writes rows to it. This call did not
+// follow, and the failure was silent in the worst way a crossing can be —
+// `report` was a PROMISE, `report.refused` was `undefined`, and the process
+// exited 0 having written nothing. Measured A/B on a seeded db: before the
+// async change a foreign-class crossing wrote four files and exited 1; after
+// it, and before this line, it wrote nothing, printed `{}` and exited 0. A
+// ferry chain is `&&`-joined, so that reads as a clean crossing and the mail
+// goes out on top of a record nobody settled.
+//
+// THE EXIT ALSO MOVED. `process.exit()` does not unwind, so the `finally` below
+// never ran and both handles were closed by process teardown instead of by this
+// file. That was invisible while the call was synchronous and would have been a
+// held sqlite lock on Windows the moment anything awaited between them.
+let code = 0;
 try {
-  const report = runTownDrain(odb, {
+  const report = await runTownDrain(odb, {
     db, clone: CLONE, date: DATE,
     dryRun: flag("--dry-run"),
     requireLock: !flag("--unlocked"),
   });
   if (flag("--json")) console.log(JSON.stringify(report, null, 2));
-  process.exit(report.refused ? 1 : 0);
+  code = report.refused ? 1 : 0;
 } finally {
   try { odb.close(); } catch { /* already gone */ }
   try { db?.close(); } catch { /* already gone */ }
 }
+process.exit(code);

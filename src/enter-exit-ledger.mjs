@@ -39,8 +39,12 @@
 //                    2026-08-10 when movement moved into the store. Never
 //                    appended to again, so it is a fixed input rather than an
 //                    accumulating output.
-//   the live era     the journal's rows, in seq order, carrying `payload.lines`
-//                    verbatim — the exact text the acting pen formatted.
+//   the live era     the record's enter/exit acts, in the record's own order,
+//                    carrying `payload.lines` verbatim — the exact text the
+//                    acting pen formatted. It was the sqlite journal's rows
+//                    until POS-194; it is `acts` now, read through the same
+//                    row set and order `/world2/occupancy` folds. There is no
+//                    sqlite left under this module.
 //
 //   derived = header + frozen lines + journal lines not already among them
 //
@@ -98,12 +102,11 @@
 //
 // None of those writes anything. The deleted file was the only half that could.
 
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { dynamicDbPath, openDynamic } from "./dynamic-store.mjs";
-import { readJournal } from "./world-journal.mjs";
+import { actsQuery } from "./world2-acts.mjs";
 
 /** The derived record, under its own name. */
 export const LEDGER_NEW = "WORLD/enter-exit-ledger.md";
@@ -201,7 +204,13 @@ export function frozenLinesIn(repo) {
 }
 
 /**
- * THE LIVE ERA'S LINES — the journal's, verbatim, in seq order.
+ * THE LIVE ERA'S LINES — verbatim, in the record's own order.
+ *
+ * ONE SERIALIZER FOR BOTH PENS, and after POS-194 for both STORES. It reads the
+ * row shape `appendJournal` built, which is the shape `insertAct` and
+ * `mirrorAct` copy into `acts` unchanged — so moving the source changed which
+ * table the rows came out of and nothing at all about the text derived from
+ * them. The name keeps the journal's because the SHAPE is the journal's.
  *
  * `payload.lines` is the exact text the acting pen formatted. Carrying it
  * rather than re-deriving it is what makes "the derived record holds the same
@@ -258,18 +267,58 @@ export async function enterExitLedgerText(repo, rows) {
 }
 
 /**
- * THE ONE I/O SEAM over the store, so the door and the save read the same rows
+ * THE ONE I/O SEAM over the record, so the door and the save read the same rows
  * by the same route.
  *
- * Feature-detected and fail-soft, both deliberately. A store that predates the
- * journal has no table to read and a read-only open cannot create one — and an
- * office whose store is missing entirely must still serve the frozen era rather
- * than 500.
+ * ── IT READS `acts`, NOT THE JOURNAL (POS-194, G1 gate 1 of 3) ─────────────
+ *
+ * This was the LAST live-era reader of the sqlite journal's enter/exit rows, and
+ * it is the reason G1 could not land: `src/world2-acts.mjs` said so in its own
+ * words — "deleting this row's mirror today still costs the town its occupancy.
+ * The row stays; POS-156 is where it goes." It has gone here. There is no
+ * sqlite open left under this function and no flag over it; a switch would be
+ * the office keeping two answers to one question.
+ *
+ * ⚑ THE ROW SET AND THE ORDER ARE THE OCCUPANCY DOOR'S OWN, imported from
+ * `live-reads.mjs` rather than spelled again here. `/world2/occupancy` reads
+ * `PASSAGE_ACTIONS` in `PASSAGE_ORDER_SQL` order, and two readers of one record
+ * asking two different questions is how the town learns to trust neither.
+ *
+ * ⚑ THE FOUNDING ERA IS EXCLUDED — `payload->>'_ledger' IS NULL`, the clause
+ * `storeDepartureRows` carries for the same reason. `PASSAGE_ACTIONS` matches
+ * the 155 backfilled crossings of the frozen ledger too, and the frozen era
+ * ALREADY reaches this derivation by another road: `frozenLinesIn` reads it out
+ * of the clone's own file. Returning those rows here would hand `deriveEnter-
+ * ExitLedger` the founding era twice — and the de-dupe could not save it,
+ * because the live set wins its POSITION, so 155 crossings would silently
+ * migrate out of their place in the archive and into the live era's tail.
+ *
+ * ⚑ ONE SERIALIZER, AND IT IS `journalLinesIn`. The lines are carried VERBATIM
+ * in `payload.lines`, exactly as the pen formatted them, and both pens put that
+ * payload in `acts` unchanged (`insertAct`, `mirrorAct`). So the port moves the
+ * row SOURCE and nothing else: the text below this line is derived by the same
+ * function, from the same field, as it was on the journal.
+ *
+ * ⚑ WHY NOT `passageRecords`, WHICH IS THE FOLD ITSELF — measured, and it is a
+ * STOP rather than a preference. `passageOf` reads `lines[0]`, ONE line per
+ * act; a chained enter writes one act carrying one line per mark crossed
+ * (`world-verbs.mjs § enter` pushes a `formatEnterExit` per link) and this
+ * suite pins that all of them reach the served record. The fold also REFUSES a
+ * line that does not match its vendored grammar, where this record's law is the
+ * opposite — "a line this does not understand must survive into the derived
+ * file so that parser can say so out loud". The fold is right for occupancy and
+ * wrong for the archive, and asking it for the archive would lose lines nobody
+ * would ever look for.
+ *
+ * Feature-detected and fail-soft, both deliberately, and unchanged by the port.
+ * An office pointed at no record must still serve the frozen era rather than
+ * 500, and `actsQuery` answers `null` for exactly that — "not asked" against
+ * "asked, and the answer is none".
  *
  * ABSENCE IS NAMED, NEVER FILLED — and this is the one place in this module
  * where getting that wrong would rebuild the very bug it exists to remove. An
- * unreadable store and an empty one produce the SAME derived text: the record as
- * of the cutover. One of those is the truth and the other is a two-day-stale
+ * unreachable record and an empty one produce the SAME derived text: the record
+ * as of the cutover. One of those is the truth and the other is a two-day-stale
  * fossil served as though it were current, which is exactly what prod did from
  * 2026-08-24 to 2026-08-26 with nothing anywhere saying so.
  *
@@ -280,37 +329,74 @@ export async function enterExitLedgerText(repo, rows) {
  * (Caught by running this against a copy of prod's own store, 2026-08-26: a
  * mis-resolved path made the read throw, and the draft answered 155 acts with a
  * straight face.)
+ *
+ * ⚑ RENAMED from `liveJournalRows`, which named a source it no longer has. No
+ * caller outside this module and its suite ever held the old name.
  */
-// THE JOURNAL MEMO (the Snug night, 2026-09-27): the live profile put ~16% of the
-// office's thread in re-reading and re-hydrating the WHOLE journal on every apex
-// and ledger read. The rows are kept per store file and re-read only when the
-// file or its WAL changes (mtime and size), the same stamp as w39.13's
-// movements memo: same rows, same order, never older than the file. A failed
-// read is never cached, so its sentence is re-tried on the next call.
-const journalMemo = new Map();
-function storeStamp(path) {
-  return [path, `${path}-wal`].map((p) => { try { const s = statSync(p); return `${s.mtimeMs}:${s.size}`; } catch { return "-"; } }).join("|");
+// ── READ ONCE PER PASSAGE, NOT ONCE PER CALL (POS-272) ──────────────────────
+//
+// Every say pays this read: `residentStandpoint`'s aboard-by-occupancy branch
+// folds occupancy out of the served ledger, and the crossing doors ask again.
+// The rows change only when a passage lands, so the read is kept under the
+// passage set's HIGH-WATER MARK — `max(id)` and `count(*)` over exactly the
+// rows the read returns — and re-read when either moves.
+//
+// THE COUNT IS THE EXACT HALF. `acts` is append-only (the `acts_append_only`
+// trigger refuses UPDATE and DELETE), so the row set changes only by growing
+// and the count moves with every change. `max(id)` alone would miss a passage
+// whose identity was drawn before a later one but committed after it: the
+// later id is already the maximum when the earlier row appears.
+//
+// Scoped to the passage rows, not to every act: keyed on the whole table, each
+// say (the commonest act by far) would throw the memo away.
+//
+// A mark that cannot be read is no memo, never a stale answer: the full read
+// runs as before, and its own failure is still named below.
+let _passages = null;   // { mark, rows }
+
+/** Forget the kept passages — for suites that swap the record under the office. */
+export function __forgetPassages() { _passages = null; }
+
+async function passageMark(live, env) {
+  const got = await actsQuery(
+    `SELECT max(id) AS hw, count(*) AS n FROM acts
+      WHERE action = ANY($1) AND payload->>'_ledger' IS NULL`,
+    [live.PASSAGE_ACTIONS], env);
+  const r = got?.[0];
+  if (!r || r.n == null) return null;
+  return `${env.WORLD2_PG_URL}|${r.hw ?? "none"}|${r.n}`;
 }
-export function liveJournalRows({ dbPath = undefined } = {}) {
-  const path = dbPath ?? dynamicDbPath();
-  const stamp = storeStamp(path);
-  const hit = journalMemo.get(path);
-  if (hit && hit.stamp === stamp) return hit.answer;
-  const answer = liveJournalRowsUncached({ dbPath: path });
-  if (!answer.unread) journalMemo.set(path, { stamp, answer });
-  return answer;
-}
-function liveJournalRowsUncached({ dbPath = undefined } = {}) {
-  let db = null;
+
+export async function livePassageRows({ env = process.env } = {}) {
   try {
-    db = openDynamic(dbPath, { readOnly: true });
-    const has = db.prepare("SELECT name n FROM sqlite_master WHERE type='table' AND name='journal'").get();
-    if (!has) return { rows: [], unread: "this office's store predates the journal — there is no journal table, so nothing since the FROZEN ERA ONLY could be read" };
-    return { rows: readJournal(db), unread: null };
+    const live = await import("../world2/tools/live-reads.mjs");
+    let mark = null;
+    try { mark = await passageMark(live, env); } catch { mark = null; }
+    if (mark && _passages?.mark === mark) return { rows: _passages.rows, unread: null };
+    const rows = await actsQuery(
+      `SELECT id, at, crossing, actor, action, payload FROM acts
+        WHERE action = ANY($1) AND payload->>'_ledger' IS NULL ${live.PASSAGE_ORDER_SQL}`,
+      [live.PASSAGE_ACTIONS], env);
+    if (rows == null)
+      return { rows: [], unread: "this office is pointed at no record (WORLD2_PG) — the passages live in `acts`, so nothing since the FROZEN ERA ONLY could be read" };
+    // ASSERTED, NEVER ASSUMED — the trap is silent: an unordered read returns
+    // rows, in an order, with no symptom a caller could see, and this record's
+    // whole meaning is its sequence. Driven by the clause's OWN keys, so it can
+    // only ever assert the order the query actually asked for.
+    live.assertDepartureOrder(rows, live.PASSAGE_ORDER_KEYS);
+    // The row shape `journalLinesIn` reads, and `acts.id` standing in for `seq`.
+    // They are the same ORDER and never the same number: the mirror inserts in
+    // journal order and the flipped pen writes `acts` first, so id ascends with
+    // seq under both pens — while `journal_seq` is NULL on every flipped row and
+    // would sort the live era's newest crossings to the front of it.
+    const out = rows.map((r) => ({ seq: Number(r.id), payload: r.payload }));
+    // Kept under the mark read BEFORE the rows: a passage landing between the
+    // two reads is in these rows and moves the next mark, so the next call
+    // reads again rather than keeping an answer older than its key.
+    _passages = mark ? { mark, rows: out } : null;
+    return { rows: out, unread: null };
   } catch (e) {
-    return { rows: [], unread: `the journal could not be read (${String(e?.message ?? e).slice(0, 160)}) — everything below is the FROZEN ERA ONLY, and any passage made since is missing from this answer rather than absent from the town` };
-  } finally {
-    try { db?.close(); } catch { /* already gone */ }
+    return { rows: [], unread: `the passage record could not be read (${String(e?.message ?? e).slice(0, 160)}) — everything below is the FROZEN ERA ONLY, and any passage made since is missing from this answer rather than absent from the town` };
   }
 }
 
@@ -320,9 +406,9 @@ function liveJournalRowsUncached({ dbPath = undefined } = {}) {
  * answering the same question with two shapes is how a caller learns to trust
  * one of them.
  */
-export async function servedEnterExitLedger(repo, { dbPath = undefined } = {}) {
+export async function servedEnterExitLedger(repo, { env = process.env } = {}) {
   const frozen = frozenLinesIn(repo);
-  const { rows, unread } = liveJournalRows({ dbPath });
+  const { rows, unread } = await livePassageRows({ env });
   const live = journalLinesIn(rows);
   const ledger = deriveEnterExitLedger({ header: await ledgerHeaderFrom(repo), frozen: frozen.lines, journal: live });
   return {
@@ -330,8 +416,14 @@ export async function servedEnterExitLedger(repo, { dbPath = undefined } = {}) {
     bytes: ledger.length,
     acts: ledger.split("\n").filter(isActLine).length,
     derived: {
-      from: [frozen.source ?? "(no frozen era in this clone)", "the world journal's enter/exit rows"],
+      from: [frozen.source ?? "(no frozen era in this clone)", "the record's enter/exit acts (`acts`)"],
       frozen_acts: frozen.lines.length,
+      // `journal_acts` AND `journal_unread` KEEP THEIR NAMES, though the source
+      // moved to `acts` (POS-194). They are the door's API, and
+      // `world2/tools/ab-compare.mjs` reads `derived.journal_acts` with a `?? 0`
+      // that would answer a confident zero to a rename — the orphaned
+      // name-keyed reader this module's own header is a museum of. The count
+      // means what it always meant: the live era's acts, whoever holds them.
       journal_acts: live.length,
       // Present ONLY when there is one, so a caller can neither miss it nor have
       // to infer it from a count that reads plausibly either way. An unreadable
@@ -340,7 +432,7 @@ export async function servedEnterExitLedger(repo, { dbPath = undefined } = {}) {
       // being served as though it were current. That is the whole bug.
       ...(unread ? { journal_unread: unread, incomplete: true } : {}),
     },
-    source: "derived live — the frozen era from the office's own world clone, the passages since from the journal",
+    source: "derived live — the frozen era from the office's own world clone, the passages since from the record's `acts`",
   };
 }
 

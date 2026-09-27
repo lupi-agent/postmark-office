@@ -26,11 +26,11 @@ import { parsePsaEntries, psaFold, PSA_SLUG } from "../src/queries.mjs";
 import { dialNumber } from "../src/world-classes.mjs";
 import { storeDbPath } from "../src/world-serve.mjs";
 import { CLASS_ROSTER_GATE_SQL } from "../src/world-store.mjs";
+import { townClone } from "./fixture-paths.mjs";
 
 // The town checkout the office is pointed at. Every candidate the repo's own
 // tooling uses; the test says which it found rather than inventing a wall.
-const TOWN = [process.env.TOWN_CLONE, "G:/postmark/seam-overnight/town-main",
-  join(import.meta.dirname, "..", "town-clone"), "G:/postmark/repo"]
+const TOWN = [townClone()]
   .filter(Boolean).find((p) => existsSync(join(p, "TOWN_BULLETIN", `${PSA_SLUG}.md`)));
 
 const wallText = TOWN

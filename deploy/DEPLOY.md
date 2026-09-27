@@ -92,7 +92,7 @@ reach by construction: `town-clone/`, `world-clone/`, `world-clone-pool/`,
 root-level `town.lock`, `office.db`, `oauth.db`, `dynamic.db`,
 `.git-credentials`, `git-metrics-token`, `stamp-key.pem`.
 
-Two directories are excluded by name:
+Three directories are excluded by name:
 
 - **`telemetry/`** — the trap. It is tracked (`telemetry/github/*.json`) *and*
   box-written (`access-*.jsonl`, plus fresh gh snapshots the hourly cron writes
@@ -100,6 +100,14 @@ Two directories are excluded by name:
   logs and roll the snapshots back to whenever the train was cut. The box is the
   writer here; the repo is the archive.
 - **`.github/`** — CI config; nothing on the box reads it.
+- **`.omc/`** — the orchestration layer's per-operator session state, untracked
+  and gitignored since 2026-09-21 (Keemin, ROLLOVER 25). The exclusion is the
+  second net, not the fix: the first net is that the tag no longer carries the
+  directory, so `git archive` never puts it in `stage/` and this list never sees
+  it. **The box's own copy is not deleted by this.** A directory absent from
+  `dirs.txt` gets no `--delete` sync, and root-level files sync without
+  `--delete` — so whatever `/srv/postmark-office/.omc/` holds on dev and prod
+  stays until somebody removes it by hand.
 
 **Nothing is installed into `/etc`.** `deploy/*.service`, `deploy/*.timer` and
 the nginx confs land in `/srv/postmark-office/deploy/` as ordinary files and go
@@ -193,6 +201,17 @@ sudo systemctl enable --now postmark-office postmark-office-rehydrate.timer post
 #      (legacy, kept serving) and deploy/nginx-postmark-town.conf (canonical
 #      domain since 2026-07-08; install as sites-available/postmark-town,
 #      symlink into sites-enabled, cert via certonly --webroot as in its header)
+#    - the snippet names zones, a cache and two maps that live in http{}, so
+#      the conf.d files go in first or `nginx -t` refuses it. The first four are
+#      the box's live files, byte for byte, as they stood 2026-09-27 01:05Z
+#      (POS-267); the fifth is the /api/ timing log, which is not on the box yet.
+#      The keyless zone's source is still deploy/nginx-rate-limit.conf.snippet
+#      (its http{} half), as installed 2026-08-14.
+sudo cp deploy/nginx-worldcache.conf /etc/nginx/conf.d/postmark-worldcache.conf
+sudo cp deploy/nginx-present-grid.conf /etc/nginx/conf.d/postmark-present-grid.conf
+sudo cp deploy/nginx-present-zone.conf /etc/nginx/conf.d/postmark-present-zone.conf
+sudo cp deploy/nginx-api.conf /etc/nginx/snippets/postmark-api.conf
+sudo cp deploy/nginx-api-timing.conf /etc/nginx/conf.d/postmark-api-timing.conf
 sudo nginx -t && sudo systemctl reload nginx
 
 # 5. the panes origin (household windows — postmark-windows Phase 0)
@@ -379,7 +398,7 @@ cat /srv/postmark-sentinel/status.json | head -40
 
 ## The operator dashboards (`/ops/`, hub generated since 2026-08-11)
 
-Five static surfaces under `/ops/`, all written to `/var/www/postmark-ops/`
+Six static surfaces under `/ops/`, all written to `/var/www/postmark-ops/`
 (outside the site webroot, so a site rsync never clobbers them) and served by
 the aliases in `nginx-postmark-town.conf`:
 
@@ -390,6 +409,7 @@ the aliases in `nginx-postmark-town.conf`:
 | `/ops/git/` | `tools/git-report.mjs` | `/etc/cron.hourly/postmark-git-report` |
 | `/ops/economy/` | `tools/economy-report.mjs` | `/etc/cron.hourly/postmark-economy-report` |
 | `/ops/world/` | `tools/world-report.mjs` | `/etc/cron.hourly/postmark-world-report` |
+| `/ops/activity/` | `tools/ops-activity.mjs` | `/etc/cron.hourly/postmark-activity-report` |
 
 `/ops/desk/` is the exception: it is site-built (astro) and keeps its own more
 specific nginx location.
@@ -399,7 +419,7 @@ come from that dashboard's own `data.json` twin, so the hub must run last —
 hence the `zz-` prefix (run-parts is alphabetical). Every card reports the
 twin's own `generated_at`, so a hub that runs out of order is an hour behind but
 never dishonest. `/var/www/postmark-ops/data.json` is the freshness roll-up: one
-file to poll instead of four.
+file to poll instead of five.
 
 **Installing the hub the first time** (2026-08-11 change; do these together):
 
@@ -419,7 +439,15 @@ sources and output, so a dev machine can build the real page against sample or
 cloned data before anything ships: `TRAFFIC_ARCHIVE`, `TRAFFIC_GITHUB`,
 `OFFICE_TELEMETRY`, `NGINX_LOG_DIR`, `TRAFFIC_REPORT_OUT`; `TOWN_CLONE`,
 `GIT_REPORT_OUT`, `GIT_REPORT_NO_FETCH=1` (render from the PR cache, no GitHub
-token); `WORLD_CLONE`, `WORLD_REF`, `ECONOMY_REPORT_OUT`, `OUT_DIR`; `OPS_ROOT`.
+token); `WORLD_CLONE`, `WORLD_REF`, `ECONOMY_REPORT_OUT`, `OUT_DIR`; `OPS_ROOT`;
+`ACTIVITY_OUT`, `ACTIVITY_ACTS_FILE`, `ACTIVITY_NOW` (or `--town`, `--telemetry`,
+`--acts`, `--out`, `--now`).
+
+**Installing `/ops/activity/`** (POS-216): `install -m 755
+deploy/cron-postmark-activity-report.sh /etc/cron.hourly/postmark-activity-report`,
+then run it once by hand. It reads the store's `acts` with the office's own two
+keys from `/etc/postmark-office.env`; without them the page says the world acts
+were not read and counts the ledgers alone.
 
 ## Branch previews (`/preview/<slug>/`, 2026-07-20)
 
@@ -692,11 +720,57 @@ one line, named below.
 | `postmark-world2-ingest.timer` | `world2-ingest.sh` → `law-ingest.mjs` + `stamp-ingest.mjs` | **PARKED** since 2026-08-31 — the stamp pen's unit now (below) |
 | `postmark-world2-law-ingest.timer` | `world2-ingest.sh law` → `law-ingest.mjs` only | every 15 min, :04/:19/:34/:49 |
 | `postmark-world2-notary.timer` | `world2-notary.sh` → `snapshot-export.mjs` + `falsifier-canon-locks.mjs` (postmark#2594, nightly — the section below) | 07:20 UTC (office#83, from 03:20) |
-| `postmark-world2-backup.timer` | `world2-backup.sh` → `pg_dump` + ship, `pg_basebackup` | 08:10 UTC (office#83, from 04:10) |
+| `postmark-world2-backup.timer` | `world2-backup.sh` → `pg_dump` + ship, `pg_basebackup`, **and `roles.db`** (POS-185) | 08:10 UTC (office#83, from 04:10) |
 
 All five carry rows in `deploy/box-rollcall-manifest.json`. `world2-restore-rehearse.sh`
 is a hand-run, deliberately: it drops and recreates a database, and nothing that
 does that belongs on a clock.
+
+**The backup lane also carries `roles.db` since POS-185 (2026-09-21)**, and it is
+the only file in that commit that is not the world store. It is there because
+`src/roles.mjs:71-82` says so in its own voice and then declines to act on it,
+correctly — the module states the gap, operations decides the discipline:
+
+> `roles.db` … lives on the box and nowhere else. It is NOT the same durability
+> class as its neighbours: `office.db` and `world.db` are pure indexes, deleted
+> and rebuilt whole from a clone; `oauth.db` is auth paperwork whose loss only
+> forces everyone to sign in again; `dynamic.db` carries an explicit covenant
+> that every row re-derives or recovers from a crossing-save. This file carries
+> NO such covenant, because a grant exists nowhere else in the world — no repo
+> holds it, no fold recomputes it. **Losing `roles.db` loses who paid.**
+
+Three things about how it rides, each of which is the answer to a question the
+next reader will have:
+
+- **It is copied with `VACUUM INTO`, never `cp`.** A SQLite file copied while a
+  writer is mid-transaction is torn — it has the size and the magic bytes of a
+  database and restores as nothing. `VACUUM INTO` takes a read transaction and
+  emits a self-consistent database whatever the office is doing at 08:10.
+- **Through node's `node:sqlite`, not the `sqlite3` CLI**, so the box gains no
+  new package: the office already imports `DatabaseSync` to serve the gate
+  (`src/roles.mjs:141`, `src/server.mjs:36`). The handle is opened **read-only**
+  — `VACUUM INTO` writes only to the target — so the backup lane never holds a
+  pen over who paid.
+- **No new unit, no new credential, no new roll-call row.** Same timer, same
+  private repo, same deploy key, and the `postmark-world2-backup.timer` row's
+  receipt now carries `roles_status`, `roles_db_bytes` and `role_audit_rows`.
+  `roles_status: absent` is legal and does not redden: `OFFICE_ROLE_GATES` is
+  unset on every office today (`src/server.mjs:170`), so a box that has never
+  granted a role has no file to copy. A file that exists and *cannot* be copied
+  exits 1.
+
+**Restoring it is a file copy**, which is the whole restore path:
+
+```
+cp roles/<newest>.db /srv/postmark-office/roles.db   # the office opens it at boot
+```
+
+`world2-restore-rehearse.sh` counts the shipped copy's `role_audit` against the
+live registry on every rehearsal, under the same drift rule as the Postgres
+tables: the live side may have gained rows (the town kept selling), but the copy
+holding MORE rows than live cannot be explained by the clock and is the finding.
+Prefer `--from-remote`, which reads the copy out of the off-box clone rather than
+the box's own disk — the local one only proves the copier ran.
 
 ### The law pen keeps its own clock (2026-09-19, postmark#2893)
 

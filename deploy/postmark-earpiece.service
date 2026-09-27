@@ -1,0 +1,39 @@
+[Unit]
+# THE EARPIECE'S DELIVERER (POS-209). One oneshot a minute: while an event is
+# doors-open or underway, it wakes each RSVPed resident with what was said at
+# the place and who walked in or out since their last wake — a signed webhook
+# POST, or mail (Letta falls back to mail until POS-210). It logs every attempt
+# in earpiece_wakes (026) and writes its stamp on every fire, idle included.
+#
+# MAIL is a letter from postmark-pen, one per resident per event per crossing,
+# written in the 10 minutes before 00:00Z / 12:00Z through the office's own
+# send: the office's index (office.db beside the checkout, or --db) and the
+# town clone (TOWN_CLONE; TOWN_PUSH=1 pushes the pen's commit), both from the
+# office env below. The ferry carries it. The town clone must carry
+# WHITE_PAGES/postmark-pen (town main 55df1afc6), or the ferry bounces it.
+#
+# THE KILL FLAG: W2_EARPIECE=1 in the office env, or every fire writes
+# status "disabled" and sends nothing. It ships unset.
+#
+# Install (Wright, after review; dev sandbox first):
+#   psql as world2_owner: the 026 re-run (idempotent; adds earpiece_wakes)
+#   sudo cp deploy/postmark-earpiece.{service,timer} /etc/systemd/system/
+#   sudo mkdir -p /srv/postmark-earpiece && sudo chown meepo /srv/postmark-earpiece
+#   sudo systemctl daemon-reload && sudo systemctl enable --now postmark-earpiece.timer
+Description=the earpiece — wake RSVPed residents during an event's window
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=meepo
+WorkingDirectory=/srv/postmark-office
+# The office's own env file (the one postmark-office.service reads): the
+# record's URL as office_api, WORLD_CLONE, and W2_EARPIECE when it is turned
+# on. systemd reads it as root and hands the values in.
+EnvironmentFile=/etc/postmark-office.env
+Environment=EARPIECE_STATE=/srv/postmark-earpiece/state.json
+# Exit 0 ran, idle or disabled · 1 the record could not be reached (the stamp
+# says so) · 2 usage.
+ExecStart=/usr/bin/node world2/tools/earpiece-deliver.mjs --run
+TimeoutStartSec=300
+Nice=5

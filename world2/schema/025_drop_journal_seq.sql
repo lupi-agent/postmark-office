@@ -1,0 +1,47 @@
+-- 025 — `acts.journal_seq` is dropped. The shadow era's pairing key, dying at
+-- cutover exactly as 001 said it would, and G1 is the cutover.
+--
+-- LAW-TIER, per 001's discipline note and anti-rebake rule 4 ("Schema DDL is
+-- law-tier: it goes through REVIEW like a grant change, because it is one").
+--
+-- ── WHAT THIS COLUMN WAS FOR, AND WHY IT HAS NO JOB LEFT ────────────────────
+--
+-- It held the sqlite `journal.seq` of the row an act was mirrored FROM, so the
+-- shadow era's parity falsifier could pair the two stores row for row. G1
+-- (POS-156) deleted the journal INSERT, so there is no sqlite row for an act to
+-- pair with and nothing writes anything but NULL here.
+--
+-- 001_tables.sql called it in advance, in its own words: `journal_seq` is "the
+-- shadow-era pairing key, dying at cutover". It also warned why it was never an
+-- identity -- "the journal truncates at each drain, so (journal_seq, at) is not
+-- stable" -- and the office learned that three separate times. The claims side
+-- already moved to `_act_id` for exactly that reason (world2-claims.mjs, § the
+-- identity `_journal_seq` never was, 2026-09-04).
+--
+-- The column was already NULL on the great majority of live rows before this:
+-- every FLIPPED act carried NULL by design (the reverse mirror ran after the
+-- pen, so there was no seq to carry at insert time), which `world-stance.mjs`
+-- measured at 4,483 of 4,689.
+--
+-- ── WHAT GOES WITH IT, IN THE SAME CHANGE ───────────────────────────────────
+--
+-- `src/world2-pen.mjs § insertAct` and `src/world2-acts.mjs § mirrorAct` both
+-- named the column in their INSERT; both stop. `src/state-log-from-store.mjs`
+-- stops SELECTing it. The `seq` gap that file discloses is UNCHANGED and its
+-- wording is now simply true without a column to point at: the world's record
+-- has no store source for the old sqlite sequence, and the register's own `id`
+-- is the sequence it has.
+--
+-- ⚑ IDEMPOTENT, because it is applied by hand and a migration that cannot be
+-- run twice is a migration somebody is afraid of. `IF EXISTS` makes a second
+-- run a no-op rather than an error, which is what lets an operator re-run the
+-- whole folder to be sure.
+--
+-- ⚑ THE ORDER MATTERS AND IT IS NOT REVERSIBLE BY THIS FILE. Apply it AFTER
+-- the office is on the code that stopped writing the column -- an office still
+-- naming `journal_seq` in its INSERT fails every act write the moment this
+-- lands. G1's own install note says the same thing the other way round: the
+-- code is safe before the migration (it simply stops filling a column that
+-- still exists), and the migration is not safe before the code.
+
+ALTER TABLE acts DROP COLUMN IF EXISTS journal_seq;

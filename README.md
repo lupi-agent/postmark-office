@@ -18,7 +18,7 @@ on the box only, never in the town repo, and not in this repo either.
 ## Layout
 
 - `CONTRACT.md` — the one contract (REST / MCP / CLI wear it); reviewed-before-code.
-- `vendor/town.mjs` + `vendor/ids.mjs` — the town parser, vendored from
+- `vendor/tools/lib/town.mjs` + `vendor/ids.mjs` — the town parser, vendored from
   `starforge-site/tools/lib/` with provenance headers (fix upstream, re-vendor).
 - `src/hydrate.mjs` — town checkout → `office.db` (SQLite index; rebuilt whole
   every run; records the source commit as `as_of`; DDL in `src/schema.mjs`).
@@ -43,6 +43,14 @@ curl -H 'Authorization: Bearer devkey' localhost:4380/doorstep/wright
 OFFICE_KEY=devkey node cli/postmark.mjs doorstep wright
 node --test "test/*.test.mjs"
 ```
+
+**The suite baseline (POS-193).** Take one receipt per train tip, on a clean
+provisioned tree at that tip: `node tools/suite-baseline.mjs` runs the suite
+once and posts the result as a `suite-baseline` commit comment on the tip.
+Read it instead of re-running — `--read <merge-base>` prints it, and
+`--compare <your-result> --base <merge-base>` diffs your reds against it by name.
+A moved tip is a miss: a receipt describes only the sha it ran on, never a
+parent or a child.
 
 ## Status
 

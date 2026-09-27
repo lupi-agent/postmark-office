@@ -222,8 +222,12 @@ export async function readClaimEffects({ key, handles = [], sinceCrossing, nowCr
  * laid over ground you hold", and one question must not have two derivations
  * that disagree (#1044's lesson, and `stances_awaiting`'s two counts).
  */
-export async function doorstepRulings(handle, { key = null, sinceCrossings = 2, repo = null } = {}) {
-  const now = currentCrossing();
+export async function doorstepRulings(handle, { key = null, sinceCrossings = 2, repo = null, nowMs = Date.now() } = {}) {
+  // `nowMs` is the INSTANT (POS-168); `now` below is the crossing NUMBER that
+  // instant falls in. The doorstep hands one instant to every clock read on the
+  // page so the whole page names one boat; a caller that passes nothing reads
+  // the wall clock, exactly as this line did before it had a seam.
+  const now = currentCrossing(nowMs);
   // ⚑ `?? 2` NOT `|| 2`: an explicit `crossings: 0` is a caller asking for the
   // window that is open right now, and `||` turned it into 2 after
   // `household-apex.mjs` had already let 0 through its `Number.isFinite` guard.

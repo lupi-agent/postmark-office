@@ -22,6 +22,7 @@ import { HANDLE_FIELD } from "../tools/stripe-watch.mjs";
 import { tmpdir } from "node:os";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
+import { NO_TOWN, townClone } from "./fixture-paths.mjs";
 
 // execFileSync BLOCKS THE EVENT LOOP, so the in-process fake Stripe below could
 // never accept the child's connection and every run died on the fetch timeout.
@@ -31,8 +32,9 @@ const run = promisify(execFile);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, "..", "tools", "stripe-watch.mjs");
-const TOWN = [resolve(HERE, "..", "town-clone"), "G:/postmark/seam-overnight/town-clone"]
+const TOWN = [townClone()].filter(Boolean)
   .find((p) => existsSync(join(p, "tools", "stamp-mint.mjs")));
+const SKIP = !TOWN && NO_TOWN;
 
 const KEY = "rk_test_thisisnotarealkey";
 const CS = "cs_test_cli111111111111111111111";
@@ -107,7 +109,7 @@ const session = (over = {}) => ({
   payment_intent: "pi_cli", ...over,
 });
 
-test("the CLI runs end to end: env → reader → pages → journal → state, and writes no ledger row", async (t) => {
+test("the CLI runs end to end: env → reader → pages → journal → state, and writes no ledger row", { skip: SKIP }, async (t) => {
   // ONE session object, fed and then asserted against. `session()` derives
   // `created` from `Date.now()` at second resolution, so calling it a second
   // time at assert time asks a different question of the clock — and the answer
@@ -155,7 +157,7 @@ test("the CLI runs end to end: env → reader → pages → journal → state, a
   assert.equal(readFileSync(ledger, "utf8"), before);
 });
 
-test("a second run journals the SAME session once — the journal is append-only, not append-again", async (t) => {
+test("a second run journals the SAME session once — the journal is append-only, not append-again", { skip: SKIP }, async (t) => {
   const { port } = await fakeStripe([session()], t);
   const town = seamTown();
   const state = join(town.repo, "state.json");
@@ -171,7 +173,116 @@ test("a second run journals the SAME session once — the journal is append-only
   assert.equal(rows.filter((r) => r.kind === "seen").length, 1, "the boundary second is re-read and the session is re-seen, but journalled once");
 });
 
-test("no key is a loud refusal, not a quiet empty tick", async () => {
+// A Stripe that ROUTES: the listing at /v1/checkout/sessions, and one payment
+// intent at /v1/payment_intents/<id>, answered expanded only when the request
+// asked for the expansion — so the assertion on what the CLI sent means
+// something. Shut down the same way as fakeStripe, for the same reason.
+function routedStripe({ sessions, intents }, t) {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push({ url: req.url, auth: req.headers.authorization });
+    res.setHeader("content-type", "application/json");
+    const u = new URL(req.url, "http://x");
+    const m = u.pathname.match(/^\/v1\/payment_intents\/([^/]+)$/);
+    if (m) {
+      const pi = intents[decodeURIComponent(m[1])];
+      if (!pi) { res.statusCode = 404; return res.end(JSON.stringify({ error: { message: "No such payment_intent" } })); }
+      const expanded = u.searchParams.get("expand[]") === "latest_charge.balance_transaction";
+      return res.end(JSON.stringify(expanded ? pi : { ...pi, latest_charge: pi.latest_charge.id }));
+    }
+    res.end(JSON.stringify({ object: "list", data: sessions, has_more: false }));
+  });
+  if (t) t.after(() => { server.closeAllConnections?.(); server.close(); });
+  return new Promise((done) => server.listen(0, "127.0.0.1", () => done({ server, seen, port: server.address().port })));
+}
+
+test("POS-183 · the CLI reads a EUR session's SETTLED dollars off its balance transaction and journals the settlement", { skip: SKIP }, async (t) => {
+  // LAW (tools/stripe-watch.mjs, the header, verbatim): "`usd:` from the
+  //     balance transaction, whole dollars, cents disclosed as they always
+  //     were." Driven through the entrypoint the box runs, not the pure core.
+  const due = Math.floor(Date.now() / 1000) - 2 * 86_400;
+  const fed = session({ created: due, amount_total: 1840, currency: "eur", payment_intent: "pi_eur" });
+  const intents = { pi_eur: { id: "pi_eur", object: "payment_intent", latest_charge: { id: "ch_eur", object: "charge", balance_transaction: { id: "txn_eur", object: "balance_transaction", amount: 2013, currency: "usd" } } } };
+  const { seen, port } = await routedStripe({ sessions: [fed], intents }, t);
+  const town = seamTown();
+  const state = join(town.repo, "state.json");
+  const journal = join(town.repo, "intake.jsonl");
+  execFileSync(process.execPath, [join(TOWN, "tools", "stamp-mint.mjs"), "--append", "--key", town.keyFile, "--repo", town.repo], { encoding: "utf8" });
+
+  const { stdout } = await run(process.execPath, [
+    CLI, "--dry-run", "--json", "--clone", town.repo, "--state", state, "--journal", journal,
+  ], {
+    encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
+    env: { ...process.env, STRIPE_KEY: KEY, STRIPE_API: `http://127.0.0.1:${port}/v1`, TOWN_CLONE: "" },
+  });
+  const report = JSON.parse(stdout);
+
+  const read = seen.find((s) => s.url.startsWith("/v1/payment_intents/pi_eur"));
+  assert.ok(read, "the CLI asked Stripe for the payment intent");
+  assert.match(read.url, /expand%5B%5D=latest_charge\.balance_transaction/, "with the expansion down to the balance transaction");
+  assert.equal(read.auth, `Bearer ${KEY}`);
+
+  assert.equal(report.anomalies, 0, "no longer `not-usd` for the founder's hand");
+  assert.equal(report.witness.length, 1);
+  assert.equal(report.witness[0].usd, 20, "the settled whole dollars");
+  assert.deepEqual(report.witness[0].presented, { currency: "eur", amount: 1840 });
+
+  const rows = readFileSync(journal, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "seen");
+  assert.deepEqual(rows[0].settled, { balance_transaction: "txn_eur", currency: "usd", amount: 2013 },
+    "the settlement is journalled, so the funding report reads the same dollars with no key");
+
+  // THE BOUNDARY SECOND, again: the cursor is inclusive, so the next tick
+  // re-lists this session. Its settlement is remembered, not re-read.
+  const reads = () => seen.filter((s) => s.url.startsWith("/v1/payment_intents/")).length;
+  assert.equal(reads(), 1);
+  const { stdout: again } = await run(process.execPath, [
+    CLI, "--dry-run", "--json", "--clone", town.repo, "--state", state, "--journal", journal,
+  ], {
+    encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
+    env: { ...process.env, STRIPE_KEY: KEY, STRIPE_API: `http://127.0.0.1:${port}/v1`, TOWN_CLONE: "" },
+  });
+  assert.equal(JSON.parse(again).witness[0].usd, 20, "decided from the remembered settlement");
+  assert.equal(reads(), 1, "a settlement the journal already holds is never asked for twice");
+  assert.equal(readFileSync(journal, "utf8").trim().split("\n").length, 1, "and nothing new is journalled");
+});
+
+test("POS-183 · a real tick WITNESSES the settled dollars: the ledger row says 20, the journal row carries `presented`", { skip: SKIP }, async (t) => {
+  // No --dry-run: the whole path the box runs, through penRecorder, fund-exec
+  // and the town's own epoch-close, into a throwaway git town. TOWN_PUSH is
+  // unset, so nothing leaves the temp directory.
+  const due = Math.floor(Date.now() / 1000) - 2 * 86_400;
+  const fed = session({ created: due, amount_total: 1840, currency: "eur", payment_intent: "pi_eur" });
+  const intents = { pi_eur: { id: "pi_eur", object: "payment_intent", latest_charge: { id: "ch_eur", object: "charge", balance_transaction: { id: "txn_eur", object: "balance_transaction", amount: 2013, currency: "usd" } } } };
+  const { port } = await routedStripe({ sessions: [fed], intents }, t);
+  const town = seamTown();
+  const state = join(town.repo, "state.json");
+  const journal = join(town.repo, "intake.jsonl");
+  execFileSync(process.execPath, [join(TOWN, "tools", "stamp-mint.mjs"), "--append", "--key", town.keyFile, "--repo", town.repo], { encoding: "utf8" });
+  const git = (...a) => execFileSync("git", ["-C", town.repo, ...a], { encoding: "utf8" });
+  git("init", "-q");
+  git("add", "-A");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "seed");
+
+  await run(process.execPath, [CLI, "--json", "--clone", town.repo, "--state", state, "--journal", journal], {
+    encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
+    env: { ...process.env, STRIPE_KEY: KEY, STRIPE_API: `http://127.0.0.1:${port}/v1`, TOWN_CLONE: "", STAMP_KEY: town.keyFile, TOWN_PUSH: "" },
+  });
+
+  const rows = readFileSync(journal, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const w = rows.find((r) => r.kind === "witnessed");
+  assert.ok(w, `the tick witnessed it (journal: ${rows.map((r) => r.kind).join(", ")}${rows.find((r) => r.kind === "refused")?.defect ? ` — ${rows.find((r) => r.kind === "refused").defect}` : ""})`);
+  assert.equal(w.usd, 20);
+  assert.deepEqual(w.presented, { currency: "eur", amount: 1840 });
+  assert.deepEqual(w.settled, { balance_transaction: "txn_eur", currency: "usd", amount: 2013 });
+  assert.match(w.line, /usd: 20\b/, "the ledger line the town signed carries the settled dollars");
+  const ledger = readFileSync(join(town.repo, "WHITE_PAGES", "stamp-ledger.md"), "utf8");
+  assert.ok(ledger.includes(`stripe:${CS}`));
+  assert.ok(!/eur|1840/i.test(ledger), "the presentment never reaches the public ledger");
+});
+
+test("no key is a loud refusal, not a quiet empty tick", { skip: SKIP }, async () => {
   const town = seamTown();
   execFileSync(process.execPath, [join(TOWN, "tools", "stamp-mint.mjs"), "--append", "--key", town.keyFile, "--repo", town.repo], { encoding: "utf8" });
   let err = null;
@@ -184,7 +295,7 @@ test("no key is a loud refusal, not a quiet empty tick", async () => {
   assert.match(String(err.stderr), /no STRIPE_KEY/);
 });
 
-test("no town clone with the funding seam is a loud refusal too", async () => {
+test("no town clone with the funding seam is a loud refusal too", { skip: SKIP }, async () => {
   const bare = mkdtempSync(join(tmpdir(), "no-seam-"));
   let err = null;
   try {

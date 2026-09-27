@@ -1,0 +1,119 @@
+-- 021 — households.provisional: A HOUSE THAT NEVER DECLARED HOLDS A BORROWED KEY
+-- (postmark POS-159, w40)
+--
+-- RULED (Keemin, 2026-09-22): every household in the roll gets exactly one row.
+-- A house that never declared gets a PROVISIONAL key from its FIRST resident's
+-- HANDLE — handles are already unique slugs — and chooses its real one ONCE, at
+-- the human's first co-sign. The provisional key then lands in `formerly`
+-- (migration 020) rather than vanishing, `provisional` goes false, and the key
+-- is immutable from that moment like everyone else's.
+--
+-- ── THIS COLUMN IS A CLAIM ABOUT A KEY, NOT ABOUT A HOUSE ───────────────────
+--
+-- `provisional = true` says ONE thing: nobody has chosen this key, so the
+-- ceremony may still change it. It does not say the house is lesser, unverified
+-- or temporary. The house is real, its residents are real, and it renders in the
+-- town's file exactly like every other house — plus one key.
+--
+-- 019's header refused this column and named a DIFFERENT `provisional`: the
+-- economy's, which `stamp-mint currentHouseholds()` derives from the ledger and
+-- returns as `{ key, provisional }`. That one is derived and lives nowhere. This
+-- one is declared, is written by exactly two ceremonies, and is read by the
+-- renderer. Two words, two mechanisms; this file is the only place the second
+-- one is stored, and nothing here touches the economy's.
+--
+-- ── MEASURED BEFORE THIS WAS WRITTEN (2026-09-22, town origin/main 1cd13ff57) ─
+--
+--   the roll                      188 residents (189 ADDRESS.md cards under
+--                                 WHITE_PAGES/, minus WHITE_PAGES/TEMPLATE/
+--                                 whose own handle line reads `your-handle`)
+--   houses with no row              0  — all 188 residents resolve to a standing
+--                                 household by account, and all 188 are listed
+--                                 in that same house's `residents` array
+--   rows the backfill plans today   0
+--   handles failing the alphabet    0 of 188
+--   handles already holding a slug  3 of 188 (elias-returning, mari, moth) —
+--                                 the <handle>-household fallback, none colliding
+--
+-- So 0 of the rows this column exists for exist TODAY, and the column is still
+-- NOT NULL DEFAULT false rather than absent: the choose-once path in
+-- `src/ceremony.mjs` is the mechanism that makes a provisional key safe to mint
+-- at all, and a mechanism that arrives a week after the rows it governs is a
+-- week of rows nobody can rename. The backfill tool ships with it and Wright
+-- runs its `--dry-run` at the ship; on today's roll it plans nothing and says so.
+--
+-- ── WHY `false` RENDERS AS NO KEY AT ALL ────────────────────────────────────
+--
+-- Same rule `formerly` took in 020, for the same reason and in the same place.
+-- 0/118 live rows carry `provisional`, and the drain's whole law is byte-equality
+-- against today's file (`tools/registry-drain.mjs --check`). A column rendering
+-- `"provisional": false` on every house would rewrite all 118 rows on the first
+-- crossing and turn every lane red. So the renderer emits the key ONLY when the
+-- value is TRUE — `registryFromRows` in `src/registry-rows.mjs`, where `formerly`
+-- already drops an empty array and a NULL `name` already drops its key.
+--
+-- NOT NULL with a default rather than NULLable: "this key was chosen" and
+-- "nobody has looked" are not two different facts. Every standing row chose its
+-- key at a declaration, so `false` is the truth about all 118 of them, and a NULL
+-- arriving from an older row is treated as false by the same renderer check.
+--
+-- ── WHO WRITES IT ───────────────────────────────────────────────────────────
+--
+-- TWO ceremonies and no door:
+--
+--   · `tools/registry-backfill.mjs --apply` writes `true`, once, for a house the
+--     roll holds and the registry does not. It REFUSES against an empty store
+--     (the seed has not run) and against any slug already taken.
+--   · `src/ceremony.mjs § mintHousehold` writes `false`, once, when the
+--     co-signing account's house is provisional and the slug it names is free
+--     and lawful — the CHOOSE-ONCE path, which RENAMES the standing row rather
+--     than minting a second house. A second choice is refused
+--     (`REFUSALS.CHOSEN`).
+--
+-- Every other mint writes the column's default, so nothing else has to know the
+-- column exists.
+--
+-- ── A RENAME IS AN UPDATE, BECAUSE NO PEN HOLDS DELETE ──────────────────────
+--
+-- `slug` is the PRIMARY KEY, and `office_api` holds SELECT/INSERT/UPDATE and no
+-- DELETE anywhere (019). So the choose-once path cannot insert-the-new and
+-- drop-the-old; it UPDATEs the slug in place (`renameHousehold` in
+-- `src/registry-store.mjs`), which keeps the house's `ord` — its standing place
+-- in the town's file — and rewrites exactly one line of that file instead of
+-- moving the house to the end and rewriting every row after it.
+--
+-- `household_pins` carries NO household reference (019: handle, login, gh_id and
+-- four legacy notes), so a rename moves nothing in that table. The belonging
+-- lives in `households.residents`, which travels with the row it is a column of.
+--
+-- ── IDEMPOTENT. APPLY AS `world2_owner`, 019's own idiom, AFTER 019 AND 020 ──
+--
+-- Secret-free: nothing sourced, no URL and no password anywhere on the line.
+--
+--   sudo -n -u postgres psql -v ON_ERROR_STOP=1 -d world2_dev \
+--     -c "SET ROLE world2_owner;" -f world2/schema/021_households_provisional.sql
+--
+-- Applied as `postgres` instead, the column's owner diverges from the table's and
+-- nothing fails (014's lesson; the divergence is silent and permanent).
+--
+-- ── HOW TO PROVE IT LANDED (there is no migrations table in this store) ─────
+--
+--   SELECT column_name, data_type, is_nullable, column_default
+--     FROM information_schema.columns
+--    WHERE table_name = 'households' AND column_name = 'provisional';
+--       -- provisional | boolean | NO | false
+--   SELECT count(*) FROM households WHERE provisional;        -- 0 today
+--   node tools/registry-drain.mjs --check                     -- still byte-equal
+--
+-- No new grants: `office_api` already holds INSERT/UPDATE on `households` (019),
+-- and a column is not a separate grantable object. No pen gains DELETE.
+
+BEGIN;
+
+ALTER TABLE households
+  ADD COLUMN IF NOT EXISTS provisional boolean NOT NULL DEFAULT false;
+
+COMMENT ON COLUMN households.provisional IS
+  'TRUE while nobody has chosen this house''s key: the backfill minted it from the first resident''s handle (tools/registry-backfill.mjs) and the ceremony may still change it. Goes FALSE once, at the human''s first co-sign, when src/ceremony.mjs renames the row and drops the old key into `formerly`. Rendered into tools/households.json only when TRUE, so today''s 118 rows stay byte-equal. POS-159, Keemin 2026-09-22.';
+
+COMMIT;

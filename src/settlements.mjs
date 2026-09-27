@@ -150,31 +150,46 @@ export function isRepoRoot(repo) {
   return norm(top) === norm(repo);
 }
 
-// One `git tag` call for the list, then one date lookup per tag. The tag may be
-// lightweight or annotated — `git log -1` resolves either to its commit, so the
-// date is the commit's, which is when the blessing actually landed.
+// ONE `git for-each-ref` for the whole list (POS-272). This used to be one
+// `git tag` call and then two spawns per tag — 168 children and 567 ms per
+// request on the box, the largest git door the office had (POS-263's
+// inventory) — for a door the World page polls.
+//
+// The tag may be lightweight or annotated. The `*` atoms are the PEELED
+// object, the commit an annotated tag blesses, and are empty for a lightweight
+// tag, whose own object IS the commit, so each field takes the peeled value
+// first. That is what `^{commit}` and `git log -1 <tag>` answered per tag: the
+// sha a reader can look up in the log, and the commit's date (`%cI`'s strict
+// ISO), which is when the blessing actually landed.
+//
+// Fields are TAB-separated (`%09` is for-each-ref's own escape; its dialect is
+// `%xx`, not `log`'s `%x1f`, which is the four literal bytes measured above)
+// and split on the tab alone, so an empty peeled field stays a field instead
+// of shifting the ones after it.
+export const SETTLEMENT_LIST_FORMAT = [
+  "%(refname:short)",
+  "%(*objectname:short)", "%(objectname:short)",
+  "%(*committerdate:iso-strict)", "%(committerdate:iso-strict)",
+].join("%09");
+
+/** Parse `for-each-ref` lines in SETTLEMENT_LIST_FORMAT into `{ tag, sha, date }` rows. */
+export function settlementRowsFromRefLines(text) {
+  const rows = [];
+  for (const line of String(text ?? "").split("\n")) {
+    const [tag, peeledSha, sha, peeledDate, date] = line.replace(/\r$/, "").split("\t");
+    if (!SETTLEMENT_TAG.test(String(tag ?? "").trim())) continue;
+    rows.push({ tag: tag.trim(), sha: (peeledSha || sha || "").trim() || null, date: (peeledDate || date || "").trim() || null });
+  }
+  return rows;
+}
+
 export function readSettlementTags(repo) {
   if (!isRepoRoot(repo)) return [];           // not this directory's tags to give
-  let names = [];
   try {
-    names = git(repo, ["tag", "--list", "settlement/S*"]).split("\n").map((s) => s.trim()).filter(Boolean);
+    return settlementRowsFromRefLines(git(repo, ["for-each-ref", `--format=${SETTLEMENT_LIST_FORMAT}`, "refs/tags/settlement/"]));
   } catch {
     return [];                              // no repo, no git, no tags — all the same answer
   }
-  const rows = [];
-  for (const tag of names) {
-    if (!SETTLEMENT_TAG.test(tag)) continue;
-    let sha = null, date = null;
-    try {
-      // ^{commit} so an ANNOTATED tag reports the commit it blesses rather than
-      // its own tag object — the two differ, and the sha a reader wants is the
-      // one they can look up in the log.
-      sha = git(repo, ["rev-parse", "--short", `${tag}^{commit}`]).trim() || null;
-      date = git(repo, ["log", "-1", "--format=%cI", tag]).trim() || null;
-    } catch { /* a tag we cannot resolve contributes nothing rather than a hole */ }
-    rows.push({ tag, sha, date });
-  }
-  return rows;
 }
 
 // The door's answer. An empty answer is HONEST, not an error: a checkout with no

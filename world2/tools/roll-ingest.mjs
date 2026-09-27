@@ -25,7 +25,7 @@
 // The roll has exactly one definition in this office and it is two steps, both
 // imported live rather than restated:
 //
-//   1. `readTown` (vendor/town.mjs) enumerates it —
+//   1. `readTown` (vendor/tools/lib/town.mjs) enumerates it —
 //        "residents (skip TEMPLATE — it's the blank form, not a resident)"
 //        `listDir(WHITE_PAGES).filter((n) => isDir(...) && n !== "TEMPLATE")`
 //      — and reads each ADDRESS.md with the town's own frontmatter parser.
@@ -47,7 +47,7 @@
 //
 // The office's readers are imported from THIS checkout rather than from the town
 // one, and that is the correct half of the reuse rule: the town repo owns its
-// FRONTMATTER (and `vendor/town.mjs` is that reader, vendored under an explicit
+// FRONTMATTER (and `vendor/tools/lib/town.mjs` is that reader, vendored under an explicit
 // do-not-edit-here notice), while who counts as a resident AT THE DOOR is the
 // office's own law and lives nowhere else.
 //
@@ -77,7 +77,7 @@ const OFFICE = resolve(HERE, "..", "..");
  */
 export async function deriveRoll({ townRepo }) {
   const repo = resolve(townRepo);
-  const { readTown } = await import(pathToFileURL(join(OFFICE, "vendor", "town.mjs")).href);
+  const { readTown } = await import(pathToFileURL(join(OFFICE, "vendor", "tools", "lib", "town.mjs")).href);
   const { isResidentHandle } = await import(pathToFileURL(join(OFFICE, "src", "residency.mjs")).href);
 
   const town = readTown(repo);

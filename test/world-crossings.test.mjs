@@ -15,19 +15,25 @@ import { join } from "node:path";
 
 import { enterViaOffice, exitViaOffice, occupancyViaOffice, CROSSING_TOOLS } from "../src/world-crossings.mjs";
 import { DISPATCHABLE, fieldsFor } from "../src/world-apex.mjs";
+import { NO_WORLD, worldClone } from "./fixture-paths.mjs";
 
 // The world clone this office is wired to. The suite is honest about the
 // dependency rather than mocking it away: no clone, no crossing law, and the
 // tests that need one say so instead of passing over an invented world.
-const CLONE = process.env.WORLD_CLONE
-  ?? join(process.cwd(), "..", "postmark-world"); // was the demo worktree's path; the verbs merged to main 2026-08-20
+// It resolved `join(process.cwd(), "..", "postmark-world")`, which is not one
+// directory but a different one in every tree — in a pool tree it named a
+// sibling pool slot that does not exist, and all eight cases below read as the
+// office's failure rather than the runner's. A cwd-relative fallback is exactly
+// as unportable as an absolute one, and a grep for a drive letter cannot see it.
+const CLONE = worldClone();
 // The grammar module, by whichever name this clone carries it. BOTH, because
 // the office and its world clone deploy on separate clocks and this file is a
 // name-keyed reader exactly like the code it tests — it broke against a renamed
 // clone the first time it met one, which is the defect the fallbacks in
 // world-crossings.mjs and crossing-exec.mjs exist to prevent.
-const GRAMMAR = ["enter-exit.mjs", "thresholds.mjs"].find((n) => existsSync(join(CLONE, "tools", n)));
+const GRAMMAR = CLONE && ["enter-exit.mjs", "thresholds.mjs"].find((n) => existsSync(join(CLONE, "tools", n)));
 const HAVE_CLONE = !!GRAMMAR;
+const WHY_NOT = CLONE ? `the world clone at ${CLONE} carries no enter-exit/thresholds grammar` : NO_WORLD;
 
 const key = (...handles) => ({ handles: new Set(handles) });
 const SHIP = "the-town/the-post-office";
@@ -36,7 +42,7 @@ const WHEELHOUSE = "the-town/the-wheelhouse";
 /** A whole office, in a closure: the world off the clone's fold, one resident
  *  standing wherever we put her, an in-memory ledger, and a pen that appends to
  *  it. The pen's contract is the exec's — lines in, `within` out. */
-async function officeWith({ at = 200, standing = { x: -30, y: 40 }, ledger = "" } = {}) {
+async function officeWith({ at = 200, standing = { x: -9, y: 35.5 }, ledger = "" } = {}) { // POS-220: the default standing is INSIDE the post office (its anchor) — a door is entered only from within its extent
   const { readFileSync } = await import("node:fs");
   const worldState = JSON.parse(readFileSync(join(CLONE, "WORLD", "world-state.json"), "utf8"));
   const mod = await import(`file:///${join(CLONE, "tools", GRAMMAR).replace(/\\/g, "/")}`);
@@ -64,14 +70,14 @@ async function officeWith({ at = 200, standing = { x: -30, y: 40 }, ledger = "" 
 
 // ── the office's own half: who is acting ────────────────────────────────────
 
-test("a key holding several residents must name one", async () => {
+test("a key holding several residents must name one", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const o = await officeWith();
   await assert.rejects(
     () => enterViaOffice(CLONE, { mark: SHIP }, key("a", "b"), o.deps),
     (e) => e.code === 422 && /which resident/.test(e.defect) && e.choices.length === 2);
 });
 
-test("a handle the key does not hold is refused before any law is read", async () => {
+test("a handle the key does not hold is refused before any law is read", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const o = await officeWith();
   await assert.rejects(
     () => enterViaOffice(CLONE, { mark: SHIP, handle: "stranger" }, key("postmaster"), o.deps),
@@ -79,21 +85,21 @@ test("a handle the key does not hold is refused before any law is read", async (
   assert.equal(o.written.length, 0, "and nothing reached the pen");
 });
 
-test("enter with no mark named is a bounce, not a guess", async () => {
+test("enter with no mark named is a bounce, not a guess", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const o = await officeWith();
   await assert.rejects(
     () => enterViaOffice(CLONE, {}, key("postmaster"), o.deps),
     (e) => e.code === 422 && /enter what/.test(e.defect));
 });
 
-test("exit with nothing to step out of refuses with a reason", async () => {
+test("exit with nothing to step out of refuses with a reason", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const o = await officeWith();
   await assert.rejects(
     () => exitViaOffice(CLONE, {}, key("postmaster"), o.deps),
     (e) => e.code === 422 && /not within anything/.test(e.defect));
 });
 
-test("an office whose clone carries no enter/exit law says so by name", async () => {
+test("an office whose clone carries no enter/exit law says so by name", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const o = await officeWith();
   await assert.rejects(
     () => enterViaOffice(join(CLONE, "no-such-clone"), { mark: SHIP }, key("postmaster"), o.deps),
@@ -114,7 +120,7 @@ test("a door with terms shows them and records NOTHING", { skip: "awaits entry-l
   assert.ok(o.written.length >= 1 && o.written.every((l) => / · enters /.test(l)));
 });
 
-test("accepting the terms crosses the whole chain and the pen sees every link", { skip: !HAVE_CLONE && "no world clone" }, async () => {
+test("accepting the terms crosses the whole chain and the pen sees every link", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const o = await officeWith();
   const answer = await enterViaOffice(CLONE, { mark: SHIP, handle: "postmaster", accept: true }, key("postmaster"), o.deps);
   assert.ok(answer.entered.includes(SHIP));
@@ -139,7 +145,7 @@ test("opposed is a refusal at the threshold, and the refusal is IN the record", 
   assert.match(answer.note, /standing at that door/);
 });
 
-test("exit truncates the chain and names the scope it restores to", { skip: !HAVE_CLONE && "no world clone" }, async () => {
+test("exit truncates the chain and names the scope it restores to", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const o = await officeWith();
   await enterViaOffice(CLONE, { mark: SHIP, handle: "postmaster", accept: true }, key("postmaster"), o.deps);
   const answer = await exitViaOffice(CLONE, { handle: "postmaster" }, key("postmaster"), o.deps);
@@ -148,7 +154,7 @@ test("exit truncates the chain and names the scope it restores to", { skip: !HAV
   assert.ok(answer.into, "and says where you now stand");
 });
 
-test("occupancy is derived, public, and carries entity children only", { skip: !HAVE_CLONE && "no world clone" }, async () => {
+test("occupancy is derived, public, and carries entity children only", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const o = await officeWith();
   await enterViaOffice(CLONE, { mark: SHIP, handle: "postmaster", accept: true }, key("postmaster"), o.deps);
   const read = await occupancyViaOffice(CLONE, {}, { ...o.deps, now: () => 200 });
@@ -172,7 +178,7 @@ test("the dispatch table holds the pair, and the fields come from their own sche
 
 // ── the reach law (founder-ruled 2026-08-27, option A of the R15 collision) ──
 
-test("a door is entered from within its reach — entry from afar is refused with directions, and nothing reaches the pen", async () => {
+test("a door is entered from within its reach — entry from afar is refused with directions, and nothing reaches the pen", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   // "You can enter things when you aren't even there" — the first dev walk's
   // finding. The bundled walk the world's crossingPlan assumed is performed by
   // nobody (R15: the office never writes a walk), so before this guard, entry
@@ -189,7 +195,7 @@ test("a door is entered from within its reach — entry from afar is refused wit
   assert.equal(o.written.length, 0, "and nothing reached the pen — a refusal at the door writes no crossing");
 });
 
-test("...and every such refusal carries the plan's bundled WALK as a field, not only in its sentence", async () => {
+test("...and every such refusal carries the plan's bundled WALK as a field, not only in its sentence", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   // A page that parsed "Walk to (563, -294.5)" out of the hint to find a machine
   // fact would be the prose-scraping class this office keeps a museum of. The
   // object rides the bounce so the button never reads the sentence.
@@ -201,7 +207,7 @@ test("...and every such refusal carries the plan's bundled WALK as a field, not 
   assert.equal(o.written.length, 0);
 });
 
-test("...and the reach itself still admits — within earshot of the TARGET is at the door", async () => {
+test("...and standing INSIDE the target still admits — within its extent is at the door", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   // The default fixture standing is the one every chain falsifier above enters
   // from; if this test reddens, the guard has started refusing a walker who is
   // standing at the door, and every chain law above it is standing on a corpse.
@@ -233,7 +239,7 @@ const PARCEL = "illuminator/the-looking-room-parcel";
 const DEEP_IN_TOWN_FAR_FROM_PARCEL = { x: -1100, y: 150 };
 
 test("illuminator's case: inside the outer link but 1.7 km from the mark you named is REFUSED, and nothing is recorded",
-  { skip: !HAVE_CLONE && "no world clone" }, async () => {
+  { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const { readFileSync } = await import("node:fs");
   const world = JSON.parse(readFileSync(join(CLONE, "WORLD", "world-state.json"), "utf8"));
   const { pathToFileURL } = await import("node:url");
@@ -274,7 +280,7 @@ test("illuminator's case: inside the outer link but 1.7 km from the mark you nam
 });
 
 test("...and from the parcel's own reach the chain still enters the outer links first",
-  { skip: !HAVE_CLONE && "no world clone" }, async () => {
+  { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   // Nothing is lost by measuring at the target: `enterExitPlan` says it in its
   // own comment — "walking to the target's own ground puts you inside every
   // link at once, since the target sits within all of them". So the fix is
@@ -293,28 +299,26 @@ test("...and from the parcel's own reach the chain still enters the outer links 
   assert.equal(o.written.length, answer.entered.length, "one row per link actually crossed");
 });
 
-test("the margin is measured at the target, and it is ±1 m of the town's own earshot",
-  { skip: !HAVE_CLONE && "no world clone" }, async () => {
-  // Observable only because the measure moved: the post office is 9 × 26 m, so
-  // 59 m from its anchor is outside its extent and the margin leg is the only
-  // thing that can admit. Under the old code both of these passed on the town
-  // centre's containment and this test could not exist. CAN-FAIL: widen or
-  // narrow EARSHOT_M and one of the two assertions reddens.
-  const { EARSHOT_M } = await import("../src/reach.mjs");
+test("the door is the EXTENT: half a metre inside its edge admits, one metre outside refuses — no earshot enter (POS-220)",
+  { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  // Keemin, 2026-09-25: "remove the earshot enter, so must be within extent".
+  // Until then a 60 m reach from the ANCHOR admitted a resident 3 m outside the
+  // taproom (postmaster from the mooring). CAN-FAIL: restore the reach leg
+  // (drop earshotM: 0 in world-crossings.mjs) and the second assertion reddens.
   const { readFileSync } = await import("node:fs");
   const world = JSON.parse(readFileSync(join(CLONE, "WORLD", "world-state.json"), "utf8"));
   const po = world.marks.find((m) => m.id === SHIP);
+  const edge = po.at.x + po.extent.w / 2;
 
-  const near = await officeWith({ standing: { x: po.at.x + EARSHOT_M - 1, y: po.at.y } });
-  const admitted = await enterViaOffice(CLONE, { mark: SHIP, accept: true }, key("postmaster"), near.deps);
-  assert.ok((admitted.entered ?? []).length > 0 || admitted.already,
-    `${EARSHOT_M - 1} m from the post office's anchor is at its door`);
+  const inside = await officeWith({ standing: { x: edge - 0.5, y: po.at.y } });
+  const admitted = await enterViaOffice(CLONE, { mark: SHIP, accept: true }, key("postmaster"), inside.deps);
+  assert.ok((admitted.entered ?? []).length > 0 || admitted.already, "half a metre inside the edge is at its door");
 
-  const far = await officeWith({ standing: { x: po.at.x + EARSHOT_M + 1, y: po.at.y } });
-  const e = await enterViaOffice(CLONE, { mark: SHIP, accept: true }, key("postmaster"), far.deps)
+  const outside = await officeWith({ standing: { x: edge + 1, y: po.at.y } });
+  const e = await enterViaOffice(CLONE, { mark: SHIP, accept: true }, key("postmaster"), outside.deps)
     .then(() => null, (err) => err);
-  assert.ok(e && e.code === 409, `${EARSHOT_M + 1} m is not`);
-  assert.equal(far.written.length, 0);
+  assert.ok(e && e.code === 409, "one metre outside the edge is not — the 60 m reach is gone");
+  assert.equal(outside.written.length, 0);
 });
 
 test("no refusal this door speaks calls the margin a DOORSTEP — the resident's word stays the resident's",
@@ -332,7 +336,7 @@ test("no refusal this door speaks calls the margin a DOORSTEP — the resident's
   for (const b of sentences) {
     assert.doesNotMatch(b, /doorstep/i, `a bounce still says "doorstep": ${b.slice(0, 120)}`);
   }
-  assert.match(src, /a door is entered from within its reach/, "and the rule says the word it means");
+  assert.match(src, /a door is entered from within its extent/, "and the rule says the word it means");
 });
 
 
@@ -355,7 +359,7 @@ test("no refusal this door speaks calls the margin a DOORSTEP — the resident's
 // that can admit a walker standing beside it. So the boundary is asserted
 // here, at the door, as well as on `standsWithin` in test/hold-reach.test.mjs.
 
-test("the enter refusal reports the distance the SHARED reach measured, not one of its own", { skip: !HAVE_CLONE && "no world clone" }, async () => {
+test("the enter refusal reports the distance the SHARED reach measured, not one of its own", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const { readFileSync } = await import("node:fs");
   const { standsWithin } = await import("../src/reach.mjs");
   const world = JSON.parse(readFileSync(join(CLONE, "WORLD", "world-state.json"), "utf8"));

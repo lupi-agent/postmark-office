@@ -20,8 +20,11 @@
 // full stamp ledger, and identity reads are frequent.
 
 import { statSync, readFileSync } from "node:fs";
+
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { resolveHouse } from "./household-deriver.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TOWN_CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -47,17 +50,22 @@ function build() {
   try { declared = JSON.parse(readFileSync(join(TOWN_CLONE, "tools", "households.json"), "utf8")).households ?? {}; } catch { /* registry optional */ }
   // An entry answers to every key form its house can wear: the hh: key (post
   // ledger re-key), each account's gh: key (the common case — one shared
-  // credential), and the login: fallback. The 2026-08-08 harvest declared
-  // eleven existing gh:-keyed houses; their nameplates must not wait on a
-  // ledger ceremony the economy doesn't need.
-  const slugOfKey = new Map();
-  for (const [slug, rec] of Object.entries(declared)) {
-    slugOfKey.set(`hh:${slug}`, slug);
-    for (const a of rec.accounts ?? []) {
-      if (a?.id != null) slugOfKey.set(`gh:${a.id}`, slug);
-      if (a?.login) slugOfKey.set(`login:${String(a.login).toLowerCase()}`, slug);
-    }
-  }
+  // credential), the login: fallback, and — since POS-160 — a FORMER or
+  // provisional slug, through the one alias mechanism. The 2026-08-08 harvest
+  // declared eleven existing gh:-keyed houses; their nameplates must not wait
+  // on a ledger ceremony the economy doesn't need.
+  //
+  // THE WALK IS THE DERIVER'S (POS-160). This used to build its own key -> slug
+  // map, which was a fourth answer to "which house" and the only one that could
+  // not see `formerly` — so a house that re-keyed through the choose-once path
+  // lost its nameplate on every surface this module feeds, silently, for as
+  // long as a stale key was in play. Same question, same walk, one place.
+  //
+  // It stays SYNCHRONOUS and it stays on the town clone's file. Identity reads
+  // sit in sync routes, the deriver's loaded half is a store read, and the
+  // pure core takes the registry as an argument precisely so this caller can
+  // hand it one it already has. What moved here is the derivation; what did
+  // not move is where this module gets its bytes.
   const byKey = new Map(); // key -> [handles]
   for (const [handle, rec] of map) {
     if (!byKey.has(rec.key)) byKey.set(rec.key, []);
@@ -65,7 +73,7 @@ function build() {
   }
   const byHandle = new Map();
   for (const [handle, rec] of map) {
-    const slug = slugOfKey.get(rec.key) ?? null;
+    const slug = resolveHouse(rec.key, { households: declared }).slug;
     byHandle.set(handle, {
       key: rec.key,
       slug,

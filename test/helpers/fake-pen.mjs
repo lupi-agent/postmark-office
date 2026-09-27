@@ -36,6 +36,9 @@ let store = null;
 export function resetStore({ identities = {}, failOn = null, connectDelay = null, queryDelay = null } = {}) {
   store = {
     acts: [], claims: [], windows: [{ id: 1, status: "open" }],
+    // `marks` — the published register `markStandingStatus` reads (slug,
+    // status, retired_window). Empty unless a test seeds it (postmark#3139).
+    marks: [],
     identities: { ...identities },
     log: [], clients: 0, nextActId: 1000, nextClaimId: 1,
     // `failOn` is a predicate on the statement text: the pen made unreachable
@@ -81,6 +84,20 @@ export function theStore() {
 export function committedLog() {
   return store.log.filter((e) => e.committed).map((e) => e.text);
 }
+
+/**
+ * `household = ANY($n)` — the predicate, modelled (POS-160 RULING 4).
+ *
+ * The store never re-spells a row, so every household filter on `claims` takes
+ * the acting house's SPELLING SET rather than its one current key. `asked` is
+ * therefore an array, and this is membership.
+ *
+ * A BARE STRING IS STILL ACCEPTED, and not out of kindness: a client that could
+ * not answer `current_setting` falls back to `[household]`, and a suite driving
+ * one of the filters by hand may still pass a string. Both spell the same
+ * question at one element.
+ */
+const oneOf = (asked, held) => (Array.isArray(asked) ? asked.includes(held) : asked === held);
 
 const jsonGet = (v, k) => {
   if (v == null) return null;
@@ -144,7 +161,29 @@ class FakeClient {
       this.open = false; this.writes = []; this.staged = [];
       return { rows: [], rowCount: 0 };
     }
+    // ── THE TWO SESSION SETTINGS (POS-160 RULING 4) ────────────────────────
+    //
+    // The store never re-spells a row — `acts_append_only`,
+    // `claims_update_guard` and `marks_id_is_fixed` each refuse it — so a house
+    // declares EVERY spelling it has ever carried and
+    // `024_household_spellings.sql`'s four draft policies compare
+    // `household = ANY(app.household_keys)`. `app.household` is still the one
+    // CURRENT spelling.
+    //
+    // `_keys` IS MATCHED FIRST, and the ordering is load-bearing: `app.household`
+    // is a prefix of `app.household_keys`, so a looser pattern above would let
+    // the set overwrite the key and every assertion about "whose household is
+    // acting" would be about the wrong string.
+    if (/set_config\('app\.household_keys'/i.test(t)) {
+      this.householdKeys = params[0] ? String(params[0]).split(",") : [];
+      return { rows: [], rowCount: 0 };
+    }
     if (/set_config\('app\.household'/i.test(t)) { this.household = params[0]; return { rows: [], rowCount: 0 }; }
+    // `world2-claims.mjs § declaredKeys` reads the set back off the connection
+    // rather than resolving the house a second time. Answered here the way a
+    // real `string_to_array(NULLIF(…), ',')` answers: an array, or null.
+    if (/current_setting\('app\.household_keys'/i.test(t))
+      return { rows: [{ keys: this.householdKeys?.length ? this.householdKeys : null }], rowCount: 1 };
 
     // A statement outside a transaction is legal here (householdKeyFor and
     // promoteDraftOnStake read on the pool), and is applied immediately.
@@ -155,21 +194,80 @@ class FakeClient {
         ? { rows: [{ household: store.identities[params[0]] }], rowCount: 1 }
         : { rows: [], rowCount: 0 };
 
+    // ── THE REGISTRY, AS `householdKeyFor` NOW READS IT (POS-160) ───────────
+    //
+    // The pen's resolver stopped reading `identities` and started reading the
+    // registry that IS the record (`households` + `household_pins`), so this
+    // fake has to answer those three SELECTs or every write path that resolves
+    // a household dies here rather than at the thing under test.
+    //
+    // It answers them FROM THE SAME `identities` option, deliberately: a suite
+    // that said "guards-alfa lives at gh:9000001" is making one statement about
+    // one town, and making it say the same thing twice in two vocabularies is
+    // how two fakes drift apart. One house per distinct key, its slug the key
+    // with its prefix stripped, its residents the handles that share it. What
+    // changes for a caller is the SPELLING the resolver hands back (`hh:9000001`
+    // rather than `gh:9000001`), which is the whole point of the lane; no suite
+    // in this repo asserts on that value, which was measured before it moved.
+    if (/FROM households/i.test(t)) {
+      const byKey = new Map();
+      for (const [handle, key] of Object.entries(store.identities)) {
+        const slug = String(key).replace(/^[a-z0-9-]+:/, "");
+        if (!byKey.has(slug)) byKey.set(slug, []);
+        byKey.get(slug).push(handle);
+      }
+      return {
+        rows: [...byKey].map(([slug, residents], i) => ({
+          slug, ord: i, name: null, human: null, accounts: [], residents,
+          since: null, member_of: null, declared_by: null, formerly: [], provisional: false,
+        })),
+      };
+    }
+    if (/FROM household_pins/i.test(t)) return { rows: [] };
+    if (/FROM registry_meta/i.test(t)) return { rows: [{ key: "schema_version", value: 1 }] };
+
     if (/FROM windows WHERE status = 'open'/i.test(t)) {
       const w = store.windows.filter((x) => x.status === "open").sort((a, b) => b.id - a.id)[0];
       return { rows: w ? [{ id: w.id }] : [], rowCount: w ? 1 : 0 };
     }
 
+    // `world2-claims.mjs § markStandingStatus` (postmark#3139): the marks row,
+    // standing first, with the OPEN window a pending claim on the slug rides.
+    if (/FROM marks m WHERE m\.slug = \$1/i.test(t)) {
+      const [slug] = params;
+      const open = new Set(store.windows.filter((w) => w.status === "open").map((w) => w.id));
+      const onDocket = store.claims.filter((c) => c.slug === slug && c.status === "pending" && open.has(c.window_id))
+        .map((c) => c.window_id).sort((a, b) => b - a);
+      const m = store.marks.filter((x) => x.slug === slug)
+        .sort((a, b) => Number(b.status === "standing") - Number(a.status === "standing"))[0];
+      return m
+        ? { rows: [{ status: m.status, retired_window: m.retired_window ?? null, docket_window: onDocket[0] ?? null }], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
+    }
+
     if (/INSERT INTO acts/i.test(t)) {
       const id = store.nextActId++;
-      const [at, crossing, actor, action, object, at_anchor, at_dx, at_dy, witnesses, cls, payload, effect, household, journal_seq] = params;
-      defer(() => store.acts.push({ id, at, crossing, actor, action, object, at_anchor, at_dx, at_dy, witnesses, class: cls, payload, effect, household, journal_seq }));
+      const [at, crossing, actor, action, object, at_anchor, at_dx, at_dy, witnesses, cls, payload, effect, household, ...rest] = params;
+      const row = { id, at, crossing, actor, action, object, at_anchor, at_dx, at_dy, witnesses, class: cls, payload, effect, household };
+      // ⚑ `journal_seq` IS ONLY PRESENT IF THE PEN SENT IT. G1 (POS-156,
+      // migration 025) drops that column and the pen stopped naming it; this
+      // row used to carry the key unconditionally, which would have let a suite
+      // assert the column's absence and pass while the pen still wrote it.
+      // Spreading the rest, rather than destructuring a fourteenth parameter
+      // into a named key, is what makes "the pen did not send it" and "the pen
+      // sent null" different facts here -- which is the difference migration
+      // 024 turns into a failed write on a real store.
+      // Named, not positional, past the thirteenth: since migration 027 a say's
+      // row may carry `nonce` there, and it must not be filed as `journal_seq`.
+      const extra = (/INSERT INTO acts \(([^)]*)\)/i.exec(t)?.[1] ?? "").split(",").map((c) => c.trim()).slice(13);
+      extra.forEach((c, i) => { row[c] = rest[i]; });
+      defer(() => store.acts.push(row));
       return { rows: [{ id }], rowCount: 1 };
     }
 
     if (/DELETE FROM claims WHERE status = 'draft'/i.test(t)) {
       const [slug, claimant, household] = params;
-      const hit = store.claims.filter((c) => c.status === "draft" && c.slug === slug && c.claimant === claimant && c.household === household);
+      const hit = store.claims.filter((c) => c.status === "draft" && c.slug === slug && c.claimant === claimant && oneOf(household, c.household));
       defer(() => { for (const c of hit) store.claims.splice(store.claims.indexOf(c), 1); });
       return { rows: [], rowCount: hit.length };
     }
@@ -193,7 +291,7 @@ class FakeClient {
     // the promotion/rewrite of a held draft (world2-claims § the stake crossing the boundary)
     if (/UPDATE claims SET status = \$12/i.test(t)) {
       const [windowId, kind, body, geometry, bbox, stake, supersedes, data, slug, claimant, household, status] = params;
-      const hit = store.claims.find((c) => c.status === "draft" && c.claimant === claimant && c.slug === slug && c.household === household);
+      const hit = store.claims.find((c) => c.status === "draft" && c.claimant === claimant && c.slug === slug && oneOf(household, c.household));
       if (!hit) return { rows: [], rowCount: 0 };
       guardTransition(hit.status, status);
       defer(() => Object.assign(hit, {
@@ -213,7 +311,7 @@ class FakeClient {
     // the promotion read in promoteDraftOnStake
     if (/SELECT id, data->'_deferred_act' AS held FROM claims/i.test(t)) {
       const [claimant, slug, household] = params;
-      const c = store.claims.find((x) => x.status === "draft" && x.claimant === claimant && x.slug === slug && x.household === household);
+      const c = store.claims.find((x) => x.status === "draft" && x.claimant === claimant && x.slug === slug && oneOf(household, x.household));
       if (!c) return { rows: [], rowCount: 0 };
       const data = typeof c.data === "string" ? JSON.parse(c.data) : (c.data ?? {});
       return { rows: [{ id: c.id, held: data._deferred_act ?? null }], rowCount: 1 };

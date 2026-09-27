@@ -492,10 +492,25 @@ export function dynamicHealth({ repo = WORLD_CLONE } = {}) {
         : { movements: null, movements_latest: null }),
       // THE JOURNAL, feature-detected for the same reason `movements` is: a
       // read-only open of a store predating this slice cannot create the table,
-      // and flag-off must never require the new schema. The operator's first
-      // question after the cutover is whether the one pen is receiving, and the
-      // answer is only legible beside the drain's cursor — so the head seq and
-      // the last-drained seq ride together.
+      // and flag-off must never require the new schema.
+      //
+      // ── WHAT THESE NUMBERS MEAN AFTER G1 (POS-156, 2026-09-22) ───────────
+      //
+      // They used to answer "is the one pen receiving". G1 deleted the general
+      // INSERT, so what is left in this table is the ARENA's rows and nothing
+      // else — the named exemption (DEC-1/P-143, `world-journal.mjs §
+      // appendArenaRow`) — plus whatever history predates the deletion and has
+      // not been drained. So this is now the surface on which that exception is
+      // VISIBLE, which is the thing a named exception with a death condition
+      // most needs and the reason these three were kept rather than deleted
+      // with the other journal readers.
+      //
+      // ⚑ AND `tools/g1-dev-proof.mjs` READS THEM. `db.journal` and
+      // `db.journal_head` from this answer are the proof's DEFAULT source for
+      // "the doors round-tripped through the store with no journal row behind
+      // them". Dropping the keys would not red that probe — it would make it
+      // read `(absent)` and pass trivially, which is a falsifier that can no
+      // longer fail. Keep them, or move the proof first.
       ...(one("SELECT name n FROM sqlite_master WHERE type='table' AND name='journal'")
         ? { journal: one("SELECT COUNT(*) c FROM journal").c,
             journal_head: one("SELECT MAX(seq) s FROM journal").s ?? 0,

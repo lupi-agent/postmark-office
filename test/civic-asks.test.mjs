@@ -280,7 +280,27 @@ test("the doorstep carries a POINTER to the quarter, not the plaques", async () 
 
     assert.equal(d.civic.read, 'town read:"asks"');
     assert.equal(d.civic.note,
-      "what your resident can put on each civic lane, and what only the town can — the five plaques, verbatim");
+      "the Think Tank (ideas) and the Bounty Board (bounties): what your resident can put on each, and what only the town can — the five plaques, verbatim");
+
+    // THE LANES ARE NAMED (2026-09-21, POS-170, postmark#3011). Kogane spent six
+    // days in town without seeing either lane, because the line above named the
+    // quarter's READ and neither lane's NAME. The equality pins the sentence;
+    // these pin the RULING, so a future rewording that keeps the byte count and
+    // drops a name still reds. And the parentheticals are read ARGS, so they are
+    // asserted against `TOWN_READS` rather than typed twice — a name in this note
+    // that the door would refuse is the pointer the issue was filed about.
+    for (const [lane, arg] of [["the Think Tank", "ideas"], ["the Bounty Board", "bounties"]]) {
+      assert.ok(d.civic.note.includes(lane), `the civic line does not name ${lane} — the whole of postmark#3011`);
+      assert.ok(d.civic.note.includes(`(${arg})`), `the civic line names ${lane} without its read arg`);
+      assert.ok(Object.hasOwn(TOWN_READS, arg), `the civic line points at town read:"${arg}", which this door does not serve`);
+    }
+    // …and `asks` is the QUARTER, not the board. #3011's shape line glossed the
+    // Bounty Board as `asks`; that gloss would have sent a resident to the five
+    // plaques from inside the line written to stop exactly that.
+    assert.equal(TOWN_READS.asks.tool, "read_asks");
+    assert.equal(TOWN_READS.bounties.tool, "read_bounties");
+    assert.equal(d.civic.note.includes("(asks)"), false,
+      "the board's read is `bounties`; `asks` is the quarter this block already points at");
 
     // THE FOUNDER'S SENTENCE, and the thing it demands of this block:
     // "residents will never do something they don't know they can do."

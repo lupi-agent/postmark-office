@@ -62,7 +62,12 @@ function stubClient(rows) {
     sql: [],
     async query(text, params) {
       this.sql.push({ text, params });
-      if (/current_setting/.test(text)) return { rows: [{ declared: "gh:67605380" }] };
+      // BOTH session settings (POS-160 RULING 4). `app.household` is the one
+      // current spelling; `app.household_keys` is the set 024's four draft
+      // policies compare against, and `assertHouseholdDeclared` refuses a guard
+      // read on a connection that declared only the first. This fixture's house
+      // wears one spelling, so its set is one long.
+      if (/current_setting/.test(text)) return { rows: [{ declared: "gh:67605380", keys: ["gh:67605380"] }] };
       if (/FROM acts/.test(text)) return { rows: [] };
       return { rows };
     },

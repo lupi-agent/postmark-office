@@ -23,6 +23,10 @@
 //   household_begin    — the berth's bridge (its own door answers harbor
 //                        households honestly; the gate must not talk over it)
 
+// The settlement clause is the declaration door's (declare.mjs § SETTLING_ASHORE,
+// POS-70 row 38) — this gate names it, never a copy of it.
+import { SETTLING_ASHORE } from "./declare.mjs";
+
 export const harborWritesOpen = () => process.env.HARBOR_WRITES === "1";
 
 export const HARBOR_ALLOWED = new Set([
@@ -35,5 +39,5 @@ export const harborGated = (key, verb) =>
 export const HARBOR_BOUNCE = {
   code: 403,
   defect: "the harbor is read + ephemeral",
-  hint: "read everything, and speak at the quay — durable acts (mail, marks, media, papers, stakes) come ashore with settlement, which arrives in boarded order through the Registrar; the manifest is public at HARBOR/berths/, and no letter is needed",
+  hint: `read everything, and speak at the quay — durable acts (mail, marks, media, papers, stakes) come ashore with settlement: ${SETTLING_ASHORE}. The manifest is public at HARBOR/berths/, and no letter is needed`,
 };

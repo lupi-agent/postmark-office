@@ -23,6 +23,7 @@
 // both when present).
 
 import { boxOf } from "../world2/tools/seed-import.mjs";
+import { houseOfVia, sessionKeysVia, sessionKeyString } from "./household-deriver.mjs";
 // Phase 5.6's deferred act is released through world2-pen's insertAct, INSIDE
 // the promotion's own transaction (imported lazily there — R1, 2026-08-29).
 
@@ -128,13 +129,38 @@ export async function householdKeyForKey(p, key) {
  * policy in 007 working exactly as written. Hence: a dedicated client, an
  * explicit BEGIN/COMMIT, rollback on the way out, and the connection released
  * in `finally`. Nothing in this file may reach `app.household` any other way.
+ *
+ * ── TWO SETTINGS NOW, AND THE SECOND IS THE HOUSE'S WHOLE HISTORY ───────────
+ *
+ * `app.household` is the ONE CURRENT spelling, unchanged: it is what the pen
+ * writes on every new row and what `guard-reads.mjs § assertHouseholdDeclared`
+ * names in its refusal.
+ *
+ * `app.household_keys` is the SPELLING SET — every name this house has ever
+ * carried, comma-joined, the current one first — and it is what
+ * `024_household_spellings.sql`'s four policies compare against. The store
+ * never re-spells a row (three guards refuse it; see 022's retirement header),
+ * so a house whose rows were written under `gh:<id>` reaches them by declaring
+ * that spelling rather than by moving the rows to this one.
+ *
+ * RESOLVED ON THE POOL, BEFORE `connect()`. `sessionKeysVia` reads the registry
+ * through the queryable it is handed, and running it on the dedicated client
+ * after BEGIN would put the registry fold inside every household transaction in
+ * the office. On the pool it is folded once per process (`houseRowsVia`'s
+ * WeakMap) and the transaction opens holding an array.
  */
 export async function withHousehold(p, household, fn) {
+  const keys = await sessionKeysVia(p, household);
   const client = await p.connect();
   try {
     await client.query("BEGIN");
     await client.query("SELECT set_config('app.household', $1, true)", [household]);
-    const out = await fn(client);
+    await client.query("SELECT set_config('app.household_keys', $1, true)",
+      [sessionKeyString(keys) ?? ""]);
+    // `fn(client, keys)` — the second argument is the SAME array the policy is
+    // comparing against, handed over so a door's own WHERE clause is belt to
+    // the policy's braces rather than a second, narrower notion of this house.
+    const out = await fn(client, keys);
     await client.query("COMMIT");
     return out;
   } catch (err) {
@@ -145,14 +171,63 @@ export async function withHousehold(p, household, fn) {
   }
 }
 
+/**
+ * ── THE DERIVER ANSWERS IT NOW (POS-160, the w40 ship) ──────────────────────
+ *
+ * This used to read `identities.household` — a projection of the WORLD repo's
+ * copy of the town's pins, four hops from the fact, answering in whichever
+ * spelling that copy happened to carry. So the store's rows recorded the same
+ * house two ways depending on when the row was written: measured on the live
+ * registry 2026-09-22, 173 of 190 handles wore `gh:<id>` and 17 wore
+ * `hh:<slug>`, and two handles of ONE house could wear one of each.
+ *
+ * It now asks `household-deriver.mjs`, the office's one walk over the registry
+ * that IS the record (`households` + `household_pins`, 019/020/021), and
+ * answers `hh:<slug>` — the key the ship writes from its law date on.
+ *
+ * ── WHICH ROWS MOVE, AND WHICH DO NOT ───────────────────────────────────────
+ *
+ * Every NEW row this pen writes from the law date carries `hh:<slug>`. Rows
+ * already in the store keep the spelling they were written with, and that is a
+ * problem THIS FUNCTION CANNOT SOLVE, because 007's draft row policy was a
+ * string equality (`household = current_setting('app.household', true)`): a
+ * resident whose key re-spells stops seeing their own drafts.
+ *
+ * ── AND THE ROWS DO NOT MOVE. THE READ WIDENS. (RULING 4, PROVISIONAL) ──────
+ *
+ * `022_household_respell.sql` was going to re-spell them and is now RETIRED to
+ * a header and `SELECT 1;`. The store refuses the rewrite by three separate
+ * laws, each measured on the dev sandbox 2026-09-22: `acts_append_only`,
+ * `claims_update_guard` (`NEW.household IS NOT DISTINCT FROM OLD.household` on
+ * every lawful transition) and `marks_id_is_fixed`. A row's household spelling
+ * is fixed for its life, which is what this module's own header has always said
+ * about history.
+ *
+ * So a house declares EVERY SPELLING IT HAS EVER CARRIED and the policy
+ * compares against the set: `household-deriver.mjs § houseKeysOf` builds it,
+ * `§ sessionKeysFor` is what a session declares, `withHousehold` above puts it
+ * on the connection as `app.household_keys`, and
+ * `024_household_spellings.sql`'s four policies read it. There is no backfill
+ * and no window to run one in — the INSTALL block is a policy migration that
+ * changes no row.
+ *
+ * ── THE MEMO STILL ONLY REMEMBERS A YES ─────────────────────────────────────
+ *
+ * A `solo:` answer is NOT cached, exactly as before. It means "the registry has
+ * never heard of this handle", which is a fact that changes the moment a join
+ * lands — and a cached absence would keep a brand-new resident outside their
+ * own house for the life of the process. A named house does not change under a
+ * running request, so that one is remembered.
+ */
 export async function householdKeyFor(p, handle) {
   if (!handle) return null;
   const hit = householdKeys.get(handle);
   if (hit) return hit;
-  const { rows } = await p.query("SELECT household FROM identities WHERE handle = $1", [handle]);
-  const key = rows[0]?.household ?? null;
-  if (key) householdKeys.set(handle, key);
-  return key ?? `solo:${handle}`;
+  const { slug } = await houseOfVia(p, handle);
+  if (!slug) return `solo:${handle}`;
+  const key = `hh:${slug}`;
+  householdKeys.set(handle, key);
+  return key;
 }
 
 /**
@@ -196,6 +271,34 @@ export async function claimHouseholdFor(row, env = process.env) {
 }
 
 /**
+ * THE SPELLING SET THIS CONNECTION DECLARED — read back, never re-derived.
+ *
+ * `024_household_spellings.sql`'s four policies compare against
+ * `app.household_keys`. A door's own WHERE clause must compare against THE SAME
+ * ARRAY, so this asks the connection for the value the policy is reading rather
+ * than resolving the house a second time: two resolvers is how the spellings
+ * came apart in the first place (`world2-guards.mjs § scoped` says it in those
+ * words), and here the two would be a draft the policy shows and the door hides.
+ *
+ * ── THE FALLBACK NARROWS, AND CANNOT WIDEN ──────────────────────────────────
+ *
+ * A client that does not answer `current_setting` — a scripted test client, or
+ * a connection where nothing declared — falls back to `[household]`, which is
+ * EXACTLY the single string these WHERE clauses compared before this ruling. So
+ * the worst case of an unreadable session is yesterday's behaviour: a house
+ * reaches only its current spelling. It can never reach a spelling that is not
+ * its own, which is the only direction that would be a leak.
+ */
+export async function declaredKeys(client, household) {
+  try {
+    const { rows: [r] } = await client.query(
+      "SELECT string_to_array(NULLIF(current_setting('app.household_keys', true), ''), ',') AS keys");
+    if (Array.isArray(r?.keys) && r.keys.length) return r.keys;
+  } catch { /* a client with no session settings — see § THE FALLBACK NARROWS */ }
+  return household == null ? [] : [household];
+}
+
+/**
  * THE CANDLE HALF OF ONE ACT, ON ONE CLIENT — R1 of the pen-flip design
  * (2026-08-29): this used to be the body of a second queue on a second pool,
  * which is the two-pens disease reproduced inside Postgres (DESIGN §2 R1).
@@ -227,9 +330,14 @@ export async function claimTxFromJournal(client, row, seq, { household, actId = 
       // unpublish").
       if (row.action === "withdraw") {
         const slug = row.object; // the journal's object IS the <by>/<slug> id
+        // `= ANY(keys)` — a draft composed under this house's OLD key is still
+        // this house's draft, and a withdraw that missed it would fall through
+        // to `retractPendingClaim`, find no pending row, and return rowCount 0
+        // — which is a LAWFUL answer on this path, so the resident's draft
+        // would simply not go away and nothing would say why.
         const dropped = await client.query(
-          "DELETE FROM claims WHERE status = 'draft' AND slug = $1 AND claimant = $2 AND household = $3",
-          [slug, row.actor, household]);
+          "DELETE FROM claims WHERE status = 'draft' AND slug = $1 AND claimant = $2 AND household = ANY($3)",
+          [slug, row.actor, await declaredKeys(client, household)]);
         if (dropped.rowCount) { state.written += 1; return; }
         const rowCount = await retractPendingClaim(client,
           { windowId: win.id, slug, claimant: row.actor });
@@ -331,10 +439,22 @@ export async function claimTxFromJournal(client, row, seq, { household, actId = 
                 stake = $6, supersedes = $7, data = $8, slug = $9,
                 window_id = CASE WHEN $12 = 'pending' THEN $1 ELSE window_id END,
                 submitted_at = CASE WHEN $12 = 'pending' THEN now() ELSE submitted_at END
-          WHERE status = 'draft' AND claimant = $10 AND slug = $9 AND household = $11
+          WHERE status = 'draft' AND claimant = $10 AND slug = $9 AND household = ANY($11)
           RETURNING id`,
+        // $11 is the SPELLING SET, not the one key — a draft composed under this
+        // house's old key is the same draft, and this UPDATE is the SUBMIT. A
+        // narrow filter here would show the author a draft through 024's policy
+        // and then refuse to put it forward, with the fall-through below writing
+        // a SECOND claim for the same slug instead.
+        //
+        // The row's own `household` is UNTOUCHED by this statement, which is not
+        // an oversight: 007's `claims_update_guard` requires `NEW.household IS
+        // NOT DISTINCT FROM OLD.household` on the draft -> pending transition,
+        // so the submitted claim keeps the spelling it was composed under. That
+        // is the whole of RULING 4 in one statement — the read widens, the row
+        // never moves.
         [win.id, kind, body ?? null, JSON.stringify(geometry), bbox, stamps ?? 0,
-         supersedes, data, slug, row.actor, household, status]);
+         supersedes, data, slug, row.actor, await declaredKeys(client, household), status]);
       if (promoted.rowCount) {
         state.written += 1;
         if (status === "pending") state.submitted += 1;
@@ -488,11 +608,15 @@ export async function promoteDraftOnStake({ actor, householdName, slug, stamps =
     "SELECT id FROM windows WHERE status = 'open' ORDER BY id DESC LIMIT 1");
   if (!win) throw new Error("no open window — the candle is dark; the stake cannot put this mark forward");
 
-  const out = await withHousehold(p, household, async (c) => {
+  const out = await withHousehold(p, household, async (c, keys) => {
+    // The spelling set, for `readDraftClaims`' reason: a stake on a draft the
+    // house composed under its old key must find that draft, or the stake is
+    // read as a stake on an already-public mark and the draft never goes
+    // forward — `promoted: false`, which is a lawful answer on this path.
     const { rows: [draft] } = await c.query(
       `SELECT id, data->'_deferred_act' AS held FROM claims
-        WHERE status = 'draft' AND claimant = $1 AND slug = $2 AND household = $3`,
-      [actor, slug, household]);
+        WHERE status = 'draft' AND claimant = $1 AND slug = $2 AND household = ANY($3)`,
+      [actor, slug, keys]);
     if (!draft) return null;
     // The released deferred act, in the SAME transaction (F3 closed): dated at
     // the putting-forward exactly as before — the world witnessed the resident
@@ -582,12 +706,23 @@ export async function promoteDraftOnStake({ actor, householdName, slug, stamps =
 export async function markStandingStatus({ slug }, env = process.env) {
   if (!candleEnabled(env)) return { known: false };
   const p = await pool(env);
+  // `docket_window` (postmark#3139): the OPEN window a pending claim on this
+  // slug rides, or null. A mark put forward again sits pending there while its
+  // `marks` row still says retired, and that pair means "put forward", not
+  // "returned to your drafts". Asked in the SAME statement, so the stake door
+  // gains no query. `claims_read` shows every non-draft row to any reader
+  // (007/024), so the pool sees the public docket without a household.
   const { rows } = await p.query(
-    `SELECT status, retired_window FROM marks WHERE slug = $1
-      ORDER BY (status = 'standing') DESC LIMIT 1`, [slug]);
+    `SELECT m.status, m.retired_window,
+            (SELECT c.window_id FROM claims c JOIN windows w ON w.id = c.window_id
+              WHERE c.slug = $1 AND c.status = 'pending' AND w.status = 'open'
+              ORDER BY c.window_id DESC LIMIT 1) AS docket_window
+       FROM marks m WHERE m.slug = $1
+      ORDER BY (m.status = 'standing') DESC LIMIT 1`, [slug]);
   if (!rows.length) return { known: true, found: false };
   return { known: true, found: true, status: rows[0].status,
-           retired: rows[0].status === "retired", retired_window: rows[0].retired_window };
+           retired: rows[0].status === "retired", retired_window: rows[0].retired_window,
+           docket_window: rows[0].docket_window == null ? null : Number(rows[0].docket_window) };
 }
 
 /**
@@ -607,9 +742,14 @@ export async function markStandingStatus({ slug }, env = process.env) {
 export async function readDraftClaims(key, env = process.env) {
   const p = await pool(env);
   const household = await householdKeyForKey(p, key);
-  const rows = await withHousehold(p, household, (c) => c.query(
+  // `= ANY(keys)` and not `= household`: the store never re-spells a row, so a
+  // draft composed under this house's OLD key is still this house's draft and
+  // the door must ask for it by every name the house has worn. The WHERE and
+  // 024's policy now compare the SAME array — see `withHousehold`'s second
+  // argument.
+  const rows = await withHousehold(p, household, (c, keys) => c.query(
     `SELECT id, slug, class, claimant, body, geometry, stake, submitted_at AS composed_at
-       FROM claims WHERE status = 'draft' AND household = $1 ORDER BY slug`, [household]));
+       FROM claims WHERE status = 'draft' AND household = ANY($1) ORDER BY slug`, [keys]));
   return { household, drafts: rows.rows };
 }
 

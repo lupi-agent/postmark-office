@@ -12,8 +12,10 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { SCHEMA } from "../src/schema.mjs";
 import { questBoardFor } from "../src/queries.mjs";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 
-const TOWN = "G:/Wright-HQ/postmark"; // a real checkout — the office imports the town's tool live
+const TOWN = townClone(); // a real checkout — the office imports the town's tool live
+const SKIP = !TOWN && NO_TOWN;
 const REGISTRY = JSON.stringify({
   version: 1,
   quests: [
@@ -39,11 +41,11 @@ const q = (board, id) => board.quests.find((x) => x.id === id);
 // the office zeroes a stale snapshot across midnight, so tests must use the
 // town's own notion of today or they'd read a clean zero and prove nothing.
 async function today() {
-  const { townDay } = await import("file:///G:/Wright-HQ/postmark/tools/quest-progress.mjs");
+  const { townDay } = await import(townModuleUrl("tools", "quest-progress.mjs"));
   return townDay();
 }
 
-test("counted survives the round trip through the index", async () => {
+test("counted survives the round trip through the index", { skip: SKIP }, async () => {
   const day = await today();
   const db = dbWith({
     handle: "alice", send: 2, receive: 1, house_size: 1, house_send: 2, house_receive: 1,
@@ -54,7 +56,7 @@ test("counted survives the round trip through the index", async () => {
   assert.deepEqual(q(board, "correspond-receive").counted, ["dave"]);
 });
 
-test("counted.length always equals progress — the card can't contradict its bar", async () => {
+test("counted.length always equals progress — the card can't contradict its bar", { skip: SKIP }, async () => {
   const day = await today();
   const db = dbWith({
     handle: "alice", send: 3, receive: 0, house_size: 1, house_send: 3, house_receive: 0,
@@ -66,7 +68,7 @@ test("counted.length always equals progress — the card can't contradict its ba
   }
 });
 
-test("a pre-field row degrades to [] rather than 500ing", async () => {
+test("a pre-field row degrades to [] rather than 500ing", { skip: SKIP }, async () => {
   const day = await today();
   // NULL columns — what a snapshot written before sent_to/heard_from existed looks like
   const db = dbWith({
@@ -78,7 +80,7 @@ test("a pre-field row degrades to [] rather than 500ing", async () => {
   assert.deepEqual(q(board, "correspond-send").counted, []);
 });
 
-test("malformed JSON in a column degrades to [] rather than 500ing", async () => {
+test("malformed JSON in a column degrades to [] rather than 500ing", { skip: SKIP }, async () => {
   const day = await today();
   const db = dbWith({
     handle: "alice", send: 1, receive: 0, house_size: 1, house_send: 1, house_receive: 0,
@@ -89,7 +91,7 @@ test("malformed JSON in a column degrades to [] rather than 500ing", async () =>
   assert.deepEqual(q(board, "correspond-receive").counted, []);
 });
 
-test("a resident absent from the index reads a clean zero with empty lists", async () => {
+test("a resident absent from the index reads a clean zero with empty lists", { skip: SKIP }, async () => {
   const day = await today();
   const board = await questBoardFor(dbWith(null, day), meta(day), "nobody", TOWN);
   for (const quest of board.quests) {
@@ -164,7 +166,7 @@ const mixedMeta = (day) => ({ quest_registry: MIXED_REGISTRY, quest_day: day });
 // not name, correctly.
 const BLIND_WORLD = { worldBlock: async () => ({ mark_id: null, x: null, y: null, sited: false, unreadable: true, unreadable_reason: "this fixture has no world" }) };
 
-test("every quest row says whether it is measured — a number is measured, a null is not", async () => {
+test("every quest row says whether it is measured — a number is measured, a null is not", { skip: SKIP }, async () => {
   const day = await today();
   const db = dbWith({
     handle: "alice", send: 2, receive: 1, house_size: 1, house_send: 2, house_receive: 1,
@@ -191,7 +193,7 @@ test("every quest row says whether it is measured — a number is measured, a nu
   // here and asked directly. The day the town names a third countable row, an
   // office deriving `measured` from a hardcoded pair reds on this line — which
   // is the divergence worth catching, and the only one that exists.
-  const { COUNTABLE_FIELD } = await import("file:///G:/Wright-HQ/postmark/tools/quest-progress.mjs");
+  const { COUNTABLE_FIELD } = await import(townModuleUrl("tools", "quest-progress.mjs"));
   assert.ok(Object.keys(COUNTABLE_FIELD).length, "the town's countable table is empty — this oracle has stopped saying anything");
   for (const quest of board.quests) {
     assert.equal(quest.measured, typeof quest.progress === "number",
@@ -201,7 +203,7 @@ test("every quest row says whether it is measured — a number is measured, a nu
   }
 });
 
-test("`measured` is ADDITIVE — progress survives, null and all, for the readers that already use it", async () => {
+test("`measured` is ADDITIVE — progress survives, null and all, for the readers that already use it", { skip: SKIP }, async () => {
   // The site's guard reads `q.progress`, the doorstep's next-steps lane rides
   // these rows, and household-stamps maps `q.progress ?? null`. None of them
   // asked for the key to go, and a key removed is a shape change every reader
@@ -220,7 +222,7 @@ test("`measured` is ADDITIVE — progress survives, null and all, for the reader
   assert.equal(counted.measured, true, "so zero is measured — `measured` is not `progress > 0`");
 });
 
-test("a stale snapshot does not make a countable row unmeasured — the two are different facts", async () => {
+test("a stale snapshot does not make a countable row unmeasured — the two are different facts", { skip: SKIP }, async () => {
   // The distinction the field is for. A stale index means the office served
   // yesterday's numbers as zero; it does not mean the row cannot be counted.
   // If `measured` ever went false here it would be saying "this kind of quest is
@@ -236,7 +238,7 @@ test("a stale snapshot does not make a countable row unmeasured — the two are 
   assert.equal(q(board, "walk-the-world").measured, false, "while the uncounted row is unchanged by the staleness");
 });
 
-test("a stale snapshot across midnight zeroes the names too, not just the bars", async () => {
+test("a stale snapshot across midnight zeroes the names too, not just the bars", { skip: SKIP }, async () => {
   const day = await today();
   const db = dbWith({
     handle: "alice", send: 4, receive: 0, house_size: 1, house_send: 4, house_receive: 0,

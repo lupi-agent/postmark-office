@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, rmSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readTown } from "../vendor/town.mjs";
+import { readTown } from "../vendor/tools/lib/town.mjs";
 import { isResidentHandle } from "./residency.mjs"; // one definition of what a handle is — the door's
 import { readProfile } from "./profiles.mjs"; // PROFILE.md postdates the vendored reader — see that file
 import { readWindowState } from "./panes.mjs"; // the pane's machine twin — one island parser, two readers
@@ -112,7 +112,7 @@ try {
 // non-resident directory the town ever grew (`_archived`, the retirement shelf)
 // walked straight through it and became a row here, and from here into every
 // reader over this table. The vendor is upstream law and not ours to edit
-// (vendor/town.mjs line 2); what the office indexes IS ours.
+// (vendor/tools/lib/town.mjs line 2); what the office indexes IS ours.
 //
 // The skip is REPORTED, never silent: dropping a name quietly is how a town
 // loses somebody without anyone noticing (`the-town/the-disclosure` — refuse or
@@ -124,11 +124,13 @@ const notHandles = town.residents.filter((r) => !isResidentHandle(r.handle)).map
 for (const r of town.residents.filter((r) => isResidentHandle(r.handle))) insResident.run(r.handle, JSON.stringify({
   ...r, is_office: isOffice(r), window_state: windowStateOf(r.handle),
   last_active: lastActive.get(r.handle) ?? null,
-  // The profile bubble. Read here rather than by the vendored readTown, which
-  // was vendored 2026-07-07 and predates PROFILE.md entirely — see
-  // src/profiles.mjs for why this is an office-local reader and not a
-  // re-vendor. Absent/malformed reads null; a profile defect never stops a
-  // hydration.
+  // The profile bubble. The re-vendored readTown DOES read profiles now
+  // (POS-128), so `r.profile` above is a real value — and this line deliberately
+  // overrides it, keeping ONE answer for this field in the store. The two agree
+  // on 181 of the town's 182 handles; where they differ it is this reader's
+  // shape the office's doors and tests are written against. src/profiles.mjs
+  // holds the measurement and why that file was not deleted. Absent/malformed
+  // reads null; a profile defect never stops a hydration.
   profile: readProfile(TOWN, r.handle),
 }));
 if (notHandles.length)
@@ -291,23 +293,24 @@ if (existsSync(questTool) && existsSync(registryPath)) {
   // This block is now the WIRING only: read the town's folds, hand them to the
   // pure reduction, write what comes back.
   if (typeof questMod.onboardingFactsFor === "function" && typeof questMod.foldFriendships === "function") {
-    const { onboardingFactsFor, foldFriendships } = questMod;
-    const { parseDeliveries } = await import(pathToFileURL(join(TOWN, "tools", "stamp-mint.mjs")));
-    const { standingRowsFor } = await import("./quest-standing.mjs");
+    const { onboardingFactsFor, foldFriendships, welcomedHouseholds } = questMod;
+    const { parseDeliveries, currentHouseholds } = await import(pathToFileURL(join(TOWN, "tools", "stamp-mint.mjs")));
+    const { standingRowsFromTown } = await import("./quest-standing.mjs");
 
-    // ONE ledger parse, shared by the onboarding facts and the two first-letter
-    // dates. `foldOnboarding` would parse it a second time for the same answer.
-    const deliveries = parseDeliveries(TOWN);
-    const friendships = foldFriendships(TOWN);
     // `isResidentHandle` is the office's own admission grammar and the reason
     // this iterates it rather than `town.residents` raw: the raw list carries
     // `_archived`, which the daily fold already excludes, so an unfiltered loop
     // wrote a standing row nothing would ever read.
     const handles = town.residents.map((r) => r.handle).filter(isResidentHandle);
-    const rows = standingRowsFor(handles, {
-      deliveries, friendships,
-      factsFor: (h) => onboardingFactsFor(TOWN, h, { deliveries }),
-    });
+    // EVERY town fold ONCE per rehydrate — the deliveries parse this block
+    // already shared, and the households roll + welcomed set the welcome row
+    // needs, which `onboardingFactsFor` otherwise re-resolves per resident at
+    // three ledger parses each. `foldOnboarding` is not the call because it
+    // would parse the mail ledger a second time for the same `deliveries`.
+    // The rule lives in quest-standing.mjs; this line is the wiring.
+    const { rows, friendships } = standingRowsFromTown(
+      { parseDeliveries, foldFriendships, currentHouseholds, welcomedHouseholds, onboardingFactsFor },
+      TOWN, handles);
 
     const insS = db.prepare("INSERT OR REPLACE INTO quest_standing (handle, json) VALUES (?, ?)");
     for (const [h, row] of rows) insS.run(h, JSON.stringify(row));

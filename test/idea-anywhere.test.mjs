@@ -43,6 +43,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { NO_TOWN, townClone } from "./fixture-paths.mjs";
 
 const { ideasTank } = await import("../src/world-classes.mjs");
 const { injectedComplete } = await import("../src/queries.mjs");
@@ -231,13 +232,17 @@ test("THE DOORSTEP ROW: an idea standing off the Tank settles first-idea — the
 // reach the tank through `ideasTank` itself, or this test cannot see the seam.
 // The engine is the town train's own stamp-mint (real law, no fake), the same
 // rail first-idea-sweep.test.mjs runs on.
-const TRAIN_ENGINE = "G:/Postmark/worktrees/town-w36/tools";
+// It was pinned to `G:/Postmark/worktrees/town-w36/tools` — a week-36 worktree
+// on one operator's disk, gone now and never on anyone else's.
+const TOWN = townClone();
+const TRAIN_ENGINE = TOWN && join(TOWN, "tools");
+const SKIP = !TOWN && NO_TOWN;
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const penDir = mkdtempSync(join(tmpdir(), "idea-anywhere-pen-"));
 const KEY = join(penDir, "stamp-key.pem");
 writeFileSync(KEY, privateKey.export({ type: "pkcs8", format: "pem" }));
 process.env.STAMP_KEY = KEY;
-process.env.STAMP_ENGINE_DIR = TRAIN_ENGINE;
+if (TRAIN_ENGINE) process.env.STAMP_ENGINE_DIR = TRAIN_ENGINE;
 
 function foundedClone() {
   const clone = mkdtempSync(join(tmpdir(), "idea-anywhere-town-"));
@@ -255,7 +260,7 @@ function foundedClone() {
   return clone;
 }
 
-test("THE CROSSING MINTS FOR AN IDEA IN THE GARRISON — the consumer that pays, read through ideasTank", async () => {
+test("THE CROSSING MINTS FOR AN IDEA IN THE GARRISON — the consumer that pays, read through ideasTank", { skip: SKIP }, async () => {
   const { planFirstIdeaSweep } = await import("../src/first-idea-sweep.mjs");
   const clone = foundedClone();
   const { path, cleanup } = storeWith([

@@ -226,6 +226,21 @@
    "stale_means": "Not applicable. Down is the failure, and down is caught as ALARM-disabled. site-sentinel's office_api probe watches the same thing from outside the box; both are kept, because a door that answers 200 to the outside while systemd reports it restarting is a finding, and so is the reverse."
   },
   {
+   "unit": "postmark-office.service",
+   "label": "the office's thread",
+   "stage": "live",
+   "activation_owner": "Keemin — POS-267 part 2, briefed by Wright and built by the lane jetto-office-measure (2026-09-27, after the Snug Harbour night's two brownouts, when the office answered 18-22 s late and nothing on the box recorded it). The office writes the file itself from src/loop-lag.mjs, so it goes live with the first release that carries that module; until then this row reads ALARM-noheartbeat (the file does not exist), which is correct",
+   "cadence": "read as: last CALM — calm_at is the last minute in which every caller got the thread within 5 s; the office rewrites the file every minute",
+   "cadence_source": "src/loop-lag.mjs (MINUTE_MS); the row above this one says whether the process is up",
+   "heartbeat": {
+    "kind": "state_file",
+    "path": "/srv/postmark-office/telemetry/loop-lag-4380.json",
+    "stamp_field": "calm_at",
+    "stale_after_minutes": 10
+   },
+   "stale_means": "For ten minutes or more, no minute passed in which every caller got the office's one thread within 5 s (LAG_ALARM_MS, judged on the minute's MAX lag, because one 48 s synchronous read is a single late sample that p99 hides). That is the brownout itself: requests queue behind the thread, nginx's cached reads keep answering, and everything else waits. The same alarm reads when the office stops writing the file at all. Read the file's worst_24h and minutes for the shape, and GET /api/ops/loop-lag for the live numbers. THE LIMIT, said once: this is a point-in-time reader like the rest of the board, so a brownout that ended before the roll-call ran is not an alarm here; it is in worst_24h."
+  },
+  {
    "unit": "postmark-office-dev.service",
    "label": "the dev office",
    "stage": "live",
@@ -310,6 +325,36 @@
    "stale_means": "The rulebook copy stops advancing and the store answers under a law the tree has amended. This is the alarm postmark#2893 asked for, and it is worth saying WHY it had to be asked for: the designed guard is the clearing's refusal on a NULL world-law pin, and a pin that was written once and then froze is never null — so between 09-05 and 09-19 nothing anywhere went red while law_projection fell 37 commits behind. The allowance is 45 minutes, three ticks: one missed fire is weather, three is the rail. THIS FILE IS THIS UNIT'S ALONE and that is the point — the parked poll writes /srv/world2-lab/state/ingest.json, so a heartbeat here can never go green on a run that was not the law pen's. Read the `law.sha` line beside the stamp: a fresh `at` with an ALARM-failed exit means the pen ran and could not ingest, and the detail names which."
   },
   {
+   "unit": "postmark-earpiece.timer",
+   "label": "the earpiece",
+   "stage": "live",
+   "activation_owner": "Wright — POS-209 (Earpiece C), brief 2026-09-25, transport ruled by Wright on Keemin's 'will leave it to you' and disclosed on POS-208/209. Unit source: deploy/postmark-earpiece.{service,timer}, tool world2/tools/earpiece-deliver.mjs. Installed by Wright's hand, dev sandbox first; it ships with W2_EARPIECE unset, so every fire writes status 'disabled' and sends nothing until the flag is set.",
+   "cadence": "every minute, on the minute UTC — the tool coalesces to one wake per resident per 5 minutes per event, so the timer only decides how late a wake can be",
+   "cadence_source": "systemctl show postmark-earpiece.timer -p TimersCalendar",
+   "heartbeat": {
+    "kind": "state_file",
+    "path": "/srv/postmark-earpiece/state.json",
+    "stamp_field": "at",
+    "stale_after_minutes": 5
+   },
+   "stale_means": "Residents who RSVPed stop being woken during an event, and nothing says so: the resident sees no wake and cannot tell a quiet room from a dead rail. EVERY FIRE WRITES THE STAMP, the idle and disabled ones included, so this unit is never rightly silent and needs no window-aware allowance: outside every event's window the stamp says status 'idle', with the flag off it says 'disabled', and a stale `at` means the rail is not running at all. Read `status` beside the stamp: 'failed' with a fresh `at` is the record unreachable mid-run. The allowance is five fires: one missed minute is weather, five is the rail."
+  },
+  {
+   "unit": "postmark-world2-marks-ingest.timer",
+   "label": "the World 2.0 marks pen",
+   "stage": "live",
+   "activation_owner": "Keemin — RULED 2026-09-23 18:4x EDT on POS-142: 'the class fix goes — a marks ingest at every bless, then prod's fold flips to the store — this week, no separate sitting'. The store had no ingest for the world repo's marks: door-made writes reach it through the clearing, every file-side change after the 08-28 seed did not, and PR #173's rows fold differed from the published file by 7 missing marks and ~50 stale rows. Unit source: deploy/postmark-world2-marks-ingest.{service,timer}, script deploy/world2-marks-ingest.sh, tool world2/tools/marks-ingest.mjs. Installed by Wright's hand, dev sandbox first.",
+   "cadence": "every 15 minutes, :12/:27/:42/:57 UTC — five minutes after the office tick that fetches a fresh settlement tag; the tool acts only on a new blessing and is a no-op between them, so the bless is the trigger and the clock is how the box notices it",
+   "cadence_source": "systemctl show postmark-world2-marks-ingest.timer -p TimersCalendar",
+   "heartbeat": {
+    "kind": "state_file",
+    "path": "/srv/world2-lab/state/ingest-marks.json",
+    "stamp_field": "at",
+    "stale_after_minutes": 45
+   },
+   "stale_means": "The store stops learning the world repo's own changes, and the rows fold drifts from the published file one crossing at a time — the exact silence POS-142 measured (7 marks no row held, ~50 stale rows, and nothing anywhere red). Every fire writes the state file, the no-op ones included, so a stale `at` means the pen is not running, not that nothing was blessed. Read `status` beside the stamp: `failed` with a fresh `at` is a STOP or a refused write, and `receipt`/`detail` name which; a STOP is a fact the row shape cannot hold and wants a person, never a retry. The allowance is 45 minutes, three fires: one missed fire is weather, three is the rail."
+  },
+  {
    "unit": "postmark-world2-notary.timer",
    "label": "the World 2.0 notary",
    "stage": "live",
@@ -357,7 +402,7 @@
     "stamp_field": "at",
     "stale_after_minutes": 1560
    },
-   "stale_means": "THE STORE STOPS HAVING AN OFF-BOX COPY, and this is the one row in this file where a long silence is not a degraded read but an unbounded loss: every hour past the last successful ship is an hour that dies with the box. The allowance is one day plus two hours. What the lane ships is the pg_dump (RPO no worse than 24h) to github.com/wright-starforge/postmark-world2-backups, private, over an SSH deploy key scoped to that one repository. It no longer ships a bundle of the notary checkout: since 2026-09-03 the notary pushes itself to its own separate repo (DEC-7), and a certification kept beside the backup it certifies cannot be the check on that backup. The bundles shipped before that date stay in this repo's history under notary/ with a RETIRED.md beside them saying which repo is live. What it does NOT ship is the WAL: measured at about 163 MB/day raw on 2026-08-29, which no git history survives, so the pg_basebackup and the WAL spool are on-box only and cover a bad migration rather than a lost box. That split is deliberate and it is the tee — an object-storage bucket makes the WAL ship a dozen lines. Check the receipt with deploy/world2-restore-rehearse.sh --from-remote, which is the only thing that turns any of this from a hope into a backup."
+   "stale_means": "THE STORE STOPS HAVING AN OFF-BOX COPY, AND SO DOES WHO PAID, and this is the one row in this file where a long silence is not a degraded read but an unbounded loss: every hour past the last successful ship is an hour that dies with the box. The allowance is one day plus two hours. What the lane ships is the pg_dump (RPO no worse than 24h) to github.com/wright-starforge/postmark-world2-backups, private, over an SSH deploy key scoped to that one repository. It no longer ships a bundle of the notary checkout: since 2026-09-03 the notary pushes itself to its own separate repo (DEC-7), and a certification kept beside the backup it certifies cannot be the check on that backup. The bundles shipped before that date stay in this repo's history under notary/ with a RETIRED.md beside them saying which repo is live. What it does NOT ship is the WAL: measured at about 163 MB/day raw on 2026-08-29, which no git history survives, so the pg_basebackup and the WAL spool are on-box only and cover a bad migration rather than a lost box. That split is deliberate and it is the tee — an object-storage bucket makes the WAL ship a dozen lines. Since POS-185 (2026-09-21) the same commit also carries roles.db, the office's subscriber registry — src/roles.mjs:71-82 states the gap in its own words: a grant exists nowhere else in the world, no repo holds it and no fold recomputes it, so \"losing roles.db loses who paid\". It is copied with VACUUM INTO through node:sqlite from a read-only handle, never cp, which tears a live SQLite file; the receipt's roles_status, roles_db_bytes and role_audit_rows are the numbers to read, and roles_status:absent is legal on a box where no role has ever been granted (OFFICE_ROLE_GATES is unset on every office today). It rides this row rather than getting one of its own: one lane, one heartbeat, one thing to watch. Check the receipt with deploy/world2-restore-rehearse.sh --from-remote, which is the only thing that turns any of this from a hope into a backup — it now counts the shipped roles copy's role_audit against the live registry too."
   }
  ],
  "_custody_readme": [
@@ -396,6 +441,22 @@
    "must_be_owned_by": "meepo",
    "why": "Every push this box makes reads it — the settlement clone is configured with credential.helper 'store --file /srv/postmark-office/.git-credentials' by settlement-auto.sh itself, and deploy/settlement-escalate.mjs reads the same file to reach the operator queue. A root-owned credential store is the exact shape of the 2026-08-28 two-hour pen lockout: readable by nobody who needs it, and silent until the moment something tries to push.",
    "repair": "sudo chown meepo:meepo /srv/postmark-office/.git-credentials && sudo chmod 600 /srv/postmark-office/.git-credentials"
+  },
+  {
+   "id": "dev-world-clone",
+   "label": "the dev office's world clone",
+   "path": "/srv/postmark-office-dev/world-clone",
+   "must_be_owned_by": "meepo",
+   "why": "The dev office's world clone is rewritten by postmark-dev-freshen.service every night at 08:10 UTC, and that unit runs as meepo (its unit says User=meepo): a fetch, then a git reset --hard onto sandbox/seed, which has to rewrite every tracked file. On 2026-09-22 Wright found 1,918 root-owned files across this clone and its sibling — the 08-28 root-git class again: something on the box ran git in them as root. Every reset had been refusing them with Permission denied for an unknown time, and the freshen printed 'dev clones stood back on sandbox/seed' past the errors and exited 0, so dev had quietly stopped returning to the seed and no row said so. The freshen now fails loud (POS-192); this row is the other half: it names the foreign owner before the next reset trips on it, and its repair is chown, not a restart.",
+   "repair": "sudo chown -R meepo:meepo /srv/postmark-office-dev/world-clone && sudo -u meepo git -C /srv/postmark-office-dev/world-clone fsck --no-progress"
+  },
+  {
+   "id": "dev-town-clone",
+   "label": "the dev office's town clone",
+   "path": "/srv/postmark-office-dev/town-clone",
+   "must_be_owned_by": "meepo",
+   "why": "The dev office's town clone is rewritten by postmark-dev-freshen.service every night at 08:10 UTC, and that unit runs as meepo (its unit says User=meepo): a fetch, then a git reset --hard onto sandbox/seed, which has to rewrite every tracked file. On 2026-09-22 Wright found 1,918 root-owned files across this clone and its sibling — the 08-28 root-git class again: something on the box ran git in them as root. Every reset had been refusing them with Permission denied for an unknown time, and the freshen printed 'dev clones stood back on sandbox/seed' past the errors and exited 0, so dev had quietly stopped returning to the seed and no row said so. The freshen now fails loud (POS-192); this row is the other half: it names the foreign owner before the next reset trips on it, and its repair is chown, not a restart.",
+   "repair": "sudo chown -R meepo:meepo /srv/postmark-office-dev/town-clone && sudo -u meepo git -C /srv/postmark-office-dev/town-clone fsck --no-progress"
   }
  ],
  "_trees_readme": [
@@ -610,6 +671,16 @@
     "must_be": "release",
     "why": "law-ingest.mjs execs out of this tree, and it is the only writer of law_projection anywhere in the office. A law pen on an old tree writes the rulebook to a schema the deployed clearing no longer expects — the escrow class from the upstream side, and worse here than on the parked poll it was split from, because this one is LIVE. The row carries require_env rather than a default so it refuses to guess: a unit whose drop-in went missing must redden, not fall back to a tree that happens to be right today.",
     "activation_owner": "Keemin — the split is his ruling of 2026-09-19 (postmark#2893); the drop-in and this row are the same install."
+   },
+   {
+    "id": "world2-marks-ingest",
+    "unit": "postmark-world2-marks-ingest.service",
+    "label": "the World 2.0 marks pen's office tree",
+    "env_key": "WORLD2_OFFICE",
+    "require_env": "/etc/systemd/system/postmark-world2-marks-ingest.service.d/office-tree.conf (deploy/postmark-world2-office-tree.conf)",
+    "must_be": "release",
+    "why": "marks-ingest.mjs execs out of this tree and writes `marks` and `claims` through materialize.mjs — the same pen shape the clearing uses. A marks pen on an old tree writes rows in a shape the deployed clearing and fold no longer read. require_env rather than a default, as on the law pen: a unit whose drop-in went missing must redden, not fall back to a tree that happens to be right today.",
+    "activation_owner": "Keemin — the ingest is his ruling of 2026-09-23 (POS-142); the drop-in and this row are the same install, by Wright's hand."
    },
    {
     "id": "world2-ops-scripts",

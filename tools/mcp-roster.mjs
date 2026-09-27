@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { TOOLS, WRITE_TOOLS, DELISTED } = await import("../src/mcp.mjs");
-const { DISPATCHABLE, dispatchToolFor } = await import("../src/world-apex.mjs");
+const { DISPATCHABLE, dispatchToolFor, WORLD_READ_FIELDS } = await import("../src/world-apex.mjs");
 const { classRoster } = await import("../src/world-classes.mjs");
 
 // ── THE FLOOR GUARD (Wright's fix round, 2026-08-26) ───────────────────────
@@ -99,6 +99,16 @@ lines.push("");
 lines.push("| apex action | dispatches to |");
 lines.push("|---|---|");
 for (const a of DISPATCHABLE) lines.push(`| \`${a}\` | \`${dispatchToolFor(a) ?? "— (argument-free: do: performs it directly)"}\` |`);
+lines.push("");
+// The shadow reads' own fields (postmark#3138): `read:` narrows with args:,
+// and a field that lives only here (`who` on the walk read) had no page that
+// named it. Rendered from the same table the door validates against.
+lines.push("The shadow reads' narrowing fields (`world { read: <action>, args: { … } }`; a read never performs):");
+lines.push("");
+lines.push("| read | field | what it does |");
+lines.push("|---|---|---|");
+for (const [a, props] of Object.entries(WORLD_READ_FIELDS))
+  for (const [k, p] of Object.entries(props ?? {})) lines.push(`| \`${a}\` | \`${k}\` | ${fence(p.description)} |`);
 lines.push("");
 
 // ── the flat roster ─────────────────────────────────────────────────────────

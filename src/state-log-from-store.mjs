@@ -357,7 +357,11 @@ export async function stateLogFromStore(client, {
   }
   const params = [Number(window)];
   let sql = "SELECT id, at, crossing, actor, action, object, at_anchor, at_dx, at_dy,"
-    + " witnesses, class, payload, effect, household, journal_seq"
+    // `journal_seq` IS GONE from this select with the column (G1 / POS-156,
+    // migration 025). The `seq` gap below is unchanged and its cause now reads
+    // without pointing at a column: the world's record has no store source for
+    // the old sqlite sequence, and the register's `id` is the sequence it has.
+    + " witnesses, class, payload, effect, household"
     + " FROM acts WHERE crossing = $1";
   if (upto != null) { params.push(upto); sql += ` AND at <= $${params.length}`; }
   sql += " ORDER BY id";
@@ -411,7 +415,7 @@ export function compareWindow(fileLines, derivedLines) {
       for (const field of LINE_FIELDS) {
         const fv = JSON.stringify(f[field]), dv = JSON.stringify(d[field]);
         if (fv === dv) continue;
-        if (field === "seq") causes.push({ field, cause: "no store source — acts.journal_seq is null; this is the register's own id" });
+        if (field === "seq") causes.push({ field, cause: "no store source — `acts.journal_seq` was dropped by G1 (migration 025) and was NULL on every flipped row before that; this is the register's own id" });
         else if (field === "at") causes.push({ field, cause: "the private-draft deferral: the register holds the putting-forward instant, the journal held the compose", file: f.at, derived: d.at });
         else if (field === "household") causes.push({ field, cause: "household spelling — the register keys it, the journal named it", file: f.household, derived: d.household });
         else if (field === "payload" && JSON.stringify(sorted(f[field])) === JSON.stringify(sorted(d[field]))) {

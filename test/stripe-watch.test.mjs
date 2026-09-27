@@ -27,10 +27,11 @@ import { execFileSync } from "node:child_process";
 import { isResidentHandle } from "../src/residency.mjs";
 import { CROSSING_MS } from "../src/crossings.mjs";
 import { townLoginHands } from "../src/household-logins.mjs";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 import {
   decide, decodeSession, resolveSession, listCompleteSessions, stripeReader,
-  attachSettlement, settlementOf,
-  OUTSIDE_FROM, HANDLE_FIELD, RAIL, MIN_USD, SETTLE_CURRENCY,
+  OUTSIDE_FROM, HANDLE_FIELD, RAIL, MIN_USD,
+  readSettlements, settlementOf, foldSettlements, unwitnessedSeen, witnessedRow, SETTLEMENT_EXPAND,
 } from "../tools/stripe-watch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -38,20 +39,34 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // always used. No process.env read: this suite carries an env-invariance guard
 // (test/freshness-ladder.test.mjs) and a fixture that changes shape with an
 // exported variable is the exact thing it exists to catch.
-const TOWN = [resolve(HERE, "..", "town-clone"), "G:/postmark/seam-overnight/town-clone"]
+const TOWN = [townClone()].filter(Boolean)
   .find((p) => existsSync(join(p, "tools", "stamp-mint.mjs")));
-const ENGINE = await import(`file:///${TOWN}/tools/stamp-mint.mjs`);
+// Guarded: a top-level await import of a clone that is not there takes the
+// whole module down at load, and its cases then neither pass nor fail.
+const ENGINE = TOWN ? await import(townModuleUrl("tools", "stamp-mint.mjs")) : null;
+const SKIP = !TOWN && NO_TOWN;
 
 const CS_A = "cs_test_a11111111111111111111111";
 const CS_B = "cs_test_b22222222222222222222222";
 const CS_C = "cs_test_c33333333333333333333333";
 
 // ── a Stripe account that honours the query ─────────────────────────────────
-function stripeAccount({ sessions = [], throws = false } = {}) {
+// `intents` answers GET /payment_intents/<id>, the settlement read (POS-183).
+// It honours the query too: without the expansion the watcher asks for, the
+// charge comes back as a bare id, exactly as Stripe returns it.
+function stripeAccount({ sessions = [], throws = false, intents = {} } = {}) {
   const calls = [];
   const stripe = async (path, params = {}) => {
     calls.push({ path, params });
     if (throws) throw new Error("Stripe refused the read (401): Invalid API Key provided");
+    if (path.startsWith("/payment_intents/")) {
+      const id = decodeURIComponent(path.slice("/payment_intents/".length));
+      const intent = intents[id];
+      if (!intent) throw new Error(`Stripe refused the read (404): No such payment_intent: '${id}'`);
+      if (params["expand[]"] !== "latest_charge.balance_transaction")
+        return { ...intent, latest_charge: intent.latest_charge?.id ?? null };
+      return intent;
+    }
     if (path !== "/checkout/sessions") throw new Error(`unexpected path ${path}`);
     let rows = sessions.slice();
     if (params.status) rows = rows.filter((s) => s.status === params.status);
@@ -67,28 +82,15 @@ function stripeAccount({ sessions = [], throws = false } = {}) {
   return { stripe, calls };
 }
 
-// `settled` is the SETTLED pair, and it is written here exactly where Stripe
-// writes it: on the balance transaction of the charge of the payment intent.
-// A session with `settled: null` (the default, and every USD fixture in this
-// file) leaves `payment_intent` the bare string id it has always been — which
-// is the real shape of an unexpanded session, so no USD falsifier below had to
-// learn a new fixture to keep passing.
 const sess = ({
   id, created, amount = 1000, currency = "usd", pot = "keep", handle = null,
   livemode = true, payment_status = "paid", status = "complete", email = "patron@example.test",
-  settled = null,
 }) => ({
   id, object: "checkout.session", created, status, payment_status, livemode,
   amount_total: amount, currency, client_reference_id: pot,
   customer_details: { email },
   custom_fields: handle === null ? [] : [{ key: HANDLE_FIELD, type: "text", text: { value: handle } }],
-  payment_intent: settled === null ? `pi_${id.slice(3)}` : {
-    id: `pi_${id.slice(3)}`, object: "payment_intent",
-    latest_charge: {
-      id: `ch_${id.slice(3)}`, object: "charge",
-      balance_transaction: { id: `txn_${id.slice(3)}`, object: "balance_transaction", ...settled },
-    },
-  },
+  payment_intent: `pi_${id.slice(3)}`,
 });
 
 // ── a throwaway town with a real, sealed ledger ─────────────────────────────
@@ -145,7 +147,7 @@ const cliRecorder = ({ repo, keyFile }, rail = RAIL) => async ({ pot, usd, from,
 // THE POT — from the session, never from a guess
 // ════════════════════════════════════════════════════════════════════════════
 
-test("the pot comes from the session's own client_reference_id, and a session without one is never guessed at", async () => {
+test("the pot comes from the session's own client_reference_id, and a session without one is never guessed at", { skip: SKIP }, async () => {
   // LAW (tools/epoch-close.mjs --receipt, verbatim): `no pot file
   //     WHITE_PAGES/pot-${pot}.json — a receipt needs the pot it pays`.
   //
@@ -185,7 +187,7 @@ test("the pot comes from the session's own client_reference_id, and a session wi
 // THE HAND — a match, or a gift; never a near-match
 // ════════════════════════════════════════════════════════════════════════════
 
-test("an exactly-matching handle becomes the payer, and anything else becomes a gift that mints no holo", async () => {
+test("an exactly-matching handle becomes the payer, and anything else becomes a gift that mints no holo", { skip: SKIP }, async () => {
   // LAW (the fund page, the card rail's own warning, verbatim): "Tell the town
   //     which handle it was for when you pay, or write and say so — a payment
   //     the office cannot attach to a hand can still be a gift, but it cannot
@@ -214,7 +216,7 @@ test("an exactly-matching handle becomes the payer, and anything else becomes a 
   assert.match(none.gift_note, /no handle was given/);
 });
 
-test("the gift spelling can never collide with a handle, and the ledger still takes it", async () => {
+test("the gift spelling can never collide with a handle, and the ledger still takes it", { skip: SKIP }, async () => {
   // LAW (src/funding.mjs, the pot-receipt grammar, verbatim): the payer rides
   //     `from: (\S+)` — anything without whitespace. And (src/residency.mjs) a
   //     handle is lowercase letters, digits and single hyphens.
@@ -247,7 +249,7 @@ test("the gift spelling can never collide with a handle, and the ledger still ta
 // reading it is reading the record, and the only thing being added is that the
 // office stops throwing away an answer it already has.
 
-test("a typed GitHub login the town has pinned to ONE household with ONE hand is the hand — attributed, not guessed", async () => {
+test("a typed GitHub login the town has pinned to ONE household with ONE hand is the hand — attributed, not guessed", { skip: SKIP }, async () => {
   // LAW (tools/world-households-export.mjs, verbatim): "logins: lowercased
   //     GitHub login → household key … Pinned handles contribute their pin's
   //     login; login-keyed households bind their own name by construction."
@@ -275,7 +277,7 @@ test("a typed GitHub login the town has pinned to ONE household with ONE hand is
   assert.equal(r.handle_typed, "pazmartina");
 });
 
-test("a login whose household holds SEVERAL hands is a household and not a hand, so it stays a gift that says why", async () => {
+test("a login whose household holds SEVERAL hands is a household and not a hand, so it stays a gift that says why", { skip: SKIP }, async () => {
   // LAW (tools/stripe-watch.mjs, the header, verbatim): "a payment the office
   //     cannot attach to a hand can still be a gift, but it cannot mint your
   //     holo." A pin that names six people names no one of them.
@@ -300,7 +302,7 @@ test("a login whose household holds SEVERAL hands is a household and not a hand,
   assert.match(r.gift_note, /cannot mint your holo/);
 });
 
-test("a resident handle OUTRANKS a login of the same spelling — the handle channel is asked first", async () => {
+test("a resident handle OUTRANKS a login of the same spelling — the handle channel is asked first", { skip: SKIP }, async () => {
   // LAW (tools/stripe-watch.mjs, the header, verbatim): the hand is "the
   //     session's custom field `handle`, if it EXACTLY names a registered
   //     household". Exact match is the first question and it keeps its
@@ -323,7 +325,7 @@ test("a resident handle OUTRANKS a login of the same spelling — the handle cha
   assert.equal(r.pin_note, undefined, "nothing was resolved through a pin, so nothing claims it was");
 });
 
-test("the login channel is case-insensitive, because a login is not case-sensitive and a payer types what they remember", async () => {
+test("the login channel is case-insensitive, because a login is not case-sensitive and a payer types what they remember", { skip: SKIP }, async () => {
   // LAW (tools/world-households-export.mjs, verbatim): "logins: LOWERCASED
   //     GitHub login → household key". The map is built lowercased, so the
   //     lookup must be too, or the map's own spelling silently excludes the
@@ -340,7 +342,7 @@ test("the login channel is case-insensitive, because a login is not case-sensiti
   }
 });
 
-test("a login TWO different accounts claim is ambiguous, and ambiguity is a gift rather than a winner", async () => {
+test("a login TWO different accounts claim is ambiguous, and ambiguity is a gift rather than a winner", { skip: SKIP }, async () => {
   // LAW (src/household-logins.mjs, verbatim): "A consumer that picks the first
   //     of several is guessing with somebody's deed."
   //
@@ -358,7 +360,7 @@ test("a login TWO different accounts claim is ambiguous, and ambiguity is a gift
   assert.equal(r.attributed, false);
 });
 
-test("an unknown string is still a gift, and the pin channel did not loosen the old rule", async () => {
+test("an unknown string is still a gift, and the pin channel did not loosen the old rule", { skip: SKIP }, async () => {
   // LAW (the fund page, the card rail's own warning, verbatim): "a payment the
   //     office cannot attach to a hand can still be a gift, but it cannot mint
   //     your holo."
@@ -381,7 +383,7 @@ test("an unknown string is still a gift, and the pin channel did not loosen the 
   assert.match(none.gift_note, /no handle was given/);
 });
 
-test("the disclosure rides the PLAN through decide(), so the held row the operator reads carries it too", async () => {
+test("the disclosure rides the PLAN through decide(), so the held row the operator reads carries it too", { skip: SKIP }, async () => {
   // LAW (tools/stripe-watch.mjs, the header, verbatim): "A HELD session carries
   //     its provisional resolution, not just 'wait'. That is the whole value of
   //     the window: the operator round must be able to read [the resolution]
@@ -409,7 +411,7 @@ test("the disclosure rides the PLAN through decide(), so the held row the operat
   assert.match(plan.pin_note, /attributed, not guessed/);
 });
 
-test("with NO pins map handed in, the rule is exactly the rule it was before this lane", async () => {
+test("with NO pins map handed in, the rule is exactly the rule it was before this lane", { skip: SKIP }, async () => {
   // LAW (src/household-logins.mjs, verbatim): "An engine without
   //     `currentHouseholds` yields an EMPTY map, which is the honest answer: no
   //     pins were read, so no login is a hand."
@@ -433,7 +435,7 @@ test("with NO pins map handed in, the rule is exactly the rule it was before thi
 // THE GRACE WINDOW
 // ════════════════════════════════════════════════════════════════════════════
 
-test("a session younger than one crossing is HELD, and the hold carries the plan the operator must be able to veto", async () => {
+test("a session younger than one crossing is HELD, and the hold carries the plan the operator must be able to veto", { skip: SKIP }, async () => {
   // LAW (src/crossings.mjs, the ratified derivation, verbatim): "crossings run
   //     00:00 / 12:00 UTC (the ferry's clock), counted from the mail-ledger's
   //     first delivery day (2026-06-12). This derivation IS the town clock".
@@ -457,7 +459,7 @@ test("a session younger than one crossing is HELD, and the hold carries the plan
   assert.equal(ripe.disposition, "witness", "one crossing exactly is old enough — the boundary is >=, not >");
 });
 
-test("the grace is ELAPSED AGE, not a crossing boundary — a payment made a minute before 12:00 UTC still gets its window", async () => {
+test("the grace is ELAPSED AGE, not a crossing boundary — a payment made a minute before 12:00 UTC still gets its window", { skip: SKIP }, async () => {
   // The interpretive call, asserted so it cannot be quietly changed back. "≥1
   // crossing old" could have meant "a boundary has passed", and under that
   // reading a session created at 11:59 UTC would witness one minute later —
@@ -475,7 +477,7 @@ test("the grace is ELAPSED AGE, not a crossing boundary — a payment made a min
 // THE CAP
 // ════════════════════════════════════════════════════════════════════════════
 
-test("an over-target arrival on a capped pot journals as an anomaly rather than witnessing", async () => {
+test("an over-target arrival on a capped pot journals as an anomaly rather than witnessing", { skip: SKIP }, async () => {
   // LAW (D5, Keemin 2026-08-21, verbatim as the /fund door quotes it): "intake
   //     refuses dollars past a pot's posted target, mechanically (recording
   //     tool / door bounce), except pots explicitly marked uncapped."
@@ -500,7 +502,7 @@ test("an over-target arrival on a capped pot journals as an anomaly rather than 
 // IDEMPOTENCE — the ledger decides, not the journal
 // ════════════════════════════════════════════════════════════════════════════
 
-test("once the ref is a receipt the same session reports `already`, and a second tick writes nothing", async () => {
+test("once the ref is a receipt the same session reports `already`, and a second tick writes nothing", { skip: SKIP }, async () => {
   // LAW (stamp-mint.mjs, the pot-receipt grammar, verbatim): "ref is unique
   //     forever: one dollar, one mint chance, a re-recorded receipt bounces."
   //
@@ -535,7 +537,7 @@ test("once the ref is a receipt the same session reports `already`, and a second
 // WHAT IS NEVER A RECEIPT
 // ════════════════════════════════════════════════════════════════════════════
 
-test("test-mode money, unpaid sessions, unsettled foreign payments and sub-dollar amounts are named, never witnessed", async () => {
+test("test-mode money, unpaid sessions, foreign currency and sub-dollar amounts are named, never witnessed", { skip: SKIP }, async () => {
   // LAW (fund.mjs, guard 5, verbatim): "the ledger records whole dollars, so a
   //     payment under $1 cannot be witnessed as a receipt. It reached the town
   //     and it is not lost — write to the postmaster."
@@ -546,12 +548,11 @@ test("test-mode money, unpaid sessions, unsettled foreign payments and sub-dolla
 
   assert.equal(at({ id: CS_A, livemode: false }).anomaly, "testmode");
   assert.equal(at({ id: CS_A, payment_status: "unpaid" }).anomaly, "unpaid");
-  // A foreign session with NOTHING SETTLED YET is still named — but the reason
-  // moved, and the difference is the whole of postmark#3183. It is no longer
-  // "this money is foreign"; foreign money is fine. It is "no settled amount
-  // could be read for it", which Stripe fixes by itself on the next tick.
-  assert.equal(at({ id: CS_A, currency: "eur" }).anomaly, "not-usd");
-  assert.match(at({ id: CS_A, currency: "eur" }).why, /no settled amount could be read/);
+  // MOVED 2026-09-23 (POS-183), on purpose: a EUR session is no longer
+  // `not-usd` by its presentment. With no settlement read it is `unsettled`;
+  // `not-usd` is reserved for a balance transaction that is itself not in
+  // dollars. Both are asserted in THE SETTLED DOLLARS below.
+  assert.equal(at({ id: CS_A, currency: "eur" }).anomaly, "unsettled");
   const dust = at({ id: CS_A, amount: 50 });
   assert.equal(dust.anomaly, "under-a-dollar");
   assert.match(dust.rule, /cannot be witnessed as a receipt/);
@@ -559,7 +560,7 @@ test("test-mode money, unpaid sessions, unsettled foreign payments and sub-dolla
   assert.equal(at({ id: CS_A, amount: 100 }).disposition, "witness");
 });
 
-test("cents are witnessed as whole dollars and the remainder is disclosed, never dropped in silence", async () => {
+test("cents are witnessed as whole dollars and the remainder is disclosed, never dropped in silence", { skip: SKIP }, async () => {
   // LAW (src/funding.mjs, verbatim): "Dollars are whole: `usd` is [1-9]\\d* in
   //     the landed grammar. $10.50 is not a smaller payment, it is not a row."
   const town = seamTown();
@@ -570,167 +571,10 @@ test("cents are witnessed as whole dollars and the remainder is disclosed, never
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// THE SETTLED DOLLARS — a foreign payment is a receipt, not a queue (#3183)
-// ════════════════════════════════════════════════════════════════════════════
-
-test("a EUR session is witnessed for the dollars that SETTLED, and the record keeps what the payer actually paid", async () => {
-  // LAW (Keemin, 2026-09-21, verbatim): "let's accept other currencies, no need
-  //     to block it on our end."
-  // LAW (the pot-receipt grammar, tools/epoch-close.mjs, verbatim): "`usd:` is
-  //     a whole number of US dollars."
-  //
-  // Account-level Adaptive Pricing presents the payment link in the payer's own
-  // money, so the session says `eur` / 2500 minor units. The town holds no rate
-  // and must never invent one — but it does not need one: Stripe converted at
-  // settlement and wrote the answer on the charge's balance transaction. €25.00
-  // landed as $27.31, and $27 is the receipt.
-  const town = seamTown();
-  const now = 2_000_000_000_000;
-  const old = Math.floor(now / 1000) - 86_400;
-
-  const eur = resolveSession(decodeSession(sess({
-    id: CS_A, created: old, handle: "paz", currency: "eur", amount: 2500,
-    settled: { amount: 2731, currency: "usd" },
-  })), { ...ctx(town), now });
-
-  assert.equal(eur.disposition, "witness", "a foreign payment is a receipt now, not a queue for the founder");
-  assert.equal(eur.usd, 27, "the SETTLED dollars, floored — never the presentment number, which would have read 25");
-  assert.deepEqual(eur.paid, { currency: "eur", amount: 2500 }, "and the record still says what the payer agreed to");
-  // The remainder is disclosed against the SETTLED amount, the same way a
-  // domestic $27.31 would be. A sentence about €0.31 would be a rate the town
-  // does not have, quietly asserted.
-  assert.match(eur.cents_note, /\$27\.31 arrived/);
-  assert.match(eur.cents_note, /\$0\.31 is money the town holds that priced nothing/);
-
-  // AND THE WHOLE WAY DOWN: the row the town's own CLI actually writes.
-  const { report, todo } = decide({
-    sessions: [sess({ id: CS_A, created: old, handle: "paz", currency: "eur", amount: 2500, settled: { amount: 2731, currency: "usd" } })],
-    ...ctx(town), now,
-  });
-  assert.equal(report.witnessed_now, 1);
-  const record = cliRecorder(town);
-  const { line } = await record(todo[0]);
-  assert.match(line, /· pot-receipt · pot:keep · rail: stripe · usd: 27 · from: paz · ref: stripe:cs_test_a11111111111111111111111 · sig: /,
-    "the ledger line is an ORDINARY receipt in whole dollars — the euro never reaches it");
-  // AND IT CANNOT. `POT_RECEIPT_RE` is `^…$`-anchored in both copies of the
-  // grammar (the town's tools/stamp-mint.mjs and this office's src/funding.mjs),
-  // so a `· paid: eur/2500` appended here would not parse as a receipt at all —
-  // the fold would see no money. The presentment pair lives on the operator's
-  // record instead, which is why this assertion is the ONLY shape allowed.
-  assert.ok(!/paid/.test(line), "nothing about euros reaches the signed row");
-  const folded = ENGINE.foldPotReceipts(entriesOf(town.repo)).receipts.at(-1);
-  assert.equal(folded.usd, 27, "and the town's own fold reads it back as 27 dollars");
-});
-
-test("a foreign session with no settled amount, or one settled in a third currency, is named and never guessed at", async () => {
-  // LAW (the anomaly this narrows, verbatim): "there is no rate anywhere in the
-  //     town to convert it."
-  //
-  // The rule reads a rate Stripe already applied; it never applies one. So the
-  // two ways a foreign session can arrive without a settled USD figure are both
-  // anomalies, and they are NOT the same anomaly to an operator: one is Stripe
-  // being a few hours behind and fixes itself, the other is an account setting
-  // and needs a person. The shared kind is `not-usd` because the report, the
-  // operator round and the journal all already read that name.
-  const town = seamTown();
-  const now = 2_000_000_000_000;
-  const old = Math.floor(now / 1000) - 86_400;
-  const at = (o) => resolveSession(decodeSession(sess({ created: old, handle: "paz", ...o })), { ...ctx(town), now });
-
-  const unsettled = at({ id: CS_A, currency: "gbp", amount: 2000 });
-  assert.equal(unsettled.anomaly, "not-usd");
-  assert.match(unsettled.why, /GBP and no settled amount could be read/);
-  assert.match(unsettled.resolves, /the next tick re-reads the session/, "it resolves itself, and the queue must say so");
-  assert.equal(unsettled.usd, undefined, "no dollars were invented for it");
-
-  const thirdCurrency = at({ id: CS_B, currency: "gbp", amount: 2000, settled: { amount: 1800, currency: "eur" } });
-  assert.equal(thirdCurrency.anomaly, "not-usd");
-  assert.match(thirdCurrency.why, /settled in EUR, not USD/);
-  assert.match(thirdCurrency.resolves, /no rate anywhere in the town to convert it/, "this one is the founder's, and keeps the original sentence");
-  assert.equal(thirdCurrency.usd, undefined);
-});
-
-test("a USD session is the row it has always been: the settled read never touches it, and it costs no extra Stripe call", async () => {
-  // The whole safety of #3183 is that the common path did not move. A USD
-  // session carries no balance transaction in any fixture in this file — that
-  // is the real shape of an unexpanded session — and it must resolve to exactly
-  // the receipt it resolved to before, because `amount_total` already IS the
-  // settled amount when presentment and settlement are the same currency.
-  const town = seamTown();
-  const now = 2_000_000_000_000;
-  const old = Math.floor(now / 1000) - 86_400;
-
-  const plain = decodeSession(sess({ id: CS_A, created: old, handle: "paz", amount: 1000 }));
-  assert.equal(settlementOf(sess({ id: CS_A, created: old })), null, "an unexpanded session has no balance transaction to read");
-  assert.equal(plain.settled, null);
-  const r = resolveSession(plain, { ...ctx(town), now });
-  assert.equal(r.disposition, "witness");
-  assert.equal(r.usd, 10, "the same ten dollars, from the same field, as before the rule learned about settlement");
-  assert.deepEqual(r.paid, { currency: "usd", amount: 1000 }, "`paid` is carried even when it restates `usd` — a field that appears only sometimes teaches readers that its absence means something");
-
-  const { line } = await cliRecorder(town)(r);
-  assert.match(line, /· pot-receipt · pot:keep · rail: stripe · usd: 10 · from: paz · ref: stripe:cs_test_a11111111111111111111111 · sig: /);
-
-  // AND THE READ: no second call is made for it.
-  const acct = stripeAccount({ sessions: [sess({ id: CS_A, created: old }), sess({ id: CS_B, created: old + 1 })] });
-  await listCompleteSessions({ stripe: acct.stripe, createdGte: old });
-  assert.ok(acct.calls.every((c) => c.path === "/checkout/sessions"),
-    "every USD session was answered by the listing alone — the settled read is asked only of the sessions that need it");
-});
-
-test("the settled read is a RETRIEVE, asked once per foreign session, and a refusal there is an anomaly rather than a dead rail", async () => {
-  // `data.payment_intent.latest_charge.balance_transaction` sits at Stripe's
-  // documented four-level expansion limit on a LIST, and a request at a limit
-  // fails with an API error rather than a null — which on the list would blind
-  // the whole rail. So the expansion is asked on the SESSION, three levels
-  // deep, and only of a session whose presentment currency is not the account's.
-  const old = 1_700_000_000;
-  const rows = [
-    sess({ id: CS_A, created: old }),
-    sess({ id: CS_B, created: old + 1, currency: "eur", amount: 2500 }),
-  ];
-  const full = { ...rows[1], payment_intent: { id: "pi_x", latest_charge: { id: "ch_x", balance_transaction: { amount: 2731, currency: "usd" } } } };
-  const calls = [];
-  const stripe = async (path, params = {}) => {
-    calls.push({ path, params });
-    if (path === "/checkout/sessions") return { object: "list", data: rows.slice().sort((a, b) => b.created - a.created), has_more: false };
-    if (path === `/checkout/sessions/${CS_B}`) return full;
-    throw new Error(`unexpected path ${path}`);
-  };
-  const got = await listCompleteSessions({ stripe, createdGte: old });
-  const retrieves = calls.filter((c) => c.path !== "/checkout/sessions");
-  assert.equal(retrieves.length, 1, "one retrieve, for the one foreign session");
-  assert.equal(retrieves[0].path, `/checkout/sessions/${CS_B}`);
-  assert.equal(retrieves[0].params["expand[]"], "payment_intent.latest_charge.balance_transaction",
-    "the request itself names what it needs, three levels and not four");
-  assert.deepEqual(settlementOf(got.find((s) => s.id === CS_B)), { amount: 2731, currency: "usd" });
-
-  // THE REFUSAL. A watcher that threw here would stop witnessing every good
-  // session queued behind one unreadable payment.
-  const angry = async (path) => {
-    if (path === "/checkout/sessions") return { object: "list", data: rows.slice().sort((a, b) => b.created - a.created), has_more: false };
-    throw new Error("Stripe refused the read (400): no such payment_intent");
-  };
-  const survived = await listCompleteSessions({ stripe: angry, createdGte: old });
-  assert.equal(survived.length, 2, "the tick still has both sessions");
-  assert.equal(settlementOf(survived.find((s) => s.id === CS_B)), null, "and the one it could not read carries no settlement, so the rule names it");
-  assert.equal(SETTLE_CURRENCY, "usd", "the account settles in dollars, and that is the one currency the ledger records");
-});
-
-test("attachSettlement asks nothing of a session it was not given, and leaves a mismatched answer alone", async () => {
-  // A retrieve that comes back as a DIFFERENT session is not a session this
-  // reader may substitute — the settled dollars would be another payer's.
-  const wrong = async () => ({ id: "cs_somebody_else", payment_intent: { latest_charge: { balance_transaction: { amount: 9999, currency: "usd" } } } });
-  const [only] = await attachSettlement({ stripe: wrong, sessions: [sess({ id: CS_B, created: 1, currency: "eur", amount: 2500 })] });
-  assert.equal(only.id, CS_B);
-  assert.equal(settlementOf(only), null, "the mismatched answer was discarded, not grafted on");
-});
-
-// ════════════════════════════════════════════════════════════════════════════
 // THE READ
 // ════════════════════════════════════════════════════════════════════════════
 
-test("only COMPLETED sessions are asked for, and the pages are followed to the end", async () => {
+test("only COMPLETED sessions are asked for, and the pages are followed to the end", { skip: SKIP }, async () => {
   // The refusing is done by Stripe rather than by our incuriosity: an open or
   // expired session is never in the answer because it was never in the request.
   const created = 1_700_000_000;
@@ -748,7 +592,7 @@ test("only COMPLETED sessions are asked for, and the pages are followed to the e
   assert.deepEqual(got.map((s) => s.created), got.map((s) => s.created).slice().sort((a, b) => a - b));
 });
 
-test("the cursor is INCLUSIVE, so two sessions in the same second cannot fall through it", async () => {
+test("the cursor is INCLUSIVE, so two sessions in the same second cannot fall through it", { skip: SKIP }, async () => {
   const created = 1_700_000_000;
   const twins = [sess({ id: CS_A, created }), sess({ id: CS_B, created })];
   const acct = stripeAccount({ sessions: twins });
@@ -757,7 +601,7 @@ test("the cursor is INCLUSIVE, so two sessions in the same second cannot fall th
   assert.equal(acct.calls[0].params["created[gte]"], created);
 });
 
-test("the page cap REFUSES rather than truncating — a partial read decides nothing", async () => {
+test("the page cap REFUSES rather than truncating — a partial read decides nothing", { skip: SKIP }, async () => {
   // LAW (tools/usdc-watch.mjs, on an unreachable chain, verbatim): "a silent
   //     empty report from a blind watcher is indistinguishable from a quiet day,
   //     and the second one is a lie." A watcher that quietly stopped paginating
@@ -775,7 +619,7 @@ test("the page cap REFUSES rather than truncating — a partial read decides not
   assert.equal(all.length, 20);
 });
 
-test("a Stripe read that fails throws, and no key means no reader at all", async () => {
+test("a Stripe read that fails throws, and no key means no reader at all", { skip: SKIP }, async () => {
   // Same law as usdc-watch's unreachable chain: "a silent empty report from a
   // blind watcher is indistinguishable from a quiet day, and the second one is
   // a lie."
@@ -784,7 +628,7 @@ test("a Stripe read that fails throws, and no key means no reader at all", async
   assert.throws(() => stripeReader({ key: null }), /no STRIPE_KEY/);
 });
 
-test("the ref is stripe:<session id>, and it is the only ref this rail can ever mint", async () => {
+test("the ref is stripe:<session id>, and it is the only ref this rail can ever mint", { skip: SKIP }, async () => {
   // LAW (stamp-mint.mjs, the pot-receipt grammar, verbatim): "ref is unique
   //     forever: one dollar, one mint chance, a re-recorded receipt bounces."
   //     The card rail has no payer paste-path (the fund page: "Step 2 — there
@@ -794,7 +638,7 @@ test("the ref is stripe:<session id>, and it is the only ref this rail can ever 
   assert.ok(!/\s|·/.test(d.receipt_ref), "the town CLI refuses a ref carrying whitespace or the field separator");
 });
 
-test("NO DOOR IN THE TOWN CAN MINT A `stripe:` REF — the premise the whole auto-witness rests on", async () => {
+test("NO DOOR IN THE TOWN CAN MINT A `stripe:` REF — the premise the whole auto-witness rests on", { skip: SKIP }, async () => {
   // LAW (the fund page, the card rail's step 2, verbatim): "There is nothing
   //     for you to paste. The hash form belongs to the USDC rail — it reads
   //     Base directly and cannot see a card payment."
@@ -832,7 +676,7 @@ test("NO DOOR IN THE TOWN CAN MINT A `stripe:` REF — the premise the whole aut
   assert.ok(!w.receipt_ref.startsWith(`${RAIL}:`));
 });
 
-test("the payer's email is journalled for the operator and never reaches a ledger row", async () => {
+test("the payer's email is journalled for the operator and never reaches a ledger row", { skip: SKIP }, async () => {
   // The journal is a private operator surface; the ledger is public forever.
   const town = seamTown();
   const now = 2_000_000_000_000;
@@ -840,4 +684,152 @@ test("the payer's email is journalled for the operator and never reaches a ledge
   assert.equal(r.email, "patron@example.test");
   await cliRecorder(town)(r);
   assert.ok(!ledgerText(town.repo).includes("patron@example.test"), "no email on the public ledger");
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE SETTLED DOLLARS (POS-183): Adaptive Pricing presents, the ledger records
+// what SETTLED
+// ════════════════════════════════════════════════════════════════════════════
+
+const intentOf = (id, bt) => ({
+  id, object: "payment_intent",
+  latest_charge: bt === null ? null : { id: `ch_${id.slice(3)}`, object: "charge", balance_transaction: { id: `txn_${id.slice(3)}`, object: "balance_transaction", ...bt } },
+});
+
+test("S1 · a session PRESENTED in EUR whose balance transaction is in USD is WITNESSED with the settled whole dollars", { skip: SKIP }, async () => {
+  // LAW (tools/stripe-watch.mjs, the header, verbatim): "`usd:` from the
+  //     balance transaction, whole dollars, cents disclosed as they always
+  //     were. The presented currency and amount ride the witnessed JOURNAL row
+  //     as a receipt".
+  const town = seamTown();
+  const now = 2_000_000_000_000;
+  const old = Math.floor(now / 1000) - 86_400;
+  // 18.40 EUR shown to the payer; $20.13 gross settled to the account
+  const raw = sess({ id: CS_A, created: old, amount: 1840, currency: "eur", handle: "paz" });
+  const acct = stripeAccount({ intents: { [raw.payment_intent]: intentOf(raw.payment_intent, { amount: 2013, currency: "usd", exchange_rate: 1.094 }) } });
+
+  const settlements = await readSettlements({ stripe: acct.stripe, rows: [decodeSession(raw)] });
+  assert.equal(acct.calls.length, 1, "one settlement read, for the one foreign session");
+  assert.equal(acct.calls[0].path, `/payment_intents/${raw.payment_intent}`);
+  assert.equal(acct.calls[0].params["expand[]"], SETTLEMENT_EXPAND, "the read asks Stripe to expand the charge down to its balance transaction");
+
+  const { todo, report } = decide({ sessions: [raw], settlements, ...ctx(town), now });
+  assert.equal(report.anomalies, 0, "a foreign presentment is no longer an anomaly for the founder's hand");
+  assert.equal(todo.length, 1);
+  const w = todo[0];
+  assert.equal(w.usd, 20, "the SETTLED whole dollars, not 18 (the euro figure read as dollars)");
+  assert.match(w.cents_note, /\$20\.13 arrived.*\$0\.13 is money the town holds/);
+  assert.deepEqual(w.presented, { currency: "eur", amount: 1840 });
+  assert.deepEqual(w.settled, { balance_transaction: `txn_${raw.payment_intent.slice(3)}`, currency: "usd", amount: 2013 });
+
+  // and the ROW the town writes carries those dollars, through the town's own CLI
+  await cliRecorder(town)(w);
+  const { receipts } = ENGINE.foldPotReceipts(entriesOf(town.repo));
+  const got = receipts.find((r) => r.ref === `stripe:${CS_A}`);
+  assert.equal(got.usd, 20);
+  assert.ok(!/eur|1840|presented/i.test(ledgerText(town.repo)), "the presentment rides the journal, never the ledger");
+});
+
+test("S2 · a session whose balance transaction is itself in EUR is `not-usd`, and nothing is witnessed", { skip: SKIP }, async () => {
+  // LAW (tools/stripe-watch.mjs, the header, verbatim): "`not-usd` now means
+  //     the BALANCE TRANSACTION itself is not in dollars".
+  const town = seamTown();
+  const now = 2_000_000_000_000;
+  const raw = sess({ id: CS_A, created: Math.floor(now / 1000) - 86_400, amount: 1840, currency: "eur", handle: "paz" });
+  const acct = stripeAccount({ intents: { [raw.payment_intent]: intentOf(raw.payment_intent, { amount: 1840, currency: "eur" }) } });
+  const settlements = await readSettlements({ stripe: acct.stripe, rows: [decodeSession(raw)] });
+  const { todo, report } = decide({ sessions: [raw], settlements, ...ctx(town), now });
+  assert.equal(todo.length, 0);
+  assert.equal(report.anomaly[0].anomaly, "not-usd");
+  assert.match(report.anomaly[0].why, /settled in EUR/);
+  assert.match(report.anomaly[0].resolves, /the founder, by hand/);
+});
+
+test("S3 · a USD session is untouched: no extra read, the same decoded row, the same plan, the same journal row", { skip: SKIP }, async () => {
+  // The ledger line is written from { pot, usd, from, ref } alone (src/fund.mjs
+  // penRecorder), so a dollar session whose plan and journal rows are key for
+  // key what they were cannot produce a different line. The key lists are
+  // LITERALS read off train/2026-w40 6b86776, not derived from the code under
+  // test.
+  const town = seamTown();
+  const now = 2_000_000_000_000;
+  const raw = sess({ id: CS_A, created: Math.floor(now / 1000) - 86_400, amount: 1050, handle: "paz" });
+  const acct = stripeAccount({ sessions: [raw] });
+
+  const d = decodeSession(raw);
+  assert.deepEqual(Object.keys(d), ["session", "receipt_ref", "created", "created_at", "amount_total", "currency", "client_reference_id", "handle_typed", "email", "payment_status", "livemode", "payment_intent"],
+    "the decoded (and journalled) row is the row it always was, with no `settled` key on a dollar session");
+
+  const settlements = await readSettlements({ stripe: acct.stripe, rows: [d] });
+  assert.equal(settlements.size, 0);
+  assert.equal(acct.calls.length, 0, "a dollar session is never asked about its settlement");
+
+  const { todo } = decide({ sessions: [raw], settlements, ...ctx(town), now });
+  const w = todo[0];
+  assert.equal(w.usd, 10);
+  assert.equal(w.presented, undefined);
+  assert.equal(w.settled, undefined);
+  assert.deepEqual(Object.keys(witnessedRow(w, { line: "L", commit: null }, "T")),
+    ["kind", "at", "session", "ref", "pot", "from", "usd", "attributed", "handle_typed", "line", "commit"]);
+
+  await cliRecorder(town)(w);
+  const { receipts } = ENGINE.foldPotReceipts(entriesOf(town.repo));
+  assert.equal(receipts.find((r) => r.ref === `stripe:${CS_A}`).usd, 10);
+});
+
+test("S4 · the witnessed journal row carries `presented` and `settled`; a late settlement is journalled and folded back", { skip: SKIP }, async () => {
+  // LAW (tools/stripe-watch.mjs, the header, verbatim): "The settlement is
+  //     JOURNALLED (on the `seen` row, or on a `settled` row when it arrives
+  //     later), because tools/funding-report.mjs re-decides these rows from the
+  //     journal with no key and no network."
+  const town = seamTown();
+  const now = 2_000_000_000_000;
+  const raw = sess({ id: CS_A, created: Math.floor(now / 1000) - 86_400, amount: 1840, currency: "gbp", handle: "paz" });
+  const settled = { balance_transaction: "txn_x", currency: "usd", amount: 2311 };
+  const { todo } = decide({ sessions: [raw], settlements: new Map([[CS_A, settled]]), ...ctx(town), now });
+  const row = witnessedRow(todo[0], { line: "L", commit: "c" }, "T");
+  assert.deepEqual(row.presented, { currency: "gbp", amount: 1840 });
+  assert.deepEqual(row.settled, settled);
+  assert.equal(row.usd, 23);
+
+  // the journal as the watcher leaves it when the settlement arrived a tick late
+  const journal = [
+    { kind: "seen", at: "T0", ...decodeSession(raw) },
+    { kind: "settled", at: "T1", session: CS_A, settled },
+  ];
+  const [behind] = unwitnessedSeen(foldSettlements(journal));
+  assert.deepEqual(behind.settled, settled, "the late `settled` row reaches the seen row");
+  const again = decide({ sessions: [], journal: [behind], ...ctx(town), now });
+  assert.equal(again.todo[0].usd, 23, "and the row behind the cursor is decided from the settled dollars with no read at all");
+});
+
+test("S5 · no balance transaction yet, or a failed read, is `unsettled`, and it holds up nothing behind it", { skip: SKIP }, async () => {
+  const town = seamTown();
+  const now = 2_000_000_000_000;
+  const old = Math.floor(now / 1000) - 86_400;
+  const pending = sess({ id: CS_A, created: old, amount: 1840, currency: "eur", handle: "paz" });
+  const missing = sess({ id: CS_B, created: old, amount: 1840, currency: "eur", handle: "paz" });
+  const dollars = sess({ id: CS_C, created: old, amount: 1000, handle: "paz" });
+  const acct = stripeAccount({ intents: { [pending.payment_intent]: intentOf(pending.payment_intent, null) } });
+  const settlements = await readSettlements({ stripe: acct.stripe, rows: [pending, missing, dollars].map(decodeSession) });
+  const { todo, report } = decide({ sessions: [pending, missing, dollars], settlements, ...ctx(town), now });
+  const by = Object.fromEntries(report.anomaly.map((a) => [a.session, a]));
+  assert.equal(by[CS_A].anomaly, "unsettled");
+  assert.match(by[CS_A].why, /18\.40 EUR/);
+  assert.match(by[CS_A].resolves, /every tick re-reads it/);
+  assert.equal(by[CS_B].anomaly, "unsettled");
+  assert.match(by[CS_B].why, /No such payment_intent/, "the failed read's own words reach the operator");
+  assert.deepEqual(todo.map((w) => w.session), [CS_C], "the dollar session behind them is witnessed regardless");
+});
+
+test("S6 · an EXPANDED listing decodes to the same settlement the two-call read returns", { skip: SKIP }, async () => {
+  // One reading of one shape: settlementOf is asked of both.
+  const raw = sess({ id: CS_A, created: 1, amount: 1840, currency: "eur" });
+  const intent = intentOf(raw.payment_intent, { amount: 2013, currency: "USD" });
+  const d = decodeSession({ ...raw, payment_intent: intent });
+  assert.equal(d.payment_intent, raw.payment_intent, "the id survives the expansion");
+  assert.deepEqual(d.settled, settlementOf(intent));
+  assert.equal(d.settled.currency, "usd", "currency is lower-cased like the session's own");
+  // and an unexpanded charge (a bare id) is no settlement at all
+  assert.equal(settlementOf({ ...intent, latest_charge: "ch_x" }), null);
 });

@@ -28,6 +28,7 @@ import {
 import { appendJournal, CLASS_MARK } from "../src/world-journal.mjs";
 import { enqueueLetter, outboxRelPath, validateLetter } from "../src/write.mjs";
 import { DYNAMIC_SCHEMA } from "../src/dynamic-store.mjs";
+import { townClone } from "./fixture-paths.mjs";
 
 delete process.env.TOWN_PUSH; // belt and braces: nothing here may leave the machine
 
@@ -98,12 +99,14 @@ const flagOn = async (fn) => {
 
 // ── THE CLASS ───────────────────────────────────────────────────────────────
 
-test('THE CLASS: "letter" is the town log\'s, and the world log bounces it on sight', () => {
+test('THE CLASS: "letter" is the town log\'s, and the world log bounces it on sight', async () => {
   assert.ok(TOWN_CLASSES.has("letter"));
   const d = odb();
   // one line in TOWN_CLASSES is what teaches the world log to refuse — the
   // tripwire reads that set rather than keeping a list of its own.
-  assert.throws(() => appendJournal(d, { actor: "wright", action: "send", cls: "letter", household: "keemin" }),
+  // `assert.rejects` since G1: `appendJournal` is async, so the tripwire's
+  // throw arrives as a rejection. Same call, same message, same claim.
+  await assert.rejects(() => appendJournal(d, { actor: "wright", action: "send", cls: "letter", household: "keemin" }),
     /"letter" is the town log's class, not the world's/,
     "a mail row under the world's drain would be truncated undrained — the collision two tables exist to make impossible");
   // and the reverse fence still stands
@@ -625,8 +628,7 @@ test("PRE-FLIGHT: the duplicate family is a 409, the rest a 422 — the office's
 // The REAL law, from the office's own town checkout. The repo's idiom for a
 // test that needs the town's tools (economy-report.test.mjs, next-steps.test.mjs):
 // find the checkout, and SKIP BY NAME rather than assert against an invented one.
-const TOWN = [process.env.TOWN_CLONE, "G:/postmark/seam-overnight/town-main",
-  join(import.meta.dirname, "..", "town-clone"), "G:/postmark/repo"]
+const TOWN = [townClone()].filter(Boolean)
   .filter(Boolean).find((p) => existsSync(join(p, "tools", "envelope.mjs")));
 const lawSkip = TOWN ? false : "no town checkout carrying tools/envelope.mjs — set TOWN_CLONE";
 
@@ -735,7 +737,13 @@ test("send_letter FOLDS UNDER household — your pen lives where your standing d
   // same thing from three angles (server.test.mjs's flag-off listing and
   // town-apex.test.mjs's TOWN_READABLE are the other two); all three moved
   // together, which is the ledger being paid rather than a count being nudged.
-  assert.equal(names.length, 51, "no tool was added or removed beyond the paid ledger; the flag-off listing is untouched");
+  // 51 → 52: read_calendar (the calendar, 2026-09-24, POS-207) — town
+  // { read: "calendar" }, born delisted behind the town apex the same way. All
+  // three counts moved in the same commit again.
+  // 52 → 53: read_earpiece (the earpiece, 2026-09-25, POS-209) — household
+  // { read: "earpiece" }, born delisted behind the household apex. The three
+  // counts moved in the same commit.
+  assert.equal(names.length, 53, "no tool was added or removed beyond the paid ledger; the flag-off listing is untouched");
 
   assert.ok(HOUSEHOLD_DISPATCHABLE.includes("send"), "household do: \"send\" is the letter's apex verb");
   assert.equal(householdDispatchToolFor("send"), "send_letter",

@@ -12,6 +12,7 @@
 // them once the pins know them.
 //
 // Run: node tools/world-households-export.mjs [--town <town-clone>] [--world <world-clone>]
+//      node tools/world-households-export.mjs --check    (says what would move, writes nothing)
 // Writes the file only; committing and pushing the world clone is the caller's.
 //
 // ── WHO THE CALLER IS, CORRECTED 2026-09-09 ─────────────────────────────────
@@ -32,7 +33,7 @@
 // the emission stamps `town_sha` below rather than trusting its caller.
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
@@ -132,6 +133,67 @@ const out = {
 };
 
 const dest = join(WORLD, "WORLD", "households.json");
+
+// -- `--check`: SAY WHAT WOULD MOVE, WRITE NOTHING (POS-160) ----------------
+//
+// The registry drain has had this shape since POS-155/187 -- render, compare,
+// name the FIRST difference -- and this export had no equivalent, so the only
+// way to learn what a refresh would do to the world's copy was to let it do it.
+// That is not good enough for a file three consumers read as live: the parcel
+// cap (marks-fold.mjs § admissibility), the consent gate (mark-lint.mjs) and
+// the authorship wall (settlement-sweep.mjs / lane-wall.mjs, which fails
+// SILENTLY, standing down rather than refusing).
+//
+// IT COMPARES THE MAPPING, NOT THE BYTES, and the reason is in the file's own
+// first two keys. `generated_at` is a clock and `town_sha` is the source this
+// run read, so both differ on every honest re-run, and a byte comparison would
+// report "differs" every single time -- the cried-wolf red the drain's own
+// `--check` is careful not to be. What this compares is the two maps the
+// consumers actually read: `households` (handle -> household key) and `logins`
+// (sketchbook name -> household key). A difference in either is a difference in
+// what the world folds; a difference in the stamps is not.
+//
+// Exit 1 when the mapping moved, 0 when it did not. Neither is a verdict on
+// whether it SHOULD move -- that is a person's call, and on the w40 ship it is
+// the open question POS-160 stopped on (finding 3: the parcel cap groups by the
+// key STRING over the full history, so a re-spelling that merges two credential
+// keys into one declared house re-counts that house's whole estate).
+if (args.includes("--check")) {
+  let had = null;
+  try { had = JSON.parse(readFileSync(dest, "utf8")); }
+  catch (e) {
+    console.error(`households-export --check: cannot read ${dest} -- ${e?.message}`);
+    process.exit(1);
+  }
+  const compare = (name, mine, theirs) => {
+    const keys = [...new Set([...Object.keys(mine ?? {}), ...Object.keys(theirs ?? {})])].sort();
+    return { name, total: keys.length, moved: keys.filter((k) => (mine ?? {})[k] !== (theirs ?? {})[k]) };
+  };
+  const both = [
+    compare("households", households, had.households),
+    compare("logins", out.logins, had.logins),
+  ];
+  const movedAll = both.filter((c) => c.moved.length);
+  if (!movedAll.length) {
+    console.log(`households-export --check: the mapping is unchanged -- `
+      + both.map((c) => `${c.total} ${c.name}`).join(", "));
+    console.log("  (generated_at and town_sha are excluded: both differ on every honest re-run)");
+    process.exit(0);
+  }
+  console.error("households-export --check: THE MAPPING MOVED");
+  for (const c of movedAll) {
+    const mine = c.name === "households" ? households : out.logins;
+    const theirs = c.name === "households" ? had.households : had.logins;
+    console.error(`  ${c.name}: ${c.moved.length} of ${c.total} entries differ`);
+    for (const k of c.moved.slice(0, 10)) {
+      console.error(`    ${k}: file has ${theirs?.[k] ?? "(absent)"} -- this run derives ${mine?.[k] ?? "(absent)"}`);
+    }
+    if (c.moved.length > 10) console.error(`    ... and ${c.moved.length - 10} more`);
+  }
+  console.error(`  nothing written. Drop --check to write ${dest}.`);
+  process.exit(1);
+}
+
 writeFileSync(dest, JSON.stringify(out, null, 2) + "\n");
 const planted = Object.keys(second.additions).length;
 console.log(`households: ${Object.keys(households).length} handles → ${dest}`);

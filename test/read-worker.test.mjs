@@ -518,31 +518,44 @@ test("§3b ALL SEVEN store readers ask for a READ handle, and the ask is load-be
   assert.equal(results.length, 7, "the count in the title must be the count in the loop");
 });
 
-test("§3c readHoldEffects says UNREADABLE on an absent store, not empty", async () => {
+test("§3c readHoldEffects says UNREADABLE on an absent RECORD, not empty", async () => {
   // ⚑ THE FLIP FOUND THIS ONE GREEN. F15 made `readHoldEffects` claim
   // `readable: true` on an absent store and NOTHING reddened — the repair had
   // landed with no check behind it, which is the third time this lane has met
   // "a correction with no guard". `readable` is a claim about whether the
   // record was READ; "I read it and it is empty" is the same sentence a
   // genuinely empty store produces, and a caller cannot tell them apart.
-  const before = process.env.WORLD_DYNAMIC_DB;
+  //
+  // ── THE RECORD MOVED, THE PROMISE DID NOT (POS-153) ───────────────────────
+  //
+  // The holding shelf reads `acts` now, so the absent thing under test is the
+  // RECORD rather than the sqlite file, and the reason says so in its own
+  // words. What this leg has always been about — that `readable` discriminates
+  // and is not a constant — is unchanged, and both poles are still driven.
+  const prevEnv = { pg: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL };
+  const guards = await import("../src/world2-guards.mjs");
+  let undo = null;
   try {
-    const missing = join(tmp, "no-store-readable", "dynamic.db");
-    process.env.WORLD_DYNAMIC_DB = missing;
+    delete process.env.WORLD2_PG;
+    delete process.env.WORLD2_PG_URL;
     const { readHoldEffects } = await import("../src/world-hold.mjs?readable");
     const absent = await readHoldEffects({ handles: ["wright"] });
-    assert.equal(absent.readable, false, "an absent store is UNREADABLE, not empty");
-    assert.match(String(absent.reason ?? ""), /no dynamic store/i, "and it must say why, in words a caller can act on");
+    assert.equal(absent.readable, false, "an absent record is UNREADABLE, not empty");
+    assert.match(String(absent.reason ?? ""), /could not be read/i, "and it must say why, in words a caller can act on");
+    assert.deepEqual(absent.events, [], "an unreadable record yields no events, and says which");
 
     // The other pole, without which the check passes against a hardcoded false:
-    // a store that IS there reads, and says so.
-    process.env.WORLD_DYNAMIC_DB = dynPath;
+    // a record that IS there reads, and says so.
+    process.env.WORLD2_PG = "1";
+    process.env.WORLD2_PG_URL = "postgres://the-reader-override-never-dials-this";
+    undo = guards.useGuardReader(async (run) => run({ query: async () => ({ rows: [] }) }));
     const { readHoldEffects: rhe2 } = await import("../src/world-hold.mjs?readable2");
     const present = await rhe2({ handles: ["wright"] });
-    assert.equal(present.readable, true, "a store that exists is readable — otherwise `readable` is a constant");
+    assert.equal(present.readable, true, "a record that answers is readable — otherwise `readable` is a constant");
   } finally {
-    if (before === undefined) delete process.env.WORLD_DYNAMIC_DB;
-    else process.env.WORLD_DYNAMIC_DB = before;
+    if (undo) undo();
+    for (const [k, v] of [["WORLD2_PG", prevEnv.pg], ["WORLD2_PG_URL", prevEnv.url]])
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
   }
 });
 test("§3d openOauthDb's readOnly is a handle that REFUSES a write, not a flag", () => {

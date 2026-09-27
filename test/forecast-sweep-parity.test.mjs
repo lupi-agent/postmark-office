@@ -25,17 +25,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { foldableStakeRows } from "../src/world-forecast.mjs";
+import { worldClone } from "./fixture-paths.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OFFICE_SOURCE = readFileSync(join(HERE, "..", "src", "world-forecast.mjs"), "utf8");
 
 // where a world clone might be; the office reads one at runtime from WORLD_CLONE
-const SWEEP_CANDIDATES = [
-  process.env.WORLD_CLONE && join(process.env.WORLD_CLONE, "tools", "settlement-sweep.mjs"),
-  "G:/Postmark/repo-clones/wright/postmark-world/tools/settlement-sweep.mjs",
-  join(HERE, "..", "..", "postmark-world", "tools", "settlement-sweep.mjs"),
-].filter(Boolean);
-const sweepPath = SWEEP_CANDIDATES.find((p) => existsSync(p)) ?? null;
+const WORLD = worldClone();
+const sweepCandidate = WORLD && join(WORLD, "tools", "settlement-sweep.mjs");
+const sweepPath = sweepCandidate && existsSync(sweepCandidate) ? sweepCandidate : null;
 
 test("THE FORECAST SIDE still filters its rows before folding", () => {
   assert.equal(typeof foldableStakeRows, "function", "the rule is a named, testable thing");

@@ -477,9 +477,17 @@
   function buildField(name, spec, isRequired) {
     spec = spec || {};
     var kind = kindOf(spec);
+    // A FIELD MAY WEAR A HUMAN NAME (2026-09-23, the founder on the move-in
+    // form: "'string' being the recommended text … means nothing to a
+    // nontechnical human"). JSON Schema's own `title` is the label when the
+    // door gives one; the wire name stays on the node (`data-field`) and in
+    // the args — only the label changes. A titled field drops the type chip:
+    // the chip is for the operator reading a raw schema, and a door that wrote
+    // a title has already said this box is for a person.
+    var titled = typeof spec.title === "string" && spec.title.trim();
     var lab = el("div", { class: "lab" }, [
-      el("span", { text: name }),
-      el("span", { class: "ty", text: typeLabel(spec) }),
+      el("span", { class: titled ? "title" : "", text: titled ? spec.title.trim() : name }),
+      titled ? null : el("span", { class: "ty", text: typeLabel(spec) }),
       isRequired ? el("span", { class: "req", text: "required" }) : null,
     ]);
     var host = el("div", {});
@@ -503,35 +511,56 @@
       control = el("input", { type: "number", step: spec.type === "integer" ? "1" : "any", placeholder: spec.type === "integer" ? "integer" : "number" });
       host.appendChild(control);
     } else if (kind === "string") {
-      control = el("input", { type: "text", placeholder: "string" });
+      var examples = Array.isArray(spec.examples) && spec.examples.length &&
+        spec.examples.every(function (v) { return typeof v === "string"; }) ? spec.examples : null;
+      // THE PLACEHOLDER IS AN EXAMPLE OR NOTHING (2026-09-23). A titled field
+      // shows its first example as the grey text in the box — a real value,
+      // the way a form for people does it — and never the word "string". An
+      // untitled field keeps the operator's type word, as before.
+      var ph = titled ? (examples ? examples[0] : "") : (examples ? "string · " + examples.length + " suggested" : "string");
+      // A DOOR MAY SAY WHICH SHAPE THE BOX IS. `x-multiline: true` is a
+      // paragraph box from the start (an address card, a letter body);
+      // `x-multiline: false` is one line and stays one line (a handle, a
+      // date); neither is the old rule — a one-line box with the ⤢ button, the
+      // reader deciding — because no schema keyword said which. The founder's
+      // read of the move-in form (2026-09-23): the button was useless on five
+      // of seven boxes and the one box that wanted paragraphs did not look it.
+      var multiline = spec["x-multiline"];
+      control = multiline === true
+        ? el("textarea", { rows: "8", placeholder: ph })
+        : el("input", { type: "text", placeholder: ph });
       // `examples` is the schema's non-binding sibling of `enum` — a door
       // whose field accepts more than its roster (or whose options depend on
       // who asks) suggests without constraining. Rendered as a datalist:
       // dropdown of the suggestions, free text still typed. Procedural, like
       // everything here — the values come from the schema, never this file.
-      if (Array.isArray(spec.examples) && spec.examples.length &&
-          spec.examples.every(function (v) { return typeof v === "string"; })) {
+      // A titled field's ONE example is its placeholder and not a dropdown of
+      // one; two or more still list.
+      if (examples && control.tagName === "INPUT" && !(titled && examples.length === 1)) {
         var dlId = "dl-" + Math.random().toString(36).slice(2, 10);
         var dl = el("datalist", { id: dlId });
-        spec.examples.forEach(function (v) { dl.appendChild(el("option", { value: v })); });
+        examples.forEach(function (v) { dl.appendChild(el("option", { value: v })); });
         control.setAttribute("list", dlId);
-        control.placeholder = "string · " + spec.examples.length + " suggested";
         host.appendChild(dl);
       }
       host.appendChild(control);
       // A one-line box is wrong for a letter body and right for a handle, and
-      // no schema keyword says which — so the reader decides, per field.
-      var grow = el("button", { class: "ghost grow", type: "button", text: "⤢ multiline" });
-      grow.addEventListener("click", function () {
-        var wide = control.tagName === "INPUT";
-        var next = wide ? el("textarea", { rows: "5", placeholder: "string" }) : el("input", { type: "text", placeholder: "string" });
-        next.value = control.value;
-        host.replaceChild(next, control);
-        control = next;
-        grow.textContent = wide ? "⤡ one line" : "⤢ multiline";
-        next.focus();
-      });
-      lab.appendChild(grow);
+      // no schema keyword says which — so the reader decides, per field —
+      // UNLESS the door said (`x-multiline` either way), in which case there is
+      // nothing to decide and no button.
+      if (multiline !== true && multiline !== false) {
+        var grow = el("button", { class: "ghost grow", type: "button", text: "⤢ multiline" });
+        grow.addEventListener("click", function () {
+          var wide = control.tagName === "INPUT";
+          var next = wide ? el("textarea", { rows: "5", placeholder: ph }) : el("input", { type: "text", placeholder: ph });
+          next.value = control.value;
+          host.replaceChild(next, control);
+          control = next;
+          grow.textContent = wide ? "⤡ one line" : "⤢ multiline";
+          next.focus();
+        });
+        lab.appendChild(grow);
+      }
     } else {
       control = el("textarea", { rows: "3", placeholder: "JSON — " + typeLabel(spec) });
       host.appendChild(control);
@@ -615,12 +644,44 @@
     var node = el("div", { class: "form" });
     var fields = {};
     var names = Object.keys(props || {});
+    // A DOOR MAY PARTITION ITS FIELDS (2026-09-23, the founder on the move-in
+    // form: "totally unclear which fields are for the household versus for the
+    // resident … make that partition first class"). A field carrying
+    // `x-group` is drawn inside a <fieldset> for that group, in the order the
+    // groups first appear; `x-group-title` on any field of the group is its
+    // <legend>, `x-group-hint` its one line under the legend. Ungrouped fields
+    // stand where they always did. The `fields` map, `read()` and `set()` do
+    // not know about groups at all — a group is where a box is DRAWN, never
+    // what is sent.
+    var groups = {};
+    function hostFor(spec) {
+      var key = typeof spec["x-group"] === "string" && spec["x-group"].trim() ? spec["x-group"].trim() : null;
+      if (!key) return node;
+      if (!groups[key]) {
+        var fs = el("fieldset", { class: "group", "data-group": key });
+        groups[key] = { node: fs, body: null, titled: false, hinted: false };
+        node.appendChild(fs);
+      }
+      var g = groups[key];
+      if (!g.titled && typeof spec["x-group-title"] === "string" && spec["x-group-title"].trim()) {
+        var legend = el("legend", { text: spec["x-group-title"].trim() });
+        g.node.insertBefore(legend, g.node.firstChild);
+        g.titled = true;
+      }
+      if (!g.hinted && typeof spec["x-group-hint"] === "string" && spec["x-group-hint"].trim()) {
+        var hint = el("p", { class: "group-hint", text: spec["x-group-hint"].trim() });
+        if (g.body) g.node.insertBefore(hint, g.body); else g.node.appendChild(hint);
+        g.hinted = true;
+      }
+      if (!g.body) { g.body = el("div", { class: "group-body" }); g.node.appendChild(g.body); }
+      return g.body;
+    }
     names.forEach(function (name) {
       var spec = props[name] || {};
       var required = reqList.indexOf(name) >= 0 || spec.required === true;
       var f = buildField(name, spec, required);
       fields[name] = f;
-      node.appendChild(f.node);
+      hostFor(spec).appendChild(f.node);
     });
     if (!names.length) node.appendChild(el("p", { class: "hint", text: "this tool takes no arguments" }));
 

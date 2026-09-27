@@ -26,8 +26,9 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { penCommit } from "./write.mjs";
-import { conformance, planDeclaration, readJson, PINS_PATH } from "./declare.mjs";
-import { REGISTRY_PATH } from "./residency.mjs";
+import { conformance, planDeclaration, readRegisters, LANDING_GROUND } from "./declare.mjs";
+import { gangwayState } from "./residency.mjs";
+import { mintHousehold, joinHousehold, collectingDrain, NO_DRAIN } from "./ceremony.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -47,8 +48,20 @@ async function main() {
     execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
 
   const db = new DatabaseSync(dbPath ?? process.env.OFFICE_DB ?? resolve(HERE, "..", "office.db"), { readOnly: true });
-  const registry = readJson(CLONE, REGISTRY_PATH) ?? { schema_version: 1, households: {} };
-  const pins = readJson(CLONE, PINS_PATH) ?? {};
+
+  // THE REGISTERS, FROM THE RECORD, UNDER THE LOCK (POS-158). These two lines
+  // used to read the clone's JSON files with an `?? {}` fallback. The registry
+  // is store-of-record now, and the fallback was the more dangerous half: an
+  // unreadable file became "no households exist", against which every slug is
+  // free — so the check that runs INSIDE the lock, the one this whole file
+  // exists to run, would have waved through a duplicate of a live house.
+  // `readRegisters` refuses on an unreachable record instead.
+  let registry, pins;
+  try {
+    ({ registry, pins } = await readRegisters());
+  } catch (e) {
+    return err(e.code ?? 503, e.field ?? null, e.defect, e.hint);
+  }
 
   // The deciding check — inside the lock, against the freshened registers. A
   // key arriving here is already GitHub-verified by the door; we re-check the
@@ -60,12 +73,21 @@ async function main() {
     return err(e.code ?? 422, e.field ?? null, e.defect, e.hint);
   }
 
-  const plan = planDeclaration(registry, pins, decl);
+  // The gangway is re-read HERE, under the lock, against the clone we just
+  // freshened — not carried in from the door's earlier read. Settling at the
+  // door (POS-178) made this door a settlement road, and a breaker that is read
+  // outside the lock is a breaker a race can walk past: the founder's commit
+  // raising the gangway may have arrived in the pull above. Same reason
+  // conformance runs twice — the check inside the lock is the one that decides.
+  const plan = planDeclaration(registry, pins, decl, { gangway: gangwayState(CLONE) });
 
-  // Berth + registry entry + identity pin go down together and are staged
-  // together, so the single commit below is the atomicity: both or neither. A
+  // Berth + registry entry + identity pin — and, for a household settling at
+  // the door, its white-pages file set — go down together and are staged
+  // together, so the single commit below is the atomicity: all or none. A
   // household standing in the registry whose credential resolves to nobody is
-  // precisely the state this must never produce.
+  // precisely the state this must never produce, and so is an address card with
+  // no row behind it. Adding the settlement to `plan.files` bought that
+  // guarantee for free: it is the same list, the same staging, the same commit.
   const paths = [];
   for (const f of plan.files) {
     const abs = join(CLONE, f.path);
@@ -74,10 +96,76 @@ async function main() {
     paths.push(abs);
   }
 
-  const commit = penCommit(CLONE, paths,
-    `harbor: ${decl.handle} arrives · household ${decl.slug} declared (via postmark-office, join-as-declaration)`);
+  // ── THE MINT, HERE, UNDER THE LOCK (POS-158) ─────────────────────────────
+  //
+  // THE CO-SIGN IS THIS ACT. `conformance` check 11 refuses a declaration
+  // without `key.ghId`, so a declaration reaching this line is anchored to a
+  // verified GitHub account by construction — and the berth co-sign lane
+  // (`src/oauth.mjs § berth-cosign`) arrives here too, carrying the HUMAN's
+  // verified identity from the one click. One mint serves both paths because
+  // both walk this exec.
+  //
+  // WHY HERE AND NOT IN `declareHousehold`. The ruling says the house is minted
+  // at the co-sign, at the door; this IS that door's writing half, and it is
+  // the only half that holds the town flock. The door's own conformance ran
+  // outside the lock and is courtesy — "uniqueness is only true if it is true
+  // when you write", this file's own words. A mint in the parent process would
+  // write a house row against a check the lock may overturn a moment later, and
+  // leave a row with no card behind it.
+  //
+  // TWO ROWS, ONE DRAIN. The house first, then the membership — and the house's
+  // mint drains NOTHING (`NO_DRAIN`), because between the two calls the record
+  // holds a house whose first resident has no pin, and publishing that half
+  // state into the town's history is precisely the broken covenant this file's
+  // atomicity paragraph above refuses.
+  //
+  // ONE COMMIT, STILL. `collectingDrain` writes the two registry files and
+  // hands back their paths instead of committing them, so they are staged
+  // beside the berth and the address card and go down in the SINGLE
+  // `penCommit` below. The guarantee the paragraph above bought for free is
+  // unchanged: all or none, and there is no window in which a household holds
+  // an address and no registry row.
+  const { drain, paths: drainedPaths } = collectingDrain({ clone: CLONE });
+  let registryOutcome = { rendered: true };
+  try {
+    await mintHousehold({
+      slug: plan.slug,
+      name: decl.household,
+      coSign: { ghId: decl.ghId, ghLogin: decl.ghLogin },
+      residents: [decl.handle],
+      since: plan.date,
+      memberOf: LANDING_GROUND,
+      declaredBy: plan.registry.households[plan.slug].declared_by,
+      drain: NO_DRAIN,
+    });
+    const joined = await joinHousehold({
+      slug: plan.slug,
+      handle: decl.handle,
+      coSign: { ghId: decl.ghId, ghLogin: decl.ghLogin },
+      pinnedOn: plan.date,
+      drain,
+    });
+    // THE DRAIN'S OUTCOME RIDES THE ANSWER (review 6/6). `drainRegistry`
+    // refuses rather than shrink the registry, and the row still landed — so
+    // the house IS founded while the town's two files are one crossing behind,
+    // a state only a person can clear. Silence there told the resident
+    // everything landed; this says which half did.
+    registryOutcome = joined.registry;
+  } catch (e) {
+    return err(e.code ?? 500, e.field ?? null, e.defect ?? String(e?.message ?? e), e.hint ?? null);
+  }
+  paths.push(...drainedPaths);
 
-  answer({ slug: plan.slug, handle: decl.handle, commit, files: plan.files.map((f) => f.path) });
+  // The subject line says which of the two things happened, because the town
+  // repo's log is read by people looking for when a household came ashore.
+  const commit = penCommit(CLONE, paths, plan.settled
+    ? `harbor: ${decl.handle} arrives and settles ashore · household ${decl.slug} declared (via postmark-office, join-as-declaration)`
+    : `harbor: ${decl.handle} arrives · household ${decl.slug} declared (via postmark-office, join-as-declaration)`);
+
+  // `settled` rides the answer because THIS process is the authority on it: the
+  // door planned against a gangway it read before the lock, and this one re-read
+  // it after the pull. declareHousehold prefers this field over its own plan.
+  answer({ slug: plan.slug, handle: decl.handle, commit, settled: plan.settled, gangway: plan.gangway, registry: registryOutcome, files: plan.files.map((f) => f.path) });
 }
 
 main().catch((e) => { console.error(String(e?.stack ?? e)); process.exit(1); });

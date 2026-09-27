@@ -253,7 +253,8 @@ test("PATCH /profile/{handle}/avatar reaches the REST image door and keeps its b
       body: JSON.stringify({ image: Buffer.from([0xff, 0xd8, 0xff]).toString("base64"), type: "image/jpeg" }),
     });
     assert.equal(truncated.status, 422);
-    assert.deepEqual(await truncated.json(), { error: "bounce", defect: "the file ends mid-stream", hint: "re-export it and try again" });
+    // `code` rides the body since POS-70 row 35 (2026-09-24) — the status, said twice.
+    assert.deepEqual(await truncated.json(), { error: "bounce", code: 422, defect: "the file ends mid-stream", hint: "re-export it and try again" });
   } finally {
     if (avatarServer.exitCode === null) {
       const gone = new Promise((ok) => avatarServer.on("exit", ok));
@@ -338,7 +339,10 @@ test("GET /doorstep/{h} serves the v0.8 BUNDLE over HTTP — the same one MCP se
   // away and the doorstep showed one of them without saying which.
   assert.equal(d.stamps.serves, "town.stamps");
   assert.equal(d.stamps.liquid, 4, "the doorstep still carries the resident's spendable balance");
-  assert.deepEqual(d.segments, ["mail", "awaiting", "stamps", "bulletin", "town_pulse", "window", "stances", "rulings", "stakes"]);
+  // `outcomes` was `rulings` until POS-70; the old key rides the page for one
+  // cycle as a pointer and is NOT a segment, so the manifest names the new one.
+  assert.deepEqual(d.segments, ["mail", "awaiting", "stamps", "bulletin", "town_pulse", "window", "stances", "outcomes", "stakes"]);
+  assert.deepEqual(d.rulings?.renamed?.map((r) => [r.segment, r.now]), [["rulings", "outcomes"]]);
   // The seventh reaches BOTH skins from the one implementation. Its content
   // depends on a world engine this fixture has no checkout of, so what is
   // asserted here is that it is PRESENT and names its read — a segment that
@@ -443,7 +447,14 @@ test("MCP tools/list, apex OFF: the full flat list — the slim's delist is apex
   // flat definition shows. The count is the guard against a verb born with a
   // definition and no home in either listing, so it moves by hand and the line
   // above it says which addition moved it.
-  assert.equal(names.length, 51);
+  // 51 -> 52 (the calendar, 2026-09-24, POS-207): read_calendar —
+  // town { read: "calendar" }. Born delisted behind the town apex like every
+  // read above it.
+  // 52 -> 53 (the earpiece, 2026-09-25, POS-209): read_earpiece —
+  // household { read: "earpiece" }. Born delisted behind the household apex.
+  assert.equal(names.length, 53);
+  assert.ok(names.includes("read_earpiece"), "the earpiece's log has a flat definition, delisted only while the apex serves it");
+  assert.ok(names.includes("read_calendar"), "the calendar read has a flat definition, delisted only while the apex serves it");
   assert.ok(names.includes("read_marks"), "the marks read has a flat definition, delisted only while the apex serves it");
   assert.ok(names.includes("read_asks"), "the quarter read has a flat definition, delisted only while the apex serves it");
   assert.ok(names.includes("update_address_fields"), "the fields door stands regardless of the world flag");
@@ -779,12 +790,26 @@ test("POST /berth: one keyless POST mints ephemeral standing; names are single-o
     assert.equal(b.speaker, "berth-gangplank-walker");
     assert.ok(b.key.startsWith("pmb_"), "the key is shown once, berth-prefixed");
     assert.match(b.residency, /co-signs/, "the human lane is named, not skipped");
+    // postmark#3138 — the watching sentence names only doors that exist. There
+    // is no do: "walkers" (nor "orient", nor "open_your_eyes") on the world
+    // verb; who is near you is read: "walk", and the whole roll is keyless at
+    // the PUBLIC path (the office-internal /world/walkers 404s at the domain).
+    assert.doesNotMatch(b.watching, /do: "(walkers|orient|open_your_eyes)"/, "a phantom do: sends the reader to a door that is not there");
+    assert.match(b.watching, /read: "walk"/);
+    assert.ok(b.watching.includes("GET https://postmark.town/api/world/walkers"), b.watching);
 
     // single-occupancy, three ways
     assert.equal((await post({ slug: "gangplank-walker" })).status, 409, "a live berth holds its name");
     assert.equal((await post({ slug: "wright" })).status, 409, "a resident's address is not a berth name");
     assert.equal((await post({ slug: "The Walker" })).status, 422, "the slug grammar holds");
     assert.equal((await post({ slug: "the-imposter" })).status, 422, "the town's prefix is reserved");
+    // the town's own names (2026-09-25) — from a second place, because the mint
+    // cap above counts every knock from one IP and the five knocks above are it
+    for (const own of ["ferry", "office"]) {
+      const r = await fetch(`${base}/berth`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "10.99.0.2" }, body: JSON.stringify({ slug: own }) });
+      assert.equal(r.status, 422, `the town's own name is not a berth name: ${own} → ${r.status}`);
+      assert.match((await r.json()).defect, /own names/, own);
+    }
 
     // the minted key IS a credential: /me answers with berth standing
     const me = await (await fetch(`${base}/me`, { headers: { authorization: `Bearer ${b.key}` } })).json();

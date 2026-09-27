@@ -522,7 +522,8 @@ export function worldStoreHealth({ repo = null } = {}) {
 
   return {
     mode,
-    flags: { WORLD_STORE_READS: process.env.WORLD_STORE_READS ?? null, WORLD_STORE_SHADOW: process.env.WORLD_STORE_SHADOW ?? null },
+    // W2_FOLD (POS-142): "store" = /world/state is the world fold over the store's rows (src/world2-fold.mjs)
+    flags: { WORLD_STORE_READS: process.env.WORLD_STORE_READS ?? null, WORLD_STORE_SHADOW: process.env.WORLD_STORE_SHADOW ?? null, W2_FOLD: process.env.W2_FOLD ?? null },
     eligibility: "blessed reads only — a resolved household folds its draft branch and is never served from the store (ruling 9); the store must also be hydrated at the exact sha the newest settlement tag blesses (main, when the clone has no settlement tag)",
     db, blessed: canon, main,
     counters: COUNT,

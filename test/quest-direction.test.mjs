@@ -26,9 +26,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 
-const TOWN = "G:/Wright-HQ/postmark";
-const { deriveMints } = await import(`file:///${TOWN}/tools/stamp-mint.mjs`);
+const TOWN = townClone();
+const { deriveMints } = TOWN ? await import(townModuleUrl("tools", "stamp-mint.mjs")) : {};
+const SKIP = !TOWN && NO_TOWN;
 
 const houses = new Map([
   ["alice", { key: "house-a" }],
@@ -39,14 +41,14 @@ const ONE_WAY = [{ date: "2026-09-08", id: "alice-to-bob-1", from: "alice", to: 
 
 const side = (mints, s) => mints.filter((m) => m.side === s);
 
-test("the SENT side is credited to the writer, and to nobody else", () => {
+test("the SENT side is credited to the writer, and to nobody else", { skip: SKIP }, () => {
   const sent = side(deriveMints(ONE_WAY, houses), "sent");
   assert.equal(sent.length, 1);
   assert.equal(sent[0].handle, "alice", "the resident who WROTE the letter earns the sent unit");
   assert.equal(sent[0].other, "bob", "and the unit is earned WITH the addressee");
 });
 
-test("the RECEIVED side is credited to the addressee, and to nobody else", () => {
+test("the RECEIVED side is credited to the addressee, and to nobody else", { skip: SKIP }, () => {
   const recv = side(deriveMints(ONE_WAY, houses), "received");
   assert.equal(recv.length, 1);
   assert.equal(recv[0].handle, "bob",
@@ -54,7 +56,7 @@ test("the RECEIVED side is credited to the addressee, and to nobody else", () =>
   assert.equal(recv[0].other, "alice", "and the unit is earned WITH the sender");
 });
 
-test("a resident who only writes earns nothing on the receiving side", () => {
+test("a resident who only writes earns nothing on the receiving side", { skip: SKIP }, () => {
   const mints = deriveMints(ONE_WAY, houses);
   assert.equal(mints.filter((m) => m.handle === "alice" && m.side === "received").length, 0,
     "alice sent one letter and received none; a received unit for her is the direction defect itself");
@@ -62,7 +64,7 @@ test("a resident who only writes earns nothing on the receiving side", () => {
     "and bob wrote nothing");
 });
 
-test("the two directions do not collapse when the same pair writes both ways", () => {
+test("the two directions do not collapse when the same pair writes both ways", { skip: SKIP }, () => {
   const both = [
     { date: "2026-09-08", id: "alice-to-bob-1", from: "alice", to: "bob" },
     { date: "2026-09-08", id: "bob-to-alice-1", from: "bob", to: "alice" },
@@ -76,7 +78,7 @@ test("the two directions do not collapse when the same pair writes both ways", (
   assert.equal(m.length, 4, "two letters, two directions, four units — a swap would still total four, which is why the per-handle lists above are the assertion and the count is not");
 });
 
-test("wright's own morning, replayed: three out and one in", () => {
+test("wright's own morning, replayed: three out and one in", { skip: SKIP }, () => {
   // The exact four deliveries the town ledger held for wright on 2026-09-08 —
   // the state walk #16 read as a direction defect. Fixture, not a live read, so
   // this keeps meaning what it means after the ledger moves on.

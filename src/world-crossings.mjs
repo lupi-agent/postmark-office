@@ -210,7 +210,7 @@ const classMarkIn = (worldState, className) =>
  * that cannot read it answers null rather than an empty block: a portal whose
  * rules could not be read must not look like a portal that lends nothing.
  */
-async function groundBlockFor(targetId, { w, service, deps, entryStop = null, standingRide = null, nowMs = Date.now() }) {
+async function groundBlockFor(targetId, { w, service, deps, entryStop = null, standingRide = null, nowMs = Date.now(), knockedAt = null }) {
   if (!deps.lends) return null;
   const target = (w?.marks ?? []).find((m) => m.id === targetId) ?? null;
   const className = String(target?.class ?? "").trim();
@@ -218,7 +218,7 @@ async function groundBlockFor(targetId, { w, service, deps, entryStop = null, st
   let lends = [];
   try { lends = (await deps.lends(targetId)) ?? []; } catch { return null; }
   const extras = className === VEHICLE_CLASS && service
-    ? vehicleGroundExtras({ service, entryStop, standingRide, nowMs })
+    ? vehicleGroundExtras({ service, entryStop, standingRide, nowMs, knockedAt })
     : null;
   return groundBlockOf({ classMark: classMarkIn(w, className), lends, extras });
 }
@@ -243,15 +243,21 @@ async function enterViaPortal(portal, { who, w, at, occupancy, here, thresholds,
     throw bounce(422, `${stop} has no place in this world`, "a stop must be a sited mark with an anchor before it can be a door");
 
   // THE DOOR CHECKED IS THE ONE YOU NAMED — here, the wharf.
-  const reach = standsWithin(here, stopMark, { pointWithinMark: verbs.pointWithinMark });
+  const reach = standsWithin(here, stopMark, { pointWithinMark: verbs.pointWithinMark, earshotM: 0 }); // POS-220: within the extent only
   if (!reach.stands)
     throw bounce(409, `you are not at that door — ${stop} stands ~${reach.distance_round} m from where you stand`,
-      `every stop on ${vessel}'s timetable is a door into her, wherever her hull is — but a door is still entered from within its reach. Walk to (${stopMark.at.x}, ${stopMark.at.y}) and knock again; nothing was recorded`,
+      `every stop on ${vessel}'s timetable is a door into her, wherever her hull is — but a door is entered only from within its extent (Keemin, 2026-09-25: no earshot enter). Walk to (${stopMark.at.x}, ${stopMark.at.y}) and knock again; nothing was recorded`,
       { walk: { to: { x: stopMark.at.x, y: stopMark.at.y }, mark: stop } });
 
   const acts = deps.acts ? (await deps.acts(who)) ?? [] : [];
   const state = rideStateFrom(acts, { vesselId: vessel });
-  const ground = await groundBlockFor(vessel, { w, service, deps, entryStop: state.entryStop, standingRide: state.standingRide, nowMs });
+  // THE STOP BEING KNOCKED AT rides along (POS-161), because this block is
+  // built BEFORE the enter act is written a few lines down — so on the terms
+  // call AND on the accepting one `state.entryStop` is still null, and without
+  // it every distance here was null for the rider deciding whether to board.
+  // `stop` is the mark the enter call named, and `portalEntryFor` has already
+  // proved it is one of her stops.
+  const ground = await groundBlockFor(vessel, { w, service, deps, entryStop: state.entryStop, standingRide: state.standingRide, nowMs, knockedAt: stop });
 
   if (held.includes(vessel))
     return {
@@ -406,7 +412,7 @@ export async function enterViaOffice(worldClone, payload = {}, key = null, deps 
   const threshold = target ? thresholdAtStandpointFrame(target, answer, here, w.marks ?? []) : null;
   let bundledWalk = answer.walk;
   if (threshold && answer.walk) {
-    const reach = standsWithin(here, threshold, { pointWithinMark: verbs.pointWithinMark });
+    const reach = standsWithin(here, threshold, { pointWithinMark: verbs.pointWithinMark, earshotM: 0 }); // POS-220: within the extent only
     if (!reach.stands) {
       if (threshold !== target) bundledWalk = { ...answer.walk, to: { x: threshold.at.x, y: threshold.at.y } };
       // THE WALK RIDES THE REFUSAL AS A FIELD, NOT ONLY AS A SENTENCE
@@ -421,7 +427,7 @@ export async function enterViaOffice(worldClone, payload = {}, key = null, deps 
       // here on purpose — a second copy of the destination is a second answer to
       // "where is that door", and this door already has the first.
       throw bounce(409, `you are not at that door — ${threshold.id} stands ~${reach.distance_round} m from where you stand`,
-        `a door is entered from within its reach (founder-ruled 2026-08-27; re-ruled 2026-09-11 to measure at the mark you NAMED, not the outermost link of its chain; R15 keeps walk and entry decoupled in both directions). Walk to (${threshold.at?.x}, ${threshold.at?.y}) and knock again; nothing was recorded`,
+        `a door is entered from within its extent — the 60 m reach from the anchor was removed on 2026-09-25 (Keemin: "remove the earshot enter, so must be within extent"; postmaster had entered the taproom from the mooring, 3 m outside it, POS-220); measured at the mark you NAMED (re-ruled 2026-09-11); R15 keeps walk and entry decoupled in both directions). Walk to (${threshold.at?.x}, ${threshold.at?.y}) and knock again; nothing was recorded`,
         { walk: bundledWalk });
     }
     // The engine's bundled walk was computed against canonical mark geometry.
@@ -483,10 +489,11 @@ export async function enterViaOffice(worldClone, payload = {}, key = null, deps 
     // caller and null for its twin is worse than a column that is null for both.
     // CONSUMERS NAMED: `world-drain.mjs § logLine` passes it through to the
     // JSONL (additive); `world-drain.mjs:167` skips every non-mark class, so the
-    // drain's own routing is untouched; `journal-reaper.mjs`'s twin key and
-    // `state-log-from-store.mjs § compareWindow`'s pairing key both get STRICTLY
-    // FINER, which reaps and mis-pairs less rather than more; `world-hold.mjs`
-    // reads it only for `drop`. Checked, all five.
+    // drain's own routing is untouched; `state-log-from-store.mjs §
+    // compareWindow`'s pairing key gets STRICTLY FINER, which mis-pairs less
+    // rather than more; `world-hold.mjs` reads it only for `drop`. Checked.
+    // (`journal-reaper.mjs`'s twin key was the fifth consumer; the reaper was
+    // deleted by G1 — it reaped a journal that no longer fills.)
     ? await deps.record({ handle: who, act: "enter", at, lines: answer.rows, mark: markId, ...(viaOrdinary ? { via: viaOrdinary } : {}), summary })
     : { within: [...(occupancy.get(who) ?? [])] };
 

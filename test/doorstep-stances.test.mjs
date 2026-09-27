@@ -97,6 +97,26 @@ beforeEach(() => {
   dbPath = join(scratch, `dynamic-${++runs}.db`);
   process.env.WORLD_DYNAMIC_DB = dbPath;
   process.env.WORLD_SINGLE_LOG = "1";
+  // THE CANDIDATE LIST READS THE STORE (POS-195, 2026-09-22). These fixtures
+  // still plant their sketches in the journal and mean the same thing by it; the
+  // stub answers the store's query from that journal, shaped as `claims` rows.
+  Object.assign(process.env, STANCE_ON);
+  stancePoolFromJournal(dbPath);
+  // ── AND THE DOOR WRITES THE RECORD (G1 / POS-156, RULING 3) ─────────
+  //
+  // `declareStanceViaOffice` wrote a sqlite journal row and queued a Postgres
+  // copy behind it; G1 deleted that INSERT and made the write awaited and
+  // refusable, so a stance door with no record gives the ruled 503. The pen is
+  // separate from the stance READ above — two pools, two credentials, by
+  // RULING 2's own design — so this leaves `stance_reader`'s stub where it is.
+  //
+  // The late-arrival reason is the guard's own remedy: these fixtures declare
+  // at a historical crossing, and the pen refuses a row into certified history
+  // by name unless the caller says why.
+  process.env.WORLD2_PG = RECORD_ON.WORLD2_PG;
+  process.env.WORLD2_PG_URL = RECORD_ON.WORLD2_PG_URL;
+  process.env.W2_LATE_ARRIVAL = "doorstep-stances.test.mjs fixtures declare at a historical crossing on purpose";
+  pen = installActsPen();
   resetStanceGeometry?.();
 });
 
@@ -107,13 +127,27 @@ const HANDLE = "alpha";
 const key = { household: "alpha", handles: new Set([HANDLE]) };
 
 let doorstepBundle, callTool, declareStanceViaOffice, resetStanceGeometry, stancesForHandles, SEGMENT_META;
-let db, ctx;
+let STANCE_ON, clearStancePool, stancePoolFromJournal;
+let db, ctx, pen;
+const { installActsPen, uninstallActsPen, RECORD_ON } = await import("./acts-pen-stub.mjs");
+after(() => {
+  uninstallActsPen();
+  delete process.env.WORLD2_PG; delete process.env.WORLD2_PG_URL; delete process.env.W2_LATE_ARRIVAL;
+});
 // ONE hook, because the second half depends on the first: the office fixture is
 // built from a SCHEMA that only exists once the dynamic imports have run.
 before(async () => {
   ({ doorstepBundle } = await import("../src/doorstep-bundle.mjs"));
   ({ callTool } = await import("../src/mcp.mjs"));
   ({ declareStanceViaOffice, resetStanceGeometry, stancesForHandles } = await import("../src/world-stance.mjs"));
+  // THE CANDIDATE LIST READS THE STORE (POS-195, 2026-09-22). This file plants
+  // its sketches in the journal and still means the same thing by them; the stub
+  // answers the store's query from that same journal, shaped as `claims` rows.
+  // Imported HERE rather than at the top, for this file's own stated reason: a
+  // static import is hoisted above the env this fixture sets.
+  ({ STANCE_ON, clearStancePool, stancePoolFromJournal } = await import("./stance-pool-stub.mjs"));
+  Object.assign(process.env, STANCE_ON);
+  stancePoolFromJournal(dbPath);
   ({ SEGMENT_META } = await import("../src/queries.mjs"));
   const { SCHEMA } = await import("../src/schema.mjs");
 

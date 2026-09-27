@@ -44,6 +44,7 @@
 // asserting the fixture.
 
 import test, { after } from "node:test";
+import { NO_TOWN, townClone, worldClone } from "./fixture-paths.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, rmSync } from "node:fs";
@@ -56,8 +57,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 // The town checkout the fixture copies its engine out of. Same resolution order
 // `test/funding-report.test.mjs` uses, plus the pool path this lane runs on.
-const TOWN = [process.env.TOWN_CLONE, resolve(HERE, "..", "town-clone"), "G:/postmark/pool/town-1", "G:/postmark/seam-overnight/town-clone"]
+const TOWN = [townClone()].filter(Boolean)
   .find((p) => p && existsSync(join(p, "tools", "stamp-mint.mjs")));
+const SKIP = !TOWN && NO_TOWN;
 
 const litter = [];
 after(() => { for (const d of litter) { try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* litter */ } } });
@@ -102,10 +104,12 @@ const ledgerBytes = (repo) => (existsSync(ledgerPathOf(repo)) ? readFileSync(led
 // takes the clone as a parameter for exactly this reason; the DOOR's constant is
 // older than this lane and not its to move.)
 // ────────────────────────────────────────────────────────────────────────────
-const MINT = await import(pathToFileURL(join(TOWN, "tools", "stamp-mint.mjs")));
-const BOOT = townFixture({ mints: [{ handle: "tester", n: 5 }, { handle: "poorer", n: 1 }],
-  pots: [{ pot: "keep" }, { pot: "shut", status: "closed" }] });
-process.env.TOWN_CLONE = BOOT.repo;
+// Guarded: a top-level await import of a clone that is not there takes the
+// whole module down at load, and its cases then neither pass nor fail.
+const MINT = TOWN ? await import(pathToFileURL(join(TOWN, "tools", "stamp-mint.mjs"))) : null;
+const BOOT = TOWN ? townFixture({ mints: [{ handle: "tester", n: 5 }, { handle: "poorer", n: 1 }],
+  pots: [{ pot: "keep" }, { pot: "shut", status: "closed" }] }) : null;
+if (BOOT) process.env.TOWN_CLONE = BOOT.repo;
 
 const { clipTo, heldFor, stampsBlock, toConfirm, RULE_MARK, STAKE_MARK_BODY, STAKE_MARK_MARK, NOTHING_MOVED } =
   await import("../src/stamps-preview.mjs");
@@ -155,7 +159,7 @@ const openDoor = (fx, over = {}) => ({
 // 1 · THE CLIP IS THE TOWN'S OWN — driven against the real engine
 // ════════════════════════════════════════════════════════════════════════════
 
-test("PARITY: clipTo returns exactly what the town's own stake engine applies, at every boundary", async () => {
+test("PARITY: clipTo returns exactly what the town's own stake engine applies, at every boundary", { skip: SKIP }, async () => {
   // LAW (tools/world-stake.mjs:220, verbatim): `const applied = Math.min(n, balance);`
   // — asserted by DRIVING it, never by reading it. This is the one line
   // src/stamps-preview.mjs admits to computing office-side; the warrant is here.
@@ -175,7 +179,7 @@ test("PARITY: clipTo returns exactly what the town's own stake engine applies, a
   }
 });
 
-test("PARITY: clipTo returns exactly what the town's own UNSTAKE engine applies — the ceiling is the position, not the balance", async () => {
+test("PARITY: clipTo returns exactly what the town's own UNSTAKE engine applies — the ceiling is the position, not the balance", { skip: SKIP }, async () => {
   // LAW (tools/world-stake.mjs:250, verbatim): `const applied = Math.min(n, open);`
   // and the engine's own sentence for why it is a different ceiling: "you can
   // never take out more than you put in, and never another resident's stamps."
@@ -194,7 +198,7 @@ test("PARITY: clipTo returns exactly what the town's own UNSTAKE engine applies 
   }
 });
 
-test("heldFor folds the TOWN's own ledger, both tenses, and moves when the ledger moves", async () => {
+test("heldFor folds the TOWN's own ledger, both tenses, and moves when the ledger moves", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 7 }] });
   assert.deepEqual(await heldFor(fx.repo, "tester"), { liquid: 7, staked: 0 });
   const ws = await import(pathToFileURL(join(fx.repo, "tools", "world-stake.mjs")));
@@ -261,7 +265,7 @@ test("to_confirm is the y of the y/n, and the n is said out loud — and it ride
 // 3 · A PREVIEW MOVES NOTHING — and the absence has a witness
 // ════════════════════════════════════════════════════════════════════════════
 
-test("A PREVIEW OF A MARK STAKE WRITES NOTHING: the ledger is byte-identical and the ledger was never reached", async () => {
+test("A PREVIEW OF A MARK STAKE WRITES NOTHING: the ledger is byte-identical and the ledger was never reached", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 5 }] });
   process.env.TOWN_CLONE = fx.repo;
   const deps = openDoor(fx);
@@ -277,7 +281,7 @@ test("A PREVIEW OF A MARK STAKE WRITES NOTHING: the ledger is byte-identical and
   assert.match(answer.nothing_written, /no escrow moved/);
 });
 
-test("A PREVIEW OF AN UNSTAKE WRITES NOTHING, and reads the position it would draw from", async () => {
+test("A PREVIEW OF AN UNSTAKE WRITES NOTHING, and reads the position it would draw from", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 6 }] });
   process.env.TOWN_CLONE = fx.repo;
   const ws = await import(pathToFileURL(join(fx.repo, "tools", "world-stake.mjs")));
@@ -294,7 +298,7 @@ test("A PREVIEW OF AN UNSTAKE WRITES NOTHING, and reads the position it would dr
   assert.deepEqual(answer.stamps.after, { liquid: 4, staked: 2 }, "two come home");
 });
 
-test("A PREVIEW OF A POT STAKE WRITES NOTHING — and it is the exec's own clip that judged it", async () => {
+test("A PREVIEW OF A POT STAKE WRITES NOTHING — and it is the exec's own clip that judged it", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 5 }], pots: [{ pot: "keep" }] });
   const before = ledgerBytes(fx.repo);
   const answer = await potStakeViaOffice(fx.repo, { from: "tester", pot: "keep", stamps: 2, preview: true }, KEY);
@@ -313,7 +317,7 @@ test("A PREVIEW OF A POT STAKE WRITES NOTHING — and it is the exec's own clip 
 // 4 · THE RECEIPT CARRIES WHAT THE PREVIEW SHOWED
 // ════════════════════════════════════════════════════════════════════════════
 
-test("THE IDENTICAL BLOCK: the real stake's receipt carries the numbers the preview showed for the same call", async () => {
+test("THE IDENTICAL BLOCK: the real stake's receipt carries the numbers the preview showed for the same call", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 5 }] });
   process.env.TOWN_CLONE = fx.repo;
   const args = { mark: "tester/m", stamps: 3 };
@@ -332,7 +336,7 @@ test("THE IDENTICAL BLOCK: the real stake's receipt carries the numbers the prev
   assert.equal("to_confirm" in receipt.stamps, false, "a receipt telling its reader how to confirm invites a second act");
 });
 
-test("THE IDENTICAL BLOCK, THE POT DOOR: preview then act, same numbers, and the ledger really moved", async () => {
+test("THE IDENTICAL BLOCK, THE POT DOOR: preview then act, same numbers, and the ledger really moved", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 5 }], pots: [{ pot: "keep" }] });
   const args = { from: "tester", pot: "keep", stamps: 2 };
   const preview = await potStakeViaOffice(fx.repo, { ...args, preview: true }, KEY);
@@ -354,7 +358,7 @@ test("THE IDENTICAL BLOCK, THE POT DOOR: preview then act, same numbers, and the
   assert.deepEqual(await heldFor(fx.repo, "tester"), receipt.stamps.after);
 });
 
-test("THE CLIP CASE previews the CLIPPED number, and the receipt agrees with it", async () => {
+test("THE CLIP CASE previews the CLIPPED number, and the receipt agrees with it", { skip: SKIP }, async () => {
   // The founder's own case: an agent asks for more than it holds, and the point
   // of asking first is to be told so BEFORE the ledger says it in past tense.
   const fx = townFixture({ mints: [{ handle: "tester", n: 1 }] });
@@ -374,7 +378,7 @@ test("THE CLIP CASE previews the CLIPPED number, and the receipt agrees with it"
 // 5 · A PREVIEW OF A REFUSED ACT SHOWS THE REFUSAL, AND NO BLOCK
 // ════════════════════════════════════════════════════════════════════════════
 
-test("a preview of a stake on a RETIRED mark shows the refusal — defect and hint — and carries no block", async () => {
+test("a preview of a stake on a RETIRED mark shows the refusal — defect and hint — and carries no block", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 5 }] });
   process.env.TOWN_CLONE = fx.repo;
   const deps = openDoor(fx, { standing: async () => ({ known: true, found: true, retired: true }) });
@@ -387,7 +391,7 @@ test("a preview of a stake on a RETIRED mark shows the refusal — defect and hi
   assert.equal(deps.ledger.calls.length, 0);
 });
 
-test("a preview of a stake on a mark you cannot see is the SAME 404 the act gives, before any block is built", async () => {
+test("a preview of a stake on a mark you cannot see is the SAME 404 the act gives, before any block is built", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 5 }] });
   process.env.TOWN_CLONE = fx.repo;
   const deps = openDoor(fx, { exists: async () => ({ known: true, exists: false }) });
@@ -397,7 +401,7 @@ test("a preview of a stake on a mark you cannot see is the SAME 404 the act give
   assert.equal(deps.ledger.calls.length, 0);
 });
 
-test("a preview of a pot that is not open is refused by the exec's OWN clip, not by a second rule here", async () => {
+test("a preview of a pot that is not open is refused by the exec's OWN clip, not by a second rule here", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 5 }], pots: [{ pot: "shut", status: "closed" }] });
   const answer = await potStakeViaOffice(fx.repo, { from: "tester", pot: "shut", stamps: 2, preview: true }, KEY);
   assert.equal(answer.error, "bounce");
@@ -412,7 +416,7 @@ test("a preview of a pot that is not open is refused by the exec's OWN clip, not
   assert.equal(answer.hint, direct.error.hint);
 });
 
-test("a preview of a pot that does not exist names the pots that do — the clip's own hint", async () => {
+test("a preview of a pot that does not exist names the pots that do — the clip's own hint", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 5 }], pots: [{ pot: "keep" }] });
   const answer = await potStakeViaOffice(fx.repo, { from: "tester", pot: "ghost", stamps: 2, preview: true }, KEY);
   assert.equal(answer.code, 404);
@@ -429,8 +433,7 @@ test("the rule the block quotes is the world record's own text, read from the ma
   // door quotes it, never its own prose." So this reads the MARK FILE, not the
   // door's copy of it. Skipped, never faked, when no world checkout is at hand:
   // a green tick that proved nothing would be worse than an honest absence.
-  const roots = [process.env.WORLD_CLONE, "G:/postmark/pool/world-1", "G:/Postmark/repo-clones/wright/postmark-world",
-    resolve(HERE, "..", "world-clone")];
+  const roots = [worldClone()].filter(Boolean);
   const rel = "WORLD/marks/let-there-be-light/the-town-centre/the-keeping-works/postmark-edge/stake/stake-mark/mark.md";
   let text = null;
   for (const root of roots) { if (!root) continue; try { text = readFileSync(join(root, rel), "utf8"); break; } catch { /* next */ } }
@@ -444,7 +447,7 @@ test("the rule the block quotes is the world record's own text, read from the ma
   assert.match(text, /class: stake-mark/);
 });
 
-test("the block names WHICH law it quoted, on both the mark door and the pot door", async () => {
+test("the block names WHICH law it quoted, on both the mark door and the pot door", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 5 }], pots: [{ pot: "keep" }] });
   process.env.TOWN_CLONE = fx.repo;
   const mark = await worldStakeViaOffice({ mark: "tester/m", stamps: 1, preview: true }, KEY, openDoor(fx));
@@ -483,7 +486,7 @@ test("every stamp-moving card declares `preview`, and declares it as an opt-in b
   assert.equal(stake.fields.preview.required, undefined);
 });
 
-test("THE BLOCK IS THE SAME SHAPE AT EVERY DOOR — the same four keys, whatever is being staked", async () => {
+test("THE BLOCK IS THE SAME SHAPE AT EVERY DOOR — the same four keys, whatever is being staked", { skip: SKIP }, async () => {
   const fx = townFixture({ mints: [{ handle: "tester", n: 5 }], pots: [{ pot: "keep" }] });
   process.env.TOWN_CLONE = fx.repo;
   const ws = await import(pathToFileURL(join(fx.repo, "tools", "world-stake.mjs")));
@@ -508,7 +511,7 @@ test("THE BLOCK IS THE SAME SHAPE AT EVERY DOOR — the same four keys, whatever
     "the inline stake is the stake door's act, asked of the stake door's own owner");
 });
 
-test("the preview is OPT-IN: without it the doors answer exactly as they did, and nothing named preview rides", async () => {
+test("the preview is OPT-IN: without it the doors answer exactly as they did, and nothing named preview rides", { skip: SKIP }, async () => {
   // The founder refused a forced two-step, and the cheapest way for one to grow
   // back is a door that starts previewing when it is not asked to.
   const fx = townFixture({ mints: [{ handle: "tester", n: 5 }] });

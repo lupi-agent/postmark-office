@@ -1395,6 +1395,8 @@ test("...and the HOLD DOOR itself refuses it — the guard is wired, not merely 
   const prev = { store: process.env.WORLD_STORE_DB, dyn: process.env.WORLD_DYNAMIC_DB, log: process.env.WORLD_SINGLE_LOG,
                  mv2: process.env.WORLD_MOVEMENT_V2 };
   const storePath = join(dir, "world.db");
+  // Declared out here so the `finally` can undo them whatever throws inside.
+  let restoreGuardReader = null, restorePgEnv = null;
   try {
     // the same bottle, written to disk where `storeDbPath()` will find it
     const disk = new DatabaseSync(storePath);
@@ -1428,16 +1430,48 @@ test("...and the HOLD DOOR itself refuses it — the guard is wired, not merely 
     // should not have: a hand who has not entered the room is not in the fight.
     // The placement is the one `spawnOnEnter` writes for a real entrant, in the
     // same words: a zero-length departure to where the ground sets them down.
-    {
-      const { openDynamic } = await import("../src/dynamic-store.mjs");
-      const { declareMovement } = await import("../src/dynamic-entities.mjs");
-      const dyn = openDynamic();
-      try {
-        const spot = { x: 1082, y: -792.4 }; // the vault floor, beside the loot
-        declareMovement(dyn, { actor: "darko", from: spot, toward: spot, crossing: 0,
-          within: null, toMark: VAULT, declaredBy: "darko", pace: 0 });
-      } finally { dyn.close(); }
-    }
+    //
+    // POS-154: the placement used to be `declareMovement` into `dynamic.db`.
+    // `storedDepartures` reads `acts` now and no longer opens that file, so a
+    // movements row places nobody — this test went red on the distance check
+    // ("you are not standing where the-town/the-good-lighter stands") with every
+    // assertion below still correct. The same zero-length departure is filed as
+    // the ACT the movement-store pen writes, through the reader seam.
+    //
+    // ⚑ THE STUB THROWS ON EVERY OTHER QUERY, deliberately. This office has no
+    // `WORLD2_PG` of its own, so before this lane the guard reads here refused
+    // and the hold path took its own degraded answers. Answering `[]` instead
+    // would hand `readHoldEffects` a readable-but-empty record where it used to
+    // get `{ readable: false }`, which is a different door — so only the
+    // departure query is answered and the rest refuse exactly as they did.
+    const prevPg = { on: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL };
+    process.env.WORLD2_PG = "1";
+    process.env.WORLD2_PG_URL = "postgres://arena-test/none";
+    const { useGuardReader } = await import("../src/world2-guards.mjs");
+    const spot = { x: 1082, y: -792.4 }; // the vault floor, beside the loot
+    restoreGuardReader = useGuardReader(async (fn) => fn({
+      query: async (sql, params) => {
+        if (!/FROM acts/i.test(String(sql)) || !String(sql).includes("_ledger")) {
+          throw new Error("this fixture answers the departure query only");
+        }
+        const actions = params?.[0] ?? [];
+        if (!actions.includes("walk")) return { rows: [] };
+        // ⚑ THE INSTANT IS IN THE PAST, and it has to be. `storedDepartures`
+        // cuts on the record's own `iso` against the `atMs` the door captured
+        // BEFORE it asked — so an act stamped `new Date()` inside the stub is
+        // stamped after the cut and is dropped, silently, leaving darko
+        // unplaced and this test red on the distance check for a reason that
+        // has nothing to do with what it asserts.
+        return { rows: [{
+          id: 1, at: new Date(Date.now() - 60_000), crossing: "0", actor: "darko", action: "walk",
+          payload: { from: spot, toward: spot, within: null, to: VAULT, pace: 0, declared_by: "darko" },
+        }] };
+      },
+    }));
+    restorePgEnv = () => {
+      if (prevPg.on == null) delete process.env.WORLD2_PG; else process.env.WORLD2_PG = prevPg.on;
+      if (prevPg.url == null) delete process.env.WORLD2_PG_URL; else process.env.WORLD2_PG_URL = prevPg.url;
+    };
 
     const refused = await callHoldTool("world_hold", { thing: WICK }, key).then(() => null, (e) => e);
     assert.ok(refused, "the hold door took the wick end while the cake was still standing — the guard is written but not wired");
@@ -1478,6 +1512,8 @@ test("...and the HOLD DOOR itself refuses it — the guard is wired, not merely 
           `the floor row for ${row.thing} carries no position — an injected entry with no \`at\` cannot be drawn`);
     } finally { try { store.db?.close(); } catch { /* already gone */ } }
   } finally {
+    if (restoreGuardReader) restoreGuardReader();
+    if (restorePgEnv) restorePgEnv();
     for (const [k, v] of [["WORLD_STORE_DB", prev.store], ["WORLD_DYNAMIC_DB", prev.dyn], ["WORLD_SINGLE_LOG", prev.log], ["WORLD_MOVEMENT_V2", prev.mv2]])
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* windows holds it a beat */ }

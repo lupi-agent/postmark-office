@@ -5,8 +5,9 @@
 #
 # Installed at /etc/cron.hourly/zz-postmark-ops-index. THE zz- PREFIX IS LOAD-
 # BEARING: run-parts runs cron.hourly in alphabetical order, and this reads the
-# four siblings' data.json twins, so it has to run after postmark-economy-report,
-# postmark-git-report, postmark-traffic-report and postmark-world-report.
+# five siblings' data.json twins, so it has to run after postmark-activity-report,
+# postmark-economy-report, postmark-git-report, postmark-traffic-report and
+# postmark-world-report.
 # Out of order it is not wrong — every card reports the twin's OWN generated_at,
 # so staleness still shows honestly — it is just an hour behind for no reason.
 #

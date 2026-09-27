@@ -131,15 +131,21 @@ jobs:
           path: world-checkout
           fetch-depth: 1
 
-      # The five roles 002_grants.sql GRANTs to. No file in this repo CREATEs
-      # them — the box's were made by hand — so this is the list, derived from
-      # 002's grantees: the owner (migrations only) and the four pens.
+      # The roles the migrations GRANT to. No file in this repo CREATEs them —
+      # the box's were made by hand — so this is the list, derived from the
+      # grantees: the owner (migrations only), the four pens, and `stance_reader`.
+      #
+      # `stance_reader` (023_stance_reader.sql, 2026-09-22) is NOT a sixth pen —
+      # it holds SELECT on one table and writes nothing. It is here because 023
+      # GRANTs to it, and 023's own guard refuses by name when the role is
+      # absent, so a floor run without this line fails the migration rather than
+      # skipping it quietly.
       - name: Roles
         run: |
-          for r in world2_owner office_api clearing_job law_ingester snapshot_reader; do
+          for r in world2_owner office_api clearing_job law_ingester snapshot_reader stance_reader; do
             psql -v ON_ERROR_STOP=1 -d postgres -qc "CREATE ROLE $r LOGIN PASSWORD '$W2_PW'"
           done
-          echo "five roles created"
+          echo "six roles created"
 
       # The floor on BOTH databases — every world2/schema/NNN_*.sql in name
       # order, as world2_owner; 003 skipped (it is the three-pens falsifier
@@ -219,7 +225,7 @@ jobs:
             INSERT INTO windows (id, opens_at, closes_at, status)
               VALUES (1, now() - interval '2 days', now() - interval '1 day', 'closed');
             INSERT INTO claims (window_id, class, claimant, household, status, body, geometry, slug, stake)
-              VALUES (1, 'sited', 'guards-alfa', 'gh:9000001', 'draft', 'a shed that stands in no journal',
+              VALUES (1, 'sited', 'guards-alfa', 'hh:guards-alfa-house', 'draft', 'a shed that stands in no journal',
                       '{\"slug\":\"guards-alfa/the-planted-shed\",\"at\":{\"x\":90,\"y\":90},\"extent\":{\"w\":2,\"h\":2}}',
                       'guards-alfa/the-planted-shed', 0);"
           echo "planted guards-alfa/the-planted-shed in claims — 1.0's journal never wrote it"

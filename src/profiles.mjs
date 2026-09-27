@@ -1,41 +1,62 @@
 // profiles.mjs — the resident's profile bubble, read at the office.
 //
 // WHY THIS FILE EXISTS
-// PROFILE.md arrived AFTER the vendored town reader. vendor/town.mjs was
-// vendored 2026-07-07; profiles landed 2026-07-31. So `readTown` has never
-// known the file exists, no door over the residents table has ever carried a
-// profile, and `read_resident` answers ADDRESS/HOME/region and stops — exactly
-// what its description promised, and exactly one field short of useful. The
+// PROFILE.md arrived AFTER the vendored town reader. The copy vendored
+// 2026-07-07 predated profiles by three weeks, so `readTown` did not know the
+// file existed, no door over the residents table carried a profile, and
+// `read_resident` answered ADDRESS/HOME/region and stopped — exactly what its
+// description promised, and exactly one field short of useful. (The vendored
+// reader has since been re-pointed at an upstream that DOES read profiles; see
+// the next block for why that did not retire this one.) The
 // site has been covering the gap for us: postmark-site tools/extract-town.mjs
 // says so in as many words — "PROFILE.md is checkout-coupled (the office does
 // not serve it yet)" — and overlays checkout-read profiles onto our residents
 // row. This module is the office finally serving its own data.
 //
-// WHY THIS IS NOT A RE-VENDOR — AND THE VENDOR IS NOT STALE
-// The obvious theory is "our vendored copy is old, re-vendor it." Measured
-// 2026-08-22, that theory is FALSE and worth writing down so nobody re-derives
-// it: vendor/town.mjs differs from its DECLARED upstream by exactly the two
-// header lines. Its recorded `upstream sha256 a408ddfdc66fbc24` still matches
-// starforge-site/tools/lib/town.mjs byte for byte today. Nothing drifted.
+// THE TWO UPSTREAMS ARE RECONCILED (POS-128, 2026-09-21) — AND THIS FILE STAYS
+// The passage that stood here described two diverged copies of the town reader
+// (starforge-site's 340-line one, which we vendored and which had never heard of
+// PROFILE.md; and postmark-site's, which grew the real profile reader) and said:
+// re-pointing at the other copy is a real option, left for a deliberate pass.
+// That pass has happened. Keemin ruled 2026-09-13 that postmark-site's copy is
+// the authoritative upstream, the office now vendors it, `js-yaml` is a real
+// dependency here, and `readTown` returns `resident.profile` on its own.
 //
-// What is actually true is stranger: there are TWO upstreams for this one
-// module, and they have diverged from each other.
-//   starforge-site/tools/lib/town.mjs  340 lines, a408ddfd — what we vendor.
-//                                      Zero mentions of "profile".
-//   postmark-site/tools/lib/town.mjs   462 lines, 417ad6d6 — a divergent copy
-//                                      in the town-site repo, +122 lines, and
-//                                      it grew the full profile reader
-//                                      (readResidentProfile / …Profiles).
-// So the office is pinned to the copy that does not know profiles exist, and
-// no amount of re-vendoring from the declared upstream would ever fix that.
-// Re-pointing at the other copy is a real option, but it drags in `js-yaml`
-// (which the office does not depend on) and is a decision about which upstream
-// is authoritative — not a profile fix. Raised as an issue; left for a
-// deliberate pass.
+// So the old instruction — "when the two upstreams are reconciled, DELETE THIS
+// FILE and call the surviving readResidentProfile instead" — is now due, and the
+// answer is no. It was written expecting the upstream to arrive as a superset.
+// It did not. Measured over all 182 WHITE_PAGES handles in the live checkout,
+// the two readers give the SAME profile for 181 of them and differ on one
+// (cipher: upstream keeps `avatar: ""`, this reader drops an empty field), which
+// is close enough that the *value* is interchangeable — but the SHAPE is not:
 //
-// WHEN THE TWO UPSTREAMS ARE RECONCILED, DELETE THIS FILE and call the
-// surviving readResidentProfile instead. It is already exported and, having a
-// real YAML parser under it, already better than this.
+//   parseProfile(text)     has no upstream counterpart at all. Upstream reads
+//                          only from a checkout path. The profile act's seam
+//                          probe (test/profile-act.test.mjs) reads the PROFILE.md
+//                          the door just wrote, as text, through this function —
+//                          that is how it proves a written field is a readable
+//                          one, and there is nothing upstream to point it at.
+//   normalizeProfile(raw)  is exported here and directly tested; upstream's is
+//                          module-private and takes (raw, path, problems).
+//   PROFILE_STRING_FIELDS  is five fields here, six upstream (it added
+//                          `avatar_url`). test/profiles.test.mjs asserts ours.
+//   absent                 reads `null` here and `{}` upstream — deliberate, and
+//                          documented below: it matches `window_state` on the
+//                          same row.
+//
+// So deleting this file would not be a re-vendor, it would be a rewrite of the
+// office's own profile contract and of the two test files that hold it. That is
+// a real piece of work and a decision about which shape the office wants; it is
+// not this lane's, and it should not be smuggled in as a consequence of a
+// vendoring. If it is taken up, the thing to settle first is `avatar_url`: the
+// office guards it at the WRITE door (edit.mjs's `mediaUrlOk`, which also
+// refuses a query string) and upstream guards it at the READ door
+// (`atTownMediaDoor`, which does not). Two guards, two answers, one field.
+//
+// WHAT DID CHANGE: hydrate.mjs still fills the residents row from `readProfile`
+// below, so the store keeps exactly one answer for this field — the vendored
+// reader's `resident.profile` is computed and then dropped on the floor. One
+// resolver, as before; the second one is upstream's and unused.
 //
 // THE CONTRACT THIS DELIBERATELY MIRRORS
 // Every rule below is upstream's, copied on purpose so that re-vendoring later

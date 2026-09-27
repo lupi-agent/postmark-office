@@ -287,11 +287,23 @@ jobs:
           #    shipping workflow files into a runtime directory only invites a
           #    later reader to think the box runs them.
           #
+          # AND ONE BELT-AND-BRACES NAME (2026-09-21, Keemin ROLLOVER 25):
+          #
+          #  .omc/ — the orchestration layer's per-operator session state. It
+          #    was tracked at the top level until this change, and `find` does
+          #    not skip a dotted directory, so it was listed here and rsync'd
+          #    with --delete like any repo-owned tree. Untracking it is what
+          #    actually ends the carry — `stage/` is a `git archive` of the tag,
+          #    so a directory the tag does not carry cannot appear in this list
+          #    at all. The name stays here anyway, because the failure mode this
+          #    guards is somebody re-adding it by reflex, and then the deletion
+          #    would be silent while the deploy was not.
+          #
           # Everything else (src cli deploy dev docs ops test tools vendor) was
           # confirmed pure-repo: `git status --ignored` over them in a working
           # clone returns nothing.
           find stage -maxdepth 1 -mindepth 1 -type d -printf '%f\n' \
-            | grep -vx -e telemetry -e .github \
+            | grep -vx -e telemetry -e .github -e .omc \
             | sort > dirs.txt
           echo "directories to sync:"; sed 's/^/  /' dirs.txt
 

@@ -35,11 +35,20 @@ import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
 import { openOauthDb } from "../src/oauth.mjs";
 import { appendTownJournal, pendingRows, townDrainCursor } from "../src/town-journal.mjs";
-import { GANGWAY_HELD, planTownDrain } from "../src/town-drain.mjs";
+import { GANGWAY_HELD, planTownDrain as REAL_planTownDrain } from "../src/town-drain.mjs";
 import { runTownDrain, TOWN_DOORS } from "../src/town-bridge.mjs";
 import { MAIL_ACT } from "../src/town-mail.mjs";
 import { outboxRelPath } from "../src/write.mjs";
 import { REGISTRY_PATH } from "../src/residency.mjs";
+import { withRecordFrom } from "./registry-pool-stub.mjs";
+
+// POINTED AT THE RECORD (POS-158). `planTownDrain` reads the town's registry
+// from the store now, so this seeds the store from whatever registry the clone
+// holds — the same fixture these tests already write. Without it every plan
+// here would answer "the record is unreachable" and defer every row, which is
+// correct behaviour answering the wrong question.
+const planTownDrain = (o, clone, opts) => withRecordFrom(clone, () => REAL_planTownDrain(o, clone, opts));
+
 
 delete process.env.TOWN_PUSH; // nothing here may leave the machine
 
@@ -107,10 +116,19 @@ const seedLetter = (o, { from = "wright", to = "limen", date = "2026-08-24", slu
 const db = fixtureDb();
 const HELD = () => true;
 const silent = () => {};
-const run = (o, over = {}) => runTownDrain(o, { db, doors: TOWN_DOORS, lockHeld: HELD, log: silent, ...over });
-const flagOn = (fn) => {
+// POINTED AT THE RECORD, AND AWAITED (POS-158). A crossing reads the town's
+// registry from the store and writes its membership rows there, so the helper
+// seeds the store from whatever registry the clone already holds — the same
+// fixture these tests were already writing — and awaits the drain. Without it
+// every crossing here would answer "the record is unreachable" and defer every
+// row, which is correct behaviour answering the wrong question.
+const run = (o, over = {}) => withRecordFrom(over.clone, () => runTownDrain(o, { db, doors: TOWN_DOORS, lockHeld: HELD, log: silent, ...over }));
+// ASYNC-AWARE SINCE POS-158. `return fn()` handed back a promise and the
+// `finally` then cleared the flag while the work was still running — a teardown
+// racing the thing it tears down, which fails somewhere else entirely.
+const flagOn = async (fn) => {
   process.env.TOWN_SINGLE_LOG = "1";
-  try { return fn(); } finally { delete process.env.TOWN_SINGLE_LOG; }
+  try { return await fn(); } finally { delete process.env.TOWN_SINGLE_LOG; }
 };
 const ashore = (clone, h) => existsSync(join(clone, "WHITE_PAGES", h, "ADDRESS.md"));
 
@@ -120,7 +138,7 @@ test.after(dropAll);
 // G1-G3 · THE GANGWAY, AT THE PLANNER — the pile a held row lands in
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("G1 · FROZEN: every join row is filed WAITING, and the reason names the gangway", () => {
+test("G1 · FROZEN: every join row is filed WAITING, and the reason names the gangway", async () => {
   const clone = townClone();
   const o = liveOdb();
   try {
@@ -128,7 +146,7 @@ test("G1 · FROZEN: every join row is filed WAITING, and the reason names the ga
     seedJoin(o, "second-arrival");
     setGangway(clone, "frozen");
 
-    const plan = planTownDrain(o, clone, { date: "2026-08-24" });
+    const plan = await planTownDrain(o, clone, { date: "2026-08-24" });
 
     assert.deepEqual(plan.settle, [], "a frozen gangway settles nothing — the valve is on the pipe");
     assert.deepEqual(plan.plans, [], "…so there is no registry diff to write either");
@@ -148,16 +166,16 @@ test("G1 · FROZEN: every join row is filed WAITING, and the reason names the ga
   } finally { o.close(); }
 });
 
-test("G2 · THE FLIP: the same rows, the same clone, `state: open` — they settle", () => {
+test("G2 · THE FLIP: the same rows, the same clone, `state: open` — they settle", async () => {
   const clone = townClone();
   const o = liveOdb();
   try {
     seedJoin(o, "newcomer");
     setGangway(clone, "frozen");
-    assert.deepEqual(planTownDrain(o, clone, { date: "2026-08-24" }).settle, [], "frozen: nothing");
+    assert.deepEqual((await planTownDrain(o, clone, { date: "2026-08-24" })).settle, [], "frozen: nothing");
 
     setGangway(clone, "open");
-    const open = planTownDrain(o, clone, { date: "2026-08-24" });
+    const open = await planTownDrain(o, clone, { date: "2026-08-24" });
     assert.deepEqual(open.settle.map((r) => r.handle), ["newcomer"],
       "the same crossing with `state: open` settles them — flip both directions");
     assert.deepEqual(open.waiting, []);
@@ -166,12 +184,12 @@ test("G2 · THE FLIP: the same rows, the same clone, `state: open` — they sett
   } finally { o.close(); }
 });
 
-test("G3 · ABSENT HARBOR IS OPEN: a clone with no gangway file behaves exactly as before", () => {
+test("G3 · ABSENT HARBOR IS OPEN: a clone with no gangway file behaves exactly as before", async () => {
   const clone = townClone(); // no HARBOR/ at all
   const o = liveOdb();
   try {
     seedJoin(o, "newcomer");
-    const plan = planTownDrain(o, clone, { date: "2026-08-24" });
+    const plan = await planTownDrain(o, clone, { date: "2026-08-24" });
     assert.deepEqual(plan.settle.map((r) => r.handle), ["newcomer"],
       "residency.mjs § gangwayState: absent file = open — a town with no HARBOR has no freeze");
     assert.deepEqual(plan.gangway, { state: "open", held: 0 });
@@ -182,15 +200,15 @@ test("G3 · ABSENT HARBOR IS OPEN: a clone with no gangway file behaves exactly 
 // G4-G6 · THE GANGWAY, AT THE CROSSING — the cursor is the half that matters
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("G4 · THE CURSOR DOES NOT MOVE: a held join is still pending after the crossing", () => {
+test("G4 · THE CURSOR DOES NOT MOVE: a held join is still pending after the crossing", async () => {
   const clone = townClone();
   const o = liveOdb();
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       seedJoin(o, "newcomer");
       setGangway(clone, "frozen");
 
-      const r = run(o, { clone, date: "2026-08-24" });
+      const r = await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(r.ran, true);
       assert.deepEqual(r.settled, [], "settles zero rows…");
@@ -212,18 +230,18 @@ test("G4 · THE CURSOR DOES NOT MOVE: a held join is still pending after the cro
   } finally { o.close(); }
 });
 
-test("G5 · AND THE CROSSING AFTER THE GANGWAY LOWERS SETTLES THEM", () => {
+test("G5 · AND THE CROSSING AFTER THE GANGWAY LOWERS SETTLES THEM", async () => {
   const clone = townClone();
   const o = liveOdb();
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       seedJoin(o, "newcomer");
       setGangway(clone, "frozen");
-      run(o, { clone, date: "2026-08-24" });
+      await run(o, { clone, date: "2026-08-24" });
       assert.equal(ashore(clone, "newcomer"), false);
 
       setGangway(clone, "open");
-      const r = run(o, { clone, date: "2026-08-25" });
+      const r = await run(o, { clone, date: "2026-08-25" });
 
       assert.deepEqual(r.settled, ["newcomer"], "the freeze was a pause, not a refusal");
       assert.equal(ashore(clone, "newcomer"), true);
@@ -234,17 +252,17 @@ test("G5 · AND THE CROSSING AFTER THE GANGWAY LOWERS SETTLES THEM", () => {
   } finally { o.close(); }
 });
 
-test("G6 · JOINS ONLY, AND THAT IS THE SCOPE CALL: a frozen crossing still carries the mail", () => {
+test("G6 · JOINS ONLY, AND THAT IS THE SCOPE CALL: a frozen crossing still carries the mail", async () => {
   const clone = townClone();
   const o = liveOdb();
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       seedJoin(o, "newcomer");
       seedUpdate(o);
       seedLetter(o);
       setGangway(clone, "frozen");
 
-      const r = run(o, { clone, date: "2026-08-24" });
+      const r = await run(o, { clone, date: "2026-08-24" });
 
       // The gangway is the ARRIVALS breaker. Mail and paper have their own
       // controls, and a one-word file that quietly stopped the town's letters

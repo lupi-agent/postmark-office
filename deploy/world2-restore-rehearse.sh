@@ -132,6 +132,63 @@ for t in $TABLES; do
 done
 say "   $rows_total rows restored across $(echo "$TABLES" | wc -w) tables"
 
+
+# ── roles.db, restored and counted ──────────────────────────────────────────
+# POS-185. The dump above is the world store; this is the office's registry of
+# WHO PAID, which rides the same commit (world2-backup.sh § 1b) because a grant
+# exists nowhere else — no repo holds it and no fold recomputes it.
+#
+# "Restoring" it is a file copy, not a pg_restore: it is a whole SQLite database
+# in one file, so the rehearsal opens the shipped copy READ-ONLY and counts it
+# against the live registry. That is the entire restore path, and the rehearsal
+# proving it is therefore the rehearsal proving the restore.
+#
+# THE DRIFT RULE IS THE SAME ONE, and for the same reason: role_audit is
+# append-only (src/roles.mjs § THE STATE AND THE RECEIPT), so the live side may
+# legitimately have gained rows since the copy was taken — the town kept
+# selling. The copy having MORE rows than live cannot be explained by the clock
+# and means the two disagree about history, which is the finding.
+say "== roles.db, shipped copy vs live registry"
+ROLES_LIVE="${W2_ROLES_DB:-$WORLD2_OFFICE/roles.db}"
+if [ "$FROM_REMOTE" = true ]; then ROLES_DIR="$TMPCLONE/roles"; else ROLES_DIR="$WORLD2_LAB/private-dumps"; fi
+ROLES_COPY="$(ls -1t "$ROLES_DIR"/roles-*.db 2>/dev/null | head -n1)"
+if [ -z "${ROLES_COPY:-}" ]; then
+  # Absent is legal and is NOT a pass: it is reported in the operator's words so
+  # a reader cannot mistake "nothing to check" for "checked and fine".
+  say "   NOT-RUN: no roles-*.db in $ROLES_DIR — either no role has ever been granted on this box (OFFICE_ROLE_GATES is unset on every office today) or the lane has not shipped one yet"
+else
+  # One node, both files, read-only on each. A missing live registry counts as
+  # zero rather than as an error: the copy having rows the live side lost is the
+  # interesting direction, and it is exactly the direction the rule below flags.
+  ROLES_COUNTS="$(node - "$ROLES_COPY" "$ROLES_LIVE" <<'NODE' 2>/dev/null
+const { DatabaseSync } = require("node:sqlite");
+const { existsSync } = require("node:fs");
+const count = (p) => {
+  if (!existsSync(p)) return -1;
+  const db = new DatabaseSync(p, { readOnly: true });
+  try { return db.prepare("SELECT count(*) AS c FROM role_audit").get().c; }
+  finally { db.close(); }
+};
+const [copy, live] = process.argv.slice(2);
+process.stdout.write(`${count(copy)} ${count(live)}`);
+NODE
+)"
+  RA_COPY="${ROLES_COUNTS% *}"; RA_LIVE="${ROLES_COUNTS#* }"
+  if [ -z "$ROLES_COUNTS" ] || [ "${RA_COPY:--1}" -lt 0 ]; then
+    say "   !! the shipped roles copy could not be opened: $(basename "$ROLES_COPY")"
+    bad=$((bad + 1))
+  else
+    printf '   %-26s %10s %10s  %s\n' table restored live verdict
+    if [ "${RA_LIVE:--1}" -lt 0 ]; then v="live registry absent — nothing to compare against"
+    elif [ "$RA_COPY" -eq "$RA_LIVE" ]; then v="match"
+    elif [ "$RA_COPY" -lt "$RA_LIVE" ]; then v="live +$((RA_LIVE - RA_COPY)) (grants since the copy — expected)"
+    else v="COPY HAS MORE (+$((RA_COPY - RA_LIVE))) — THE REGISTRY LOST ROWS IT ONCE HAD"; bad=$((bad + 1)); fi
+    printf '   %-26s %10s %10s  %s\n' role_audit "$RA_COPY" "${RA_LIVE}" "$v"
+    say "   copy under test: $(basename "$ROLES_COPY") (from $( [ "$FROM_REMOTE" = true ] && echo off-box || echo on-box ))"
+    drift_lines="$drift_lines$( [ "$RA_COPY" -ne "${RA_LIVE:-0}" ] && echo "role_audit:$RA_COPY/$RA_LIVE " )"
+  fi
+fi
+
 # ── the store's own check, on the restored store ────────────────────────────
 say "== falsifier-projection-equality against the RESTORED database"
 FRC=2
@@ -170,9 +227,10 @@ esac
 
 t1=$(date +%s)
 say "== rehearsal finished in $((t1 - t0))s · $( [ "$bad" -eq 0 ] && echo PASS || echo "FAIL ($bad finding(s))" )"
-w2_state restore-rehearsal.json "$(printf '"status":"%s","source":"%s","dump":"%s","seconds":%d,"restore_seconds":%d,"rows_restored":%d,"tables":%d,"falsifier_exit":%d,"drift":"%s"' \
+w2_state restore-rehearsal.json "$(printf '"status":"%s","source":"%s","dump":"%s","seconds":%d,"restore_seconds":%d,"rows_restored":%d,"tables":%d,"roles_audit_copy":%s,"roles_audit_live":%s,"falsifier_exit":%d,"drift":"%s"' \
   "$([ "$bad" -eq 0 ] && echo pass || echo fail)" \
   "$([ "$FROM_REMOTE" = true ] && echo off-box || echo on-box)" \
-  "$(basename "$DUMP")" "$((t1 - t0))" "$((r1 - r0))" "$rows_total" "$(echo "$TABLES" | wc -w)" "$FRC" "$drift_lines")"
+  "$(basename "$DUMP")" "$((t1 - t0))" "$((r1 - r0))" "$rows_total" "$(echo "$TABLES" | wc -w)" \
+  "${RA_COPY:-null}" "${RA_LIVE:-null}" "$FRC" "$drift_lines")"
 [ "$bad" -eq 0 ] || exit 1
 exit 0

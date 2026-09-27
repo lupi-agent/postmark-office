@@ -21,6 +21,8 @@
 // materialization that could commit on its own would be a second candle.
 
 import { computeStanding, admissionNotes, gistContainment } from "./standing.mjs";
+import { houseKeyOfVia, houseRowsVia } from "../../src/household-deriver.mjs";
+import { REFUSALS, refuse } from "../../src/ceremony.mjs";
 
 /**
  * The identity a claim will materialize under.
@@ -102,19 +104,117 @@ export function orderByParent(claims, { label = "this batch" } = {}) {
  * was wrong. Two questions, one column, exactly the words-for-one-fact class.
  *
  * So the mark's household resolves from the CLAIMANT (the resident who owns
- * the mark), by the 08-28 ruling's own spelling: the roster's household KEY,
- * else solo:<handle>, never NULL, positive answers cached, misses never
- * cached (registry lag resolves itself — the fold's own comment). The sibling
- * resolver in world2-claims.mjs stays untouched and keeps its lane.
+ * the mark), never from the claim's scope label. The sibling resolver in
+ * world2-claims.mjs stays untouched and keeps its lane.
+ *
+ * ── AND IT NO LONGER READS `identities` (POS-160 follow-up, RED 2) ──────────
+ *
+ * The 08-28 spelling was "the roster's household KEY, else solo:<handle>", and
+ * the roster it meant was `identities` — a projection of the WORLD repo's copy
+ * of the town's pins, four hops from the fact, answering in whatever spelling
+ * that copy happened to carry. MEASURED 2026-09-22: `gh:<id>` on 173 handles,
+ * `hh:<slug>` on 17, and one house wearing both at once.
+ *
+ * #165's lane flagged this function as THE SOURCE of the multi-spelling store:
+ * `claims.household` is the acting key's and `marks.household` was copied from
+ * `identities`, so between them the pen minted `gh:`, `hh:` and `solo:` rows
+ * and then the read side had to reconcile them with a spelling set. Ruling 1
+ * and the design note say every NEW line from the law date names `hh:<slug>`.
+ * So this function now asks the ONE DERIVER, against the registry in the
+ * caller's own store, and answers `hh:<slug>`.
+ *
+ * ── IT REFUSES A HOUSELESS CLAIMANT. IT DOES NOT FALL BACK ──────────────────
+ *
+ * `solo:<handle>` is gone from this pen (one named exception, the town's own
+ * marks: `TOWN_HOUSEHOLD_BY_NAME` below), and that is the point rather than a
+ * side effect: every `solo:` row the store holds was minted by a fallback
+ * exactly here, and a fallback that keeps minting them makes the spelling set
+ * a permanent fixture instead of a bridge over a closed history. After
+ * POS-159's backfill the case does not arise — every resident on the roll
+ * stands in exactly one house, 188 of 188 by account — so a claimant the
+ * registry cannot name is a genuine defect in the roll and a person should see
+ * it, at the crossing, rather than read it as a household six weeks later.
+ *
+ * TWO REFUSALS AND NOT ONE, because `NULL IS NOT EMPTY` (registry-store.mjs's
+ * own rule) and the two failures want different hands:
+ *
+ *   NO_RECORD (503)      the registry holds no houses at all — this store is
+ *                        not pointed at the record, or the tables are unseeded.
+ *                        An operator problem, and refusing every claimant on
+ *                        one reading is louder and truer than naming them one
+ *                        at a time.
+ *   NO_SUCH_HOUSE (404)  the roll is readable and does not name this claimant.
+ *                        One person's row to fix, in the join ceremony.
+ *
+ * The vocabulary is `src/ceremony.mjs § REFUSALS` verbatim — the same sentences
+ * the join door says, because "a refusal a resident meets at two doors in two
+ * wordings is two laws wearing one name."
+ *
+ * ── THE MEMO MOVED INTO THE DERIVER, ON PURPOSE ────────────────────────────
+ *
+ * The `ownerKeys` Map this replaced was keyed on the HANDLE alone and lived for
+ * the life of the process, so two stores in one process (a suite's stub and a
+ * real pool; a replay and a live arm) shared one answer and `__clearHouseCache`
+ * could not reach it. `houseOfVia` memoises per (queryable, x) in a WeakMap and
+ * IS cleared by that seam, so the cache is now scoped to the store it came
+ * from. `queryableFor` keeps ONE adapter object per `q` for the same reason —
+ * a fresh `{ query }` per claim would defeat the WeakMap and put the whole
+ * registry fold through `registryFromRows` on every line of a crossing.
  */
-const ownerKeys = new Map();
+
+/** `q(text, args)` as the queryable `registryRowsVia` wants — one per `q`. */
+const queryables = new WeakMap();
+const queryableFor = (q) => {
+  let via = queryables.get(q);
+  if (!via) { via = { query: (text, args = []) => q(text, args) }; queryables.set(q, via); }
+  return via;
+};
+
+/**
+ * THE TOWN'S MARKS, BY NAME — AN INTERIM (POS-142).
+ *
+ * Keemin, 2026-09-24 ~19:3x EDT: "the town should be some kind of entity, idk
+ * if household is correct, but yes the long-term shape is that the meeps should
+ * belong to the town." Wright proposed an interim (the town's marks keep
+ * `solo:the-town` by name, pinned by a test, committing to nothing about what
+ * the town is) and Keemin approved it: "I agree. good to have a lane build it
+ * tonight".
+ *
+ * `the-town` authors the constitution marks and is not a household on the
+ * roll, so under the refusal below every ingest carrying a new town mark
+ * refused whole at NO_SUCH_HOUSE (the dev sandbox run, 2026-09-24: six of 21
+ * adds). The store already holds the town's rows as `solo:the-town`, and
+ * `store-writedown.mjs § isTheTown` already reads that spelling as the town.
+ *
+ * ONE claimant, matched exactly, answered BEFORE the roll is asked. No other
+ * handle is exempt: every other claimant the roll does not name still refuses.
+ * INTERIM until the town-as-entity sitting decides what the town is.
+ */
+export const TOWN_CLAIMANT = "the-town";
+export const TOWN_HOUSEHOLD_BY_NAME = "solo:the-town";
+
 export async function ownerHouseholdFor(q, owner) {
   const handle = String(owner ?? "").trim();
-  if (!handle) return null;
-  if (ownerKeys.has(handle)) return ownerKeys.get(handle);
-  const { rows } = await q("SELECT household FROM identities WHERE handle = $1", [handle]);
-  const key = rows[0]?.household ?? `solo:${handle}`;
-  if (rows[0]?.household) ownerKeys.set(handle, key);
+  if (handle === TOWN_CLAIMANT) return TOWN_HOUSEHOLD_BY_NAME;   // the one named exception, above
+  const via = queryableFor(q);
+
+  const rows = await houseRowsVia(via);
+  if (!Object.keys(rows?.registry?.households ?? {}).length)
+    throw refuse(REFUSALS.NO_RECORD,
+      `materialize: the registry names no households in this store, so no mark may be filed under one` +
+      (handle ? ` (asked for ${JSON.stringify(handle)})` : ""));
+
+  if (!handle)
+    throw refuse(REFUSALS.NO_SUCH_HOUSE,
+      "materialize: a claim arrived with no claimant, and `marks.household` is never NULL");
+
+  const key = await houseKeyOfVia(via, handle);
+  if (!key)
+    throw refuse(REFUSALS.NO_SUCH_HOUSE,
+      `materialize: the town's roll does not name ${JSON.stringify(handle)}, so this mark has no household ` +
+      `to stand in. The pen no longer mints \`solo:${handle}\` — every solo row in the store came from that ` +
+      `fallback, and Ruling 1 says every new line from the law date carries hh:<slug>. Fix the roll.`);
+
   return key;
 }
 

@@ -197,6 +197,14 @@ const { householdApex, HOUSEHOLD_DISPATCHABLE, HOUSEHOLD_TOOL, householdDispatch
 const { ACTION_STANCE, CLASS_STANCE, standingStances, stancesBlock } = await import("../src/world-stance.mjs");
 const { openDynamic } = await import("../src/dynamic-store.mjs");
 const { readJournal } = await import("../src/world-journal.mjs");
+// THE CANDIDATE LIST READS THE STORE (POS-195, 2026-09-22). This file plants
+// its sketches in the journal and still means the same thing by them; the stub
+// answers the store's query from that same journal, shaped as `claims` rows.
+// Imported HERE rather than at the top, for this file's own stated reason: a
+// static import is hoisted above the env this fixture sets.
+const { STANCE_ON, stancePoolFromJournal } = await import("./stance-pool-stub.mjs");
+Object.assign(process.env, STANCE_ON);
+stancePoolFromJournal(dynPath);
 
 // A household key exactly as `oauth.mjs § householdFor` mints one: the
 // household NAME is on it, which is the thing Wright's hand-run key lacked.
@@ -204,11 +212,33 @@ const KEY = { household: "wright", handles: new Set(["wright"]), ghLogin: "keemi
 const CTX = { db: null, clone: repo, odb: null, dbPath: null, pen: null, canWrite: false, meta: {}, asOf: "t" };
 const door = (args, key = KEY) => householdApex(args, key, CTX);
 
-const freshLog = () => { try { rmSync(dynPath, { force: true }); } catch { /* first run */ } };
-const stanceRows = () => {
-  const db = openDynamic(dynPath);
-  try { return readJournal(db, { cls: CLASS_STANCE }); } finally { db.close(); }
+// ── THE DOOR WRITES THE RECORD (G1 / POS-156, RULING 3) ───────────────
+//
+// The stance door wrote a sqlite journal row and queued a Postgres copy behind
+// it, so these tests could run with no record at all and read their rows back
+// out of `dynamic.db`. G1 deleted that INSERT and made the write awaited and
+// refusable, so a door with no record now gives the ruled 503 -- which is the
+// subject of ONE test here and the accident of the others.
+//
+// So the office is pointed at an in-memory record, and `stanceRows` reads the
+// rows the door actually filed. The stance READ keeps its own stub and its own
+// credential (RULING 2's two-pool design), untouched.
+const { installActsPen, uninstallActsPen, RECORD_ON } = await import("./acts-pen-stub.mjs");
+let pen = installActsPen();
+process.env.WORLD2_PG = RECORD_ON.WORLD2_PG;
+process.env.WORLD2_PG_URL = RECORD_ON.WORLD2_PG_URL;
+after(() => { uninstallActsPen(); delete process.env.WORLD2_PG; delete process.env.WORLD2_PG_URL; });
+
+const freshLog = () => {
+  try { rmSync(dynPath, { force: true }); } catch { /* first run */ }
+  // A fresh record too: these tests count rows, and a pen carrying the previous
+  // test's acts would make "the refusal wrote nothing" pass over somebody
+  // else's write.
+  pen = installActsPen();
 };
+const stanceRows = () => pen.rows()
+  .filter((r) => r.class === CLASS_STANCE)
+  .map((r) => ({ ...r, seq: r.id, payload: JSON.parse(r.payload), written_at: r.at }));
 
 // ── 1 · THE DEFECT, HELD OPEN ───────────────────────────────────────────────
 
@@ -269,8 +299,15 @@ test("the standing-scoped DO performs end to end, and the acts row carries a NON
 
   const rows = stanceRows();
   assert.equal(rows.length, 1, "one word, one row");
-  assert.equal(rows[0].household, "wright",
+  // THE RESOLVED KEY, which is what the record's column holds (G1 / POS-156).
+  // This read `"wright"` -- the household NAME -- off a sqlite journal row.
+  // The record files under `householdKeyFor`'s answer, and with no registry
+  // seeded here that is `solo:wright`: the same household, in the spelling the
+  // store keys by. The blemish this asserts is still the one it asserted --
+  // that the column is POPULATED at all, and not null, through this path.
+  assert.equal(rows[0].household, "solo:wright",
     "THE HAND-RUN BLEMISH, CLOSED: resolvedWorldHousehold(key) populates through this path");
+  assert.ok(rows[0].household, "and it is not null, which is the whole of the blemish");
   assert.notEqual(rows[0].household, null);
   assert.equal(rows[0].actor, "wright");
   assert.equal(rows[0].object, "beta/on-wrights-edge");
@@ -442,6 +479,10 @@ test("THE PEN'S REFUSAL SURVIVES THE FOLD — an unreachable pen bounces 503 thr
   // connection and then fails mid-transaction; that wants a live server and is
   // named as the gap in the handback.
   freshLog();
+  // AND THE RECORD IS TAKEN AWAY, which is the whole point of this one. The
+  // suite installs an in-memory pen so every other test can write; here the
+  // office must be pointed at a Postgres that is not there.
+  uninstallActsPen();
   process.env.WORLD2_PG = "1";
   process.env.WORLD2_PG_URL = "postgres://nobody:nothing@127.0.0.1:1/absent";
   process.env.W2_PEN = "stance";
@@ -450,13 +491,23 @@ test("THE PEN'S REFUSAL SURVIVES THE FOLD — an unreachable pen bounces 503 thr
     assert.equal(refused.code, 503, `expected the ruled refusal, got ${JSON.stringify(refused).slice(0, 300)}`);
     assert.match(refused.defect, /nothing was written, and nothing was lost/,
       "the pen's own sentence, intact through the second door");
-    assert.match(refused.hint, /W2_PEN=stance/);
+    // THE REFUSAL NAMES NO FLAG SINCE G1 (POS-156, RULING 3). It said
+    // `W2_PEN=stance`, because the unflipped arm wrote sqlite and only the
+    // flipped one could refuse. Both arms write the record now, so both refuse,
+    // and a hint blaming an unset variable would send an operator to the wrong
+    // place. What it must still say is WHOSE failure it is and that nothing was
+    // lost -- both asserted.
+    assert.match(refused.hint, /the office's record/,
+      "the refusal must name the record as the thing that could not be reached");
+    assert.equal(/W2_PEN/.test(refused.hint), false,
+      "the hint blames a flag again -- the record is the record whether or not a lane is flipped");
     assert.match(refused.hint, /your stance is safe to speak again/);
     assert.equal(stanceRows().length, 0,
-      "REFUSED MEANS REFUSED: the sqlite reverse mirror never ran, so nothing landed anywhere");
+      "REFUSED MEANS REFUSED: nothing landed anywhere, and since G1 there is no sqlite copy for it to land in");
   } finally {
     delete process.env.W2_PEN;
-    delete process.env.WORLD2_PG;
-    delete process.env.WORLD2_PG_URL;
+    pen = installActsPen();                       // hand the record back to the suite
+    process.env.WORLD2_PG = RECORD_ON.WORLD2_PG;
+    process.env.WORLD2_PG_URL = RECORD_ON.WORLD2_PG_URL;
   }
 });

@@ -115,6 +115,28 @@ import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+// ── ONE READER OF THE SETTLEMENT HISTORY (postmark#2979, 2026-09-21) ─────────
+//
+// deploy/settlement-history.mjs is the one law of the settlement log: it writes
+// the lines, and it owns what they mean. This file used to keep its own copy of
+// half of that — its own `UNSETTLED` status set and its own unfiltered window —
+// so after postmark#2974 taught the crossing's 05:45Z escalation to ask its
+// question of SCHEDULED lines only, the escalation and the board an operator
+// reads at 8am could disagree about the same log. The one disagreeing by being
+// WRONG was the board: a person publishing by hand between two refusals broke
+// the run and silenced it, which is exactly the reading #2786 forbids — a
+// person rescuing the town by hand is not the timer being healthy.
+//
+// THE EDGE IS SAFE BECAUSE BOTH DIRECTORIES SHIP FROM ONE TAG. The box runs
+// this file as `$OFFICE/tools/box-rollcall.mjs` (deploy/box-rollcall.sh, with
+// OFFICE=/srv/postmark-office) and runs the module below as
+// `$OFFICE/deploy/settlement-history.mjs` (postmark-settlement.service, same
+// root), and release-train.yml syncs every top-level directory the tag carries
+// except telemetry/ and .github/ — so the two cannot be skewed by a release.
+// A HAND-CARRY OF THIS FILE ALONE could still ship a reader older than what it
+// imports; the hand-carry recipe in deploy/DEPLOY.md is where that is answered.
+import { readHistory, recurringUnsettled, scheduledRuns } from "../deploy/settlement-history.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_MANIFEST = join(HERE, "..", "deploy", "box-rollcall-manifest.json");
 
@@ -949,12 +971,10 @@ export function outcomeHistory(row, snapshot) {
   if (!path) return [];
   const f = (snapshot.files || {})[path];
   if (!f || !f.exists || typeof f.text !== "string") return [];
-  const rows = [];
-  for (const line of f.text.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try { rows.push(JSON.parse(line)); } catch { /* a torn line is not a crossing */ }
-  }
-  return rows;
+  // The log's own reader, on the text the snapshot already holds. The roll-call
+  // never opens this file itself — deploy/box-rollcall.sh reads it on the box
+  // and hands it over — so this is `readHistory(text)`, not `readHistory(path)`.
+  return readHistory(f.text);
 }
 
 /** The sentence to alarm with, or null when the output is fine. */
@@ -992,23 +1012,36 @@ export function judgeOutcome(row, snapshot) {
   // left_drafted, because a refused crossing never gets far enough to have
   // channel counts at all: its receipt carries zeros, so the starvation rule
   // below cannot see it.
+  //
+  // AND IT IS THE SCHEDULE THE QUESTION IS ABOUT (postmark#2979, 2026-09-21).
+  // The judgement is `recurringUnsettled` — the same function the crossing's own
+  // 05:45Z escalation calls — so the board and the escalation cannot answer
+  // differently about one log. It filters rather than skips: a by-hand line
+  // between two refusals must not shorten the evidence, and a run of by-hand
+  // probes is not the timer refusing. The window below is derived the same way
+  // for the SENTENCE, because the judgement returns a verdict, not its rows.
   const stuck = Number(spec.unsettled_runs);
-  const UNSETTLED = new Set(["refused", "starving", "race"]);
-  if (Number.isFinite(stuck) && stuck > 0 && history.length >= stuck) {
-    const window = history.slice(-stuck);
-    if (window.every((r) => UNSETTLED.has(String(r.status)))) {
-      const classes = [...new Set(window.map((r) => r.class).filter(Boolean))];
-      return (
-        `has not completed a crossing in its last ${stuck} attempts — ${window.map((r) => r.status).join(", ")}` +
-        `${classes.length ? ` (class ${classes.join(", ")})` : ""}. A refusal that keeps returning is terminal ` +
-        `whatever its class says: whatever produces it is upstream of the rerun.${means}`
-      );
-    }
+  if (recurringUnsettled(history, stuck)) {
+    const window = scheduledRuns(history).slice(-stuck);
+    const classes = [...new Set(window.map((r) => r.class).filter(Boolean))];
+    return (
+      `has not completed a crossing in its last ${stuck} attempts — ${window.map((r) => r.status).join(", ")}` +
+      `${classes.length ? ` (class ${classes.join(", ")})` : ""}. A refusal that keeps returning is terminal ` +
+      `whatever its class says: whatever produces it is upstream of the rerun.${means}`
+    );
   }
 
+  // THE SAME GAP FROM THE OTHER SIDE (postmark#2979). A by-hand publication is
+  // still a published crossing, so one of them anywhere in the window made
+  // `noneOut` false and the starvation alarm went quiet while the TIMER
+  // published nothing and left_drafted climbed. Judged on the scheduled lines,
+  // and the length gate counts them too: fewer than `runs` scheduled crossings
+  // is not yet evidence about the schedule, the same way its sibling above is
+  // deliberately false on a short history.
   const runs = Number(spec.zero_published_runs);
-  if (Number.isFinite(runs) && runs > 0 && history.length >= runs) {
-    const window = history.slice(-runs);
+  const scheduled = scheduledRuns(history);
+  if (Number.isFinite(runs) && runs > 0 && scheduled.length >= runs) {
+    const window = scheduled.slice(-runs);
     const noneOut = window.every((r) => Number(r.published || 0) === 0);
     const backedUp = Number(window[window.length - 1].left_drafted || 0) > Number(window[0].left_drafted || 0);
     if (noneOut && backedUp) {

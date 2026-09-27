@@ -57,6 +57,7 @@ import { ensureTownJournal, readTownJournal, appendTownJournal } from "../src/to
 import { paperActCommits } from "../src/town-updates.mjs";
 import { updateProfile, updateAddressBody } from "../src/edit.mjs";
 import { runTownDrain, TOWN_DOORS, isAncestorOfHead } from "../src/town-bridge.mjs";
+import { withRecordFrom } from "./registry-pool-stub.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 delete process.env.TOWN_PUSH; // nothing here may leave the machine
@@ -98,15 +99,24 @@ const logHome = () => join(scratch("2302-odb"), "oauth.db");
 const KEY = { household: "office", handles: new Set(["postmaster"]), ghId: "7", ghLogin: "keeminlee" };
 const db = fixtureDb();
 
-const withLog = (fn) => {
+// ASYNC-AWARE (POS-158). `return fn(o)` handed back a promise and the `finally`
+// then closed the db and cleared the flag while the drain was still running —
+// which is a teardown racing the thing it is tearing down, and it fails
+// somewhere else. It awaits now.
+const withLog = async (fn) => {
   process.env.TOWN_SINGLE_LOG = "1";
   const o = openOauthDb(logHome());
-  try { ensureTownJournal(o); return fn(o); }
+  try { ensureTownJournal(o); return await fn(o); }
   finally { o.close(); delete process.env.TOWN_SINGLE_LOG; }
 };
 
+// AWAITED AND POINTED AT THE RECORD (POS-158). The crossing reads the town's
+// registry from the store and writes its membership rows there, so this helper
+// seeds the store from whatever registry the clone already holds — which is the
+// same fixture this suite was already writing — and awaits the drain.
 const drain = (o, clone) =>
-  runTownDrain(o, { db, clone, doors: TOWN_DOORS, date: "2026-08-31", lockHeld: () => true, log: () => {} });
+  withRecordFrom(clone, () =>
+    runTownDrain(o, { db, clone, doors: TOWN_DOORS, date: "2026-08-31", lockHeld: () => true, log: () => {} }));
 
 const profileOf = (clone) => readFileSync(join(clone, "WHITE_PAGES", "postmaster", "PROFILE.md"), "utf8");
 
@@ -132,9 +142,9 @@ const FOUR = ["color:", "color_name:", "bio:", "runtime:"];
 // reports one replayed update and the assertion on `color:` fails, because the
 // no-op row was logged and its args were re-imposed. That red IS 63a38162.
 
-test("F1 · a door no-op, a hand edit, a crossing — the four fields SURVIVE (#2302, 63a38162)", () => {
+test("F1 · a door no-op, a hand edit, a crossing — the four fields SURVIVE (#2302, 63a38162)", async () => {
   const clone = postmasterClone();
-  withLog((o) => {
+  await withLog(async (o) => {
     // 1. the door call of the instance: four fields cleared, against a file
     //    that has none of them. Documented no-op — the door says so itself.
     const out = updateProfile(
@@ -155,7 +165,7 @@ test("F1 · a door no-op, a hand edit, a crossing — the four fields SURVIVE (#
     for (const f of FOUR) assert.ok(byHand.includes(f), `precondition: ${f} is on the card by hand`);
 
     // 3. the crossing.
-    const r = drain(o, clone);
+    const r = await drain(o, clone);
     assert.equal(r.ran, true, "the crossing ran");
     assert.equal(r.counts.update, 0, "and had no update row to replay, because none was ever written");
 
@@ -177,9 +187,9 @@ test("F1 · a door no-op, a hand edit, a crossing — the four fields SURVIVE (#
 // resident wrote more onto the same file. Same class, and the half the
 // companion fix cannot reach — the door DID write, so the row is real.
 
-test("F2 · a row whose commit is already behind HEAD is `already`, not replayed", () => {
+test("F2 · a row whose commit is already behind HEAD is `already`, not replayed", async () => {
   const clone = postmasterClone();
-  withLog((o) => {
+  await withLog(async (o) => {
     const out = updateProfile({ handle: "postmaster", bio: "keeper of the paper" }, KEY, db, clone, o);
     assert.ok(out.commit, "the door landed a real commit");
     const [row] = readTownJournal(o);
@@ -195,7 +205,7 @@ test("F2 · a row whose commit is already behind HEAD is `already`, not replayed
       "commit", "-q", "-m", "postmaster adds a colour by hand");
 
     const head = git(clone, "rev-parse", "HEAD");
-    const r = drain(o, clone);
+    const r = await drain(o, clone);
     assert.equal(r.updates.length, 1, "the row was read");
     assert.equal(r.updates[0].already, true, "and recognised as already applied");
     assert.deepEqual(r.updates[0].commits, [out.commit], "by its own recorded sha");
@@ -210,7 +220,7 @@ test("F2 · a row whose commit is already behind HEAD is `already`, not replayed
 // DID commit is a real row the companion no-op filter can never reach, so only
 // the ancestor guard stands between it and the resident's rewrite.
 
-test("F2b · a committed clear is not re-imposed over the rewrite that superseded it", () => {
+test("F2b · a committed clear is not re-imposed over the rewrite that superseded it", async () => {
   const clone = scratch("2302-reclear");
   mkdirSync(join(clone, "WHITE_PAGES", "postmaster"), { recursive: true });
   writeFileSync(join(clone, "WHITE_PAGES", "postmaster", "PROFILE.md"),
@@ -222,7 +232,7 @@ test("F2b · a committed clear is not re-imposed over the rewrite that supersede
   git(clone, "-c", "user.name=fixture", "-c", "user.email=fixture@test.invalid",
     "commit", "-q", "-m", "fixture: a profile with a bio");
 
-  withLog((o) => {
+  await withLog(async (o) => {
     const out = updateProfile({ handle: "postmaster", bio: "" }, KEY, db, clone, o);
     assert.ok(out.commit, "premise: clearing a field that was really there really commits");
     const file = join(clone, "WHITE_PAGES", "postmaster", "PROFILE.md");
@@ -235,7 +245,7 @@ test("F2b · a committed clear is not re-imposed over the rewrite that supersede
     git(clone, "-c", "user.name=postmaster", "-c", "user.email=postmaster@postmark.invalid",
       "commit", "-q", "-m", "postmaster writes a new bio by hand");
 
-    const r = drain(o, clone);
+    const r = await drain(o, clone);
     assert.equal(r.updates[0].already, true, "the clear is already in the history");
     assert.ok(readFileSync(file, "utf8").includes("on second thought, this one"),
       "#2302: the replay re-imposed a clear the resident had already superseded by hand");
@@ -252,9 +262,9 @@ test("F2b · a committed clear is not re-imposed over the rewrite that supersede
 // --hard` on the clone, which is exactly the shape below — the commit the row
 // names is no longer in this clone's history, and the act must land again.
 
-test("F3 · a row whose commit is NOT behind HEAD replays — no act is lost", () => {
+test("F3 · a row whose commit is NOT behind HEAD replays — no act is lost", async () => {
   const clone = postmasterClone();
-  withLog((o) => {
+  await withLog(async (o) => {
     const out = updateProfile({ handle: "postmaster", bio: "keeper of the paper" }, KEY, db, clone, o);
     assert.ok(out.commit, "the door committed");
 
@@ -264,7 +274,7 @@ test("F3 · a row whose commit is NOT behind HEAD replays — no act is lost", (
     assert.equal(isAncestorOfHead(clone, out.commit), false, "the sha is genuinely gone from this history");
     assert.ok(!profileOf(clone).includes("keeper of the paper"), "and so is the edit");
 
-    const r = drain(o, clone);
+    const r = await drain(o, clone);
     assert.equal(r.updates.length, 1);
     assert.notEqual(r.updates[0].already, true, "an unapplied row must not be skipped");
     assert.ok(r.updates[0].commit, "it replayed and committed");
@@ -283,9 +293,9 @@ test("F3 · a row whose commit is NOT behind HEAD replays — no act is lost", (
 // conservative grandfather is to replay as before, and this is that decision
 // made checkable rather than left to absent-reads-as-falsy.
 
-test("F4 · a commit-less legacy row is grandfathered — replayed as before", () => {
+test("F4 · a commit-less legacy row is grandfathered — replayed as before", async () => {
   const clone = postmasterClone();
-  withLog((o) => {
+  await withLog(async (o) => {
     // the pre-fix row shape, written by hand: args only, no outcome
     appendTownJournal(o, {
       cls: "update", act: "profile", household: "office", handle: "postmaster",
@@ -295,7 +305,7 @@ test("F4 · a commit-less legacy row is grandfathered — replayed as before", (
     const [row] = readTownJournal(o);
     assert.equal(row.payload.commits, undefined, "precondition: the legacy row carries no outcome");
 
-    const r = drain(o, clone);
+    const r = await drain(o, clone);
     assert.equal(r.updates.length, 1);
     assert.notEqual(r.updates[0].already, true, "an absent outcome is not an empty one");
     assert.ok(profileOf(clone).includes("written before the fix"), "the legacy row settled, as it always did");
@@ -314,7 +324,7 @@ test("F4 · a commit-less legacy row is grandfathered — replayed as before", (
 // it, and lose the resident's shown name; one that skipped on ANY sha matching
 // would pass over an act whose second half never landed. Both halves, or replay.
 
-test("F5 · paperActCommits reads the act's whole outcome, not just the top level", () => {
+test("F5 · paperActCommits reads the act's whole outcome, not just the top level", async () => {
   assert.deepEqual(paperActCommits({ commit: "a".repeat(40) }), ["a".repeat(40)],
     "the one-commit shape");
   assert.deepEqual(
@@ -329,9 +339,9 @@ test("F5 · paperActCommits reads the act's whole outcome, not just the top leve
     "and one that truly wrote nothing is the empty list");
 });
 
-test("F5b · a two-commit row replays unless EVERY sha is behind HEAD", () => {
+test("F5b · a two-commit row replays unless EVERY sha is behind HEAD", async () => {
   const clone = postmasterClone();
-  withLog((o) => {
+  await withLog(async (o) => {
     const out = updateAddressBody({ handle: "postmaster", body: "the office window" }, KEY, db, clone, o);
     assert.ok(out.commit, "one real commit landed");
     // the row as the w37 two-file act would write it: the landed half plus a
@@ -343,7 +353,7 @@ test("F5b · a two-commit row replays unless EVERY sha is behind HEAD", () => {
         commits: [out.commit, "e".repeat(40)] },
     });
 
-    const r = drain(o, clone);
+    const r = await drain(o, clone);
     const two = r.updates.find((u) => u.seq === 2);
     assert.notEqual(two.already, true,
       "one half in the history is not the act — a partially-applied act must replay");
@@ -355,7 +365,7 @@ test("F5b · a two-commit row replays unless EVERY sha is behind HEAD", () => {
 // F6 · THE LAW IS STILL WRITTEN WHERE THE FALSIFIERS QUOTE IT FROM
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("F6 · the contract sentence this fix makes true again is still in town-updates.mjs", () => {
+test("F6 · the contract sentence this fix makes true again is still in town-updates.mjs", async () => {
   // the jsdoc prefix is stripped before the quote is looked for, so the law may
   // be re-wrapped without this going red — only a REWORDING breaks it
   const src = readFileSync(join(ROOT, "src", "town-updates.mjs"), "utf8")
@@ -377,9 +387,9 @@ test("F6 · the contract sentence this fix makes true again is still in town-upd
 // does not regress the hotfix at the w37 release; this is the falsifier that
 // says it did not.
 
-test("F7 · the two-file profile act records BOTH commits, and a name-only call is not a no-op", () => {
+test("F7 · the two-file profile act records BOTH commits, and a name-only call is not a no-op", async () => {
   const clone = postmasterClone();
-  withLog((o) => {
+  await withLog(async (o) => {
     // a call that touches both files: a bio (PROFILE.md) and a shown name
     // (ADDRESS.md's `agent`, through its own writer)
     const both = updateProfile(
@@ -407,7 +417,7 @@ test("F7 · the two-file profile act records BOTH commits, and a name-only call 
 
     // the crossing: both rows are already in the history, so neither replays
     const head = git(clone, "rev-parse", "HEAD");
-    const r = drain(o, clone);
+    const r = await drain(o, clone);
     assert.deepEqual(r.updates.map((u) => u.already), [true, true], "both acts are already applied");
     assert.equal(git(clone, "rev-parse", "HEAD"), head, "and the crossing wrote nothing on top");
     assert.ok(readFileSync(join(clone, "WHITE_PAGES", "postmaster", "ADDRESS.md"), "utf8")

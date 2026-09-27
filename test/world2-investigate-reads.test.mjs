@@ -58,6 +58,14 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 
 import * as apex from "../world2/tools/apex-reads.mjs";
+// THE FIXTURE RESOLVES THE CLONE THE WAY THE DOOR DOES, or its guards watch a
+// different office than the one under test. `world2-serve.mjs § engine` reads
+// this constant, NOT `process.env.WORLD_CLONE`, and the constant falls back to
+// `<office>/world-clone` (`src/world-store.mjs:305`). So `env -u WORLD_CLONE`
+// in a pool tree does not make the office engine-less — it only blinds a
+// fixture that reads the raw variable, which is how this file came to have a
+// skip guard that opened in a configuration where the door still had an engine.
+import { WORLD_CLONE } from "../src/world-store.mjs";
 
 const env = { pg: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL };
 before(() => {
@@ -111,13 +119,40 @@ const ROWS = [ROOT, HOUSE, GHOST];
 // terrain here would make both sides agree about a world that does not exist.
 const LAW_SHA = "a23a8d174776db4d325631a3b9ecf9380cecb722";
 let SKELETON_ROWS = null;
+// THE REFUSAL TEST'S SKELETON CANNOT COME FROM THE CLONE, BECAUSE THE ABSENT
+// CLONE IS WHAT IT IS TESTING. The door asks for a non-null terrain (`:722`)
+// BEFORE it reaches the engine (`:727`), so a fixture whose skeleton is also
+// keyed on WORLD_CLONE makes the engine arm unreachable in the one
+// configuration where this test runs — it refuses `carries no skeleton` and the
+// arm it names is never touched. The fallback is used ONLY when the clone is
+// absent, and the only test that runs then is this refusal, which has no oracle
+// to disagree with: it needs a terrain that EXISTS, never a terrain that is
+// right. Every equality test skips without the engine, so the town's own
+// skeleton remains the only one any comparison ever sees.
+//
+// ITS LIMIT, SAID OUT LOUD: this fallback is reached only on a run with NO
+// world clone resolvable at all — not merely `env -u WORLD_CLONE`, which still
+// finds `<office>/world-clone`. Every pool tree and the box carry that clone, so
+// this guard is exercised in CI-without-a-clone and nowhere else; everywhere
+// else the test skips because the door really does have an engine. That is the
+// same silent-skip class POS-131 handed up, and it is named here rather than
+// discovered later. One row is enough because `skeletonFromLawRows` returns
+// null only for an EMPTY list (`test/world2-apex-reads.test.mjs:250` pins
+// exactly that), and where this fallback is reached the door refuses at
+// `engine()` before `assembleWorld` ever dereferences the terrain — so a
+// minimal skeleton is never asked to be a real one. It would be asked, and
+// would throw on `elevation.fog_ceiling_m`, if it ever met a LIVE engine; the
+// guard above keeps the fixture and the door reading one clone so it cannot.
+const FALLBACK_SKELETON = [
+  { kind: "skeleton", key: "light", path: "WORLD/skeleton.json", data: { from: "NE" } },
+];
 before(async () => {
   try {
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
-    const doc = JSON.parse(readFileSync(join(process.env.WORLD_CLONE, "WORLD", "skeleton.json"), "utf8"));
+    const doc = JSON.parse(readFileSync(join(WORLD_CLONE, "WORLD", "skeleton.json"), "utf8"));
     SKELETON_ROWS = Object.entries(doc).map(([key, data]) => ({ kind: "skeleton", key, path: "WORLD/skeleton.json", data }));
-  } catch { SKELETON_ROWS = null; }
+  } catch { SKELETON_ROWS = FALLBACK_SKELETON; }
 });
 
 function fixturePool({ rows = ROWS, law = undefined } = {}) {
@@ -149,7 +184,7 @@ before(async () => {
     const branches = await import("../src/world-branches.mjs");
     const { pathToFileURL } = await import("node:url");
     const { join } = await import("node:path");
-    const clone = process.env.WORLD_CLONE;
+    const clone = WORLD_CLONE;
     if (!clone) throw new Error("WORLD_CLONE is unset");
     const dir = branches.materializeAtRef(clone, branches.freshestMainRef(clone), "tools");
     const at = (f) => import(pathToFileURL(join(dir, "tools", f)).href);

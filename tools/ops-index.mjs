@@ -7,7 +7,7 @@
 // the instruments behind it has stopped — and /ops/world/ had been frozen since
 // 2026-07-31 without the hub showing a mark on it.
 //
-// So the hub is a generated page now, a sibling of the four it points at: one
+// So the hub is a generated page now, a sibling of the five it points at: one
 // card per dashboard carrying a live headline number, a 14-day sparkline, and a
 // FRESHNESS chip read from that dashboard's own generated_at. A card whose JSON
 // twin is missing, unparseable or stale says so in red and still links through.
@@ -19,7 +19,7 @@
 // Output: $OPS_ROOT/index.html (+ data.json — the freshness roll-up, so a
 // monitor can poll one file instead of four).
 //
-// Ordering note for the box: this must run AFTER its four siblings, so install
+// Ordering note for the box: this must run AFTER its five siblings, so install
 // it as /etc/cron.hourly/zz-postmark-ops-index (run-parts runs alphabetically).
 // Reading a sibling's twin one cycle late is not fatal — the chip reports the
 // twin's own generated_at, not this run's — but out of order it is always stale
@@ -36,7 +36,7 @@ const { esc, comma, compact } = V;
 
 // The four twins write their timestamp in three different shapes; a hub that
 // only understood one of them would report the others as broken.
-//   traffic  "2026-08-11 14:04Z"        git  "2026-08-11T13:55:38.203Z"
+//   traffic  "2026-08-11 14:04Z"        git, activity  "2026-08-11T13:55:38.203Z"
 //   economy/world  "2026-08-11 14:08 UTC"
 function parseStamp(s) {
   if (!s) return null;
@@ -149,6 +149,25 @@ const SHELF = [
         // rides its own chip rather than tinting a number it does not describe
         flag: d.crossing?.status === "ok" ? null
           : { cls: d.crossing?.status === "warn" ? "warn" : "red", text: `crossing ${d.crossing?.status ?? "unknown"}` },
+      };
+    },
+  },
+  {
+    // WHO IS STILL HERE (POS-216, 2026-09-23 — Keemin: "it's hard to know how
+    // many of them (and how many households) are still actually active"). The
+    // headline is distinct RESIDENTS who wrote on the public record this week;
+    // households (acted or read) ride the sub-line. Reads never appear per
+    // household here — the twin publishes them only as buckets.
+    slug: "activity", href: "activity/", emblem: "◉", kind: "Dashboard", title: "Who is active",
+    line: "How many residents and households are still here: who wrote on the public record, which households called the office, new against returning, and retention by join month.",
+    read: (d) => {
+      const r = d.recent ?? {};
+      const w = r.acted_residents ?? { cur: 0, prev: 0 };
+      return {
+        stamp: d.generated_at,
+        value: comma(w.cur), unit: `residents acted in the last ${r.window_days ?? 7} days`,
+        sub: `${deltaWord(w)} · ${comma(r.active_households?.cur ?? 0)} households active · ${comma(d.lifetime?.residents ?? 0)} residents lifetime`,
+        spark: (r.spark14 ?? []).map((x) => Number(x) || 0),
       };
     },
   },
@@ -271,7 +290,7 @@ const html = V.page({
   here: "/ops/",
   stamp: `hub regenerated ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC · each card reads its own dashboard's data.json twin · <a href="data.json">roll-up</a>`,
   body: `${banner}<nav class="shelf" aria-label="Operator dashboards">${cards.join("")}</nav>`,
-  footer: `Every card's number and trend come from the dashboard's own published JSON twin, and the chip beside it is that twin's <code>generated_at</code>, not this page's — so an instrument that stops is visible from the hub instead of only from its own frozen page. Generator: <code>postmark-office/tools/ops-index.mjs</code>, hourly cron, after its four siblings. Unlinked + noindex.`,
+  footer: `Every card's number and trend come from the dashboard's own published JSON twin, and the chip beside it is that twin's <code>generated_at</code>, not this page's — so an instrument that stops is visible from the hub instead of only from its own frozen page. Generator: <code>postmark-office/tools/ops-index.mjs</code>, hourly cron, after its five siblings. Unlinked + noindex.`,
   extraCss: EXTRA,
 });
 

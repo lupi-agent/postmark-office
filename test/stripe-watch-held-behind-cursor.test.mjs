@@ -61,6 +61,7 @@ import { promisify } from "node:util";
 
 import { CROSSING_MS } from "../src/crossings.mjs";
 import { HANDLE_FIELD, decodeSession } from "../tools/stripe-watch.mjs";
+import { NO_TOWN, townClone } from "./fixture-paths.mjs";
 // `unwitnessedSeen` is imported inside F5 rather than here ON PURPOSE. A static
 // import of a symbol the train tip does not export is a LOAD error, and a load
 // error reds every case in the file for a reason none of them is about — the
@@ -73,8 +74,9 @@ const run = promisify(execFile);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, "..", "tools", "stripe-watch.mjs");
-const TOWN = [resolve(HERE, "..", "town-clone"), "G:/postmark/seam-overnight/town-clone"]
+const TOWN = [townClone()].filter(Boolean)
   .find((p) => existsSync(join(p, "tools", "stamp-mint.mjs")));
+const SKIP = !TOWN && NO_TOWN;
 
 const KEY = "rk_test_thisisnotarealkey";
 const HELD = "cs_test_held1111111111111111111";
@@ -146,7 +148,7 @@ async function tick({ live = [], journal = [], cursor, t }) {
   return { report: JSON.parse(stdout), state: JSON.parse(readFileSync(statePath, "utf8")), seen, town, statePath, journalPath };
 }
 
-test("F1 · a seen-unwitnessed row BEHIND the cursor is decided, though the live listing is empty", async (t) => {
+test("F1 · a seen-unwitnessed row BEHIND the cursor is decided, though the live listing is empty", { skip: SKIP }, async (t) => {
   const raw = session();
   const { report } = await tick({ live: [], journal: [seenRow(raw)], cursor: DUE + 3600, t });
 
@@ -167,7 +169,7 @@ test("F1 · a seen-unwitnessed row BEHIND the cursor is decided, though the live
   assert.equal(report.rechecked, 1, "and the tick SAYS it re-read the journal, so the operator can tell the two reads apart");
 });
 
-test("F2 · a session the journal already recorded as witnessed is not re-decided at all", async (t) => {
+test("F2 · a session the journal already recorded as witnessed is not re-decided at all", { skip: SKIP }, async (t) => {
   const raw = session();
   const journal = [
     seenRow(raw),
@@ -186,7 +188,7 @@ test("F2 · a session the journal already recorded as witnessed is not re-decide
   assert.equal(report.rechecked, 0, "the watcher does not even TRY a session it already witnessed");
 });
 
-test("F3 · the cursor still finds NEW sessions and still advances over them", async (t) => {
+test("F3 · the cursor still finds NEW sessions and still advances over them", { skip: SKIP }, async (t) => {
   const fresh = session({ id: NEWER, created: DUE + 7200, payment_intent: "pi_newer" });
   const { report, state, seen } = await tick({ live: [fresh], journal: [], cursor: DUE, t });
 
@@ -197,7 +199,7 @@ test("F3 · the cursor still finds NEW sessions and still advances over them", a
   assert.equal(report.witness[0].session, NEWER);
 });
 
-test("F4 · a session in BOTH the listing and the journal is decided from the LIVE read, not the snapshot", async (t) => {
+test("F4 · a session in BOTH the listing and the journal is decided from the LIVE read, not the snapshot", { skip: SKIP }, async (t) => {
   // The journal remembers it as it was first seen — unpaid. Stripe says paid
   // now. A journal row that won here would freeze every session at the moment
   // it was worst understood, which is the bug this file retires, one layer down.
@@ -212,7 +214,7 @@ test("F4 · a session in BOTH the listing and the journal is decided from the LI
   assert.equal(report.rechecked, 0, "the live listing already carries it — there is nothing to re-decide");
 });
 
-test("F5 · unwitnessedSeen is the whole rule, and it is pure", async () => {
+test("F5 · unwitnessedSeen is the whole rule, and it is pure", { skip: SKIP }, async () => {
   const { unwitnessedSeen } = await import("../tools/stripe-watch.mjs");
   assert.equal(typeof unwitnessedSeen, "function", "the tick's journal rule is exported, so it can be read and tested on its own");
   const rows = [

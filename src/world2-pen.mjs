@@ -49,8 +49,9 @@
 // fallback's coat" (DESIGN §5 D2). The cost is chosen knowingly: after the
 // flip a Postgres outage is a visible town outage (DESIGN §4 F1).
 
-import { world2Enabled, MIRROR_EXPIRES, LANE_MIRROR, mirrorExpiresFor } from "./world2-acts.mjs";
+import { world2Enabled } from "./world2-acts.mjs";
 import { currentCrossing } from "./crossings.mjs";
+import { sessionKeysVia, sessionKeyString } from "./household-deriver.mjs";
 
 // ── A LATE ROW MAY NOT ENTER A CERTIFIED WINDOW (the act-4171 class, 2026-09-04) ─
 //
@@ -136,8 +137,46 @@ export class PenUnreachableError extends Error {
   }
 }
 
+/**
+ * Test seam: hand the module a pool. Never used by the office.
+ *
+ * `world2-acts.mjs` has carried the same one export for one line since the
+ * shadow era, and this file needed none because nothing awaited its pen — a
+ * suite either injected a client straight into `insertAct` or let the
+ * fire-and-forget queue fail into a console line nobody asserted on.
+ *
+ * G1 (POS-156, RULING 3) makes `penWrite` the office's ONE write and makes it
+ * refusable, so "this suite writes an act" now means "this suite points the
+ * office at a record". Without a seam here every act-writing suite would have
+ * to reach a live Postgres, and the alternative — leaving them unable to write
+ * at all — is a suite that proves the refusal and nothing else.
+ */
+export function __setPoolForTest(p) { state.pool = p; }
+
+class NoRecordError extends Error {
+  constructor() {
+    super("this office is not pointed at a record (WORLD2_PG / WORLD2_PG_URL are unset)");
+    this.name = "NoRecordError";
+  }
+}
+
 async function pool(env = process.env) {
   if (state.pool) return state.pool;
+  // ── AN OFFICE POINTED AT NO RECORD SAYS SO, AND DOES NOT DIAL (G1) ─────
+  //
+  // `new pg.Pool({ connectionString: undefined })` is not an error: it falls
+  // back to libpq's defaults and tries localhost:5432 or a unix socket. Before
+  // G1 that never happened on this path -- `mirrorAct` checked
+  // `world2Enabled()` and returned, so an office with no store simply wrote its
+  // sqlite row and moved on. G1 made this the ONE write, and without this guard
+  // every act on an unconfigured office would wait out a connection attempt to
+  // a database nobody configured, then refuse anyway.
+  //
+  // So it refuses IMMEDIATELY and by name. `penWrite` and `officeRead` wrap it
+  // in the ruled sentence the resident is owed either way -- what changes is
+  // that the cause now says "not pointed at a record" instead of ECONNREFUSED
+  // against a port the operator never chose.
+  if (!world2Enabled(env)) throw new NoRecordError();
   const { default: pg } = await import("pg");
   state.pool = new pg.Pool({ connectionString: env.WORLD2_PG_URL, max: 3 });
   return state.pool;
@@ -176,18 +215,27 @@ export function laneFlipped(lane, env = process.env) {
 // ── R1's one home: a single client, a single transaction ────────────────────
 /**
  * Run `fn(client)` inside BEGIN/COMMIT on a dedicated client. When
- * `household` is given, `app.household` is declared first with the
- * transaction-scoped set_config — world2-claims.mjs § withHousehold documents
- * why the dedicated client and the explicit ROLLBACK are not optional on a
- * pooled connection; this is that shape, generalized as DESIGN §2 R1 asked.
+ * `household` is given, `app.household` AND `app.household_keys` are declared
+ * first with the transaction-scoped set_config — world2-claims.mjs §
+ * withHousehold documents why the dedicated client and the explicit ROLLBACK
+ * are not optional on a pooled connection, and why there are two settings
+ * rather than one; this is that shape, generalized as DESIGN §2 R1 asked.
+ *
+ * THE SET IS RESOLVED ON THE POOL, BEFORE `connect()`, for this function's own
+ * stated reason one paragraph down in `penWrite`: "a resolver running inside
+ * would be a query on a second connection while this one holds the transaction
+ * open." `sessionKeysVia` reads the registry, so it runs here.
  */
 export async function officeWrite(fn, { household = null, env = process.env } = {}) {
   const p = await pool(env);
+  const keys = household == null ? [] : await sessionKeysVia(p, household);
   const client = await p.connect();
   try {
     await client.query("BEGIN");
     if (household != null) {
       await client.query("SELECT set_config('app.household', $1, true)", [household]);
+      await client.query("SELECT set_config('app.household_keys', $1, true)",
+        [sessionKeyString(keys) ?? ""]);
     }
     const out = await fn(client);
     await client.query("COMMIT");
@@ -261,16 +309,39 @@ export async function insertAct(client, rowIn, seq = null, { lateArrival = null 
   const row = lateCrossingGuard(rowIn, { lateArrival });
   const { householdKeyFor } = await import("./world2-claims.mjs");
   const household = row.household == null ? null : await householdKeyFor(client, row.household);
-  const { rows: [r] } = await client.query(
-    `INSERT INTO acts (at, crossing, actor, action, object,
-                       at_anchor, at_dx, at_dy, witnesses, class,
-                       payload, effect, household, journal_seq)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-     RETURNING id`,
-    [row.written_at, row.crossing, row.actor, row.action, row.object,
-     row.at_anchor, row.at_dx, row.at_dy, row.witnesses, row.class,
-     row.payload, row.effect, household, seq]);
+  // `acts.journal_seq` IS DROPPED (G1 / POS-156, migration 025). It held the
+  // sqlite rowid an act was mirrored FROM, and there is no sqlite row any more
+  // -- 001 called it "the shadow-era pairing key, dying at cutover", and this
+  // is the cutover. `seq` is still TAKEN, because the arena's mirror still has
+  // one to offer and a caller that passed it would otherwise think it landed;
+  // it is ignored here, deliberately and in writing.
+  const { text, values } = actsInsert(row, household);
+  const { rows: [r] } = await client.query(`${text} RETURNING id`, values);
   return r.id;
+}
+
+/**
+ * THE ACTS INSERT, ONE SPELLING FOR BOTH PENS (this one and world2-acts.mjs §
+ * mirrorAct). `household` is the already-resolved key.
+ *
+ * `nonce` (migration 027, POS-265) is named ONLY for a row that carries one.
+ * A row without it is the thirteen-column INSERT it has always been, so an
+ * office on this code runs unchanged against a store that has not taken 027;
+ * the say is the one writer that sets it, and it asks the store first
+ * (world.mjs § actsHaveNonce).
+ */
+export function actsInsert(row, household) {
+  const cols = ["at", "crossing", "actor", "action", "object",
+    "at_anchor", "at_dx", "at_dy", "witnesses", "class",
+    "payload", "effect", "household"];
+  const values = [row.written_at, row.crossing, row.actor, row.action, row.object,
+    row.at_anchor, row.at_dx, row.at_dy, row.witnesses, row.class,
+    row.payload, row.effect, household];
+  if (row.nonce != null) { cols.push("nonce"); values.push(row.nonce); }
+  return {
+    text: `INSERT INTO acts (${cols.join(", ")}) VALUES (${values.map((_, i) => `$${i + 1}`).join(",")})`,
+    values,
+  };
 }
 
 /**
@@ -372,12 +443,10 @@ export function penStatus() {
   return {
     flipped_lanes: [...flippedLanes()],
     written, failed, refused, lastError,
-    // `expires` keeps its scalar shape — the governed lanes' shared backstop —
-    // and `lane_expiry` carries the per-lane truth beside it (DEC-2), null where
-    // a lane is exempt by ruling. Same pair mirrorStatus() answers with.
-    expires: MIRROR_EXPIRES,
-    lane_expiry: Object.fromEntries(
-      Object.keys(LANE_MIRROR).map((lane) => [lane, mirrorExpiresFor(lane)])),
+    // `expires` and `lane_expiry` are GONE with the map that fed them (G1 /
+    // POS-156). They were the reverse mirror's backstop dates, and the reverse
+    // mirror is deleted -- `appendActFlipped` writes no sqlite row. Same
+    // removal, same reason, as `mirrorStatus()`.
   };
 }
 

@@ -38,3 +38,14 @@ world-shadow-diff.jsonl*
 # and this book is the office procedure the law puts outside itself.
 .subscription-endpoints.json
 .subscription-endpoints.json.tmp
+
+# the OMC orchestration layer's runtime residue. It is per-operator session
+# state — HUD caches and per-session scratch under `.omc/state/` — that the
+# office neither reads nor ships. Two files of it were tracked at the top level
+# and therefore rode the release train into `/srv/postmark-office/.omc/` on dev
+# and prod, where nothing has ever read them (Keemin 2026-09-21, ROLLOVER 25).
+# Untracking is what stops the carry: `stage/` is a `git archive` of the tag, so
+# a directory the tag does not carry is never in `dirs.txt` and never rsync'd.
+# The name is ALSO in the workflow's exclusion list beside telemetry/.github, as
+# the second net for the day somebody re-adds it by reflex.
+.omc/

@@ -23,8 +23,10 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { SCHEMA } from "../src/schema.mjs";
 import { questBoardFor, standingJoin, standingFor, STANDING_FACT, STANDING_NOTES } from "../src/queries.mjs";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 
-const TOWN = "G:/Wright-HQ/postmark"; // the same real checkout every office test imports the town's tools from
+const TOWN = townClone(); // the same real checkout every office test imports the town's tools from
+const SKIP = !TOWN && NO_TOWN;
 
 // A registry that carries one of every SHAPE the join branches on, not one of
 // every id in the town's file: the shapes are what the code distinguishes.
@@ -64,8 +66,8 @@ const FRESH = {
 
 // ── the id map is BOUND to the town's, not trusted ───────────────────────────
 
-test("STANDING_FACT covers exactly the town's own ONBOARDING_IDS", async () => {
-  const { ONBOARDING_IDS } = await import(`file:///${TOWN}/tools/quest-progress.mjs`);
+test("STANDING_FACT covers exactly the town's own ONBOARDING_IDS", { skip: SKIP }, async () => {
+  const { ONBOARDING_IDS } = await import(townModuleUrl("tools", "quest-progress.mjs"));
   // `walk-the-world` is the one onboarding row this index cannot settle — the
   // world lives outside the town checkout — so it is the deliberate difference,
   // and it is named here rather than left as an off-by-one nobody can read.
@@ -75,8 +77,8 @@ test("STANDING_FACT covers exactly the town's own ONBOARDING_IDS", async () => {
     "the office's id→fact map has drifted from the town's onboarding line. This map is a second copy of the town's private FACT_OF; when the town renames or adds a row, this assertion is the only thing between that rename and a board that silently stops measuring it.");
 });
 
-test("every id STANDING_FACT names is answered by onboardingFactsFor", async () => {
-  const t = await import(`file:///${TOWN}/tools/quest-progress.mjs`);
+test("every id STANDING_FACT names is answered by onboardingFactsFor", { skip: SKIP }, async () => {
+  const t = await import(townModuleUrl("tools", "quest-progress.mjs"));
   const facts = t.onboardingFactsFor(TOWN, "wright");
   for (const [id, fact] of Object.entries(STANDING_FACT)) {
     assert.ok(fact in facts, `${id} maps to the fact "${fact}", which onboardingFactsFor does not answer`);
@@ -132,7 +134,7 @@ test("the welcome row is undated, and never wears the day a letter arrived", () 
     "the welcome row borrowed first-answer's date");
 });
 
-test("the welcome row says the TOWN paid it — not that the resident did it", () => {
+test("the welcome row says the TOWN paid it — not that the resident did it", { skip: SKIP }, () => {
   const p = standingJoin(row("welcome-to-postmark"), SETTLED);
   assert.equal(p.note, STANDING_NOTES.welcome_paid,
     "a settled, undated row with a silent null date reads as a row nobody looked at");
@@ -258,7 +260,7 @@ test("first-idea takes its number and its day from the store, and SAYS SO when t
 
 // ── repair 4: the door's own promise, held to ────────────────────────────────
 
-test("NO unmeasured row anywhere on a board is left without a note — driven both ways", async () => {
+test("NO unmeasured row anywhere on a board is left without a note — driven both ways", { skip: SKIP }, async () => {
   const day = await today();
   // `read_quests` now promises an uncounted row "always names in `note` the
   // surface that CAN answer it". This is that sentence, executable.
@@ -272,7 +274,7 @@ test("NO unmeasured row anywhere on a board is left without a note — driven bo
 
 // ── repair 5: the notes are for residents, not for us ────────────────────────
 
-test("no note is written in office dialect", () => {
+test("no note is written in office dialect", { skip: SKIP }, () => {
   // The one note wright actually sees rides the only row left on his checklist.
   // The founder's complaint that morning was that his page said things he could
   // not parse; answering it in our own vocabulary would be the same failure in
@@ -356,11 +358,11 @@ function dbWith(standing, day) {
 const meta = (day) => ({ quest_registry: REGISTRY, quest_day: day });
 const q = (board, id) => board.quests.find((x) => x.id === id);
 async function today() {
-  const { townDay } = await import(`file:///${TOWN}/tools/quest-progress.mjs`);
+  const { townDay } = await import(townModuleUrl("tools", "quest-progress.mjs"));
   return townDay();
 }
 
-test("the founder's own board: every settled row measured, with its day", async () => {
+test("the founder's own board: every settled row measured, with its day", { skip: SKIP }, async () => {
   const day = await today();
   const board = await questBoardFor(dbWith(SETTLED, day), meta(day), "wright", TOWN);
   // the two dailies are untouched by this seam
@@ -415,7 +417,7 @@ const boardWithWorld = async (block) => {
   return questBoardFor(dbWith(SETTLED, day), meta(day), "wright", TOWN, { worldBlock: async () => block });
 };
 
-test("#2773 the served board carries the world row the office actually read", async () => {
+test("#2773 the served board carries the world row the office actually read", { skip: SKIP }, async () => {
   const standing = await boardWithWorld({ mark_id: "wright/the-house", x: 10, y: 20, sited: true });
   assert.equal(q(standing, "walk-the-world").complete, true, "the board did not ask the world, or did not carry its answer");
   assert.equal(q(standing, "walk-the-world").measured, true, "an unmeasured row is filed under Still to do whatever `complete` says");
@@ -431,7 +433,7 @@ test("#2773 the served board carries the world row the office actually read", as
   assert.equal(q(blind, "walk-the-world").note, STANDING_NOTES.world_elsewhere);
 });
 
-test("#2773 a decided verdict is used VERBATIM and the board reads nothing — the 08-15 gate, one layer down", async () => {
+test("#2773 a decided verdict is used VERBATIM and the board reads nothing — the 08-15 gate, one layer down", { skip: SKIP }, async () => {
   // Keemin's ruling, 2026-08-15: "the gaps are yours to see, not theirs to be
   // seen by" — and whether a home is sited is one of the two gap-shaped facts
   // named under it. `nextStepsFor` honours that by SKIPPING the world read on a
@@ -464,7 +466,7 @@ test("#2773 a decided verdict is used VERBATIM and the board reads nothing — t
   assert.equal(q(told, "walk-the-world").complete, true);
 });
 
-test("#2773 the board's world fact comes from the same reader the doorstep uses", async () => {
+test("#2773 the board's world fact comes from the same reader the doorstep uses", { skip: SKIP }, async () => {
   // One office, one answer to "is this home standing". `worldSitedFor` is the
   // three-way the doorstep's onboarding row already calls; the board calls the
   // same function rather than re-deriving `sited === true` beside it, so the
@@ -482,7 +484,7 @@ test("#2773 the board's world fact comes from the same reader the doorstep uses"
   assert.equal(asks, 1, `the board opened the world ${asks} times for one row`);
 });
 
-test("a board served off an index without the fold is exactly as unmeasured as it was", async () => {
+test("a board served off an index without the fold is exactly as unmeasured as it was", { skip: SKIP }, async () => {
   const day = await today();
   const board = await questBoardFor(dbWith(null, day), meta(day), "wright", TOWN);
   for (const id of ["write-your-card", "first-letter-out", "correspond-depth"]) {
@@ -521,8 +523,12 @@ import { join } from "node:path";
 import { nextStepsFor } from "../src/queries.mjs";
 import { fixtureDb } from "./fixture.mjs";
 
-// the office's own resolution order, matching next-steps.test.mjs
-const LIVE_TOWN = [join(process.cwd(), "town-clone"), TOWN].find((p) => existsSync(join(p, "quest-registry.json")));
+// the office's own resolution order, matching next-steps.test.mjs. It WAS a
+// second order of its own — `process.cwd()/town-clone`, which names a different
+// directory depending on where the runner was started, then the operator's own
+// disk. One resolver now, so this block and the ones above cannot disagree
+// about which checkout they read.
+const LIVE_TOWN = TOWN;
 
 async function stepsWith(standing) {
   const { readFileSync } = await import("node:fs");
@@ -532,7 +538,7 @@ async function stepsWith(standing) {
   return nextStepsFor(db, meta, "wright", LIVE_TOWN);
 }
 
-test("no step ever tells a resident a standing fact happened TODAY", async () => {
+test("no step ever tells a resident a standing fact happened TODAY", { skip: SKIP }, async () => {
   // A resident PART-WAY through the milestone is the shape that can go wrong:
   // a settled row is skipped by the composer's `complete === true` guard and so
   // could never carry a false tail, and asserting against a settled resident
@@ -553,7 +559,7 @@ test("no step ever tells a resident a standing fact happened TODAY", async () =>
   }
 });
 
-test("a settled milestone leaves the doorstep list entirely", async () => {
+test("a settled milestone leaves the doorstep list entirely", { skip: SKIP }, async () => {
   const settled = await stepsWith(SETTLED);
   const fresh = await stepsWith(FRESH);
   const ids = (ns) => new Set(ns.steps.map((s) => s.id));
@@ -568,7 +574,7 @@ test("a settled milestone leaves the doorstep list entirely", async () => {
     "correspond-depth has no door; it belongs on the board, not on a list of what is left to do");
 });
 
-test("the doorstep and the board agree about the seven arrival rows", async () => {
+test("the doorstep and the board agree about the seven arrival rows", { skip: SKIP }, async () => {
   const { readFileSync } = await import("node:fs");
   const db = fixtureDb();
   db.prepare("INSERT INTO quest_standing (handle, json) VALUES (?, ?)").run("wright", JSON.stringify(SETTLED));

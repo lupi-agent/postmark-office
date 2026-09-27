@@ -8,7 +8,7 @@
 //   2. a carrier is CLASS-DECLARED            — nothing here knows the word "boat"
 //   3. the carrier runs on her timetable      — position = f(timetable, clock)
 //   4. a walk never boards                    — the quay beside her (POS-247)
-//   5. carriage is nothing happening          — she sails, your offset holds
+//   5. carriage is nothing happening          — no test since POS-247 (below)
 //   6. hearing composes through the frame     — and needed no change to do it
 //   7. the contract is shown at the boundary  — terms before the step
 //   8. the freeze is a change of pen          — and refuses to be a change of place
@@ -28,7 +28,8 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 
 import { openDynamic, movementV2Enabled } from "../src/dynamic-store.mjs";
-import { declareMovement, readMovements, mergedDepartureEvents } from "../src/dynamic-entities.mjs";
+// `declareMovement` is GONE (G1 / POS-156) and was already unused here.
+import { readMovements, mergedDepartureEvents } from "../src/dynamic-entities.mjs";
 import {
   carriersFrom, carriersWithDisclosure, foldFrames, gunwaleWarning, inRect, boundariesOnRoad,
 } from "../src/world-frames.mjs";
@@ -43,6 +44,7 @@ import { parityRows, marksAsOf, BERTH_TOLERANCE_M } from "../tools/vessel-parity
 import { freezeSeamLine, isFrozen, seamDiff, standingOnDeck, ashoreFor, ledgerWriters, unflaggedWriters, execCallers } from "../tools/ledger-freeze.mjs";
 import { atCrossing, departure, fixtureMarks, makeWorldClone, QUAY, FAR_SHORE } from "./movement-fixture.mjs";
 import { WORLD_CLONE } from "../src/world-store.mjs";
+import { useGuardReader } from "../src/world2-guards.mjs";
 
 const clone = makeWorldClone();
 const dbDir = mkdtempSync(join(tmpdir(), "stageD-dyn-"));
@@ -175,21 +177,6 @@ test("ON AND OFF HER DECK BEFORE SHE MOVED: no edge either way, no carry", async
   assert.deepEqual(fold.world, { x: 60, y: 0 }, "she sailed without them, and they are where they walked to");
 });
 
-test("a walk that LEAVES a frame still ends it — the stepping-off branch stands", async () => {
-  // The fold can no longer put anyone in a frame, so the frame is seeded (`aboard`)
-  // the way a test drives a carrier along any path it likes.
-  const { carrierAt } = await reader();
-  const walk = await walkMod();
-  const carriers = carriersFrom(MARKS);
-  const records = [departure({ handle: "leaver", from: { x: 2, y: 3 }, toward: { x: 60, y: 0 }, at: 10.2 })];
-  const fold = await foldFrames(records, { carriers, carrierAt, walk, atMs: AFTER_LANDING, aboard: { carrier: carriers[0], local: { x: 2, y: 3 } } });
-  assert.equal(fold.frame, null, "stepped off, so the frame is the world again");
-  const died = fold.transitions.filter((t) => t.kind === "died");
-  assert.equal(died.length, 1);
-  assert.match(died[0].reason, /gunwale/);
-  assert.deepEqual(fold.world, { x: 60, y: 0 });
-});
-
 test("a walk that ENDS elsewhere never boards, however its line runs", async () => {
   const { carrierAt } = await reader();
   const walk = await walkMod();
@@ -209,47 +196,10 @@ test("nobody writes your movement but you: the edge is born by YOUR record", asy
 });
 
 // ── 5. carriage is nothing happening ─────────────────────────────────────────
-
-test("she sails, your offset holds, you moved", async () => {
-  const { carrierAt } = await reader();
-  const walk = await walkMod();
-  const carriers = carriersFrom(MARKS);
-  // Seeded aboard, then a step on her deck — a walk no longer boards (POS-247).
-  const aboard = { carrier: carriers[0], local: { x: 0, y: 0 } };
-  const records = [departure({ handle: "rider", from: { x: 0, y: 0 }, toward: { x: 2, y: 3 }, at: 10.0 })];
-
-  const before = await foldFrames(records, { carriers, carrierAt, walk, atMs: BEFORE_SAILING, aboard });
-  const after_ = await foldFrames(records, { carriers, carrierAt, walk, atMs: AFTER_LANDING, aboard });
-
-  assert.deepEqual(before.local, after_.local, "the offset in her frame is UNCHANGED — that is what carriage is");
-  assert.notDeepEqual(before.world, after_.world, "and the world position moved anyway");
-  assert.equal(after_.provenance, "carried");
-
-  const boat = await vesselPositionAt(MARKS, AFTER_LANDING, REPO);
-  assert.deepEqual(after_.world, { x: boat.x + after_.local.x, y: boat.y + after_.local.y },
-    "composition is carrier + offset, and nothing else");
-});
-
-test("a berthed carrier carries nobody — provenance says walked, not carried", async () => {
-  const { carrierAt } = await reader();
-  const walk = await walkMod();
-  const records = [departure({ handle: "sitter", from: { x: 60, y: 0 }, toward: { x: 2, y: 3 }, at: 10.1 })];
-  const fold = await foldFrames(records, { carriers: carriersFrom(MARKS), carrierAt, walk, atMs: BEFORE_SAILING });
-  assert.equal(fold.provenance, "walked", "she has not moved since they arrived, so nothing carried them");
-});
-
-test("walking while aboard is movement WITHIN the frame — the offset changes, the frame does not", async () => {
-  const { carrierAt } = await reader();
-  const walk = await walkMod();
-  const carriers = carriersFrom(MARKS);
-  const records = [
-    departure({ handle: "pacer", from: { x: 2, y: 8 }, toward: { x: 2, y: -8 }, at: 10.2 }),  // across her deck
-  ];
-  const fold = await foldFrames(records, { carriers, carrierAt, walk, atMs: BEFORE_SAILING, aboard: { carrier: carriers[0], local: { x: 2, y: 8 } } });
-  assert.equal(fold.frame, "the-town/the-post-office");
-  assert.equal(fold.transitions.filter((t) => t.kind === "died").length, 0, "pacing the deck is not disembarking");
-  assert.deepEqual(fold.local, { x: 2, y: -8 });
-});
+//
+// Its tests reached a frame only through a walk onto her deck, and since POS-247
+// (2026-09-26) no walk creates one. The branches they covered stay until w41,
+// when the fold's frame machinery is removed.
 
 // ── 6. hearing composes through the frame ────────────────────────────────────
 
@@ -324,7 +274,10 @@ test("a road that ends on her deck names her, and says the walk leaves you on th
   assert.ok(terms[0].terms.some((t) => /quay beside her, not aboard/.test(t) && /stop's door/.test(t) && /ride/.test(t)),
     "the walk answer says where the walk leaves you and that boarding is a stop's door");
   assert.ok(!terms[0].terms.some((t) => /means riding/.test(t)), "the old contract of stepping aboard is gone");
-  assert.ok(terms[0].terms.some((t) => /departs/.test(t)), "and when she goes");
+  // 2026-09-26 (Keemin): her departure time is no longer said to a walker — a
+  // rider is not carried by her schedule, so it was a timetable that seemed to
+  // gate boarding and did not.
+  assert.ok(!terms[0].terms.some((t) => /timetable binds|departs/.test(t)), "her schedule is not presented as binding a walker");
 });
 
 test("THE GUNWALE RULE: stepping off a moving carrier warns, and does not refuse", async () => {
@@ -460,11 +413,27 @@ test("no frames map means the rows pass through byte-identical — the flag-off 
 // ── 9. the two eras, and the freeze ──────────────────────────────────────────
 
 test("the store's records and the ledger's merge into one ordered history", async () => {
-  const db = openDynamic(DB);
+  // POS-154: era two is `acts` now, so the departure is filed as the act the
+  // movement-store pen writes rather than into a sqlite file. The claim — one
+  // ordered history across the seam — is untouched.
   const late = new Date(atCrossing(11)).toISOString();
-  declareMovement(db, { actor: "mover", at: late, from: FAR_SHORE, toward: FAR_SHORE, crossing: 11, declaredBy: "mover" });
-  db.close();
-  const stored = storedRecordsFor("mover", { dbPath: DB, atMs: atCrossing(12) });
+  const pg = process.env.WORLD2_PG, url = process.env.WORLD2_PG_URL;
+  process.env.WORLD2_PG = "1"; process.env.WORLD2_PG_URL = "postgres://world-movement-test/none";
+  const restore = useGuardReader(async (fn) => fn({
+    query: async (sql, params) => (/FROM acts/i.test(String(sql))
+      ? { rows: [{
+          id: 77, at: new Date(late), crossing: "11", actor: "mover", action: "walk",
+          payload: { from: FAR_SHORE, toward: FAR_SHORE, within: null, to: null, pace: null, declared_by: "mover" },
+        }] }
+      : { rows: [] }),
+  }));
+  let stored;
+  try { stored = await storedRecordsFor("mover", { atMs: atCrossing(12) }); }
+  finally {
+    restore();
+    if (pg == null) delete process.env.WORLD2_PG; else process.env.WORLD2_PG = pg;
+    if (url == null) delete process.env.WORLD2_PG_URL; else process.env.WORLD2_PG_URL = url;
+  }
   assert.equal(stored.length, 1);
 
   const merged = recordsAcrossEras(
@@ -521,16 +490,46 @@ test("the freeze names who the seam would move, and offers the FILING REPAIR", a
     departure({ handle: "on-deck", from: { x: 2, y: 3 }, toward: { x: 2, y: 3 }, at: 10 }),
     departure({ handle: "ashore", from: { x: 500, y: 500 }, toward: { x: 500, y: 500 }, at: 10 }),
   ];
+  // 1. GEOMETRY, and under the agreement law the only thing a deck still says.
+  // Who is standing inside her footprint at a berthed instant — never who is
+  // going anywhere, which since the agreement law is block 3's business and no
+  // longer follows from this one.
   const deck = standingOnDeck({ departures, service, walk, vessel, geometry, atFc });
   assert.deepEqual(deck.residents.map((r) => r.handle), ["on-deck"]);
 
-  const moved = seamDiff({ departures, service, walk, vessel, atFc: 10.6 });
-  assert.deepEqual(moved.map((m) => m.handle), ["on-deck"]);
-
+  // 2. THE FILING REPAIR, ahead of the carriage question rather than behind it.
+  // `ashoreFor` is where the freeze would set someone down; it does not depend
+  // on who is carried, and it sat behind an assertion that threw, so it never
+  // ran. It runs first now so no verdict about carriage can hide it again.
   const ashore = ashoreFor({ service, vessel, atFc });
   assert.ok(ashore, "the repair has somewhere to put them");
   assert.equal(geometry.pointInRect(ashore.x, ashore.y, vessel.footprintOf(service, service.stops[0].at)), false,
     "ashore means OUTSIDE her footprint, or the next departure collects them again");
+
+  // 3. BOARDING IS DECLARED, NEVER INFERRED — so the seam moves NOBODY.
+  // This assertion used to expect ["on-deck"]: standing inside her footprint at
+  // the cast-off was boarding. Keemin repealed that on 2026-08-11 (world commit
+  // 64e66ed7, "boarding is declared, never inferred — the agreement law replaces
+  // boarding-is-presence"): "The footprint test is gone; standing on her deck at
+  // the hour does nothing, and an agreement carries you from anywhere. Default
+  // empty list = nobody rides, so any reader that has not learned to pass
+  // agreements gets the correct answer rather than the old one."
+  //
+  // The office is one of those readers. `seamDiff` calls the world's
+  // `positionAt(departure, instant, service)` with three arguments and never the
+  // fourth, `agreements`, so the empty list governs and nobody is carried. The
+  // empty answer is therefore CORRECT, not a defect — and it is correct twice
+  // over, because no office store can hold a passenger agreement yet
+  // (`declareAttachment` admits only cascade|detach; the boarding verb lands
+  // with the vessel work). Restoring the old expectation would be
+  // re-implementing the one thing the ruling forbids.
+  //
+  // What this pins is the refusal, which is live: the carry mechanism fires when
+  // an agreement IS passed, and the freeze still cannot see it. See the
+  // agreement-blindness note at `seamDiff` in tools/ledger-freeze.mjs.
+  const moved = seamDiff({ departures, service, walk, vessel, atFc: 10.6 });
+  assert.deepEqual(moved.map((m) => m.handle), [],
+    "with no agreement declared, standing on her deck carries nobody — the seam must report an empty list");
 });
 
 // ── the town's own numbers ───────────────────────────────────────────────────

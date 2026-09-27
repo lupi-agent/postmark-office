@@ -69,6 +69,8 @@
 //
 //   WORLD2_PG_URL=postgres://office_api:…@localhost/world2_dev \
 //   W2_OWNER_URL=…  W2_READER_URL=…  W2_CLEARING_URL=… \
+//   W2_STANCE_URL=…   (stance_reader — 023's named carve; without it that leg
+//                      is ASLEEP and the run cannot say whether 023 applied) \
 //     node world2/tools/falsifier-draft-privacy.mjs \
 //       --office http://localhost:4382 --key <bearer> --other-key <bearer> \
 //       [--target /path/to/scratch-notary-checkout] [--self-test]
@@ -108,12 +110,29 @@ const asleep = [];
 const red = (leg, detail) => findings.push(`RED · ${leg} — ${detail}`);
 const dead = (leg, detail) => asleep.push(`ASLEEP · ${leg} — ${detail}`);
 
-/** The pen's own spelling: a draft is only ever written inside a declared household. */
+/**
+ * The pen's own spelling: a draft is only ever written inside a declared
+ * household.
+ *
+ * TWO SETTINGS since POS-160 RULING 4 (`024_household_spellings.sql`): the
+ * store never re-spells a row, so a house declares every spelling it has ever
+ * carried and the four draft policies compare `household = ANY(app.household_keys)`.
+ *
+ * THE SET HERE IS ONE LONG, ON PURPOSE. This falsifier writes its own draft,
+ * under this one key, in this run — so the house's history is irrelevant to
+ * what it is proving and importing the deriver to fetch it would give this file
+ * a second thing that can be wrong. A one-key set is the NARROWEST lawful
+ * session, which is the right instrument for a privacy falsifier: every
+ * "blind" leg is proven against the tightest declaration the office can make,
+ * and the one "visible to its own author" leg still passes, because the row was
+ * written under exactly this key.
+ */
 async function withHousehold(pool, household, fn) {
   const c = await pool.connect();
   try {
     await c.query("BEGIN");
     await c.query("SELECT set_config('app.household', $1, true)", [household]);
+    await c.query("SELECT set_config('app.household_keys', $1, true)", [household]);
     const out = await fn(c);
     await c.query("COMMIT");
     return out;
@@ -204,6 +223,79 @@ try {
   for (const [leg, run] of sqlLegs) {
     const n = await run();
     if (n !== 0) red(leg, `sees ${n} row(s) carrying the nonce — a draft is readable by a credential that must not read it`);
+  }
+
+  // ── THE STANCE CARVE · the ONE credential that may see a draft ────────────
+  //
+  // NAMED EXCEPTION, added 2026-09-22 under RULING 2 (POS-195) and deliberately
+  // not folded into `sqlLegs` above, where it would read as a leak.
+  //
+  // THE LAW IT CARVES, verbatim:
+  //
+  //   "the stance derivation may read draft rows through `stance_reader`; its
+  //    output is asserted to carry no draft body."
+  //
+  // WHY THE CARVE IS NOT A HOLE. `worldForStances` — the stance candidate list —
+  // must know that an unpublished sketch stands on your ground, or the-late-
+  // welcome stops being true ("A stance may arrive after the sketch and before
+  // the publish"). 1.0 told you that from the sqlite journal; G1 deletes the
+  // journal. So the fact moves records, and the BOUNDARY does not move: what a
+  // ground-holder learns is that a sketch EXISTS on their ground, never what it
+  // says. `world2/schema/023_stance_reader.sql` carries the whole argument.
+  //
+  // ── WHAT THIS LEG CAN AND CANNOT ASSERT, SAID PLAINLY ────────────────────
+  //
+  // The ruling's clause is about the DERIVATION'S OUTPUT, and this file cannot
+  // read that output. The stance read is MCP-only — `world { read:
+  // "declare-stance-on" }` and the household doorstep, no REST door — which is
+  // the same wall this file already records for `worldMyDrafts`. Worse, the
+  // scratch draft planted above carries `geometry: {slug}` and no at/extent, so
+  // it could never BE a candidate: the derivation drops a mark with no ground.
+  // A leg that called the derivation here would prove nothing and report green.
+  //
+  // So the output half is asserted where a fixture can give a draft real ground
+  // and a caller real standing: `test/stance-candidates-read-the-store.test.mjs`
+  // § THE SENTINEL, which plants a sentinel body in the store and asserts it
+  // reaches no stance arm — with the store HOLDING it, so the probe can fail.
+  // That split is recorded rather than papered over.
+  //
+  // WHAT THIS LEG ASSERTS, which the unit cannot: that the carve on the LIVE
+  // box is the carve that was ruled — one role, one verb, one table.
+  {
+    const STANCE_URL = process.env.W2_STANCE_URL ?? null;
+    if (!STANCE_URL) {
+      dead("the stance carve · stance_reader sees the draft",
+        "no W2_STANCE_URL given — the carve was not exercised, so this run says nothing about whether 023 applied");
+    } else {
+      // (a) POSITIVE CONTROL. `stance_reader` MUST see it. A zero here means
+      // 023 did not apply, or the policy was dropped — and then the-late-welcome
+      // is silently dead on this box while every leg above stands green.
+      const sees = await sqlSeesNonce(STANCE_URL);
+      if (sees !== 1) {
+        red("the stance carve · stance_reader sees the draft",
+          `sees ${sees} row(s), want 1 — 023_stance_reader.sql's claims_read_stance is not in force, so the stance ` +
+          `candidate list cannot learn that an unpublished sketch stands on a resident's ground. the-late-welcome ` +
+          `("a stance may arrive after the sketch and before the publish") is dead on this store.`);
+      }
+
+      // (b) THE CARVE DID NOT WIDEN. One verb, one table, and no write anywhere.
+      // 003's second query asks the policy side of this; this asks the grant
+      // side, on the live box, and the two together are the whole extent.
+      const { rows: held } = await P(OWNER_URL).query(
+        `SELECT table_name, privilege_type FROM information_schema.role_table_grants
+          WHERE table_schema = 'public' AND grantee = 'stance_reader' ORDER BY table_name, privilege_type`);
+      const unlawful = held.filter((g) => !(g.table_name === "claims" && g.privilege_type === "SELECT"));
+      if (unlawful.length) {
+        red("the stance carve · one verb, one table",
+          `stance_reader holds ${unlawful.map((g) => `${g.privilege_type} on ${g.table_name}`).join(", ")} beyond ` +
+          `SELECT on claims. The carve was ruled for ONE reader of ONE list; every privilege past that is a second ` +
+          `reader nobody argued for. 023's header: "The role is SELECT-ONLY on ONE table."`);
+      } else if (!held.length) {
+        dead("the stance carve · one verb, one table",
+          "stance_reader holds no grants at all — either 023 did not apply or the role is not the one 023 named, and " +
+          "either way the leg above proved nothing about a carve that is not there");
+      }
+    }
   }
 
   // ── the door legs · every public answer, read whole ───────────────────────
@@ -410,4 +502,4 @@ if (asleep.length) {
   console.error(`CANNOT RUN: ${asleep.length} leg(s) proved nothing — a green here would be arithmetic, not evidence`);
   process.exit(2);
 }
-console.log(`GREEN: the draft ${SLUG} was visible to its own household and to nothing else — ${4} credentials, 5 public doors, the cross-household door, and the notary's whole output tree`);
+console.log(`GREEN: the draft ${SLUG} was visible to its own household, to stance_reader through 023's named carve, and to nothing else — ${4} credentials blind, 5 public doors, the cross-household door, the notary's whole output tree, and the carve held to SELECT on claims alone`);

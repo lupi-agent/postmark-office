@@ -35,6 +35,9 @@
 // (git-era door) reds with the 403. LEG 3 is green on both sides and is
 // labelled a non-regression, not a discriminator. Flip receipt in the PR.
 //
+// LEGS 1 AND 3 MOVED to the end of `test/world-journal.test.mjs` on the w40
+// train, where the journal door's store harness lives. LEG 2 stays here.
+//
 //   node --test test/parcel-over-a-painted-house.test.mjs
 
 import test, { after } from "node:test";
@@ -200,13 +203,6 @@ process.env.TOWN_PUSH = "";
 
 const CLAIMANT = { household: "claimanthouse", handles: new Set(["claimant"]) };
 
-/** The journal door's bounce, or `{ ok: true, … }` when the claim went through. */
-async function journalLeave(payload) {
-  const { leaveMarkViaOffice } = await import("../src/world.mjs");
-  try { return { ok: true, ...(await leaveMarkViaOffice(repo, payload, CLAIMANT)) }; }
-  catch (e) { return { ok: false, code: e?.code, defect: e?.defect ?? e?.message, hint: e?.hint }; }
-}
-
 /** The git-era executor, spawned exactly as world.mjs spawns it. */
 function execLeave(payload) {
   const r = spawnSync(process.execPath, [EXEC, JSON.stringify(payload)], {
@@ -218,17 +214,13 @@ function execLeave(payload) {
   return JSON.parse(r.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1));
 }
 
-// ── LEG 1 · the door prod runs ───────────────────────────────────────────────
-
-test("THE FIX, journal door: a parcel claim over a painted house standing on nobody's parcel is ADMITTED", async () => {
-  const out = await journalLeave({ slug: "the-common-ground", kind: "parcel", by: "claimant",
-    at: { x: 2000, y: 2000 }, body: "common ground by the standing law — the painting said otherwise" });
-  console.log(`    RECEIPT · journal door → ${out.ok ? `OK id=${out.id}` : `${out.code} "${out.defect}"`}`);
-  assert.notEqual(out.code, 403,
-    `the retired guard fired: ${JSON.stringify(out)} — on main this is 403 "that spot is inside neighbour's home"`);
-  assert.equal(out.ok, true, `the claim must go forward: ${JSON.stringify(out)}`);
-  assert.equal(out.id, "claimant/the-common-ground");
-});
+// ── LEGS 1 AND 3 · the journal door ─────────────────────────────────────────
+//
+// They live in `test/world-journal.test.mjs`, at its end, since the w40 train
+// (main-into-w40, 2026-09-25). On the train the journal door reads and writes
+// the store (POS-156, G1) with no sqlite fallback, so they run on that file's
+// hand-built store: the same claims and assertions, one more that the write
+// reached the store, and the same can-fail flip.
 
 // ── LEG 2 · the git-era twin, so the two holders cannot disagree (#2888) ─────
 
@@ -240,24 +232,4 @@ test("THE FIX, git-era door: the same claim, the same answer — one law, both h
   assert.equal(out.error?.code, undefined,
     `the retired guard fired at the twin: ${JSON.stringify(out.error)} — on main this is 403 "that spot is inside neighbour's home"`);
   assert.equal(out.id, "claimant/the-common-ground-again");
-});
-
-// ── LEG 3 · NON-REGRESSION, not a discriminator: green on both sides ─────────
-//
-// This leg does not move when the guard is restored. It is here because the
-// deletion's whole defence is that the fold already owns overlapping ground —
-// so the record should say, in a test, what this door does and does not do
-// about a claim over a neighbour's PARCEL. It admits it, and always has: there
-// is no overlap check anywhere in either executor's parcel branch. The refusal
-// is `tools/marks-fold.mjs § admissibility`, at the crossing, in its own words:
-// "parcel overlaps <id> — inadmissible (MARKS.md § Parcels)", first-in-claim-
-// order wins. If a door-time overlap refusal is ever wanted, this is the leg
-// that will have to change, and it names what would have to be built.
-
-test("NON-REGRESSION: a parcel claim over a neighbour's PARCEL is admitted by this door and refused at the crossing", async () => {
-  const out = await journalLeave({ slug: "over-the-neighbour", kind: "parcel", by: "claimant",
-    at: { x: 100, y: 100 }, body: "straight over the neighbour's ground" });
-  console.log(`    RECEIPT · overlap claim → ${out.ok ? `OK id=${out.id} (the crossing refuses it, not this door)` : `${out.code} "${out.defect}"`}`);
-  assert.equal(out.ok, true,
-    `unchanged by #3025: this door carries no overlap check, before or after. Got ${JSON.stringify(out)}`);
 });

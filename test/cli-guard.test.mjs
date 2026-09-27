@@ -127,6 +127,9 @@ const ROSTER = {
   "tools/backfill-home-shelf.mjs": { args: ["--manifest", NOWHERE], code: 2, needle: "no manifest at" },
   "tools/media-thumbnails-backfill.mjs": { args: ["--from-record", NOWHERE], code: 2, needle: "no record at" },
   "tools/box-rollcall.mjs": { args: ["--manifest", NOWHERE], code: 2, needle: "the roll-call itself could not run" },
+  // POS-216: refuses on a missing town clone before reading or writing anything
+  "tools/ops-activity.mjs": { args: ["--town", NOWHERE], env: NO_PG, code: 2, needle: "no town clone at" },
+  "tools/capture-doorstep-golden.mjs": { args: [], code: 0, needle: "{" },
   "tools/capture-household-golden.mjs": { args: [], code: 0, needle: "{" },
   "tools/crossing-replay-check.mjs": { args: ["--db", NOWHERE_DB, "--world", NOWHERE], code: 2, needle: "GATE REFUSED" },
   "tools/crossing-save.mjs": { args: ["--world", NOWHERE], code: 1, needle: "GATE REFUSED world-clone" },
@@ -135,6 +138,27 @@ const ROSTER = {
   "tools/harbor-watch.mjs": { args: [], code: 2, needle: "usage: harbor-watch.mjs" },
   "tools/hydrate-equivalence.mjs": { args: ["--a", NOWHERE, "--b", `${NOWHERE}-b`], code: 2, needle: "not a world checkout:" },
   "tools/ledger-freeze.mjs": { args: ["--at", "not-a-date"], code: 2, needle: "unparseable --at" },
+  // POS-178. A safe entry proof for a tool that WRITES THE WHITE PAGES: a clone
+  // that is not a town checkout, so it refuses before it reads a berth, plans a
+  // settlement or reaches the pen. --apply is not passed and could not write
+  // anyway; the dry run is the default and the refusal comes first.
+  // POS-187's two. Both refuse on USAGE with no flag, which is before either
+  // reads the town clone, opens a Postgres connection or writes anything — the
+  // same "stops at the tool's first refusal" shape as the rest of this roster.
+  // NO_PG on top of that, so a regression that reached for a connection fails
+  // on the connection rather than quietly finding one.
+  // POS-159's third, on the same shape and for the same reason it matters
+  // MORE here than anywhere: a backfill whose entry guard is defeated by a
+  // junction exits 0 having read no roll and written no row, which is
+  // indistinguishable from the correct answer on today's town (0 planned).
+  "tools/registry-backfill.mjs": { args: [], env: NO_PG, code: 1, needle: "pass exactly one of --dry-run or --apply" },
+  "tools/registry-drain.mjs": { args: [], env: NO_PG, code: 1, needle: "pass exactly one of --check, --apply or --ingest-missing" },
+  "tools/registry-seed.mjs": { args: [], env: NO_PG, code: 1, needle: "pass exactly one of --dry-run or --apply" },
+  // POS-193 (fix-forward, 2026-09-23): the baseline tool refuses at its first gate
+  // when the named tip cannot be resolved — before any gh call and before the
+  // suite runs. #170 merged on the new test file alone and the roster went red.
+  "tools/suite-baseline.mjs": { args: ["--tip", "0000000"], code: 2, needle: "cannot resolve 0000000 to a full sha here" },
+  "tools/settle-anchored-berths.mjs": { args: ["--clone", NOWHERE], code: 1, needle: "not a town checkout" },
   "tools/site-sentinel.mjs": { args: ["--now", "not-a-date", "--dry-run", "--state", NOWHERE_OUT, "--out", NOWHERE_OUT], env: { SENTINEL_DISCORD_WEBHOOK: undefined }, code: 1, needle: "site-sentinel" },
   "tools/stripe-watch.mjs": { args: ["--clone", NOWHERE], code: 1, needle: "no town clone with the funding seam" },
   "tools/thread-parity.mjs": { args: ["--log", NOWHERE, "--db", NOWHERE_DB, "--json"], code: 2, needle: "voices-log" },
@@ -153,7 +177,11 @@ const ROSTER = {
   // reads a plan, spawns a mint or touches a key. The needle is that refusal.
   "deploy/welcome-pass.mjs": { args: [], code: 1, needle: "--town <town-clone> is required" },
   // world2/tools/
+  // No --world-repo: stops on usage before any git read or Postgres connect (POS-212).
+  "world2/tools/adopt-solo.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: adopt-solo.mjs" },
   "world2/tools/await-clearing.mjs": { args: [], env: NO_PG, code: 2, needle: "--since <iso8601> is required" },
+  // No --sqlite: stops on usage before any sqlite open or Postgres connect (POS-154).
+  "world2/tools/backfill-departures.mjs": { args: [], env: NO_PG, code: 2, needle: "--sqlite <dynamic.db> is required" },
   "world2/tools/backfill-register.mjs": { args: [], env: NO_PG, code: 2, needle: "--class must be one of" },
   "world2/tools/escrow-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: escrow-ingest.mjs --town-repo <checkout>" },
   "world2/tools/falsifier-conversations-equality.mjs": { args: [], env: NO_PG, code: 2, needle: "--voices-log <path> is required" },
@@ -163,9 +191,19 @@ const ROSTER = {
   "world2/tools/falsifier-review-closure.mjs": { args: [], env: NO_PG, code: 2, needle: "WORLD2_PG_URL missing" },
   "world2/tools/law-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: law-ingest.mjs" },
   "world2/tools/ledger-backfill.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: WORLD2_PG_URL=" },
+  // No --world-repo: stops on usage before any git or Postgres (POS-142).
+  "world2/tools/marks-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: marks-ingest.mjs" },
   "world2/tools/pointer-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: pointer-ingest.mjs --world-repo" },
   "world2/tools/replay-ingest.mjs": { args: ["--help"], env: NO_PG, code: 0, needle: "usage: replay-ingest.mjs" },
+  // No --tree: stops on usage before any git read or Postgres connect (POS-242).
+  "world2/tools/rehearse.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: rehearse.mjs" },
   "world2/tools/retire-unpublished.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: retire-unpublished.mjs" },
+  // The calendar's rebuild (POS-207): no --dry-run, so it refuses before it
+  // opens any connection — it has no write mode at all.
+  "world2/tools/events-rebuild.mjs": { args: [], env: NO_PG, code: 2, needle: "only --dry-run exists" },
+  // The earpiece's deliverer (POS-209): bare, it is usage and opens nothing —
+  // the timer passes --run, and even then W2_EARPIECE=1 gates every read.
+  "world2/tools/earpiece-deliver.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: earpiece-deliver.mjs --run" },
   "world2/tools/review-rule.mjs": { args: [], env: NO_PG, code: 2, needle: "review-rule.mjs: which claim?" },
   "world2/tools/roll-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: roll-ingest.mjs" },
   "world2/tools/seed-import.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: seed-import.mjs" },
@@ -174,7 +212,12 @@ const ROSTER = {
   "world2/tools/snapshot-export.mjs": { args: ["--help"], env: NO_PG, code: 2, needle: "usage:" },
   "world2/tools/stamp-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: stamp-ingest.mjs" },
   "world2/tools/state-log-rederive.mjs": { args: [], env: { ...NO_PG, WORLD2_PG_URL: "postgres://nobody@localhost/not_scratch" }, code: 2, needle: "REFUSED · WORLD2_PG_URL must name" },
-  "world2/tools/state-log-write.mjs": { args: [], env: NO_PG, code: 2, needle: "--world <checkout> and --windows" },
+  // POS-155 gave this tool a second door (`--window <N>`, a candle window) beside
+  // the exact-crossing `--windows`, so its no-args sentence names both. The
+  // needle moved with the sentence, which is this roster working: the CLI was
+  // restructured, the guard went red, and the new words had to be chosen rather
+  // than arrived at.
+  "world2/tools/state-log-write.mjs": { args: [], env: NO_PG, code: 2, needle: "--world <checkout> is required, and one of --window" },
   // A safe entry proof for a tool that WRITES to the live world store: no flag,
   // so it stops on usage. The store is opened lazily precisely so this refusal
   // never reaches Postgres — NO_PG below would make a connection fail anyway,

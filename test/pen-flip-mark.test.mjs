@@ -155,8 +155,20 @@ test("(c) UNFLIPPED · a withdrawn private draft leaves NO docket row — its DE
   candleOn(null); // shadow era — the flag names no lane; this is 1.0's own pen
   const db = freshDb();
   try {
-    appendJournal(db, composeRow());
-    appendJournal(db, withdrawRow());
+    // ── THE ORDERING IS THE CALLER'S AWAIT NOW (G1 / POS-156, RULING 3) ──
+    //
+    // These two calls were UNAWAITED, and the ordering came from the shared
+    // shadow queue underneath them. `appendJournal` awaits the record and
+    // throws on failure since G1, so the compose is COMMITTED before the
+    // withdrawal is issued -- a stronger guarantee than a shared queue, and one
+    // no refactor that gives an arm its own pool can undo.
+    //
+    // The claim is unchanged and so is what would break it: a withdrawal whose
+    // DELETE runs against a table its own INSERT has not reached leaves the
+    // slug taken (B1 finding 1). `settle()` stays, because the docket's own
+    // writes may still have a queue behind them.
+    await appendJournal(db, composeRow());
+    await appendJournal(db, withdrawRow());
     await settle();
 
     const left = theStore().claims;
@@ -190,8 +202,20 @@ test("(c2) UNFLIPPED · both halves of one slug's life ride ONE queue — the or
     // one broke the moment the plumbing told the truth.
     const penWrittenBefore = penStatus().written;
 
-    appendJournal(db, composeRow());
-    appendJournal(db, withdrawRow());
+    // ── THE ORDERING IS THE CALLER'S AWAIT NOW (G1 / POS-156, RULING 3) ──
+    //
+    // These two calls were UNAWAITED, and the ordering came from the shared
+    // shadow queue underneath them. `appendJournal` awaits the record and
+    // throws on failure since G1, so the compose is COMMITTED before the
+    // withdrawal is issued -- a stronger guarantee than a shared queue, and one
+    // no refactor that gives an arm its own pool can undo.
+    //
+    // The claim is unchanged and so is what would break it: a withdrawal whose
+    // DELETE runs against a table its own INSERT has not reached leaves the
+    // slug taken (B1 finding 1). `settle()` stays, because the docket's own
+    // writes may still have a queue behind them.
+    await appendJournal(db, composeRow());
+    await appendJournal(db, withdrawRow());
     await settle();
 
     assert.equal(penStatus().written - penWrittenBefore, 2,
@@ -233,9 +257,17 @@ test("(a) FLIPPED · a staked leave-mark writes the act AND its claim on ONE cli
     assert.ok(iCommit > iAct && iCommit > iClaim,
       "the act and its claim must commit TOGETHER — a COMMIT between them is the atomicity hole F3");
 
-    // D3: the reverse mirror, AFTER the record.
-    assert.equal(count(db, "journal"), 1, "the reverse-mirror journal row rides after the awaited pen");
-    assert.ok(row.seq, "and the caller can name the line it wrote");
+    // ── D3'S REVERSE MIRROR IS GONE (G1 / POS-156) ──────────────────────
+    //
+    // This asserted that a journal row rode after the awaited pen. That copy
+    // existed so "every 1.0 read stays valid" while the read ports landed --
+    // and they all have (POS-152/153/154/162/194/195), so rule 6's deletion
+    // took it. What is asserted instead is its ABSENCE, which is the whole
+    // claim of G1: one record, and no second copy anybody could read.
+    assert.equal(count(db, "journal"), 0,
+      "a journal row rode after the pen -- G1 deleted the reverse mirror, and a copy that came back would be the split brain returning");
+    assert.equal(row.seq, null, "there is no sqlite line left to name");
+    assert.ok(row.actId, "and the caller names the ACT it wrote -- the record's own id is the receipt now");
   } finally { db.close(); unflip(); }
 });
 
@@ -255,7 +287,8 @@ test("(a2) FLIPPED · a PRIVATE draft writes its claim and NOTHING to acts — t
     assert.equal(s.claims[0].status, "draft");
     const data = JSON.parse(s.claims[0].data);
     assert.ok(data._deferred_act, "the deferred act rides the draft, to be released at the stake");
-    assert.equal(count(db, "journal"), 1, "and 1.0's live layer still has its row — every 1.0 read stays valid");
+    assert.equal(count(db, "journal"), 0,
+      "and there is no 1.0 live layer left to hold a copy -- G1 deleted the reverse mirror (the read ports it was covering for have all landed)");
   } finally { db.close(); unflip(); }
 });
 
@@ -308,7 +341,8 @@ test("(d) FLIPPED · a withdraw of a private draft removes its claim IN ORDER af
     await settle();
     assert.deepEqual(theStore().claims, [],
       "the withdrawn draft kept its docket row — the slug stays taken (B1 finding 1, in the flipped era)");
-    assert.equal(count(db, "journal"), 2, "both acts have their reverse-mirror rows");
+    assert.equal(count(db, "journal"), 0,
+      "neither act left a sqlite copy -- G1 deleted the reverse mirror, so the docket is the whole of what either one did");
   } finally { db.close(); unflip(); }
 });
 
@@ -352,8 +386,13 @@ test("the claim carries the ACT'S OWN ID — `journal_seq is not an identity`, l
     const data = JSON.parse(s.claims[0].data);
     assert.equal(data._act_id, String(row.actId),
       "the claim must name the act it belongs to, by the act's own primary key");
-    assert.equal(s.acts[0].journal_seq, null,
-      "and the flipped act carries journal_seq NULL, which is why the old key could not have worked");
+    // THE COLUMN IS GONE (G1 / POS-156, migration 025). This asserted it was
+    // NULL on a flipped act, which was the evidence that pairing on it could
+    // never have worked. The evidence is stronger now: the pen does not write
+    // the column at all, so `_act_id` is not merely the better key, it is the
+    // only one there is.
+    assert.equal("journal_seq" in s.acts[0], false,
+      "the pen still names `journal_seq` in its INSERT — migration 025 drops that column, and an office writing it fails every act the moment the migration lands");
   } finally { db.close(); unflip(); }
 });
 

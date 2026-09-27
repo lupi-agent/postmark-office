@@ -226,6 +226,7 @@ report() { # status detail
   SETTLEMENT_ISOLATE_JSON="${ISOLATE_JSON:-}" SETTLEMENT_REFUSAL_JSON="${REFUSAL_JSON:-}" \
   SETTLEMENT_HARM_JSON="${HARM_JSON:-}" SETTLEMENT_SUITE_JSON="${SUITE_JSON:-}" \
   SETTLEMENT_SOURCE_MODE="$SOURCE" SETTLEMENT_STORE_JSON="${STORE_JSON:-}" \
+  SETTLEMENT_STATE_LOG_JSON="${STATE_LOG_JSON:-}" SETTLEMENT_STATE_LOG_MODE="${STATE_LOG_MODE:-}" \
   SETTLEMENT_BY_HAND="$BY_HAND" \
   SETTLEMENT_GHOSTS="${GHOSTS:-}" SETTLEMENT_KEPT_UNDELIVERED="${KEPT_UNDELIVERED:-}" \
   SETTLEMENT_RESETS="${RESETS:-}" \
@@ -746,6 +747,151 @@ if [ "$SOURCE" = "store" ]; then
   # waited is a number that describes the wrong thing.
   echo "[settlement-auto] docket: window $(node -e 'const d=require(process.argv[1]);process.stdout.write(String(d.window)+" locked at "+String(d.cleared_at)+(d.by_hand?" (TAKEN BY HAND — the newest unfolded window)":" (waited "+String(d.waited_s)+"s)"))' "$DOCKET_JSON")" >&2
   DOCKET_WINDOW="$(node -e 'const d=require(process.argv[1]);process.stdout.write(String(d.window))' "$DOCKET_JSON")"
+
+  # ── THE ARCHIVE'S EVENT LOG, WRITTEN FROM THE STORE (POS-155) ──────────────
+  #
+  # WHAT IS ACTUALLY DARK, MEASURED 2026-09-22 on world `origin/main` at
+  # `17fa4195`. `STATE/log` holds two families and only one of them is alive:
+  #
+  #   `<c>.journal.jsonl`  the DRAIN's act journal. Last written 2026-09-11
+  #                        05:45:06Z (`4d491498`). The store path runs no drain,
+  #                        so the swap already turned this off — ELEVEN DAYS
+  #                        AGO. G1 is not the threat to it; G1 is what happened.
+  #
+  #   `<N>.jsonl`          `tools/crossing-save.mjs`'s entity/event snapshot,
+  #                        still committed a couple of minutes after each ferry
+  #                        crossing (205 at 12:02:36Z, 204 at 00:04:38Z)
+  #                        (`17fa4195`, "crossing-save 205"). A different file
+  #                        with a different grammar. This step does not touch it
+  #                        and does not retire it — that is G2.
+  #
+  # So this step RE-LIGHTS the act journal rather than keeping it alive, and it
+  # is the same bytes the drain wrote: `world2/tools/state-log-write.mjs` renders
+  # through `src/state-log-from-store.mjs` and writes through the drain's own
+  # `writeJournalWindow`, never a second serializer.
+  #
+  # ── WHY IT STANDS HERE, BEFORE THE FOLD ────────────────────────────────────
+  #
+  # Two reasons, and the second is the one that would bite.
+  #
+  #   1. It needs `$DOCKET_WINDOW` and nothing else. The clearing has already
+  #      locked the window, so every act this window owns is in `acts` by this
+  #      line; the fold's output is not an input to a photograph of what people
+  #      did. Placing it after the fold would buy nothing and cost ordering.
+  #
+  #   2. `$WORLD_BASE` IS THE QUIET PASS'S BASELINE AND IT IS SET AT :463 —
+  #      before the docket exists. It means "main after the NON-SWEEP commits,
+  #      before the fold", which is what lets a crossing where the registry
+  #      moved and nothing settled still report `quiet` (:1064-1068). A
+  #      photograph is exactly such a commit, so it is taken here and
+  #      `$WORLD_BASE` is advanced past it. Written after the fold instead, it
+  #      would make `$WORLD_TO` differ from `$WORLD_BASE` on every crossing and
+  #      a quiet town would report `published` with six zero channels — which is
+  #      the answer `settlement-history.mjs --recurring` reads to decide whether
+  #      this town has settled in three days. The starving crossing with better
+  #      paperwork, again, from a new direction.
+  #
+  #      Both readers of `$WORLD_BASE` want it advanced: the harm gate's
+  #      `--base` (:990) measures what THE SWEEP produced, and a STATE commit in
+  #      the base is a STATE commit the gate correctly does not attribute to it.
+  #
+  # And the fold does not mind main moving under it: it reads AT `--world-sha
+  # "$WORLD_FROM"` (`canon-register.mjs § canonRegisterAtSha`), which is the
+  # repair :763-786 already carries for the registry refresh committing here.
+  # This commit touches `STATE/log/` only — no `WORLD/marks`, nothing the fold
+  # reads at all.
+  #
+  # ── THE WINDOW IS NOT THE CROSSING, AND THE TOOL KNOWS IT ──────────────────
+  #
+  # `$DOCKET_WINDOW` is the CANDLE window. `acts.crossing` is the FERRY clock.
+  # Candle window 204 is [09-21 17:45Z, 09-22 05:45Z); ferry crossing 204 is
+  # [09-22 00:00Z, 09-22 12:00Z). One window's acts land in TWO journal files
+  # and neither is finished until the next settlement writes into it — which is
+  # what `writeJournalWindow`'s merge-by-seq has always been for. The tool
+  # resolves the window's own `opens_at`/`closes_at` from the `windows` row and
+  # groups by each act's own crossing value; it never derives a boundary from a
+  # clock. See `state-log-write.mjs § WINDOW_BOUNDARY`.
+  #
+  # ── THE DEFAULT IS `sqlite`, AND IT ONLY LOOKS ─────────────────────────────
+  #
+  # `STATE_LOG_SOURCE=sqlite` (THE DEFAULT) runs `--check`: it renders the
+  # window from the register, compares against what is on disk, and writes the
+  # verdict into the receipt. IT NEVER FAILS THE CROSSING. On prod today it will
+  # report `absent` for every crossing, because nothing has written a
+  # `.journal.jsonl` since 09-11 — that report IS the measurement, and how many
+  # lines it would have written is the size of the hole.
+  #
+  # `STATE_LOG_SOURCE=store` runs `--write`: the files ride this crossing's own
+  # push. The flip is Wright's, by hand, after three consecutive windows check
+  # clean on prod — and a check cannot read clean until a write has happened, so
+  # the honest order is: flip one window by hand, check the next three.
+  #
+  # `--last-drained` is the drain's last file (`182.2538`), so `MERGE_HAZARD`
+  # refuses any crossing value the drain already photographed: the register's
+  # seq is `acts.id`, a different numbering, and re-deriving a drain-era window
+  # would merge a SECOND copy of every line rather than replacing them.
+  STATE_LOG_JSON=""
+  STATE_LOG_MODE="${STATE_LOG_SOURCE:-sqlite}"
+  # THE KILL SWITCH IS A DOOR, SO IT COMES FIRST. `SETTLEMENT_STATE_LOG=0` is
+  # what an operator reaches for at 06:00Z when this step is the thing going
+  # wrong, and a mode check standing ahead of it would refuse the crossing on a
+  # stale `STATE_LOG_SOURCE` the operator had just switched off. A guard the
+  # off-switch cannot get past is a guard that blocks the fix.
+  if [ "${SETTLEMENT_STATE_LOG:-1}" = "1" ]; then
+    # AN UNRECOGNISED MODE REFUSES RATHER THAN DEFAULTING, the same rule
+    # `SETTLEMENT_SOURCE` holds at :147 and for the same reason. A typo'd
+    # `STATE_LOG_SOURCE=stor` falling back to `sqlite` would mean the default
+    # was flipped, nobody was told, and the archive went on not being written —
+    # which is precisely the silence this step exists to end.
+    #
+    # It refuses THROUGH THE RECEIPT and not with a bare `exit`. :147 exits bare
+    # because it runs before `report` is defined; this line does not, and a
+    # crossing that stops with nothing on the receipt is a state the roll-call
+    # cannot see.
+    case "$STATE_LOG_MODE" in
+      store|sqlite) ;;
+      *)
+        report refused "STATE_LOG_SOURCE=\"$STATE_LOG_MODE\" is not \`store\` or \`sqlite\` — refusing rather than guessing whether to write the archive; SETTLEMENT_STATE_LOG=0 turns the step off"
+        echo "[settlement-auto] STATE_LOG_SOURCE=\"$STATE_LOG_MODE\" is not \`store\` or \`sqlite\` — publishing nothing" >&2
+        exit 1 ;;
+    esac
+    STATE_LOG_JSON="$WORK/state-log.json"
+    if [ "$STATE_LOG_MODE" = "store" ]; then
+      if (cd "$OFFICE" && node "$OFFICE/world2/tools/state-log-write.mjs" \
+            --world "$SWEEP" --window "$DOCKET_WINDOW" --write \
+            --last-drained "${STATE_LOG_LAST_DRAINED:-182.2538}" \
+            --as-of-world "$WORLD_FROM") > "$STATE_LOG_JSON" 2>"$WORK/state-log.err"; then
+        echo "[settlement-auto] photograph: $(node -e 'const r=require(process.argv[1]);const w=r.windows||[];process.stdout.write("window "+String(r.window)+" -> "+w.length+" journal file(s) ["+w.map((x)=>x.crossing).join(", ")+"], "+w.reduce((n,x)=>n+x.lines,0)+" line(s)"+(r.state_commit?" at "+String(r.state_commit).slice(0,9):" (unchanged: "+String(r.state_note||"")+")")+(w.some((x)=>(x.unnamed_households||[]).length)?"; UNNAMED HOUSEHOLD(S): "+[...new Set(w.flatMap((x)=>x.unnamed_households||[]))].join(", "):""))' "$STATE_LOG_JSON" 2>/dev/null || echo 'written')" >&2
+        # THE BASELINE MOVES WITH IT, for the reason in the header. Read back
+        # from git rather than from the tool's reported sha: `penCommit` returns
+        # null when nothing changed, and a baseline set from a null would make
+        # the quiet test compare against an empty string and call every crossing
+        # published.
+        WORLD_BASE="$(git -C "$SWEEP" rev-parse main)"
+      else
+        # A WRITE THAT FAILED IS A REFUSAL, not a warning. Under `store` this is
+        # the archive's only pen, and a crossing that published while quietly
+        # losing its own event log is the shape this lane exists to end.
+        report refused "the photograph could not be written: $(node -e 'const r=require(process.argv[1]);process.stdout.write(String(r.refused||"unknown")+" — "+String(r.detail||""))' "$STATE_LOG_JSON" 2>/dev/null || head -c 200 "$WORK/state-log.err" | tr '\n"' ' .')"
+        echo "[settlement-auto] PHOTOGRAPH REFUSED — publishing nothing" >&2
+        cat "$STATE_LOG_JSON" >&2 2>/dev/null || true; cat "$WORK/state-log.err" >&2
+        exit 1
+      fi
+    else
+      # `--check` exits 1 on "not clean", which is a VERDICT and not a failure.
+      # The `if` swallows it deliberately and the receipt carries the answer;
+      # nothing on this arm may stop a crossing, including the tool being
+      # unable to run at all — which is itself reported rather than hidden.
+      if (cd "$OFFICE" && node "$OFFICE/world2/tools/state-log-write.mjs" \
+            --world "$SWEEP" --window "$DOCKET_WINDOW" --check \
+            --last-drained "${STATE_LOG_LAST_DRAINED:-182.2538}") > "$STATE_LOG_JSON" 2>"$WORK/state-log.err"; then
+        echo "[settlement-auto] state-log check: $(node -e 'const r=require(process.argv[1]);const c=r.crossings||[];process.stdout.write("window "+String(r.window)+" CLEAN over "+c.length+" journal file(s) ["+c.map((x)=>x.crossing).join(", ")+"]")' "$STATE_LOG_JSON" 2>/dev/null || echo 'clean')" >&2
+      else
+        echo "[settlement-auto] state-log check: $(node -e 'const r=require(process.argv[1]);if(r.refused){process.stdout.write("REFUSED "+r.refused+" — "+String(r.detail||""));}else{const c=r.crossings||[];const cls={};for(const x of c)for(const[k,v]of Object.entries(x.classes||{}))cls[k]=(cls[k]||0)+v;const first=(c.find((x)=>!x.byte_equal)||{}).first_difference;process.stdout.write("window "+String(r.window)+" NOT CLEAN over "+c.length+" file(s): "+Object.entries(cls).map(([k,v])=>k+" "+v).join(", ")+(first?"; first: "+first:"")+"; would write "+c.reduce((n,x)=>n+(x.derived_lines||0),0)+" line(s)")}' "$STATE_LOG_JSON" 2>/dev/null || head -c 200 "$WORK/state-log.err" | tr '\n"' ' .')" >&2
+        echo "[settlement-auto] (the check never fails a crossing; STATE_LOG_SOURCE=store is what writes)" >&2
+      fi
+    fi
+  fi
 
   # ── THE ORDERING: THE FOLD READS AFTER THE CLEARING'S INGEST ────────────────
   #

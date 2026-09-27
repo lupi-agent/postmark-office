@@ -70,7 +70,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { appendTownJournal, pendingRows, townLogEnabled } from "./town-journal.mjs";
+import { appendTownJournal, pendingRows, townLogEnabled, NONCE_MAX, rowSpendingNonce } from "./town-journal.mjs";
 import { LADDER_NOTE, TENSE } from "./paper-fresh.mjs"; // the three words, borrowed rather than re-coined
 import { nextCrossing, outboxRelPath, validateLetter } from "./write.mjs";
 import { nextCrossingForReceipt } from "./crossings.mjs"; // #2922: the boat's number, minutes and sentence beside `expected_crossing`
@@ -342,8 +342,9 @@ export async function preflightEnvelope(clone, plan) {
 /** The row that already spent this nonce for this sender, or null. */
 export function spentNonce(odb, key, { from, nonce }) {
   if (!odb || !nonce || !from) return null;
-  return hotLetters(odb, key, { handle: from })
-    .find((r) => (r.payload?.args?.nonce ?? null) === nonce) ?? null;
+  // The lookup itself is shared with the paper acts (town-journal.mjs §
+  // rowSpendingNonce); the SCOPE is this function's, and it is the mail law's.
+  return rowSpendingNonce(hotLetters(odb, key, { handle: from }), nonce);
 }
 
 /**
@@ -356,7 +357,7 @@ export function spentNonce(odb, key, { from, nonce }) {
  * second, genuinely different letter and hand back the wrong receipt for it.
  * A silent trim is the one thing an idempotency key must never suffer.
  */
-export const NONCE_MAX = 200;
+export { NONCE_MAX }; // one cap for every retry key; it lives beside the rows (town-journal.mjs)
 
 /**
  * ── THE IN-FLIGHT MAP · the race the journal lookup cannot see ─────────────

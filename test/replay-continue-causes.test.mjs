@@ -636,10 +636,15 @@ test("PRIVILEGE — a role missing a grant is refused BEFORE any dump or write",
 test("PRIVILEGE — the checked set covers every table the write path touches", () => {
   const need = new Set(WRITE_PRIVILEGES.map(([t, p]) => `${p} ${t}`));
   // `applyBackfill` INSERTs claims; `materializeClaims` INSERTs and UPDATEs marks
-  // and SELECTs `identities` through `ownerHouseholdFor`; the arm reads `windows`.
-  for (const x of ["INSERT claims", "INSERT marks", "UPDATE marks", "SELECT identities", "SELECT windows"]) {
+  // and reads the REGISTRY through `ownerHouseholdFor` → the one deriver (POS-160
+  // follow-up RED 2 — it used to SELECT `identities`); the arm reads `windows`.
+  for (const x of ["INSERT claims", "INSERT marks", "UPDATE marks", "SELECT windows",
+                   "SELECT households", "SELECT household_pins", "SELECT registry_meta"]) {
     assert.ok(need.has(x), `the preflight must check ${x}`);
   }
+  assert.ok(!need.has("SELECT identities"),
+    "the write path no longer reads `identities`; a preflight still demanding it asks a role for a grant " +
+    "it does not need, and a lawful-enumeration falsifier would have to carry the dead row too");
   assert.equal(privilegeRefusal({ whoami: "world2_owner", missing: [] }), null,
     "and a role holding all of them is not refused — the case that makes the others mean something");
 });

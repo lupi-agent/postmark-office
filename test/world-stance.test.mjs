@@ -22,12 +22,22 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { openDynamic } from "../src/dynamic-store.mjs";
-import { CLASS_MARK, ACTION_LEAVE, appendJournal, readJournal } from "../src/world-journal.mjs";
+import { CLASS_MARK, ACTION_LEAVE, readJournal } from "../src/world-journal.mjs";
+// ── THE SKETCHES ARE SEEDED, NOT WRITTEN BY A DOOR (G1 / POS-156) ──────────
+//
+// G1 deleted the general journal INSERT; the write path writes the RECORD now.
+// These fixtures plant sketches in the sqlite journal and the stance pool stub
+// (`test/stance-pool-stub.mjs`) shapes them as the `claims` rows the store
+// read asks for -- so the rows are PUT THERE by this file, and the path under
+// test is still the real one. Nothing here claims a door wrote them.
+import { seedJournalRow } from "./journal-seed.mjs";
+import { installActsPen, uninstallActsPen, RECORD_ON } from "./acts-pen-stub.mjs";
 import {
   ACTION_STANCE, AMBIENT_CAP, CLASS_STANCE, PAGE_SIZE, STANCES,
   candidatesFrom, declareStanceViaOffice, groundFor, resetStanceGeometry,
   readNeverPerforms, stanceInbox, stanceShadow, stanceTeach, standingStances, standsBefore, stancesBlock,
 } from "../src/world-stance.mjs";
+import { STANCE_ON, clearStancePool, stancePoolFromJournal } from "./stance-pool-stub.mjs";
 
 const sweep = (d) => { try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch { /* litter */ } };
 const scratch = mkdtempSync(join(tmpdir(), "postmark-stance-"));
@@ -118,14 +128,46 @@ const houseA = { household: "alpha", handles: new Set(["alpha"]) };
 const houseB = { household: "beta", handles: new Set(["beta"]) };
 const stranger = { household: "delta", handles: new Set(["delta"]) };
 
-let dbPath, n = 0;
+let dbPath, pen, n = 0;
 beforeEach(() => {
   dbPath = join(scratch, `dyn-${++n}.db`);
   process.env.WORLD_DYNAMIC_DB = dbPath;
   process.env.WORLD_SINGLE_LOG = "1";
+  // THE CANDIDATE LIST READS THE STORE (POS-195, 2026-09-22). These fixtures
+  // plant their sketches in the journal and that intent is unchanged — "a
+  // sketch exists, unpublished, on this ground". The stub answers the store's
+  // query from that same journal, shaped as `claims` rows, so the tests below
+  // say what they always said while the path under them is the real one.
+  Object.assign(process.env, STANCE_ON);
+  stancePoolFromJournal(dbPath);
+  // ── AND THE DOOR WRITES TO THE RECORD (G1 / POS-156, RULING 3) ───────────
+  //
+  // `declareStanceViaOffice` used to write a sqlite journal row and queue a
+  // Postgres copy behind it. G1 deleted that INSERT and made the write AWAITED
+  // and REFUSABLE, so a stance door with no record gives the ruled 503 instead
+  // of declaring anything. The pen is separate from the stance READ above —
+  // two pools, two credentials, by RULING 2's own design — so installing it
+  // here leaves `stance_reader`'s stub exactly where it was.
+  process.env.WORLD2_PG = RECORD_ON.WORLD2_PG;
+  process.env.WORLD2_PG_URL = RECORD_ON.WORLD2_PG_URL;
+  // ⚑ AND THE LATE-CROSSING GUARD HAS TO BE ANSWERED. These fixtures declare
+  // at crossing 145, which is certified history by now, so the real pen refuses
+  // them by name — correctly. The guard's own message says what to do, and this
+  // is that: a named reason, so the row files into the window it ARRIVES in and
+  // keeps 145 on its payload. It is set here rather than dodged by moving the
+  // fixture to `currentCrossing()`, because a fixture pinned to the wall clock
+  // is the class of test that starts failing on a date nobody chose.
+  process.env.W2_LATE_ARRIVAL = "world-stance.test.mjs fixtures declare at crossing 145 on purpose";
+  pen = installActsPen();
   resetStanceGeometry();
 });
-after(() => { delete process.env.WORLD_DYNAMIC_DB; delete process.env.WORLD_SINGLE_LOG; });
+after(() => {
+  delete process.env.WORLD_DYNAMIC_DB; delete process.env.WORLD_SINGLE_LOG;
+  delete process.env.WORLD2_STANCE_URL; clearStancePool();
+  delete process.env.WORLD2_PG; delete process.env.WORLD2_PG_URL;
+  delete process.env.W2_LATE_ARRIVAL;
+  uninstallActsPen();
+});
 
 const withDb = (fn) => { const db = openDynamic(dbPath); try { return fn(db); } finally { db.close(); } };
 const stamp = async () => ({ at: { anchor: "alpha/alphas-parcel", dx: 1, dy: 2 }, witnesses: { source: "presence", list: [{ handle: "gamma", anchor: "alpha/alphas-parcel", dx: 0, dy: 0 }] } });
@@ -220,7 +262,11 @@ test("latest wins — a re-declaration supersedes, and the whole life stays in t
   assert.deepEqual(second.superseded, { stance: "opposed", at: second.superseded.at, seq: 1 },
     "and the second names what it replaced");
 
-  const rows = withDb((db) => readJournal(db, { cls: CLASS_STANCE }));
+  // THE LOG IS `acts` SINCE G1 -- read off the record the door wrote to, in the
+  // row shape the register's own reader hands back.
+  const rows = pen.rows()
+    .filter((r) => r.class === CLASS_STANCE)
+    .map((r) => ({ ...r, seq: r.id, payload: JSON.parse(r.payload), written_at: r.at }));
   assert.equal(rows.length, 2, "two rows — a revision is a later word, never an edit");
   assert.equal(rows[0].payload.stance, "opposed", "the first line is untouched: its whole life stays in the log");
 
@@ -259,27 +305,47 @@ test("a mark with no word from you is simply absent from your standing stances",
     "which is exactly why it is still waiting for a word");
 });
 
-// ── the write path is the journal ────────────────────────────────────────────
+// ── the write path is the RECORD (G1 / POS-156) ─────────────────────────────
 
-test("the write path is THE JOURNAL — one row, its own class, the witnessed line like a mark row", async () => {
+test("the write path is THE RECORD — one row, its own class, the witnessed line like a mark row", async () => {
   // LOGOS/the-response-function.md: "Residents' words are edges from actions, in
   // the log, like everything they do." Ruled: stance rows are the single log's
   // first new verb.
+  //
+  // THE LOG IS `acts` NOW. This asserted `log: "journal"` and read the row back
+  // out of sqlite; G1 deleted that INSERT and made the door write the record
+  // (RULING 3). Every other claim here is the claim it always was -- the class,
+  // the verb, the object, the witnessed line, the payload -- read off the row
+  // the door actually filed.
   const r = await speak({ on: "gamma/well-inside", stance: "welcomed" });
-  assert.equal(r.log, "journal");
-  assert.equal(r.seq, 1, "its receipt is a line in the log");
+  assert.equal(r.log, "acts");
+  assert.equal(r.seq, 1, "its receipt is the act's own id");
 
-  const [row] = withDb((db) => readJournal(db));
+  assert.equal(pen.rows().length, 1, "one row, for one word");
+  const [row] = pen.rows();
   assert.equal(row.class, CLASS_STANCE, "its own class, beside mark and frame in the one table");
   assert.equal(row.action, ACTION_STANCE);
   assert.equal(row.object, "gamma/well-inside");
   assert.equal(row.actor, "alpha");
-  assert.equal(row.household, "alpha");
-  assert.equal(row.crossing, 145);
-  assert.deepEqual(row.at, { anchor: "alpha/alphas-parcel", dx: 1, dy: 2 },
+  assert.equal(row.household, "solo:alpha",
+    "under the resolved key -- this fixture's registry is empty, so alpha keeps their own house");
+  // THE LATE-ARRIVAL GUARD RE-STAMPS THE WINDOW AND KEEPS THE DECLARATION.
+  // These fixtures declare at 145, which is certified history, so the pen files
+  // the row into the window it ARRIVES in and carries 145 on the payload
+  // (`lateCrossingGuard`). Both halves are asserted, because the half that
+  // matters to a resident is that their declared crossing is not lost.
+  const { currentCrossing } = await import("../src/crossings.mjs");
+  assert.equal(Number(row.crossing), Math.floor(currentCrossing()),
+    "filed into the open window, not into certified history");
+  const payload = JSON.parse(row.payload);
+  assert.equal(payload.late_from_crossing, 145, "and the declaration's own crossing rides the payload");
+  assert.match(payload.late_arrival, /fixtures declare at crossing 145/, "with the reason that admitted it");
+
+  assert.deepEqual({ anchor: row.at_anchor, dx: row.at_dx, dy: row.at_dy }, { anchor: "alpha/alphas-parcel", dx: 1, dy: 2 },
     "the-witnessed-line, exactly as a mark row carries it: where the actor stood, relative to what");
-  assert.deepEqual(row.witnesses.list, [{ handle: "gamma", anchor: "alpha/alphas-parcel", dx: 0, dy: 0 }]);
-  assert.deepEqual(row.payload, { on: "gamma/well-inside", stance: "welcomed", by: "alpha", on_your_ground: ["alpha/alphas-parcel"] });
+  assert.deepEqual(JSON.parse(row.witnesses).list, [{ handle: "gamma", anchor: "alpha/alphas-parcel", dx: 0, dy: 0 }]);
+  const { late_from_crossing: _lc, late_arrival: _la, ...declared } = payload;
+  assert.deepEqual(declared, { on: "gamma/well-inside", stance: "welcomed", by: "alpha", on_your_ground: ["alpha/alphas-parcel"] });
 });
 
 test("THE DOOR WRITES; THE CROSSING JUDGES — nothing is enforced, and the answer says so", async () => {
@@ -352,7 +418,7 @@ test("TIER 2 — your own parcel in your own spine expands the ambient block; a 
 test("TIER 2 — the ambient block is capped at ~3 and says how many more", async () => {
   // eight newcomers on alpha's ground; the ambient block is a glance, not a list
   withDb((db) => {
-    for (let i = 0; i < 8; i++) appendJournal(db, {
+    for (let i = 0; i < 8; i++) seedJournalRow(db, {
       crossing: 145, actor: "zeta", household: "zeta", action: ACTION_LEAVE,
       object: `zeta/crowd-${i}`, cls: CLASS_MARK,
       at: { anchor: null, dx: null, dy: null }, witnesses: null,
@@ -370,7 +436,7 @@ test("TIER 3 — the shadow is the full inbox, PAGINATED, plus your standing sta
   //    every candidate overlapping any mark you hold … plus your standing
   //    stances"
   withDb((db) => {
-    for (let i = 0; i < 25; i++) appendJournal(db, {
+    for (let i = 0; i < 25; i++) seedJournalRow(db, {
       crossing: 145, actor: "zeta", household: "zeta", action: ACTION_LEAVE,
       object: `zeta/many-${String(i).padStart(2, "0")}`, cls: CLASS_MARK,
       at: { anchor: null, dx: null, dy: null }, witnesses: null,
@@ -447,7 +513,7 @@ test("the-late-welcome — an UNPUBLISHED sketch on your ground is a candidate, 
   // for the crossing to read, and the deferred gate would have deferred to
   // nobody. The disclosure is narrow by construction — only a sketch that
   // overlaps ground you already hold ever appears.
-  withDb((db) => appendJournal(db, {
+  withDb((db) => seedJournalRow(db, {
     crossing: 145, actor: "zeta", household: "zeta", action: ACTION_LEAVE,
     object: "zeta/a-sketch", cls: CLASS_MARK,
     at: { anchor: null, dx: null, dy: null }, witnesses: null,
@@ -461,10 +527,11 @@ test("the-late-welcome — an UNPUBLISHED sketch on your ground is a candidate, 
 
   const r = await speak({ on: "zeta/a-sketch", stance: "opposed" });
   assert.equal(r.stance, "opposed");
-  assert.equal(withDb((db) => readJournal(db, { cls: CLASS_STANCE }))[0].object, "zeta/a-sketch");
+  assert.equal(pen.rows().filter((x) => x.class === CLASS_STANCE)[0].object, "zeta/a-sketch",
+    "and the word reached the record, which is where G1 put the write");
 
   // and a sketch that touches nothing of yours stays invisible
-  withDb((db) => appendJournal(db, {
+  withDb((db) => seedJournalRow(db, {
     crossing: 145, actor: "zeta", household: "zeta", action: ACTION_LEAVE,
     object: "zeta/elsewhere", cls: CLASS_MARK,
     at: { anchor: null, dx: null, dy: null }, witnesses: null,
@@ -510,7 +577,7 @@ test("an unreadable engine DISCLOSES rather than guessing at overlap", async () 
 // crossing-save — the act stood in the photograph and in the record; the read
 // folded the live journal alone. CAN-FAIL: with the photograph union removed,
 // the first assertion below goes red.
-test("#2454 FALSIFIER: a stance drained into a photograph still STANDS — the read folds STATE/log ∪ the live journal", async () => {
+test("#2454 FALSIFIER: a stance drained into a photograph still STANDS — the read folds STATE/log ∪ the register", async () => {
   const dbPath = join(scratch, "drained.sqlite");
   const logDir = join(repo, "STATE", "log");
   mkdirSync(logDir, { recursive: true });
@@ -528,11 +595,14 @@ test("#2454 FALSIFIER: a stance drained into a photograph still STANDS — the r
       "the drained stance stands — it was spoken, and a drain is not a withdrawal");
     assert.ok(!inbox.candidates.some((c) => c.id === "beta/on-alphas-edge"), "and the mark is no longer awaiting a word");
 
-    // the live journal wins the same seq (the fresher copy), and later seqs join the fold
-    const db2 = openDynamic(dbPath);
-    appendJournal(db2, { crossing: 168, actor: "alpha", action: ACTION_STANCE, object: "gamma/well-inside", cls: CLASS_STANCE,
-      payload: { on: "gamma/well-inside", stance: "declined", by: "alpha" }, household: "alpha" });
-    db2.close();
+    // THE LIVE ARM IS THE REGISTER NOW (G1 / POS-156). This seeded the sqlite
+    // journal, which `stanceRows` folded as its third source; that arm is
+    // deleted -- the register already overwrote it wherever both held an act,
+    // so removing it changed no answer -- and the live half of this fold is
+    // `acts`. The photograph half is untouched and is the point of the test.
+    pen.seedAct({ at: "2026-09-04T00:00:00.000Z", crossing: 168, actor: "alpha", action: ACTION_STANCE,
+      object: "gamma/well-inside", class: CLASS_STANCE, household: "alpha",
+      payload: JSON.stringify({ on: "gamma/well-inside", stance: "declined", by: "alpha" }) });
     const again = await stanceInbox(repo, houseA, { dbPath });
     assert.deepEqual(again.standing.map((s) => s.on).sort(), ["beta/on-alphas-edge", "gamma/well-inside"], "photograph + live, one fold");
   } finally {
@@ -706,8 +776,16 @@ test("the ambient block names its ground too, and TIER 1 stays one integer", asy
 test("#2454's smallest type: a stance whose row has left sqlite is still SUPERSEDED, not forgotten", async () => {
   const first = await speak({ on: "beta/on-alphas-edge", stance: "welcomed" });
   assert.equal(first.error, undefined, "the first stance is spoken");
-  const spoken = withDb((db) => readJournal(db, { cls: CLASS_STANCE }).find((r) => r.object === "beta/on-alphas-edge"));
-  assert.ok(spoken, "and it is in the journal");
+  // THE ROW IS IN THE RECORD (G1): the door's write is `acts` now, so the
+  // photograph below is cut from the row the register holds rather than from a
+  // sqlite copy that no longer exists.
+  const act = pen.rows().find((r) => r.class === CLASS_STANCE && r.object === "beta/on-alphas-edge");
+  assert.ok(act, "and it is in the record");
+  const spoken = { seq: act.id, written_at: act.at, action: act.action, actor: act.actor,
+    class: act.class, object: act.object, household: act.household, crossing: act.crossing,
+    at: { anchor: act.at_anchor, dx: act.at_dx, dy: act.at_dy },
+    witnesses: act.witnesses == null ? null : JSON.parse(act.witnesses),
+    effect: act.effect, payload: JSON.parse(act.payload) };
 
   // The row is DRAINED: it moves to the photograph and leaves sqlite. This is
   // what the drain did every twelve hours, and what the reaper now does as soon
@@ -719,8 +797,12 @@ test("#2454's smallest type: a stance whose row has left sqlite is still SUPERSE
     class: spoken.class, object: spoken.object, household: spoken.household, crossing: spoken.crossing,
     standing: spoken.at, witnesses: spoken.witnesses, effect: spoken.effect, payload: spoken.payload,
   }) + "\n");
-  withDb((db) => db.prepare("DELETE FROM journal WHERE seq = ?").run(spoken.seq));
-  assert.equal(withDb((db) => readJournal(db, { cls: CLASS_STANCE }).length), 0, "sqlite no longer holds it");
+  // AND THE ROW LEAVES THE LIVE LAYER. It used to be deleted from sqlite; the
+  // equivalent now is that the register's copy is gone -- the archive holds it,
+  // the live read does not -- which is the same shape the drain and the reaper
+  // made and the same one this test is about.
+  pen.state.acts.length = 0;
+  assert.equal(pen.rows().filter((r) => r.class === CLASS_STANCE).length, 0, "the live layer no longer holds it");
 
   const second = await speak({ on: "beta/on-alphas-edge", stance: "opposed" });
   assert.equal(second.error, undefined);

@@ -79,7 +79,22 @@
 // exits loud, reports nothing, and leaves the cursor exactly where it was, so
 // the next run re-reads the same range rather than stepping over it.
 //
+// ── THE CURSOR FINDS; THE JOURNAL REMEMBERS (postmark#2978, POS-134) ────────
+//
+// The cursor is for finding NEW blocks. It is not, and never was, a memory of
+// what is still undecided: it advances to the deepest block a tick could safely
+// read, so an arrival inside its twelve-hour grace was held on one tick and
+// stood behind the cursor ten minutes later, on the next one — every time, not
+// occasionally. `usdc-intake.jsonl` beside the state file is the memory. Every
+// tick decides the new scan UNION every journalled arrival the town has not yet
+// resolved, whatever the cursor says. Nothing here moves money either way; what
+// the orphaning cost was the arrival's place on `arrivals.json`, which is the
+// operator's Base queue, and it is why SINK_AGE_DAYS could never come due on an
+// ordinary tick. See `unresolvedSeen` below and
+// test/usdc-watch-held-behind-cursor.test.mjs for the proof.
+//
 // Usage: node tools/usdc-watch.mjs [--state <state.json>] [--out <report.json>]
+//                                  [--journal <usdc-intake.jsonl>]
 //                                  [--clone <town-clone>] [--from <block>]
 //                                  [--dry-run] [--json]
 
@@ -92,6 +107,7 @@ import { readWalletRegistry, handleForAddress } from "../src/wallet-registry.mjs
 import { CROSSING_MS } from "../src/crossings.mjs";
 import { fundGuards, penRecorder } from "../src/fund.mjs";
 import { readIntakeMap, intakeAddresses } from "../src/intake-map.mjs";
+import { readJournal as readUsdcJournal, appendJournal as appendUsdcJournal } from "./stripe-watch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -135,6 +151,20 @@ export const STATE_PATH = "/srv/postmark-usdc/state.json";
 // same unit line — so the report derives it from here rather than typing a
 // fourth literal.
 export const REPORT_NAME = "arrivals.json";
+// The journal lives beside the state too, derived rather than typed — the same
+// place and the same idiom as the card rail's `stripe-intake.jsonl`.
+export const USDC_JOURNAL_NAME = "usdc-intake.jsonl";
+export const USDC_JOURNAL_PATH = join(dirname(STATE_PATH), USDC_JOURNAL_NAME);
+
+// ── the journal: the same two functions the card rail already owns ──────────
+//
+// `readJournal`/`appendJournal` in tools/stripe-watch.mjs are JSONL file IO and
+// nothing else — a path in, rows out, a torn line surfaced as `{malformed}`.
+// They carry no Stripe field and no rail rule, so a third copy here would be a
+// third thing to keep in step for no gain. Imported and re-exported under this
+// rail's own names, the way this file already re-exports readIntakeMap: one
+// function, two callers, one answer. `tools/stripe-watch.mjs` is not modified.
+export { readUsdcJournal, appendUsdcJournal };
 
 // ── the sink rule: implemented, and OFF ─────────────────────────────────────
 export const SINK_FLAG = "USDC_SINK_UNCLAIMED";
@@ -352,22 +382,91 @@ function emptyReport({ now, intake, minConf, graceMs, sink }) {
     min_confirmations: minConf,
     scanned: null,
     arrivals: 0,
+    // What the JOURNAL contributed, on its own line and never folded into
+    // `arrivals` — that number is what the chain returned, and inflating it
+    // would make the tick's own headline read as a scan that never happened.
+    rechecked: 0,
     witnessed: [], dust: [], witness: [], hold: [], needs_pot: [], over_cap: [], unclaimed: [], sink: [],
     sink_enabled: sink,
     sink_rule: SINK_RULE,
     grace: `one crossing (${graceMs / 3_600_000}h) after the block was mined`,
-    posture: "this watch records exactly one thing: an arrival from an address a household has REGISTERED, at an address that names a single pot, MIN_CONF deep and a crossing old. Everything else it reads and reports only. The chain cannot say which pot an unmapped address meant, and a receipt recorded under a placeholder would consume that hash's one mint chance and cost the patron their holo forever.",
+    posture: "this watch records exactly one thing: an arrival from an address a household has REGISTERED, at an address that names a single pot, MIN_CONF deep and a crossing old. Everything else it reads and reports only. The chain cannot say which pot an unmapped address meant, and a receipt recorded under a placeholder would consume that hash's one mint chance and cost the patron their holo forever. The cursor finds new blocks; the journal's seen-and-unresolved arrivals are decided again every tick whatever the cursor says, so an arrival inside its grace cannot be orphaned behind it.",
   };
+}
+
+/**
+ * A journal row's identity, which is the ref the LEDGER dedupes on.
+ *
+ * A `seen` row is a whole decoded arrival, so it spells it `receipt_ref`; a
+ * `witnessed`/`refused` row is written by `main()` from a plan, so it spells
+ * the same string `ref`. Two names for one key is the sort of thing that reads
+ * as working and silently remembers nothing, so it is resolved in one place.
+ */
+export const journalRef = (r) => r?.receipt_ref ?? r?.ref ?? null;
+
+/**
+ * THE ROWS THE CURSOR FORGOT — every arrival the journal remembers as SEEN and
+ * has never recorded as WITNESSED.
+ *
+ * ── WHY THIS EXISTS (postmark#2978, POS-134) ───────────────────────────────
+ *
+ * The exact sibling of the card rail's #2973, and the Base rail had it worse.
+ * `watch()` scans `from = cursor + 1` and the cursor moves to the deepest block
+ * this tick could safely read — so an arrival inside its twelve-hour grace is
+ * held on tick 1 and is BEHIND the cursor ten minutes later, on tick 2, every
+ * time. Not "when a newer row shares a listing": always. A two-tick probe
+ * (docs/2026-09-19/pos-2973/usdc-orphan-probe.mjs) reads
+ * `hold: 1` then `hold: 0` over the same untouched arrival.
+ *
+ * THE CURSOR IS FOR FINDING NEW BLOCKS. THE JOURNAL IS FOR REMEMBERING HELD
+ * ARRIVALS. Nothing here moves money: this rail only ever SEES, and what the
+ * orphaning cost was the arrival's place on `arrivals.json` — which is the
+ * operator's Base queue in `tools/funding-report.mjs`, and the only way
+ * `SINK_AGE_DAYS` could ever come due on an ordinary tick.
+ *
+ * A `refused` row STAYS in the set, exactly as on the card rail, and for the
+ * reason `main()` already writes down in those words: the ref is unspent, so
+ * the next tick tries again. A `witnessed` row drops OUT — the ledger would
+ * bounce a second write regardless, and the watcher must not even try.
+ *
+ * Pure, and takes raw journal rows so a torn line costs nothing.
+ */
+export function unresolvedSeen(rows) {
+  const seen = new Map();
+  const witnessed = new Set();
+  for (const r of rows ?? []) {
+    const ref = journalRef(r);
+    if (!ref) continue;
+    if (r.kind === "seen") { if (!seen.has(ref)) seen.set(ref, r); }
+    else if (r.kind === "witnessed") witnessed.add(ref);
+  }
+  for (const ref of witnessed) seen.delete(ref);
+  return [...seen.values()];
 }
 
 /**
  * One tick.
  *
- * Returns { report, cursor, todo } and NEVER writes: the caller persists and
- * records, so a falsifier can run the whole tick and prove the cursor did not
- * move and the ledger did not grow. Throws when the chain is unreadable —
+ * Returns { report, cursor, todo, seen } and NEVER writes: the caller persists
+ * and records, so a falsifier can run the whole tick and prove the cursor did
+ * not move and the ledger did not grow. Throws when the chain is unreadable —
  * loudly, because a silent empty report from a blind watcher is
  * indistinguishable from a quiet day, and the second one is a lie.
+ *
+ * TWO READS, ONE DECISION. `journal` is `unresolvedSeen(...)` — the arrivals
+ * the cursor has left behind. THE LIVE SCAN WINS where both carry the same ref:
+ * a confirmed block's contents never change, but the decode this tick actually
+ * read is the one that is not a copy. A remembered row's `ts` is kept (a
+ * block's timestamp is immutable, so re-reading it is a call for nothing) and a
+ * remembered `ts: null` is retried, because that null was an RPC that failed,
+ * not a fact about the block.
+ *
+ * THE CURSOR IS STILL COMPUTED FROM THE SCAN ALONE, deliberately: it means
+ * "which blocks this town has read", and this is a fix TO a cursor bug, so it
+ * must not quietly also be a change to what the cursor means.
+ *
+ * `seen` is the rows to journal, shaped and ordered; the CALLER owns the dedupe
+ * against the file, because the file is what it read and this function did not.
  */
 export async function watch({
   rpc = baseRpc,
@@ -386,6 +485,7 @@ export async function watch({
   now = Date.now(),
   graceMs = CROSSING_MS,
   sink = false,
+  journal = [],
 } = {}) {
   let head;
   try {
@@ -402,25 +502,56 @@ export async function watch({
   const safeHead = head - minConf;
   const from = cursor == null ? Math.max(0, safeHead - maxSpan + 1) : cursor + 1;
 
-  if (safeHead < from) {
-    // nothing has settled since the last tick — not an error, and not a reason
-    // to move the cursor forward over blocks that were never read.
-    //
+  // nothing has settled since the last tick — not an error, and not a reason
+  // to move the cursor forward over blocks that were never read.
+  const quiet = safeHead < from;
+
+  if (quiet && journal.length === 0) {
     // It carries the SAME KEYS as a full report, deliberately: the quiet branch
     // used to drop `intake`, `generated_at` and the posture, so the CLI's very
     // first line (`report.intake.join`) threw on the commonest tick there is —
     // an empty ten minutes. A degraded shape is a second shape, and every
     // reader of the first one has to learn about it the hard way.
-    return { report: { ...emptyReport({ now, intake, minConf, graceMs, sink }), head, safe_head: safeHead }, cursor, todo: [] };
+    //
+    // A QUIET TICK STILL OWES THE JOURNAL ITS DECISION, which is why this
+    // return is now conditional on there being nothing to decide. Returning an
+    // empty report over a journal with rows in it would write `arrivals.json`
+    // with nothing on it and drop every remembered arrival — the exact failure
+    // this journal exists to end, reached through the quietest branch there is,
+    // where nobody would think to look for it. With an empty journal the path
+    // below is unchanged, and so is every caller that never passes one.
+    return { report: { ...emptyReport({ now, intake, minConf, graceMs, sink }), head, safe_head: safeHead }, cursor, todo: [], seen: [] };
   }
 
-  const to = Math.min(safeHead, from + maxCatchup - 1);
-  const arrivals = await scanRange({ rpc, intake, usdcToken, from, to, maxSpan });
-  const split = reconcile({ arrivals, entries, engine, minUsd });
+  const to = quiet ? cursor : Math.min(safeHead, from + maxCatchup - 1);
+  const arrivals = quiet ? [] : await scanRange({ rpc, intake, usdcToken, from, to, maxSpan });
 
-  // Ages, best effort, only for what the ledger has not already claimed.
-  const times = split.unclaimed.length ? await blockTimes({ rpc, blocks: split.unclaimed.map((a) => a.block) }) : new Map();
-  const aged = split.unclaimed.map((a) => ({ ...a, ts: times.get(a.block) ?? null }));
+  // THE SECOND READ. Everything the journal remembers that this scan did not
+  // return — the live decode wins on a collision, so a remembered snapshot can
+  // never shadow a block the town just read.
+  const scanned = new Set(arrivals.map((a) => a.receipt_ref));
+  const remembered = [];
+  for (const row of journal) {
+    const ref = journalRef(row);
+    if (!ref || scanned.has(ref)) continue;
+    // `kind` and `at` are the JOURNAL's fields, not the arrival's, and every
+    // bucket below spreads whatever it is handed into the row an operator
+    // reads. Strip them so a re-decided arrival is shaped like a freshly
+    // decoded one and no reader has to learn a second shape.
+    const { kind: _kind, at: _at, ...arrival } = row;
+    remembered.push(arrival);
+  }
+  const rechecked = remembered.length;
+
+  const all = [...arrivals, ...remembered]
+    .sort((a, b) => a.block - b.block || String(a.txhash).localeCompare(String(b.txhash)));
+  const split = reconcile({ arrivals: all, entries, engine, minUsd });
+
+  // Ages, best effort, only for what the ledger has not already claimed — and
+  // only for the ones whose age this tick does not already hold.
+  const needTimes = split.unclaimed.filter((a) => a.ts == null);
+  const times = needTimes.length ? await blockTimes({ rpc, blocks: needTimes.map((a) => a.block) }) : new Map();
+  const aged = split.unclaimed.map((a) => (a.ts == null ? { ...a, ts: times.get(a.block) ?? null } : a));
 
   const rules = resolveArrivals({
     arrivals: aged, entries, engine, clone,
@@ -429,19 +560,28 @@ export async function watch({
     now, graceMs, sink,
   });
 
+  const generated_at = new Date(now).toISOString();
   return {
     report: {
       ...emptyReport({ now, intake, minConf, graceMs, sink }),
       head,
       safe_head: safeHead,
-      scanned: { from, to },
+      scanned: quiet ? null : { from, to },
       arrivals: arrivals.length,
+      rechecked,
       witnessed: split.witnessed,
       dust: split.dust,
       ...rules,
     },
     cursor: to,
     todo: rules.witness,
+    // Every arrival this tick decided by rule — the ones whose answer the town
+    // can still change, which is exactly the set that can be orphaned. A dust
+    // row and a row already on the ledger are left out on purpose: a confirmed
+    // transfer's amount and its ref are immutable, so neither can ever become
+    // something else, and remembering them would grow the file and the report
+    // forever with rows that have no next answer.
+    seen: aged.map((a) => ({ kind: "seen", at: generated_at, ...a })),
   };
 }
 
@@ -455,6 +595,9 @@ function arg(name, dflt = null) {
 async function main() {
   const clone = arg("clone", process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone"));
   const statePath = arg("state", STATE_PATH);
+  // Derived from whatever `--state` says, the way the card rail's is, so the
+  // journal cannot end up in a different directory from the cursor it belongs to.
+  const journalPath = arg("journal", join(dirname(statePath), USDC_JOURNAL_NAME));
   const outPath = arg("out", null);
   const dryRun = process.argv.includes("--dry-run");
 
@@ -472,7 +615,13 @@ async function main() {
   const households = typeof engine.householdKeys === "function" ? engine.householdKeys(clone) : null;
   const { byAddress: wallets, invalid: walletInvalid, path: registryPath, present: registryPresent } = readWalletRegistry(undefined, { households });
 
-  const { report, cursor: next, todo } = await watch({
+  // THE SECOND READ, taken ONCE here and used twice: to re-decide the arrivals
+  // the cursor has left behind, and immediately below to decide which of this
+  // tick's arrivals are new enough to journal. One read, because two reads of
+  // an append-only file inside one tick can disagree, and a dedupe set that
+  // disagrees with the re-decide set writes the same arrival down twice.
+  const journalRows = readUsdcJournal(journalPath);
+  const { report, cursor: next, todo, seen } = await watch({
     entries: ledgerEntries(clone, engine),
     engine,
     clone,
@@ -481,9 +630,20 @@ async function main() {
     potMap,
     wallets,
     sink: sinkEnabled(),
+    journal: unresolvedSeen(journalRows),
   });
   report.registry = { path: registryPath, present: registryPresent, addresses: wallets.size, mapped_pots: potMap.size };
   report.invalid = [...mapInvalid, ...walletInvalid];
+  report.journal = journalPath;
+
+  // THE TICK SUCCEEDED, so what it saw is written down — after the tick and
+  // BEFORE the cursor moves. A tick that threw never reached this line, so it
+  // appends nothing and moves nothing, which is the same rule the cursor has
+  // always had ("nothing was read, and the cursor has not moved") applied to
+  // the thing that now remembers for it. A `--dry-run` still journals: seeing
+  // is not recording, and the card rail draws the line in the same place.
+  const known = new Set(journalRows.filter((r) => r.kind === "seen").map(journalRef));
+  appendUsdcJournal(journalPath, seen.filter((r) => !known.has(journalRef(r))));
 
   const written = [];
   if (!dryRun && todo.length) {
@@ -497,13 +657,18 @@ async function main() {
     for (const w of todo) {
       try {
         const out = await record({ pot: w.pot, usd: w.usd, from: w.from, ref: w.ref });
-        written.push({ kind: "witnessed", txhash: w.txhash, ref: w.ref, pot: w.pot, from: w.from, usd: w.usd, line: out?.line ?? null, commit: out?.commit ?? null });
+        written.push({ kind: "witnessed", at: new Date().toISOString(), txhash: w.txhash, ref: w.ref, pot: w.pot, from: w.from, usd: w.usd, line: out?.line ?? null, commit: out?.commit ?? null });
       } catch (e) {
         // A refusal is an answer, not a crash: report it and keep going. The ref
         // is unspent, so the next tick tries again.
-        written.push({ kind: "refused", txhash: w.txhash, ref: w.ref, pot: w.pot, from: w.from, usd: w.usd, code: e?.code ?? null, defect: e?.defect ?? String(e?.message ?? e).slice(0, 200) });
+        written.push({ kind: "refused", at: new Date().toISOString(), txhash: w.txhash, ref: w.ref, pot: w.pot, from: w.from, usd: w.usd, code: e?.code ?? null, defect: e?.defect ?? String(e?.message ?? e).slice(0, 200) });
       }
     }
+    // Journalled for the same reason the card rail journals its outcomes: a
+    // `witnessed` row is what retires an arrival from the remembered set, and a
+    // `refused` row deliberately does NOT — its ref is unspent, so the next
+    // tick tries again, which is what the catch above already says in words.
+    appendUsdcJournal(journalPath, written);
   }
   report.written = written;
 
@@ -515,6 +680,11 @@ async function main() {
   const { witnessed, unclaimed, dust, hold, needs_pot, over_cap, scanned } = report;
   console.log(`usdc-watch · intake ${report.intake.join(", ")}`);
   console.log(scanned ? `blocks ${scanned.from}–${scanned.to} (head ${report.head}, ${report.min_confirmations} deep)` : `nothing settled since the last tick (head ${report.head})`);
+  // Printed only when there were any, and named as a SECOND read rather than
+  // folded into the line above — that line is about which blocks were read, and
+  // an operator who cannot tell the two reads apart cannot tell a quiet chain
+  // from a cursor that has run away from an arrival still inside its grace.
+  if (report.rechecked) console.log(`  plus ${report.rechecked} seen-and-unresolved arrival(s) decided again from the journal, behind the cursor`);
   console.log(`  registry: ${report.registry.present ? `${report.registry.addresses} address(es)` : "ABSENT"} at ${report.registry.path}; ${report.registry.mapped_pots} pot address(es) mapped`);
   console.log(`  witnessed: ${witnessed.length}   recorded now: ${written.filter((w) => w.kind === "witnessed").length}   holding: ${hold.length}   needs-pot: ${needs_pot.length}   over-cap: ${over_cap.length}   unclaimed: ${unclaimed.length}   under $1: ${dust.length}`);
   for (const h of hold)

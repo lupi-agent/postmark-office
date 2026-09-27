@@ -69,6 +69,9 @@ import { DatabaseSync } from "node:sqlite";
 import { SCHEMA } from "../src/schema.mjs";
 import { parseLedgerText, foldFunding, classifyFundingRow, readPots, HOLO_CAPTION, HOLO_EXPANSION, WHAT_THIS_BUYS, TEACH } from "../src/funding.mjs";
 import { stampsDetail, potBoard, questBoardFor } from "../src/queries.mjs";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
+
+const SKIP = !townClone() && NO_TOWN;
 
 // ── the landed grammar, one row of every kind ────────────────────────────────
 
@@ -740,15 +743,15 @@ const BOUNTY_ROW = {
 };
 
 async function board(db, quests) {
-  const TOWN = "G:/Wright-HQ/postmark"; // same live-checkout convention as quests.test.mjs
-  const { townDay } = await import("file:///G:/Wright-HQ/postmark/tools/quest-progress.mjs");
+  const TOWN = townClone(); // same live-checkout convention as quests.test.mjs
+  const { townDay } = await import(townModuleUrl("tools", "quest-progress.mjs"));
   const meta = { quest_day: townDay(), quest_registry: JSON.stringify({ version: 1, quests }) };
   return questBoardFor(db, meta, "keemin", TOWN);
 }
 
 const DAILY = { id: "correspond-send", title: "Reach out", cadence: "daily", validation: "automatic", target: 5, reward: "1 stamp per unit" };
 
-test("a pot's bounty row is a board posting, never a resident's quest card", async () => {
+test("a pot's bounty row is a board posting, never a resident's quest card", { skip: SKIP }, async () => {
   const b = await board(fundingDb(), [DAILY, BOUNTY_ROW]);
   assert.deepEqual(b.quests.map((q) => q.id), ["correspond-send"],
     "the bounty comes off the card deck — left on, it renders to every resident as a daily quest stuck at 0/150");
@@ -757,7 +760,7 @@ test("a pot's bounty row is a board posting, never a resident's quest card", asy
   assert.ok(b.pots.teach, "the section explains itself where it is read");
 });
 
-test("a bounty posting with no pot file behind it is surfaced, not dropped between the two reads", async () => {
+test("a bounty posting with no pot file behind it is surfaced, not dropped between the two reads", { skip: SKIP }, async () => {
   const b = await board(fundingDb(), [DAILY, { ...BOUNTY_ROW, id: "ghost-pot" }]);
   assert.equal(b.quests.some((q) => q.id === "ghost-pot"), false, "still off the card deck");
   const ghost = b.pots.invalid_rows.list.find((i) => i.row_kind === "pot-posting");
@@ -793,6 +796,72 @@ test("the holo teach says what holo is short for, once, from the one constant", 
   // expansion teaches once instead of becoming boilerplate.
   const carriers = Object.entries(TEACH).filter(([, v]) => v.includes(HOLO_EXPANSION)).map(([k]) => k);
   assert.deepEqual(carriers, ["holo"], "exactly one teach line carries the expansion");
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// POS-218 · THE HAND, CORRECTED — the office folds a pot-correction row with
+// the town's own rule, so every reader names the payer the close mints to
+// ════════════════════════════════════════════════════════════════════════════
+
+const CORRECTED = `# stamp-ledger — POS-218 fixture
+- 2026-09-01 · pot-correction · ref: stripe:cs_early · from outside:stripe to amia · founder-directed-attribution · by: keemin
+- 2026-09-02 · pot-receipt · pot:keeping-ec2 · rail: stripe · usd: 10 · from: outside:stripe · ref: stripe:cs_early
+- 2026-09-02 · pot-receipt · pot:keeping-ec2 · rail: stripe · usd: 5 · from: outside:stripe · ref: stripe:cs_plain
+- 2026-09-03 · pot-receipt · pot:keeping-ec2 · rail: stripe · usd: 50 · from: outside:stripe · ref: stripe:cs_twice
+- 2026-09-04 · pot-correction · ref: stripe:cs_twice · from outside:stripe to spark · founder-manual-attribution · by: keemin
+- 2026-09-05 · pot-correction · ref: stripe:cs_twice · from outside:stripe to fabel · founder-directed-attribution · by: keemin
+- 2026-09-05 · pot-receipt · pot:keeping-ec2 · rail: stripe · usd: 7 · from: outside:stripe · ref: stripe:cs_closed
+- 2026-09-30 · holo · outside:stripe · 0 · pot:keeping-ec2 · epoch:2026-09 · ref: stripe:cs_closed
+- 2026-10-01 · pot-correction · ref: stripe:cs_closed · from outside:stripe to domovoi · founder-directed-attribution · by: keemin
+- 2026-10-01 · pot-correction · ref: stripe:cs_plain · from stan to paz · founder-directed-attribution · by: keemin
+- 2026-10-01 · pot-correction · ref: stripe:cs_ghost · from outside:stripe to paz · founder-directed-attribution · by: keemin
+`;
+
+test("POS-218 · a pot-correction row is folded by the town's rule: before its receipt, latest-dated wins, stale-from refused, after-close flagged", { skip: SKIP }, async () => {
+  // LAW (town tools/stamp-mint.mjs § foldPotReceipts, verbatim): "THE CORRECTION
+  //     MUST MATCH THE ROW IT CORRECTS." and "LATEST DATED WINS, and a tie goes
+  //     to the later row."
+  const entries = parseLedgerText(CORRECTED);
+  const f = foldFunding(entries);
+  const hands = Object.fromEntries((f.receiptsByPot.get("keeping-ec2") ?? []).map((r) => [r.receipt, r.from]));
+  assert.deepEqual(hands, {
+    "stripe:cs_early": "amia",            // the correction sits BEFORE its receipt
+    "stripe:cs_plain": "outside:stripe",  // its correction names the wrong old hand
+    "stripe:cs_twice": "fabel",           // the later correction wins
+    "stripe:cs_closed": "domovoi",        // corrected after its close — the hand moves, the holo row does not
+  });
+  const closed = f.receiptsByPot.get("keeping-ec2").find((r) => r.receipt === "stripe:cs_closed");
+  assert.equal(closed.corrected_from, "outside:stripe");
+  assert.equal(closed.correction.after_close, true);
+  assert.equal(f.invalid.length, 0, "every correction row parses");
+
+  // ONE RULE, NOT TWO: the office's answer is the town's, row for row
+  const ENGINE = await import(townModuleUrl("tools", "stamp-mint.mjs"));
+  const town = ENGINE.foldPotReceipts(entries);
+  assert.deepEqual(Object.fromEntries(town.receipts.map((r) => [r.ref, r.from])), hands, "the office's hand for every receipt is the town's");
+  const shape = (cs) => cs.map((c) => [c.ref, c.applied, c.refused ?? null, !!c.after_close]).sort();
+  assert.deepEqual(shape(f.corrections), shape(town.corrections), "and it applies and refuses exactly what the town does");
+});
+
+test("POS-218 · the fund door's pot rows name the corrected hand — the receipt list AND the patron roll", () => {
+  // CONSUMER: hydrate writes receiptsByPot → pot_receipts.payer and rollByPot →
+  // funding_roll.patron; potBoard (the town's quest board and the household's
+  // own board) reads both. This is that path in miniature.
+  const db = new DatabaseSync(":memory:");
+  db.exec(SCHEMA);
+  const f = foldFunding(parseLedgerText(CORRECTED));
+  const insRoll = db.prepare("INSERT INTO funding_roll (patron, pot, usd, date, receipt, holo) VALUES (?,?,?,?,?,?)");
+  for (const [pot, rs] of f.rollByPot) for (const r of rs) insRoll.run(r.patron, pot, r.usd, r.date, r.receipt, r.holo);
+  const insRcpt = db.prepare("INSERT INTO pot_receipts (pot, rail, usd, date, receipt, payer) VALUES (?,?,?,?,?,?)");
+  for (const [pot, rs] of f.receiptsByPot) for (const r of rs) insRcpt.run(pot, r.rail, r.usd, r.date, r.receipt, r.from);
+  db.prepare("INSERT INTO pots (id, json) VALUES (?,?)").run("keeping-ec2", JSON.stringify(POT_FILE));
+  const pot = potBoard(db).list[0];
+  const payers = Object.fromEntries(pot.receipts.list.map((r) => [r.receipt, r.payer]));
+  assert.equal(payers["stripe:cs_twice"], "fabel", "the $50 is fabel's on the door, as the close mints it");
+  assert.equal(payers["stripe:cs_plain"], "outside:stripe", "an uncorrected outside receipt stays outside");
+  assert.deepEqual(pot.patrons.roll.map((x) => [x.receipt, x.patron]), [["stripe:cs_closed", "domovoi"]], "the roll names the corrected hand for a settled receipt");
+  // sums are hand-blind: a correction moves no dollars
+  assert.equal(pot.receipts.sum_usd, 72);
 });
 
 // ── POS-184 · a fund names its stakers, not only its payers ──────────────────

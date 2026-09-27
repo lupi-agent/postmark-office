@@ -34,7 +34,7 @@ import { pathToFileURL } from "node:url";
 import { OFFICE_ROOT, WORLD_CLONE } from "./world-store.mjs";
 import { freshestMainRef, materializeAtRef } from "./world-branches.mjs";
 import { servedCanonSha } from "./world-serve.mjs";
-import { movementV2Enabled, openDynamic, putMeta } from "./dynamic-store.mjs";
+import { openDynamic, putMeta } from "./dynamic-store.mjs";
 
 // The vessel appears in the walk ledger as an actor — she is a mark that moves,
 // not a resident. She is never an entity; her position is `derived` mobility,
@@ -343,10 +343,45 @@ export async function refreshEntities({
 
   // STAGE D: the two eras, folded before the derivation rather than after it.
   // `governingAt` already implements latest-wins over one ordered list, so
-  // handing it the merged list is the whole of the seam's cost here — and with
-  // the flag off `movements` is not even read, so the derivation is the one that
-  // has always run.
-  const storeEvents = movementV2Enabled() ? readMovements(handle, { until: at }) : [];
+  // handing it the merged list is the whole of the seam's cost here.
+  //
+  // ── THE LIVE ERA COMES FROM THE REGISTER (POS-196's held swap, POS-156) ────
+  //
+  // This read was `readMovements(handle)` — `dynamic.db/movements`, the
+  // REVERSE-MIRROR copy G1 removes. It is `storedDepartureEvents` now: the same
+  // departures rendered from `acts` in world.db's `events` row shape, through
+  // POS-154's one road, so `mergedDepartureEvents`, `governingAt` and
+  // `deriveEntities` read one vocabulary and the seam stays a change of PEN.
+  //
+  // POS-196 could not land this and said why: the register held no departure
+  // INSTANT, and `at` is what `mergedDepartureEvents` orders on. POS-198 closed
+  // it — `walkViaOffice` reads the declaration clock once and hands the same
+  // string to both pens — so `acts.at` IS the departure's own instant now.
+  //
+  // ⚑ THE GATE IS `world2Enabled()`, AND IT IS THE OLD GATE'S TWIN. An office
+  // pointed at no register reads `[]` here, exactly as an office with
+  // `WORLD_MOVEMENT_V2` off read `[]` before: that is "this office has no live
+  // era", not "nobody has walked". An office that IS pointed at one and cannot
+  // read it REFUSES by name, because this function's own header rules it —
+  // "a refused gate leaves every existing row exactly where it was" — and
+  // deriving the entities table from the frozen era alone would replace every
+  // resident's position with a July one while reporting success.
+  //
+  // ⚑ BOTH IMPORTS ARE DYNAMIC, and not by taste: `world-movement.mjs` imports
+  // `VESSEL_HANDLE` and `worldToolModule` FROM THIS FILE (line 45 there), so a
+  // static import back would close a cycle. `world2-guards.mjs` already reaches
+  // this file the same way for the same reason.
+  const { world2Enabled } = await import("./world2-acts.mjs");
+  let storeEvents = [];
+  if (world2Enabled()) {
+    const { storedDepartureEvents } = await import("./world-movement.mjs");
+    const stored = await storedDepartureEvents({ atMs: at });
+    if (stored.absent) {
+      if (own) handle.close();
+      return { ok: false, refused: { gate: "register", detail: stored.absent }, entities: 0 };
+    }
+    storeEvents = stored.events;
+  }
   const events = storeEvents.length ? mergedDepartureEvents(read.events, storeEvents) : read.events;
   const rows = deriveEntities(events, at, w);
 
@@ -431,60 +466,24 @@ export function declareAttachment(db, { entity, target, policy = "cascade", decl
 // makes the seam a change of WRITER rather than a change of MEANING — and it is
 // why the ledger can be frozen without any resident's position moving.
 
-/**
- * Declare a departure into the store. The office pen's post-freeze equivalent of
- * appending one ledger line, and it keeps the ledger's own laws: position is a
- * pure function of (record, clock), superseding is a new departure from the
- * derived position, stopping is a zero-distance departure, and nothing en route
- * is ever written.
- */
-export function declareMovement(db, {
-  actor, at = null, from, toward, crossing,
-  within = null, toMark = null, pace = null, declaredBy = null, note = null,
-} = {}) {
-  if (!actor) throw new Error("a departure needs an actor");
-  if (!from || !Number.isFinite(from.x) || !Number.isFinite(from.y)) throw new Error("a departure needs a from {x,y}");
-  if (!toward || !Number.isFinite(toward.x) || !Number.isFinite(toward.y)) throw new Error("a departure needs a toward {x,y}");
-  if (!Number.isFinite(crossing)) throw new Error("a departure needs the fractional crossing it was declared at");
-  const iso = at ?? new Date().toISOString();
-  db.prepare(`INSERT INTO movements
-      (actor, at, from_x, from_y, toward_x, toward_y, crossing, within_w, within_h, to_mark, pace, declared_by, note)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(actor, iso, from.x, from.y, toward.x, toward.y, crossing,
-      within?.w ?? null, within?.h ?? null, toMark, pace, declaredBy ?? actor, note);
-  return { actor, at: iso, from, toward, crossing, within, to: toMark, pace, declared_by: declaredBy ?? actor, note };
-}
-
-// ── THE FLIPPED WALK (W2_PEN=walk; runbook C3, 2026-09-03) ──────────────────
+// ── THE MOVEMENTS PEN IS GONE (G1 / POS-156, 2026-09-22) ───────────────
 //
-// R2's ordering in sqlite's own terms, the hold lane's shape (world-hold.mjs §
-// declareHoldingFlipped): the movements row is written inside a sqlite
-// transaction that COMMITs only after `appendActFlipped` returns — Postgres
-// committed, the reverse-mirror journal row on the same handle — and ROLLs BACK
-// on any refusal. The three outcomes, each with one truth:
+// `declareMovement` and `declareMovementFlipped` wrote `dynamic.db/movements`:
+// the walk lane's own sqlite pen and, under the flip, the REVERSE-MIRROR copy
+// that committed in one sqlite transaction after the awaited Postgres pen. Both
+// are deleted with the rest of the reverse mirror.
 //
-//   the door refuses before this        → nothing in either store (never reaches here)
-//   the pen is unreachable              → PenUnreachableError thrown; movements + journal untouched
-//   the pen commits                     → acts holds the record; movements + journal commit together
+// NOTHING READS THE TABLE LIVE ANY MORE, which is what made the deletion a
+// deletion rather than a port: `storedDepartures` moved to `acts` in POS-154,
+// and `refreshEntities` and `crossing-save`'s `<N>.jsonl` half moved in
+// POS-156's part 0. Every walk writes one act, awaited, through `appendJournal`
+// -- `world.mjs § walkViaOffice` and `world-apex.mjs § spawnOnEnter`, which was
+// a THIRD writer of this table that POS-156's own measurement had not listed.
 //
-// `entry` is the act as the mirror would have described it (the caller builds
-// it with the same field vocabulary — `within`/`to`, the movements row's own
-// column names). `deps.appendActFlipped` exists so the ordering can be proven
-// on a hand-built store with no world db and no Postgres; the door injects the
-// real one. Throws; the door turns PenUnreachableError into the ruled 503.
-export async function declareMovementFlipped(db, movement, entry, deps = {}) {
-  const appendActFlipped = deps.appendActFlipped ?? (await import("./world-journal.mjs")).appendActFlipped;
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const declared = declareMovement(db, movement);
-    const row = await appendActFlipped(db, entry);
-    db.exec("COMMIT");
-    return { ...declared, log: "acts", seq: row.seq ?? null };
-  } catch (err) {
-    try { db.exec("ROLLBACK"); } catch { /* no transaction to roll back — the BEGIN itself failed */ }
-    throw err;
-  }
-}
+// `readMovements` STAYS, below, and so does the table. It holds the frozen era
+// and two historical readers still ask it for that history
+// (`tools/ledger-freeze.mjs`, `tools/state-to-r2.mjs`). A reader of history is
+// not a shim; what G1 removes is the WRITE, so nothing is added to it again.
 
 /**
  * Every declared movement, in world.db's `events` row shape.

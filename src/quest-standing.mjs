@@ -107,3 +107,44 @@ export function standingRowsFor(handles, { deliveries, friendships, factsFor }) 
   }
   return out;
 }
+
+/**
+ * The whole block, from a town checkout: fold what the town folds ONCE, then
+ * reduce. `tools` is the town's own module surface, injected so this stays
+ * importable and so a falsifier can count the folds without a checkout.
+ *
+ * WHY THE TWO EXTRA FOLDS ARE HANDED DOWN, and it is a cost finding rather than
+ * tidiness. `onboardingFactsFor(repo, handle, { deliveries })` answers its
+ * `welcomed` fact from `households ?? currentHouseholds(repo)` and
+ * `welcomed ?? welcomedHouseholds(repo, roll)` — so omitting the two arguments
+ * makes ONE resident's boolean cost THREE parses of the 13k-line stamp ledger
+ * (`currentHouseholds` parses it twice: once inside `householdKeys` →
+ * `sealedRegistryDates`, once for its own `parseLaws`) plus a re-walk of every
+ * WHITE_PAGES room reading every ADDRESS.md. Measured on the live town clone,
+ * 182 residents: 548 ledger parses and ~43 s, against 5 parses and ~0.9 s with
+ * the two folds passed, and all 182 rows byte-identical. The block's own
+ * comment already guarded the deliveries parse against exactly this class; the
+ * welcome row arrived on 2026-09-14 through the argument nobody passed.
+ *
+ * The count is CONSTANT, not one-per-rehydrate: `foldFriendships` parses the
+ * ledger twice on its own and `currentHouseholds` twice more. What this rule
+ * owns is that it does not grow with the resident count.
+ *
+ * A checkout too old to export `currentHouseholds` / `welcomedHouseholds`
+ * leaves both `undefined`, which is exactly what `onboardingFactsFor` already
+ * treats as "resolve your own" — the old behaviour, unchanged, not a fallback
+ * added under a new road.
+ */
+export function standingRowsFromTown(tools, repo, handles) {
+  const deliveries = tools.parseDeliveries(repo);
+  const friendships = tools.foldFriendships(repo);
+  const households = typeof tools.currentHouseholds === "function"
+    ? tools.currentHouseholds(repo) : undefined;
+  const welcomed = households !== undefined && typeof tools.welcomedHouseholds === "function"
+    ? tools.welcomedHouseholds(repo, households) : undefined;
+  const rows = standingRowsFor(handles, {
+    deliveries, friendships,
+    factsFor: (h) => tools.onboardingFactsFor(repo, h, { deliveries, households, welcomed }),
+  });
+  return { rows, friendships };
+}

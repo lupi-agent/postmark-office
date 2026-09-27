@@ -137,6 +137,14 @@ let doorstepRulings, stancesForHandles, HOUSEHOLD_READS, DOORSTEP_SEGMENTS, CROS
 before(async () => {
   ({ doorstepRulings } = await import("../src/claim-effects.mjs"));
   ({ stancesForHandles } = await import("../src/world-stance.mjs"));
+  // THE CANDIDATE LIST READS THE STORE (POS-195, 2026-09-22). This file plants
+  // its sketches in the journal and still means the same thing by them; the stub
+  // answers the store's query from that same journal, shaped as `claims` rows.
+  // Imported HERE rather than at the top, for this file's own stated reason: a
+  // static import is hoisted above the env this fixture sets.
+  const stanceStub = await import("./stance-pool-stub.mjs");
+  Object.assign(process.env, stanceStub.STANCE_ON);
+  stanceStub.stancePoolFromJournal(join(scratch, "dynamic.db"));
   ({ HOUSEHOLD_READS } = await import("../src/household-apex.mjs"));
   ({ DOORSTEP_SEGMENTS } = await import("../src/queries.mjs"));
   ({ CROSSING_EPOCH_UTC, CROSSING_MS, currentCrossing } = await import("../src/crossings.mjs"));
@@ -245,10 +253,12 @@ test("a nonsense window falls back to the default rather than throwing out of a 
 
 // ── the door's own words, and the manifest ─────────────────────────────────
 
+// The read and the segment are `outcomes` since POS-70 (Keemin, 2026-09-17);
+// the promise moved with the name, and `rulings` is a one-cycle pointer.
 test("the door still PROMISES the axis it now delivers, and the manifest names it", () => {
-  assert.match(HOUSEHOLD_READS.rulings, /every mark laid over ground you hold/,
+  assert.match(HOUSEHOLD_READS.outcomes, /every mark laid over ground you hold/,
     "if this promise is ever withdrawn, the wiring above should go with it");
-  assert.ok(DOORSTEP_SEGMENTS.includes("rulings"));
+  assert.ok(DOORSTEP_SEGMENTS.includes("outcomes"));
   assert.ok(!DOORSTEP_SEGMENTS.includes("crossings"),
     "renamed 2026-09-07: the segment answers a settlement question and must not spend the ferry's word");
 });

@@ -123,10 +123,15 @@ test("the household: line is DISPLAY prose, and the door says so where a caller 
 });
 
 // ── the town-log rows ───────────────────────────────────────────────────────
-test('THE CLASS: "update" is the town log\'s, and the world log bounces it', () => {
+// ⚑ `assert.rejects`, NOT `assert.throws` (G1 / POS-156). `appendJournal` is
+// async since the store became the write, so the tripwire's throw arrives as a
+// rejection. The ASSERTION IS THE SAME ONE — same call, same message, same
+// claim — and it is spelled this way rather than dropped, because a tripwire
+// nobody tests is a tripwire that stops tripping.
+test('THE CLASS: "update" is the town log\'s, and the world log bounces it', async () => {
   assert.ok(TOWN_CLASSES.has("update"));
   const db = odb();
-  assert.throws(() => appendJournal(db, { actor: "t", action: "update", cls: "update", household: "h" }),
+  await assert.rejects(() => appendJournal(db, { actor: "t", action: "update", cls: "update", household: "h" }),
     /is the town log's class, not the world's/,
     "the tripwire reads TOWN_CLASSES, so registering the class is what teaches the world log to refuse it");
 });

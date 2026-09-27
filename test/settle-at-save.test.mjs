@@ -32,7 +32,16 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { openDynamic } from "../src/dynamic-store.mjs";
-import { CLASS_FRAME, CLASS_MOVE, appendJournal, readJournal } from "../src/world-journal.mjs";
+import { CLASS_FRAME, CLASS_MOVE, readJournal } from "../src/world-journal.mjs";
+// ── THE ROWS ARE SEEDED, NOT WRITTEN BY A DOOR (G1 / POS-156) ───────────────
+//
+// This suite's subject is THE DRAIN: what `world-drain.mjs` makes of a journal
+// population. G1 deleted the general journal INSERT, so no door puts rows in
+// that table any more -- the write path writes the record instead. The drain
+// still reads the table and its retirement is G2's, so it is live code owed
+// tests, and the population it reads is now PUT THERE by this file, in the
+// office's own row shape. Nothing below claims a door wrote these rows.
+import { seedJournalRow } from "./journal-seed.mjs";
 import { materializeLedgers } from "../src/world-drain.mjs";
 
 const sweep = (d) => { try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch { /* litter */ } };
@@ -65,7 +74,7 @@ after(() => { delete process.env.WORLD_DYNAMIC_DB; delete process.env.WORLD_SING
 const withDb = (fn) => { const db = openDynamic(dbPath); try { return fn(db); } finally { db.close(); } };
 
 /** A walk row exactly as `walk-exec` writes one under the flag. */
-const walkRow = (db, { handle, line, at = 145.1, seq }) => appendJournal(db, {
+const walkRow = (db, { handle, line, at = 145.1, seq }) => seedJournalRow(db, {
   crossing: at, actor: handle, action: "walk", object: null, cls: CLASS_MOVE,
   at: null, witnesses: null,
   payload: { ledger: WALK_LEDGER, lines: [line], toward: { x: 1, y: 2 }, pace: 60 },
@@ -74,7 +83,7 @@ const walkRow = (db, { handle, line, at = 145.1, seq }) => appendJournal(db, {
 });
 
 /** A crossing row exactly as `crossing-exec` writes one under the flag. */
-const crossRow = (db, { handle, lines, act = "enter", at = 145.2, seq, ledger = ENTER_EXIT_LEDGER }) => appendJournal(db, {
+const crossRow = (db, { handle, lines, act = "enter", at = 145.2, seq, ledger = ENTER_EXIT_LEDGER }) => seedJournalRow(db, {
   crossing: at, actor: handle, action: act, object: "the-town/town-square", cls: CLASS_FRAME,
   at: null, witnesses: null,
   payload: { ledger, lines, summary: `${act}s the square` },
@@ -237,7 +246,7 @@ test("ROWS THAT OWE NO LINE ARE UNTOUCHED — a mark row is not a ledger row", (
   // `ledger` + `lines` is materialized, and every other row is the drain's
   // other business. A mark row has neither.
   withDb((db) => {
-    appendJournal(db, { crossing: 145, actor: "alpha", action: "leave-mark", object: "alpha/x",
+    seedJournalRow(db, { crossing: 145, actor: "alpha", action: "leave-mark", object: "alpha/x",
       cls: "mark", at: null, witnesses: null, payload: { slug: "x", by: "alpha", body: "a mark" } });
     walkRow(db, { handle: "lucien", line: "- the only line", seq: 2 });
   });
@@ -324,26 +333,40 @@ test("END TO END — the same three walks, both lanes, and the ledger comes out 
   }
   assert.equal(new Set(commits).size, 3, "three acts, three commits — the cost being removed");
 
-  // ── the save lane: no commits at all, the lines carried to the save ────────
+  // ── the save lane, AFTER G1: the door needs a record, and says so ─────────
+  //
+  // This half used to assert `commit: null`, `log: "journal"` and "settles at
+  // the save" from the real pen down the flag-on lane. G1 (POS-156, RULING 3)
+  // made the write AWAITED and REFUSABLE — "the store is the write" — so a
+  // subprocess pointed at no record no longer files a row nobody reads: it
+  // gives the ruled 503, which is the whole point of the ruling.
+  //
+  // This runs as a SUBPROCESS, so the in-memory pen (`test/acts-pen-stub.mjs`)
+  // cannot reach it; a record here would mean a live Postgres. So what is
+  // asserted end to end is the new truth — the refusal — and the assertion this
+  // test used to carry NAMES ITS NEW HOME rather than being dropped:
+  //
+  //   "fewer commits, identical record content" is held by THE BAR, the first
+  //   test in this file, which runs `materializeLedgers` over the same three
+  //   walks and compares the two records byte for byte. It is the same claim on
+  //   the same subject (the drain), one process in.
   const on = walkClone("on");
   const dbFor = join(scratch, `e2e-${n}.db`);
   for (const w of walks) {
     const r = runWalk(on.clone, w, { WORLD_SINGLE_LOG: "1", WORLD_DYNAMIC_DB: dbFor });
-    assert.equal(r.commit, null, "flag on spends no commit of its own");
-    assert.equal(r.log, "journal");
-    assert.match(r.settles, /at the save/, "and the answer says where its line went");
+    assert.equal(r.error?.code, 503,
+      "an office pointed at no record must REFUSE a walk, not answer 200 over an act no store holds");
+    assert.match(String(r.error?.hint), /the office's record/,
+      "and the refusal says the record is what could not be reached");
   }
   assert.equal(readFileSync(join(on.clone, WALK_LEDGER), "utf8"), WALK_HEADER,
-    "the record has NOT moved yet — that is the whole point of settling at the save");
+    "nothing was written anywhere — a refusal leaves the record exactly as it was");
 
-  const rows = (() => { const db = openDynamic(dbFor, { readOnly: true }); try { return readJournal(db); } finally { db.close(); } })();
-  assert.equal(rows.length, 3, "three declarations in the log");
-  materializeLedgers(on.clone, rows);
-
-  assert.equal(
-    readFileSync(join(on.clone, WALK_LEDGER), "utf8"),
-    readFileSync(join(off.clone, WALK_LEDGER), "utf8"),
-    "BYTE-IDENTICAL: three commits and one save write the same record");
+  // POS-269: the walk door no longer opens the dynamic store at all, so the
+  // strongest form of "nothing reached the sqlite journal" is that there is no
+  // file for it to have reached.
+  assert.equal(existsSync(dbFor), false,
+    "and NO sqlite store was even created — G1 deleted the INSERT and POS-269 the open, so a refused walk has no consolation copy");
 });
 
 test("FLAG OFF — materializing is a no-op when nothing declared itself into the journal", () => {

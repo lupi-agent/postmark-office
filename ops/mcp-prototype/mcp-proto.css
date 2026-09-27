@@ -487,3 +487,14 @@ select option { background: var(--harbor); }
 .hist .row .dot.ok { color: var(--green); }
 .hist .row .dot.bad { color: var(--wax-ink); }
 .hist .row .grow { margin-left: auto; display: flex; gap: 0.3em; }
+
+/* ── a door's own partition of its fields (x-group), and a titled field ──
+   2026-09-23: fieldsets with a legend where the schema draws a partition, the
+   group's one-line hint under it; a titled field's label in the ink, not the
+   mono of a wire name. The move-in form on the site restyles these selectors
+   in its own paper — this is the ops look. */
+.form fieldset.group { border: 1px solid var(--line); border-radius: 6px; padding: 0.6em 0.75em 0.75em; margin: 0.2em 0; display: grid; gap: 0.55em; }
+.form fieldset.group > legend { padding: 0 0.4em; font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-dim); }
+.form fieldset.group > .group-hint { margin: 0 0 0.2em; font-size: 0.8rem; color: var(--ink-dim); line-height: 1.5; }
+.form fieldset.group > .group-body { display: grid; gap: 0.55em; }
+.field .lab .title { text-transform: none; letter-spacing: 0.02em; font-size: 0.85rem; color: var(--ink); }

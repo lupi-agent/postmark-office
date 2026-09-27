@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openOauthDb, mintBerth, berthLookup, berthTaken, BERTH_SLUG, FROM_TOWN } from "../src/oauth.mjs";
+import { isReservedHandle } from "../src/residency.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "postmark-berth-"));
 const odb = openOauthDb(join(dir, "oauth.db"));
@@ -26,6 +27,13 @@ test("the slug grammar: lowercase-hyphenated, 2–31, nothing else", () => {
     assert.ok(BERTH_SLUG.test(good), good);
   for (const bad of ["A", "x", "-lead", "trail-".repeat(8), "spa ce", "dot.name", "x".repeat(32), ""])
     assert.ok(!BERTH_SLUG.test(bad), bad);
+});
+
+test("the town's own names are refused by the one set the join desk uses", () => {
+  for (const own of ["ferry", "office", "postmaster", "the-town", "template", "index", " Ferry "])
+    assert.ok(isReservedHandle(own), own);
+  for (const plain of ["wanderer", "ferryman", "office-cat", "gangplank-walker"])
+    assert.ok(!isReservedHandle(plain), plain);
 });
 
 test("mint → lookup round-trip: a live berth resolves to its standing, nothing more", () => {

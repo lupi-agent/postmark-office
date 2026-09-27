@@ -49,6 +49,15 @@ test("walkers: a crowd inside the radius is CAPPED, and says so", () => {
   assert.equal(near.beyond_radius, 0, "a cap is not a radius — they are different reasons to say less");
 });
 
+test("walkers: the radius note prints the whole roll's PUBLIC path, keyless (postmark#3138)", () => {
+  // Marigold fetched https://postmark.town/world/walkers and met nginx's 404:
+  // the office is mounted under /api/, and the note printed the office-internal
+  // path. A note that names a door must name it the way the public reaches it.
+  const near = walkersAround([{ handle: "far", x: 90000, y: 0 }], { x: 0, y: 0, radiusM: 500, limit: 10 });
+  assert.ok(near.note.includes("GET https://postmark.town/api/world/walkers"), near.note);
+  assert.ok(!near.note.includes("GET /world/walkers"), "the office-internal path 404s at the public domain");
+});
+
 test("walkers: an empty street is not a cap", () => {
   const near = walkersAround([{ handle: "far", x: 90000, y: 0 }], { x: 0, y: 0, radiusM: 500, limit: 10 });
   assert.equal(near.count, 0);

@@ -22,9 +22,17 @@
 // of any backfilled row can name the commit on world main that is its authority.
 //
 // WHAT IT REFUSES, BY NAME AND WITHOUT ARGUMENT:
-//   · `wright/the-lit-name` — HELD for the founder's sitting (escrow-bearing).
-//     Refused as a name, not as a rule with an exception, so no `--class` and no
-//     future filter can reach it by accident.
+//   · whatever `REFUSED_BY_NAME` names — refused as a name, not as a rule with
+//     an exception, so no `--class` and no future filter can reach it by
+//     accident. EMPTY TODAY. It held `wright/the-lit-name` for the founder's
+//     sitting (escrow-bearing) until RULED 2026-09-24 (Keemin: "meant keep it
+//     in!") — the lit-name comes into the store. Measured before the set was
+//     emptied: an ingest writes the mark's claim (stake 0) and its `marks` row
+//     and nothing else; escrow is `escrow_projection`, keyed by the text
+//     `<by>/<slug>` with no foreign key to `marks`, written by stamp-ingest from
+//     the town ledger, and it already carries positions under the new name. So
+//     admitting it needed nothing beyond the set. The mechanism stays: a future
+//     hold is one name added here, and every tool that imports the set honours it.
 //   · anything whose claim in the store is a `draft` — a private draft is the
 //     resident's, and publishing it from here would put a mark in the register
 //     that its author never put forward. These are reported and skipped; the
@@ -60,8 +68,8 @@ import { historyFor, isSweepCommit, parseFinding } from "./parity-causes.mjs";
 import { SUBSTANCE_COLUMNS, standingOnly, stripSlug, checkoutAt } from "./replay-ingest.mjs";
 import { uuid5 } from "./seed-import.mjs";
 
-/** HELD by the founder's word. Not a class, not a filter — a name. */
-export const REFUSED_BY_NAME = new Set(["wright/the-lit-name"]);
+/** HELD by the founder's word. Not a class, not a filter — a name. Empty since 2026-09-24 (see the header). */
+export const REFUSED_BY_NAME = new Set([]);
 
 const NL = String.fromCharCode(10);
 
@@ -263,9 +271,19 @@ export function visibilityRefusal(v, { heldByName = null } = {}) {
 // supersedes the standing one, it never edits a row. Worth saying because 002's
 // `claims_update_guard` exempts only `clearing_job`, so a design that DID update
 // claims would be refused by the store no matter which role ran it.
+// THE REGISTRY TABLES REPLACED `identities` HERE (POS-160 follow-up, RED 2).
+// `materializeClaims → ownerHouseholdFor` used to SELECT one row from
+// `identities`; it now asks the ONE DERIVER, which reads the registry itself —
+// `households`, `household_pins` and `registry_meta`, the three
+// `registry-store.mjs § registryRowsVia` opens. A preflight still naming
+// `identities` would pass a role that cannot read the roll and then fail
+// mid-transaction on the first claim, which is the whole thing this list exists
+// to prevent.
 export const READ_PRIVILEGES = [
   ["marks", "SELECT"], ["claims", "SELECT"],
-  ["identities", "SELECT"],   // materializeClaims → ownerHouseholdFor
+  ["households", "SELECT"],       // materializeClaims → ownerHouseholdFor → the deriver
+  ["household_pins", "SELECT"],   //   …the same read, its second table
+  ["registry_meta", "SELECT"],    //   …and its third
   ["windows", "SELECT"],
 ];
 export const ADD_PRIVILEGES = [["claims", "INSERT"], ["marks", "INSERT"]];

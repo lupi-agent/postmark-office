@@ -36,7 +36,7 @@
 // gets a STAMPED compose as well, and the stamp is what keeps a compose from
 // being a substitution nobody was told about. `pendingPaperRows` is its feed.
 
-import { appendTownJournal, pendingRows, townLogEnabled } from "./town-journal.mjs";
+import { appendTownJournal, pendingRows, townLogEnabled, NONCE_MAX, rowSpendingNonce } from "./town-journal.mjs";
 
 /** The paper doors, and the file each one settles. */
 export const PAPER_ACTS = Object.freeze({
@@ -162,10 +162,43 @@ export function logPaperAct(odb, { act, handle, household, args, key, commits })
  */
 export function paperDoor(act, impl) {
   return function paperDoorCall(args, key, db, clone, odb = null) {
-    const out = impl(args, key, db, clone);
+    // ── THE NONCE (POS-70 §5, ruled 2026-09-24) ─────────────────────────────
+    //
+    // The send's retry key, served here with the send's own lookup
+    // (town-journal.mjs § rowSpendingNonce) over rows this door already
+    // writes. A door field, never the act's: it is taken off before `impl`
+    // sees the args, and it stays in the row's args (verbatim, as a letter
+    // row keeps its own), which is where the lookup reads it back. The
+    // drain's replay reaches this function with FOUR arguments and no log, so
+    // it strips the nonce, looks nothing up and discloses nothing.
+    //
+    // NO IN-FLIGHT MAP, unlike the send's, and not by omission: `impl` is
+    // synchronous, so between the lookup and the row nothing can yield the
+    // turn to a second caller. The send's race lives in an `await`; this
+    // door has none.
+    const nonce = String(args?.nonce ?? "").trim() || null;
+    const logOn = townLogEnabled();
+    if (nonce && logOn && odb) {
+      if (Buffer.byteLength(nonce, "utf8") > NONCE_MAX) {
+        const e = new Error(`nonce must be under ${NONCE_MAX} bytes`);
+        Object.assign(e, { code: 422, defect: `nonce must be under ${NONCE_MAX} bytes`,
+          hint: "a nonce is a retry key, not a payload — anything you can repeat exactly will do. It is refused rather than trimmed, because two long nonces cut to the same prefix would become one key." });
+        throw e;
+      }
+      const spent = spentPaperNonce(odb, key, { act, handle: args?.handle, nonce });
+      if (spent) return paperDuplicateReceipt(spent, nonce);
+    }
+    const { nonce: _nonce, ...actArgs } = args ?? {};
+    const out = impl(args && Object.prototype.hasOwnProperty.call(args, "nonce") ? actArgs : args, key, db, clone);
     // AFTER success only. A bounce throws out of `impl` and never reaches this
-    // line, so no row can ever claim an edit that did not happen.
-    if (!odb || out?.error) return out;
+    // line, so no row can ever claim an edit that did not happen — and so a
+    // bounced first call spends no key.
+    if (out?.error) return out;
+    // FLAG-OFF, DISCLOSED exactly as the send discloses it (send-at-door.mjs):
+    // an office with no town log cannot remember a key, and says so.
+    if (nonce && !logOn)
+      return { ...out, nonce, nonce_honoured: false, nonce_note: PAPER_NONCE_NOT_HONOURED };
+    if (!odb) return out;
     let seq = null;
     try {
       seq = logPaperAct(odb, { act, handle: args?.handle, household: key?.household, args, key,
@@ -182,9 +215,53 @@ export function paperDoor(act, impl) {
       console.error(`[town-log] paper act "${act}" for ${args?.handle ?? "(no handle)"} did NOT reach the log: ${String(e?.message ?? e)}`);
       return out;
     }
-    return seq == null ? out : { ...out, logged: { seq, settles_at: SETTLES_AT } };
+    return seq == null ? out : { ...out, logged: { seq, settles_at: SETTLES_AT },
+      // Only when one was offered — a caller who passed no nonce is told
+      // nothing about nonces, and their receipt is byte-for-byte what it was.
+      ...(nonce ? { nonce, idempotent: "retry this exact call with the same nonce and you will get this receipt back rather than a second edit — until the crossing settles it" } : {}) };
   };
 }
+
+/**
+ * The row that already spent this nonce on THIS act for THIS resident, or null.
+ *
+ * The lookup is the send's (town-journal.mjs § rowSpendingNonce); the scope is
+ * `hotPaperActs`', which reads only the caller's own residents' un-drained rows
+ * — so a nonce cannot be probed across households, exactly as F12c holds for
+ * mail. It is narrowed to the one act as well: the same word spent on a home
+ * edit and then on a window is two edits, and handing the home's receipt back
+ * for the window would be the wrong receipt.
+ */
+export function spentPaperNonce(odb, key, { act, handle, nonce }) {
+  if (!odb || !nonce || !handle) return null;
+  return rowSpendingNonce(hotPaperActs(odb, key, { handle }).filter((r) => r.act === act), nonce);
+}
+
+/**
+ * THE FIRST EDIT'S RECEIPT, handed back — read off its row, as the send's
+ * duplicate receipt is (town-mail.mjs § duplicateReceipt). The row holds what
+ * the first call landed (`commits`, #2302) and when; `updated`, `file`,
+ * `commit` and `logged` are its own, so a retry ends where the first call
+ * ended. Nothing is written a second time.
+ */
+export function paperDuplicateReceipt(row, nonce) {
+  const commits = Array.isArray(row.payload?.commits) ? row.payload.commits : [];
+  return {
+    updated: row.handle,
+    file: PAPER_ACTS[row.act]?.file(row.handle) ?? null,
+    commit: commits[0] ?? null,
+    ...(commits.length > 1 ? { commits } : {}),
+    logged: { seq: row.seq, settles_at: SETTLES_AT, written_at: row.writtenAt },
+    duplicate: true,
+    nonce,
+    note: "this nonce was already spent, by the edit named above, which is still standing ahead of the record. NOTHING WAS WRITTEN A SECOND TIME — this is that edit's own receipt, read back off its row. Once the crossing settles it, the page itself is the guard: the same edit again changes nothing and answers `unchanged: true`.",
+  };
+}
+
+/** What a paper act says flag-off when it was handed a nonce — the send's
+ *  disclosure, with the guard that DOES hold on paper named instead of the
+ *  letter's id. */
+export const PAPER_NONCE_NOT_HONOURED = "this office keeps no town log, so a nonce cannot be remembered and this receipt is NOT idempotent by it. The guard that is holding is the page itself: your edit became a pen commit the moment it conformed, and the same call again changes nothing and answers `unchanged: true`.";
 
 /** What a caller is told about when their logged edit becomes the record. */
 export const SETTLES_AT = "the next ferry crossing (00:00 / 12:00 UTC)";

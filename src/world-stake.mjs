@@ -59,7 +59,7 @@ const bounce = (code, defect, hint, extra = {}) => ({ error: "bounce", code, def
  * the falsifiers can put a retired mark in front of it without a database, and
  * the door and the test cannot drift into two rules.
  */
-export function stakeRefusalFor({ mark, n, promoted, status, refused = null }) {
+export function stakeRefusalFor({ mark, n, promoted, status, refused = null, docket = null }) {
   if (!(n >= 1)) return null;                 // the zero path has its own ruling, below
   if (promoted) return null;                  // it went forward; nothing to refuse
   // ── THE PEN ANSWERED NO — DO NOT CHARGE FOR IT (postmark#2722) ────────────
@@ -76,7 +76,20 @@ export function stakeRefusalFor({ mark, n, promoted, status, refused = null }) {
     "postmaster, because a draft this office cannot put forward is the office's defect, not yours.",
     { held: 0, requested: n });
   if (!status?.known || !status?.found) return null;  // the store cannot say; the ledger still runs
+  // ── ON THE OPEN DOCKET IS PUT FORWARD (postmark#3139, Marigold, 2026-09-25) ─
+  //
+  // `docket` is the open window a pending claim on this mark rides, or null.
+  // A withdrawn mark that is put forward again (leave-mark with `amend` and
+  // `stamps`) goes PENDING on the open window while its `marks` row stays
+  // `retired` until a crossing publishes it, so the retired check below read
+  // it as "returned to your drafts" — false, and its hint ("leave it again, or
+  // stake the draft") was an act that would put it forward a second time.
+  // The escrow is keyed on the mark, not the claim: a stake here adds to what
+  // stands behind the one pending row and files nothing new. So it is an
+  // ordinary stake, asked before the retired check and after the pen's refusal.
+  if (docket != null) return null;
   if (!status.retired) return null;           // it stands; an ordinary stake on a public mark
+  // Retired AND on no open docket: the case this bounce was written for.
   return bounce(422, `"${mark}" is not standing — it returned to your drafts`,
     "a mark that has come back to your sketchbook is not on the commons, so there is nothing for stamps to stand behind yet. " +
     "Put it forward first — leave it again with `stamps:`, or stake the draft — and the escrow rides that act, which is what a stake IS.");
@@ -456,7 +469,7 @@ export async function worldStakeViaOffice(args = {}, key = null, deps = {}) {
     let status = { known: false };
     try { status = await standing({ slug: args.mark }); }
     catch (e) { console.error(`[world-stake] preview could not read the store's standing for "${args.mark}": ${String(e?.message ?? e)}`); }
-    const refusal = stakeRefusalFor({ mark: args.mark, n, promoted: false, status, refused: null });
+    const refusal = stakeRefusalFor({ mark: args.mark, n, promoted: false, status, refused: null, docket: status?.docket_window ?? null });
     if (refusal) return { ...refusal, preview: true };
     const now = await held(who.handle);
     const { moves } = clipTo(n, now.liquid);
@@ -542,7 +555,10 @@ export async function worldStakeViaOffice(args = {}, key = null, deps = {}) {
     // a resident's stake. Loud, and the ledger still runs.
     console.error(`[world-stake] could not read the store's standing for "${args.mark}": ${String(e?.message ?? e)}`);
   }
-  const refusal = stakeRefusalFor({ mark: args.mark, n, promoted: !!putForward?.promoted, status, refused: promotionRefused });
+  // THE DOCKET FACT rides the standing read (postmark#3139): one statement,
+  // no second query, and only when this act did not itself put the mark forward.
+  const docket = putForward?.promoted ? null : (status?.docket_window ?? null);
+  const refusal = stakeRefusalFor({ mark: args.mark, n, promoted: !!putForward?.promoted, status, refused: promotionRefused, docket });
   if (refusal) return refusal;
 
   // THE RECEIPT'S OWN BLOCK, READ BEFORE THE MOVE (POS-83). The staked tense is
@@ -635,7 +651,15 @@ export async function worldStakeViaOffice(args = {}, key = null, deps = {}) {
           ? `your draft from crossing ${putForward.late_from} is put forward in window ${putForward.window} with ✦${applied} behind it — it is on the public docket now, and locks or is refused by name at the next crossing.`
           : `✦${applied} stands behind it and that is what put it forward — it is on the public docket now, and locks or is refused by name at the next crossing.`)
           + (applied < n ? ` You asked for ✦${n}; your balance carried ✦${applied}, and ✦${applied} is what the ledger moved.` : "") }
-    : { ...staked, stamps: stampsAt };
+    : docket != null
+      // ALREADY PUT FORWARD (postmark#3139): the escrow joined the one pending
+      // claim on this window's docket, and the answer says which window.
+      ? { ...staked, stamps: stampsAt, window: docket,
+          effect: (applied > 0
+            ? `✦${applied} more stands behind it on window ${docket}'s docket — the same claim, not a second one; it locks or is refused by name at that crossing.`
+            : `nothing more stands behind it — it is on window ${docket}'s docket as it was, and locks or is refused by name at that crossing.`)
+            + (applied > 0 && applied < n ? ` You asked for ✦${n}; your balance carried ✦${applied}, and ✦${applied} is what the ledger moved.` : "") }
+      : { ...staked, stamps: stampsAt };
 }
 
 // `deps` here for the reason it exists on the stake door one function up: the

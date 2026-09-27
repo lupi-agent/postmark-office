@@ -43,6 +43,34 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { readDraftClaims, householdKeyForKey, withHousehold } from "./world2-claims.mjs";
+import { sessionKeysVia, resolveHouse, houseRowsVia } from "./household-deriver.mjs";
+
+/**
+ * HOW MANY HOUSES the roster knows — counted as HOUSES, through the deriver.
+ *
+ * `identities` is one row per HANDLE and its `household` column carries
+ * whichever spelling the world repo's copy held when the row landed (measured
+ * 2026-09-22: 173 of 190 `gh:<id>`, 17 `hh:<slug>`, umbraliminalis both at
+ * once). This figure used to be `idRows.length`, which is the handle count
+ * wearing a household's name — 190 where the town has 118 houses — and
+ * `DISCLOSURES` has nothing to say about a number that is simply a different
+ * quantity under the wrong word.
+ *
+ * A row the deriver cannot name counts as its OWN house, by its raw string. It
+ * is a roster line for somebody, and folding it into nothing would undercount
+ * the town; naming it a house it might not be is the fabricated household the
+ * deriver refuses to invent.
+ */
+export function housesKnown(idRows, rows) {
+  const houses = new Set();
+  for (const r of idRows ?? []) {
+    const hh = r?.household ?? null;
+    if (hh == null) continue;
+    const slug = rows ? resolveHouse(hh, rows.registry, rows.pins).slug : null;
+    houses.add(slug ? `hh:${slug}` : String(hh));
+  }
+  return houses.size;
+}
 import * as live from "../world2/tools/live-reads.mjs";
 // ── THE GROUNDLESS STANDPOINT, AT THE 2.0 DOOR (#2900, ruled 2026-09-17) ─────
 //
@@ -90,6 +118,9 @@ async function pool(env = process.env) {
   state.pool = new pg.Pool({ connectionString: env.WORLD2_PG_URL, max: 3 });
   return state.pool;
 }
+
+/** The store's pool, for a door that reads rows outside this file (world2-fold.mjs). */
+export const world2Pool = (env = process.env) => pool(env);
 
 // ── THE ENGINE, AND WHY IT IS THE ONE THING NOT IN THE STORE ────────────────
 //
@@ -185,7 +216,11 @@ export async function world2MyMarks(key, { offset = 0, p: injected = null } = {}
   // REVIEW-class, repo-first"). 1.0 resolves the same question through the town
   // clone's dated `currentHouseholdOf`; this is that resolution, already made
   // at the ingested sha and stored.
-  const { rows: handleRows } = await p.query(portfolio.HOUSEHOLD_HANDLES_SQL, [household]);
+  // The spelling set, for `HOUSEHOLD_HANDLES_SQL`'s reason: the roster is keyed
+  // in whichever spelling the world repo's copy carried, so asking for one
+  // returns part of a house and the page silently loses the rest of it.
+  const householdKeys = await sessionKeysVia(p, household);
+  const { rows: handleRows } = await p.query(portfolio.HOUSEHOLD_HANDLES_SQL, [householdKeys]);
   const handles = new Set(handleRows.map((r) => r.handle));
   const belongs = (h) => handles.has(h);
 
@@ -752,7 +787,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
         "receipt.crossing · receipt.settlement_sha · receipt.published_at":
           "mark-receipt.mjs derives the settlement epoch from the world repo's own `settlement/S<n>` git TAGS (settlements.mjs: \"the truth is the world repo's own git TAGS … which exist only when a settlement actually landed\") and from the filing index at a published sha. The store carries no tag and no settlement row — `acts` holds none and there is no settlements table — so the S-number, the sha it blessed and its date cannot be answered here at all. The rest of the receipt (`claims`, canon, the sketchbook) is store-readable and is a second lane's wiring, not a second lane's finding.",
         stands:
-          "world.mjs § thingStandsBlock reads the DYNAMIC sqlite store (attachments + the holding journal). The rows exist in `acts` and the port exists (`guard-reads.mjs § pgAttachmentsFor` / `pgHolderOf`), so this one is unported rather than unportable — it is wiring, and wiring it inside a read-equality lane would ship an unfalsified answer.",
+          "world.mjs § thingStandsBlock now reads the STORE for both halves (POS-162: `guard-reads.mjs § pgAttachmentsFor` for the holder, `§ pgHoldingRowsFor` for the set-down, one read-only transaction), so this block is no longer unportable OR unported — it is UNWIRED HERE. Emitting it would mean this door composing a holder answer of its own beside the engine's judgment, which is a second lane's wiring and wants its own falsifier; the read it would use already exists and is proven at the 1.0 door.",
       },
     } };
   }
@@ -894,11 +929,21 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     const residents = live.everyonePlaced({ world, departures: derived.records, at: fc, roll })
       .map((r) => (isGroundlessDefault(r) ? atOrigin(r) : r));
     const notes = live.admissionNotes({ marks: markRows, identities: idRows, roll, departureRecords: derived.records, world });
+    // THE FOLD FOR `households_known`, and it MAY NOT TAKE THIS ROUTE DOWN.
+    // This is a public read that has never touched the registry, so a store
+    // where 019 is unapplied must still answer the walk. Unfolded, the count is
+    // per raw spelling — which is still nearer the truth than the handle count
+    // this field carried before — and the reader is TOLD, because a number that
+    // quietly changed meaning is worse than one that says which meaning it has.
+    let houseRows = null;
+    try { houseRows = await houseRowsVia(p); }
+    catch { notes.push("households_known is counted per household SPELLING, not per house: the registry could not be read, so the deriver's fold did not run"); }
     const body = {
       what: "every placed resident at one instant — a walk if they have one, else their ground, else the town's porch",
       evaluated_at: new Date(at.ms).toISOString(), crossing: fc,
       roster: { walk_records: new Set(derived.records.map((d) => d.handle)).size, parcels: world.parcels.length,
-                roll: roll.length, roll_source: "town_roll @ projection_heads['town']", households_known: idRows.length },
+                roll: roll.length, roll_source: "town_roll @ projection_heads['town']",
+                households_known: housesKnown(idRows, houseRows) },
       count: residents.length,
       residents,
       disclosed: [live.DISCLOSURES.frames, live.DISCLOSURES.no_staleness, live.DISCLOSURES.roll_source, ...notes],

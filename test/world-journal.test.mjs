@@ -30,9 +30,18 @@ import { tmpdir } from "node:os";
 import { openDynamic } from "../src/dynamic-store.mjs";
 import {
   ACTION_AMEND, ACTION_LEAVE, ACTION_WITHDRAW, CLASS_FRAME, CLASS_MARK, WORLD_ANCHOR,
-  anchorAt, appendJournal, composeAnchor, draftsForKey, journalHead, liveChildrenOf,
+  anchorAt, composeAnchor, draftsForKey, journalHead, liveChildrenOf,
   liveMarks, pathFor, pinWitnesses, readJournal, replayDrafts, resetPathIndex,
 } from "../src/world-journal.mjs";
+// ── THE ROWS ARE SEEDED, NOT WRITTEN BY A DOOR (G1 / POS-156) ───────────────
+//
+// G1 deleted the general journal INSERT; the write path writes the RECORD now.
+// The tests below that plant a population are about READERS of the sqlite
+// journal -- the row shape itself, `readJournal`, and 1.0's `liveMarks` /
+// `draftsForKey`, whose own retirement is G2's -- so the rows are PUT THERE by
+// this file, in the office's own row shape. Nothing here claims a door wrote
+// them; the DOOR tests further down go through the door and reach the record.
+import { seedJournalRow } from "./journal-seed.mjs";
 import { draftDeltaForKey } from "../src/world-branches.mjs";
 
 // ── the world in a bottle ────────────────────────────────────────────────────
@@ -56,6 +65,11 @@ const PUBLISHED = [
   { id: "the-town/let-there-be-light", by: "the-town", kind: "sited", tier: "constitution", at: { x: 0, y: 0 }, extent: { w: 1000, h: 1000 }, body: "the world frame" },
   { id: "the-town/town-square", by: "the-town", kind: "sited", tier: "constitution", at: { x: 100, y: 100 }, extent: { w: 40, h: 40 }, body: "the square" },
   { id: "alpha/published-note", by: "alpha", kind: "sited", tier: "market", at: { x: 20, y: 20 }, extent: { w: 4, h: 4 }, body: "alpha published this" },
+  // postmark#3025's ground, far from every point the other tests stand on. A
+  // painted house BIG enough (60x60) that a 25 m claim fits wholly inside it,
+  // standing on no parcel, and an ordinary parcel of the same neighbour's.
+  { id: "neighbour/the-big-house", by: "neighbour", kind: "sited", tier: "market", at: { x: 300, y: -300 }, extent: { w: 60, h: 60 }, body: "a painted house, standing on no parcel of anyone's" },
+  { id: "neighbour/the-neighbour-parcel", by: "neighbour", kind: "parcel", tier: "home", at: { x: -300, y: 300 }, extent: { w: 25, h: 25 }, body: "the ground neighbour holds" },
 ];
 
 // THE ENGINE, in miniature, on main — the office materialises `tools/` at the
@@ -152,13 +166,18 @@ export function containmentParents(marks) {
   return { parent, rootId: root?.id ?? null };
 }
 `);
-put("seeding/manifest.json", JSON.stringify({ homes: [] }));
-put("WORLD/households.json", JSON.stringify({ households: { alpha: "gh:1", beta: "gh:2" } }));
+// THE PAINTING NAMES ONE HOME (postmark#3025). The office must stop CONSULTING
+// it, not merely survive its absence: with the retired sovereignty guard
+// restored, this line is what reds #3025 LEG 1 at the end of this file.
+put("seeding/manifest.json", JSON.stringify({ homes: [{ household: "neighbour", home_id: "the-big-house", title: "the Big House" }] }));
+put("WORLD/households.json", JSON.stringify({ households: { alpha: "gh:1", beta: "gh:2", neighbour: "gh:3" } }));
 put("WORLD/marks/let-there-be-light/mark.md", record("the-town", "the world frame"));
 put("WORLD/marks/let-there-be-light/town-square/mark.md", record("the-town", "the square"));
 put("WORLD/marks/let-there-be-light/published-note/mark.md", record("alpha", "alpha published this"));
+put("WORLD/marks/let-there-be-light/the-big-house/mark.md", ["---", "kind: sited", "by: neighbour", "date: 2026-08-01", "at: { x: 300, y: -300 }", "extent: { w: 60, h: 60 }", "---", "", "a painted house, standing on no parcel of anyone's", ""].join(String.fromCharCode(10)));
+put("WORLD/marks/let-there-be-light/the-neighbour-parcel/mark.md", ["---", "kind: parcel", "by: neighbour", "date: 2026-08-01", "at: { x: -300, y: 300 }", "extent: { w: 25, h: 25 }", "---", "", "the ground neighbour holds", ""].join(String.fromCharCode(10)));
 put("WORLD/skeleton.json", JSON.stringify({ features: [], physics_registry: {} }));
-put("WORLD/world-state.json", JSON.stringify({ tick: 0, dials: {}, marks: PUBLISHED, parcels: [{ id: "alpha/alpha-parcel", household: "alpha", at: { x: 110, y: 105 }, extent: { w: 25, h: 25 } }], determined: {}, vague: [], rivalries: [], portfolios: {}, terrain_weight: {}, errors: [] }));
+put("WORLD/world-state.json", JSON.stringify({ tick: 0, dials: {}, marks: PUBLISHED, parcels: [{ id: "alpha/alpha-parcel", household: "alpha", at: { x: 110, y: 105 }, extent: { w: 25, h: 25 } }, { id: "neighbour/the-neighbour-parcel", household: "neighbour", at: { x: -300, y: 300 }, extent: { w: 25, h: 25 } }], determined: {}, vague: [], rivalries: [], portfolios: {}, terrain_weight: {}, errors: [] }));
 
 // THE FROZEN FILING MANIFEST (the freeze, 2026-08-25) — seeded on MAIN, before
 // any sketchbook branch exists, because that is where the real one lives and
@@ -210,7 +229,7 @@ const withDb = (fn) => { const db = openDynamic(dbPath); try { return fn(db); } 
 
 /** A leave-mark row, as the door writes one. */
 const leave = (db, { id, by = "alpha", household = "alpha", kind = "sited", at = { x: 5, y: 5 }, body = "a declaration", action = ACTION_LEAVE, parent_id = undefined, extent = { w: 2, h: 2 }, witnesses = { source: "presence", list: [] }, standing = { anchor: WORLD_ANCHOR, dx: 5, dy: 5 } }) =>
-  appendJournal(db, {
+  seedJournalRow(db, {
     crossing: 140, actor: by, household, action, object: id, cls: CLASS_MARK,
     at: standing, witnesses,
     // A WITHDRAW ROW DESCRIBES NOTHING — the door writes {by, slug,
@@ -377,7 +396,7 @@ test("the-threshold — a frame transition rides THIS log, with its anchor and i
   const standing = anchorAt(door, { chain: chainAt(door), centreOf });
 
   const back = withDb((db) => {
-    appendJournal(db, {
+    seedJournalRow(db, {
       crossing: 140, actor: "alpha", household: "alpha",
       action: "enter", object: "the-town/town-square", cls: CLASS_FRAME,
       at: standing, witnesses: pinWitnesses({ residents: [], centreOf, chainAt }),
@@ -633,19 +652,32 @@ test("FLAG ON — an unreadable live layer discloses; it does not serve an empty
 
 process.env.WORLD_CLONE = repo;
 
+// ── THE DOOR TESTS RUN AGAINST THE RECORD NOW (G1 / POS-156) ───────────────
+//
+// These four used to run with no store at all: the pen wrote a sqlite journal
+// row and the slug guard read `liveMarks` back out of the same table. G1
+// deleted that INSERT (RULING 3 — the store is the write) and deleted the
+// guards' sqlite fallback (RULING 3a — a guard reading a journal nobody fills
+// "PERMITS EVERYTHING"), so BOTH halves of these tests now talk to the record.
+//
+// The same hand-built `guardStore` is both, which is the point: one record, one
+// door. Every claim below is the claim it always was — the row the door wrote,
+// the absent git ceremony, the collision refused, the preview writing nothing —
+// read off `acts` and `claims` instead of off the journal.
 test("THE DOOR, flag on — leave_mark is ONE INSERT: no lease, no lock, no checkout, no commit", async () => {
   process.env.WORLD_SINGLE_LOG = "1";
   const { leaveMarkViaOffice } = await import("../src/world.mjs");
+  const store = guardStore();
 
   const before = git("rev-parse", "draft/alpha").trim();
-  const result = await leaveMarkViaOffice(repo, {
+  const result = await withGuardsFlipped(store, () => leaveMarkViaOffice(repo, {
     slug: "through-the-door", kind: "sited", at: { x: 110, y: 105 }, extent: { w: 2, h: 2 },
     body: "the door wrote this into the log",
-  }, houseA);
+  }, houseA));
 
   assert.equal(result.id, "alpha/through-the-door");
-  assert.equal(result.log, "journal", "the answer names the pen that wrote it");
-  assert.equal(result.seq, 1, "and its receipt is the line, where it used to be a commit");
+  assert.equal(result.log, "acts", "the answer names the pen that wrote it, and there is one record now");
+  assert.equal(result.seq, 1, "and its receipt is the ACT's id, where it used to be a commit and then a journal seq");
   assert.equal(result.commit, undefined, "there is no commit, because nothing was committed — absent, not null, which would invite a reader to think one failed");
   assert.equal(result.dir, "alpha/through-the-door",
     "and the answer shape holds across the flag: `dir` still names where the record will sit — at its id, since the freeze");
@@ -655,28 +687,59 @@ test("THE DOOR, flag on — leave_mark is ONE INSERT: no lease, no lock, no chec
   assert.equal(git("rev-parse", "draft/alpha").trim(), before, "the sketchbook branch did not move");
   assert.equal(git("branch", "--show-current").trim(), "main", "and no checkout was parked on a household branch");
 
-  const row = withDb((db) => readJournal(db)[0]);
+  // THE ROW, read off the record the door actually wrote to.
+  assert.equal(store.acts.length, 1, "ONE INSERT — the whole claim of this test's name");
+  const row = store.acts[0];
   assert.equal(row.action, ACTION_LEAVE);
   assert.equal(row.object, "alpha/through-the-door");
-  assert.equal(row.household, "alpha");
+  assert.equal(row.household, "hh:alpha-house",
+    "filed under the RESOLVED key, which is what the store's column holds");
   assert.equal(row.class, CLASS_MARK);
-  assert.equal(row.at.anchor, "the-town/town-square",
-    "and the-witnessed-line holds at the real door: the actor's anchor is on the line, derived from the engine's own containment chain");
-  assert.deepEqual({ dx: row.at.dx, dy: row.at.dy }, { dx: 10, dy: 5 });
+  assert.equal(row.at_anchor, "the-town/town-square",
+    "and the-witnessed-line holds at the real door: the actor's anchor is on the row, derived from the engine's own containment chain");
+  assert.deepEqual({ dx: row.at_dx, dy: row.at_dy }, { dx: 10, dy: 5 });
   assert.ok(row.witnesses, "with a witnesses block, however it was read");
-  assert.equal(row.payload.body, "the door wrote this into the log");
+  assert.equal(JSON.parse(row.payload).body, "the door wrote this into the log");
+  assert.equal("journal_seq" in row, false,
+    "the pen still names `journal_seq` in its INSERT — migration 025 drops that column, and an office writing it fails every act the moment the migration lands");
 
-  // and the author reads it straight back through §1c
-  assert.ok(draftsForKey(repo, houseA).marks.some((m) => m.id === "alpha/through-the-door"),
-    "the overlay serves it from the log — the viewer half never learned anything changed");
+  // THE DOCKET IS NOT REACHED HERE, and that is this office's real behaviour
+  // rather than a gap in the fixture: `claimEligible` gates the candle half on
+  // `WORLD2_CANDLE`, which this suite does not set, so a mark-class row writes
+  // the deed and no claim. Asserted rather than left silent — a reader who
+  // expected a docket row should learn why there is none.
+  assert.equal(store.claims.length, 0,
+    "no candle in this office, so the docket half does not run — the deed is the whole write");
+
+  // The claim this test used to make here — "the overlay serves it back" — was
+  // read from `draftsForKey` over the journal, which G1 emptied. ITS NEW HOME is
+  // the B1 tests at the foot of this file, which read the live layer from
+  // `claims` through the door's own guard, with a CAN-FAIL beside it.
 });
 
 test("THE DOOR, flag on — the slug guard is a STORE lookup, and amend/withdraw are later entries", async () => {
   process.env.WORLD_SINGLE_LOG = "1";
   const { leaveMarkViaOffice, withdrawMarkViaOffice } = await import("../src/world.mjs");
-  const leaveIt = (extra = {}) => leaveMarkViaOffice(repo, {
+  // ONE STORE FOR THE WHOLE TEST — the guard reads the docket it just wrote to,
+  // which is the collision this test exists to catch. Under G1 that is a
+  // round trip through the record rather than through the sqlite journal.
+  const store = guardStore();
+  // ⚑ THE CANDLE IS ON FOR THIS ONE, and it has to be. The slug guard reads
+  // `claims`, and `claims` is only written when the docket half runs
+  // (`claimEligible` -> `candleEnabled`). With the candle off the first mark
+  // leaves a deed and no docket row, so the guard would read an empty live
+  // layer and PERMIT the duplicate -- which is the configuration this test
+  // exists to refuse, and exactly what it caught when G1 took the sqlite
+  // fallback away (RULING 3a). Prod runs both.
+  const inStore = (fn) => withGuardsFlipped(store, async () => {
+    const was = process.env.WORLD2_CANDLE;
+    process.env.WORLD2_CANDLE = "1";
+    try { return await fn(); }
+    finally { if (was === undefined) delete process.env.WORLD2_CANDLE; else process.env.WORLD2_CANDLE = was; }
+  });
+  const leaveIt = (extra = {}) => inStore(() => leaveMarkViaOffice(repo, {
     slug: "twice", kind: "sited", at: { x: 110, y: 105 }, extent: { w: 2, h: 2 }, body: "said once", ...extra,
-  }, houseA);
+  }, houseA));
 
   await leaveIt();
   await assert.rejects(leaveIt(), (e) => {
@@ -685,17 +748,39 @@ test("THE DOOR, flag on — the slug guard is a STORE lookup, and amend/withdraw
     return true;
   }, "the guard read the live layer — there is no checked-out tree to loadMarks over");
 
+  // APPEND-ONLY, ASSERTED AS EACH DECLARATION LANDS. The first two are
+  // UNSTAKED, so Phase 5.6 defers their deed and they live on the docket alone
+  // -- their body must never reach `acts`, the table that leaves the box. That
+  // is why the chain is read off `claims` here and the deed count off `acts`.
+  assert.equal(store.claims.length, 1, "the first declaration is one docket row");
+  assert.equal(store.acts.length, 0,
+    "and NO deed: an unstaked draft's body never reaches the table that leaves the box (Phase 5.6)");
+
   const amended = await leaveIt({ amend: true, body: "said better" });
   assert.equal(amended.amended, true);
-  const withdrawn = await withdrawMarkViaOffice(repo, { mark: "alpha/twice" }, houseA);
+  assert.equal(store.claims.length, 2,
+    "the amend is a LATER ENTRY -- a second row, not an edit of the first");
+  assert.deepEqual(store.claims.map((c) => c.body), ["said once", "said better"],
+    "and the first row still says what it said; nothing was rewritten");
+
+  const withdrawn = await inStore(() => withdrawMarkViaOffice(repo, { mark: "alpha/twice" }, houseA));
   assert.equal(withdrawn.withdrawn, true);
   assert.equal(withdrawn.was_published, false);
 
-  const rows = withDb((db) => readJournal(db, { household: "alpha" }));
-  assert.deepEqual(rows.map((r) => r.action), [ACTION_LEAVE, ACTION_AMEND, ACTION_WITHDRAW],
-    "three declarations, three lines, none of them an edit of another");
-  assert.equal(draftsForKey(repo, houseA).marks.some((m) => m.id === "alpha/twice"), false,
-    "and the withdrawn draft never crossed, so the overlay has nothing to draw");
+  // THE WITHDRAW IS THE ONE DEED HERE, because it is not a draft: the drafts
+  // are DELETED from the docket (007's one deletion -- nothing outside the
+  // household ever saw them, so nothing outside is owed an account of their
+  // ending) and the withdrawal itself is an act.
+  assert.deepEqual(store.acts.map((r) => r.action), [ACTION_WITHDRAW],
+    "one deed, and it is the ending");
+  assert.equal(store.claims.length, 0, "and the drafts are gone from the docket");
+  assert.equal(store.acts.every((r) => r.household === "hh:alpha-house"), true,
+    "filed under the resolved key, so a guard scoped by it sees it");
+
+  // "the withdrawn draft never crossed, so the overlay has nothing to draw" was
+  // read from `draftsForKey` over the journal, which G1 emptied. ITS NEW HOME is
+  // the B1 pair at the foot of this file: the live layer comes from `claims`
+  // through the door's own guard, with a CAN-FAIL beside it.
 });
 
 // ── PREVIEW (founder-ruled 2026-09-14, postmark#2692): say it, write nothing ──
@@ -711,7 +796,12 @@ test("PREVIEW, flag on — says where the mark would nest and writes no row, no 
   const { leaveMarkViaOffice } = await import("../src/world.mjs");
   const before = git("rev-parse", "draft/alpha").trim();
   const shape = { kind: "sited", at: { x: 110, y: 105 }, extent: { w: 2, h: 2 }, body: "would this sit in the square?" };
-  const seen = await leaveMarkViaOffice(repo, { slug: "previewed", ...shape, preview: true, stamps: 1 }, houseA);
+  // A PREVIEW STILL RUNS THE GUARDS, which read the record since G1 (RULING
+  // 3a), so it needs one even though it writes nothing. That it writes nothing
+  // is exactly what the pen below is here to prove.
+  const store = guardStore();
+  const seen = await withGuardsFlipped(store,
+    () => leaveMarkViaOffice(repo, { slug: "previewed", ...shape, preview: true, stamps: 1 }, houseA));
   assert.equal(seen.preview, true, "the answer says it is a preview");
   assert.equal(seen.id, "alpha/previewed");
   assert.equal(seen.parent, "the-town/town-square",
@@ -731,20 +821,25 @@ test("PREVIEW, flag on — says where the mark would nest and writes no row, no 
     "one grammar on every door — the same four keys the stake door answers with");
   assert.equal(seen.stamps.this_act.law, "the-town/stake-mark");
   assert.match(seen.stamps.to_confirm, /without preview: true/);
-  assert.equal(withDb((db) => readJournal(db).length), 0, "NO ROW — a preview is not a declaration");
+  assert.equal(store.acts.length, 0, "NO ROW IN THE RECORD — a preview is not a declaration");
+  assert.equal(store.claims.length, 0, "and no docket row either");
   assert.equal(git("rev-parse", "draft/alpha").trim(), before, "and the sketchbook did not move");
   // ⚑ THE FLIP: drop the preview branch in journalLeaveMark and the row count reads 1.
-  const real = await leaveMarkViaOffice(repo, { slug: "previewed", ...shape }, houseA);
+  const real = await withGuardsFlipped(store,
+    () => leaveMarkViaOffice(repo, { slug: "previewed", ...shape }, houseA));
   assert.equal(real.preview, undefined, "the same call without preview: true is the write");
-  assert.equal(real.seq, 1, "…and it is the first row, because the preview left none");
+  assert.equal(real.seq, 1, "…and it is the first act, because the preview left none");
+  assert.equal(store.acts.length, 1, "one row in the record, and it arrived with the write and not the preview");
 });
 
 test("PREVIEW, flag on — a mark outside the ground you stand in nests at the root, and still no row", async () => {
   process.env.WORLD_SINGLE_LOG = "1";
   const { leaveMarkViaOffice } = await import("../src/world.mjs");
-  const seen = await leaveMarkViaOffice(repo, {
+  // The guards read the record since G1 even on a preview — see the note above.
+  const store = guardStore();
+  const seen = await withGuardsFlipped(store, () => leaveMarkViaOffice(repo, {
     slug: "over-the-line", kind: "sited", at: { x: 130, y: 100 }, extent: { w: 2, h: 2 }, body: "past the square's edge", preview: true,
-  }, houseA);
+  }, houseA));
   assert.equal(seen.preview, true);
   assert.equal(seen.parent, "the-town/let-there-be-light", "outside the square, so it nests at the world's root");
   // No overhang here by the door's own rule: the disclosure fires only for a
@@ -752,7 +847,7 @@ test("PREVIEW, flag on — a mark outside the ground you stand in nests at the r
   // twenty metres from alpha's feet on purpose. The remedy's wording is pinned
   // in test/world.test.mjs on the pure function.
   assert.equal(seen.overhang, undefined);
-  assert.equal(withDb((db) => readJournal(db).length), 0, "still no row");
+  assert.equal(store.acts.length, 0, "still no row in the record");
 });
 
 test("PREVIEW, flag off — the git executor answers the same shape and commits nothing", async () => {
@@ -910,33 +1005,171 @@ test("THE DOOR, flag off — the same call still spends a commit on the sketchbo
  * line `householdKeyFor` resolves through. Nothing here is arranged to please
  * the port: the field names are the columns' own.
  */
-const guardStore = ({ claims = [], identities = { alpha: "gh:1", beta: "gh:2" }, scopeAs = (h) => h } = {}) => {
+// ── AND IT IS THE PEN NOW TOO (G1 / POS-156, RULING 3) ─────────────────────
+//
+// The door used to write a sqlite journal row and queue a Postgres copy behind
+// it, so this store only had to answer the guards' READS. G1 deleted that
+// INSERT and made the write AWAITED and REFUSABLE -- "the store is the write"
+// -- so a door test that does not point the office at a record now gets the
+// ruled 503 instead of exercising the door.
+//
+// So the same hand-built store answers the write too: `insertAct`'s one INSERT,
+// and the two docket queries a mark-class row reaches (`claimTxFromJournal`
+// needs the open window, and files the claim). It stays ONE store rather than
+// gaining a second stub beside it, because the whole argument of this harness is
+// that the door talks to one record.
+//
+// ⚑ IT STILL THROWS ON A QUERY IT DOES NOT KNOW. An empty answer to an
+// unrecognised statement is indistinguishable from "the record holds none",
+// which is the one confusion a guard may not have.
+const guardStore = ({ claims = [], identities = { alpha: "hh:alpha-house", beta: "hh:beta-house" }, scopeAs = (h) => h } = {}) => {
+  // TWO SESSION SETTINGS since POS-160 RULING 4 — the store never re-spells a
+  // row, so a house declares EVERY spelling it has ever carried and 024's four
+  // draft policies compare against that set. `app.household` is still the one
+  // current spelling, and `guard-reads.mjs § assertHouseholdDeclared` refuses a
+  // guard read on a connection that declared only one of the two. The
+  // `_keys` arm must be matched FIRST: `app.household` is a prefix of
+  // `app.household_keys`, so a looser pattern would let the set clobber the key.
   let declared = null;
+  let declaredKeys = null;
   const calls = { claims: 0 };
-  return {
+  const acts = [];
+  let nextActId = 1;
+  const self = {
     calls,
+    acts,
+    // The docket, exposed: a test that files a mark reads back the row the
+    // door put on it, which is where an unstaked declaration lives.
+    claims,
     client: {
       async query(sql, args = []) {
+        if (/set_config\(.app\.household_keys./.test(sql)) {
+          declaredKeys = args[0] ? String(args[0]).split(",") : null; return { rows: [{}] };
+        }
         if (/set_config\(.app\.household./.test(sql)) { declared = args[0]; return { rows: [{}] }; }
-        if (/current_setting\(.app\.household./.test(sql)) return { rows: [{ declared }] };
+        if (/current_setting\(.app\.household./.test(sql)) return { rows: [{ declared, keys: declaredKeys }] };
         if (/FROM identities/.test(sql)) return { rows: identities[args[0]] ? [{ household: identities[args[0]] }] : [] };
-        if (/FROM claims/.test(sql)) {
+        // THE REGISTRY, which is what `householdKeyFor` reads since POS-160.
+        // Same statement as the `identities` line above — these handles live in
+        // these houses — in the vocabulary the resolver now asks in. The keys
+        // are `hh:` because that is what the resolver answers from the law
+        // date, and what the rows' own `household` column therefore holds.
+        if (/FROM households/.test(sql)) return { rows:
+          [...new Set(Object.values(identities))].map((key, ord) => ({
+            slug: String(key).replace(/^hh:/, ""), ord, name: null, human: null, accounts: [],
+            residents: Object.keys(identities).filter((h) => identities[h] === key),
+            since: null, member_of: null, declared_by: null, formerly: [], provisional: false,
+          })) };
+        if (/FROM household_pins/.test(sql)) return { rows: [] };
+        if (/FROM registry_meta/.test(sql)) return { rows: [{ key: "schema_version", value: 1 }] };
+        // THE AMEND'S SUPERSESSION LOOKUP, which is a different question with
+        // different arguments: "is there a PENDING claim for this slug in this
+        // window to chain from". Told apart by `window_id`, because answering
+        // it with the guard's branch read `statuses.includes` off a window id.
+        // Empty is the truthful answer here -- nothing in these fixtures is
+        // pending -- so an amend files a fresh claim, which is what
+        // `claimTxFromJournal` does when it finds no in-window chain.
+        // ⚑ THE READ BRANCHES MUST REQUIRE `SELECT`. "DELETE FROM claims"
+        // contains "FROM claims", so a bare match here swallowed the
+        // withdrawal's deletion and answered it with a row list -- the drafts
+        // stayed on the docket and nothing said so.
+        if (/^SELECT/i.test(sql.trim()) && /FROM claims/.test(sql) && /window_id/.test(sql)) return { rows: [] };
+        // "Is there a STANDING mark with this slug to amend?" -- the fall-back
+        // the supersession chain asks when no in-window pending claim exists
+        // (#2806). No fixture here has ever been published, so the truthful
+        // answer is none, and the amend files a fresh claim.
+        if (/FROM marks/.test(sql)) return { rows: [] };
+        if (/^SELECT/i.test(sql.trim()) && /FROM claims/.test(sql)) {
           calls.claims += 1;
+          // `asked` is the SPELLING SET now (`household = ANY($2)`), so the
+          // filter is membership rather than equality — the predicate the
+          // policy evaluates, in the shape it evaluates it. `scopeAs` still
+          // rewrites what the guard asked for, which is what the CAN-FAIL test
+          // below flips to make the duplicate slip through.
           const [statuses, asked] = args;
-          const household = asked == null ? null : scopeAs(asked);
-          return { rows: claims.filter((c) => statuses.includes(c.status) && (household == null || c.household === household)) };
+          const keys = asked == null ? null : [].concat(asked).map(scopeAs);
+          return { rows: claims.filter((c) => statuses.includes(c.status) && (keys == null || keys.includes(c.household))) };
         }
         if (/^(BEGIN|COMMIT|ROLLBACK)/.test(sql.trim())) return { rows: [] };
+
+        // THE WRITE. `insertAct`'s column list, in its order; the id is
+        // assigned here because that is what the sequence does.
+        if (/^INSERT INTO acts/i.test(sql.trim())) {
+          const id = nextActId++;
+          acts.push({ id, at: args[0], crossing: args[1], actor: args[2], action: args[3],
+            object: args[4],
+            // THE WITNESSED LINE IS THREE COLUMNS, on this side of the seam as
+            // on the other -- it has never lived in `payload`, and a fixture
+            // that put it there would agree with a reader nothing writes for.
+            at_anchor: args[5], at_dx: args[6], at_dy: args[7],
+            witnesses: args[8], class: args[9], payload: args[10],
+            effect: args[11], household: args[12],
+            // ⚑ ONLY PRESENT IF THE PEN SENT IT. G1 drops `acts.journal_seq`
+            // (migration 025) and the pen stopped naming it; a row that carried
+            // the key unconditionally would let a suite assert the column's
+            // absence and pass while the pen still wrote it.
+            ...(args.length > 13 ? { journal_seq: args[13] } : {}) });
+          return { rows: [{ id }], rowCount: 1 };
+        }
+        // The docket half a mark-class row reaches on the same client.
+        if (/FROM windows/i.test(sql)) return { rows: [{ id: 1 }] };
+        // THE DOCKET RECEIVES THE ROW, it does not swallow it. A stub that
+        // acknowledged the INSERT and kept nothing would let "the door filed a
+        // duplicate slug" pass, because the guard's next read would find the
+        // docket empty -- the permissive direction, which is the one direction a
+        // guard may not fail in. The column list is `claimTxFromJournal`'s.
+        if (/^INSERT INTO claims/i.test(sql.trim())) {
+          const [, kind, claimant, household, body, geometry, bbox, stake, supersedes, data, slug, status] = args;
+          claims.push({ id: `00000000-0000-0000-0000-0000000000${String(claims.length + 1).padStart(2, "0")}`,
+            slug, class: kind, claimant, household, status, body,
+            geometry: typeof geometry === "string" ? JSON.parse(geometry) : geometry,
+            bbox, stake, supersedes, data, submitted_at: new Date() });
+          return { rows: [{ id: claims.at(-1).id }], rowCount: 1 };
+        }
+        // Withdraw's two outcomes: a draft is DELETED, a pending claim retracted.
+        // THE HOUSEHOLD IS A SPELLING SET NOW (POS-160 / #165). The withdraw's
+        // DELETE went from `household = $3` to `household = ANY($3)`, and $3 is
+        // `declaredKeys`' array -- a house may be spelled more than one way and
+        // a draft filed under any of its spellings is still its draft. A stub
+        // still comparing against a scalar matched none of them, so the drafts
+        // stayed on the docket and the slug stayed taken.
+        if (/^DELETE FROM claims/i.test(sql.trim())) {
+          const [slug, claimant, households] = args;
+          const keys = Array.isArray(households) ? households : [households];
+          const before = claims.length;
+          for (let i = claims.length - 1; i >= 0; i--) {
+            const c = claims[i];
+            if (c.status === "draft" && c.slug === slug && c.claimant === claimant && keys.includes(c.household)) claims.splice(i, 1);
+          }
+          return { rows: [], rowCount: before - claims.length };
+        }
+        // `declaredKeys` asks the session for the house's spellings; a client
+        // that has none falls back to the one key it was given, which is this
+        // fixture's case and the honest answer for a store with no session.
+        if (/current_setting\('app\.household_keys'/i.test(sql)) return { rows: [{ keys: null }] };
+        if (/^UPDATE claims/i.test(sql.trim())) return { rows: [], rowCount: 0 };
+
         throw new Error(`the hand-built store was asked something it does not know: ${sql.slice(0, 80)}`);
       },
+      release() { /* pooled in name only */ },
     },
   };
+  // The pools take a POOL, so the store is one: `connect()` hands back the same
+  // client every read in this file already uses.
+  self.connect = async () => self.client;
+  self.query = (sql, args) => self.client.query(sql, args);
+  self.end = async () => {};
+  return self;
 };
 
 /** One live draft of alpha's, filed under the RESOLVED KEY, as the docket pen files it. */
 const draftClaim = (slug, over = {}) => ({
   id: "00000000-0000-0000-0000-000000000001",
-  slug: `alpha/${slug}`, class: "sited", claimant: "alpha", household: "gh:1", status: "draft",
+  // POS-160: the resolved key is the house's SLUG now, so the row wears what
+  // `householdKeyFor` files it under. If these two ever drift apart again the
+  // guard reads an empty `claims` and permits the duplicate, which is exactly
+  // what the CAN-FAIL test below makes happen on purpose.
+  slug: `alpha/${slug}`, class: "sited", claimant: "alpha", household: "hh:alpha-house", status: "draft",
   body: "the docket already holds this one",
   geometry: { slug: `alpha/${slug}`, at: { x: 110, y: 105 }, extent: { w: 2, h: 2 } },
   stake: 0, data: { by: "alpha", kind: "sited", date: "2026-09-03", _journal_seq: 1 },
@@ -946,16 +1179,29 @@ const draftClaim = (slug, over = {}) => ({
 
 const withGuardsFlipped = async (store, fn) => {
   const guards = await import("../src/world2-guards.mjs");
+  const acts = await import("../src/world2-acts.mjs");
+  const pen = await import("../src/world2-pen.mjs");
+  const house = await import("../src/household-deriver.mjs");
   const prev = { pg: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL, flag: process.env.W2_GUARDS };
   process.env.WORLD2_PG = "1";
   process.env.WORLD2_PG_URL = "postgres://hand-built/none";   // never dialled — the reader is replaced
   process.env.W2_GUARDS = "1";
   const restore = guards.useGuardReader((run) => run(store.client));
+  // THE WRITE GOES TO THE SAME STORE (G1). Both pools, because the office holds
+  // two: `world2-acts.mjs` has the mirror's and `world2-pen.mjs` the awaited
+  // pen's, and a test that set only one would write through the other and reach
+  // a real socket.
+  acts.__setPoolForTest(store);
+  pen.__setPoolForTest(store);
+  house.__clearHouseCache();
   try {
     assert.equal(guards.guardsFlipped(), true, "the flag is READ, not merely set — B1's gate 1");
     return await fn(guards);
   } finally {
     restore();
+    acts.__setPoolForTest(null);
+    pen.__setPoolForTest(null);
+    house.__clearHouseCache();
     for (const [k, v] of [["WORLD2_PG", prev.pg], ["WORLD2_PG_URL", prev.url], ["W2_GUARDS", prev.flag]])
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
   }
@@ -997,7 +1243,14 @@ test("B1 — the guard is the only thing that changed: the same door still admit
   }, houseA));
 
   assert.equal(result.id, "alpha/nobody-holds-this");
-  assert.equal(result.log, "journal", "the READ flipped; the PEN did not — B1 and the C-series are two flags");
+  // THE SENTENCE THIS ASSERTED HAS BEEN OVERTAKEN BY G1. It read `log:
+  // "journal"` and said "the READ flipped; the PEN did not — B1 and the
+  // C-series are two flags". Both halves are the record now: RULING 3 made the
+  // pen the store, RULING 3a took the guards' sqlite fallback away. So the
+  // answer names `acts` on both sides, and what this test still proves — the
+  // guard admits a slug nobody holds — is untouched.
+  assert.equal(result.log, "acts", "one record, named on the answer");
+  assert.equal(store.acts.length, 1, "and the door wrote it there, which is the pen half of the same fact");
 });
 
 test("B1 CAN-FAIL — scope the guard by the bare handle and the duplicate is PERMITTED", async () => {
@@ -1029,4 +1282,57 @@ test("B1 CAN-FAIL — scope the guard by the bare handle and the duplicate is PE
 
   assert.equal(permitted.id, "alpha/the-docketed-one",
     "RED, deliberately: the wrong household spelling lets the duplicate through. The first test is this one, flipped back.");
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// postmark#3025 · the sovereignty guard's retirement, at the JOURNAL door
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Legs 1 and 3 of `test/parcel-over-a-painted-house.test.mjs`, ported onto
+// this file's store harness (main-into-w40, 2026-09-25). Main wrote them
+// against a sqlite journal door. Since POS-156 (G1) that door reads and writes
+// the store with no fallback, so they run here, where the one hand-built store
+// answers the guards and the write. Leg 2, the git-era twin, stays in that file.
+//
+// THE CAN-FAIL FLIP: restore the guard in `src/world.mjs` (it read
+// `seeding/manifest.json` and refused a parcel wholly inside another household's
+// PAINTED house) and LEG 1 reds with the 403. LEG 3 is green on both sides and
+// is a non-regression, not a discriminator.
+
+test("#3025 LEG 1 · THE FIX, journal door: a parcel claim over a painted house standing on nobody's parcel is ADMITTED", async () => {
+  process.env.WORLD_SINGLE_LOG = "1";
+  const { leaveMarkViaOffice } = await import("../src/world.mjs");
+  const store = guardStore();
+  let out;
+  try {
+    out = { ok: true, ...(await withGuardsFlipped(store, () => leaveMarkViaOffice(repo, {
+      slug: "the-common-ground", kind: "parcel", at: { x: 300, y: -300 },
+      body: "common ground by the standing law — the painting said otherwise",
+    }, houseA))) };
+  } catch (e) { out = { ok: false, code: e?.code, defect: e?.defect ?? e?.message }; }
+  assert.notEqual(out.code, 403,
+    `the retired guard fired: ${JSON.stringify(out)} — before #3025 this is 403 "that spot is inside neighbour's home"`);
+  assert.equal(out.ok, true, `the claim must go forward: ${JSON.stringify(out)}`);
+  assert.equal(out.id, "alpha/the-common-ground");
+  assert.equal(store.acts.length, 1, "and the door wrote it to the store — the claim really went through");
+});
+
+// This leg does not move when the guard is restored. It says, in a test, what
+// this door does about a claim over a neighbour's PARCEL: it admits it, and
+// always has. The refusal is `tools/marks-fold.mjs § admissibility`, at the
+// crossing: "parcel overlaps <id> — inadmissible (MARKS.md § Parcels)".
+test("#3025 LEG 3 · NON-REGRESSION: a parcel claim over a neighbour's PARCEL is admitted by this door and refused at the crossing", async () => {
+  process.env.WORLD_SINGLE_LOG = "1";
+  const { leaveMarkViaOffice } = await import("../src/world.mjs");
+  const store = guardStore();
+  let out;
+  try {
+    out = { ok: true, ...(await withGuardsFlipped(store, () => leaveMarkViaOffice(repo, {
+      slug: "over-the-neighbour", kind: "parcel", at: { x: -300, y: 300 },
+      body: "straight over the neighbour's ground",
+    }, houseA))) };
+  } catch (e) { out = { ok: false, code: e?.code, defect: e?.defect ?? e?.message }; }
+  assert.equal(out.ok, true,
+    `unchanged by #3025: this door carries no overlap check, before or after. Got ${JSON.stringify(out)}`);
+  assert.equal(out.id, "alpha/over-the-neighbour");
 });

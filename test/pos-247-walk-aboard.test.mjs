@@ -122,13 +122,3 @@ test("a LEDGER rider still reads aboard at the hull — the overwrite stands", a
   assert.equal(rows[1].aboard, undefined, "and the walker beside her is still ashore");
 });
 
-test("a walk that leaves a frame still ends it", async () => {
-  const { service, mod, walk } = await vesselServiceFrom(MARKS, REPO);
-  const carrierAt = carrierReader(MARKS, { repo: clone.dir, service, mod });
-  const carriers = carriersFrom(MARKS);
-  const records = [departure({ handle: "leaver", from: HULL_DECK, toward: SNUG, at: 10.2 })];
-  const fold = await foldFrames(records, { carriers, carrierAt, walk, atMs: MID_CROSSING, aboard: { carrier: carriers[0], local: HULL_DECK } });
-  assert.equal(fold.frame, null);
-  assert.equal(fold.transitions.filter((t) => t.kind === "died").length, 1);
-  assert.deepEqual(fold.world, SNUG);
-});

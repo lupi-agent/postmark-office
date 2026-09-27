@@ -51,9 +51,25 @@ export const PORTFOLIO_MARKS_SQL = `
   SELECT slug, kind, owner, household, body, geometry, data
     FROM marks WHERE status = 'standing' AND owner = ANY($1) ORDER BY slug`;
 
-/** Every handle the store's roster puts in one household. */
+/**
+ * Every handle the store's roster puts in one household.
+ *
+ * `= ANY($1)` — THE SPELLING SET, not the one current key (POS-160 RULING 4).
+ * `identities.household` is a projection of the world repo's copy of the town's
+ * pins and carries whatever spelling that copy held when each row landed:
+ * measured 2026-09-22, 173 of 190 handles wore `gh:<id>` and 17 wore
+ * `hh:<slug>`, and umbraliminalis wore BOTH — a ledger re-key had reached its
+ * first resident and not its other seven.
+ *
+ * So against a `hh:`-keyed session this used to return two of that house's
+ * eight residents. The portfolio's `belongs()` then read the other six's
+ * standing marks as somebody else's and dropped them from `published`, and the
+ * same six's stakes out of `backed` — a resident's own page, missing their own
+ * work, with no refusal and nothing to notice. The store does not re-spell
+ * `identities` (its rows are `law_ingester`'s), so the reader takes the set.
+ */
 export const HOUSEHOLD_HANDLES_SQL =
-  "SELECT handle FROM identities WHERE household = $1 ORDER BY handle";
+  "SELECT handle FROM identities WHERE household = ANY($1) ORDER BY handle";
 
 /**
  * 1.0's four labels, VERBATIM. They are the answer to the 2026-09-06 walk's

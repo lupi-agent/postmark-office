@@ -44,10 +44,16 @@ test("#2859: enter_on_arrival does not re-stop the walk that already arrived", (
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { NO_WORLD, worldClone } from "./fixture-paths.mjs";
 
-const CLONE = process.env.WORLD_CLONE ?? join(process.cwd(), "..", "postmark-world");
-const GRAMMAR = ["enter-exit.mjs", "thresholds.mjs"].find((n) => existsSync(join(CLONE, "tools", n)));
+// It resolved `join(process.cwd(), "..", "postmark-world")` — a different
+// directory in every tree, and in a pool tree a sibling slot that is not
+// there, so every case below SKIPPED while a world clone sat beside the
+// office the whole time. A silent skip is not a pass.
+const CLONE = worldClone();
+const GRAMMAR = CLONE && ["enter-exit.mjs", "thresholds.mjs"].find((n) => existsSync(join(CLONE, "tools", n)));
 const HAVE_CLONE = !!GRAMMAR;
+const WHY_NOT = CLONE ? `the world clone at ${CLONE} is missing the enter-exit grammar or WORLD/world-state.json` : NO_WORLD;
 const SHIP = "the-town/the-post-office";
 const WHO = "postmaster";
 const AT = 200;
@@ -60,7 +66,7 @@ const THE_REFUSAL = "You are within current-the-reader/the-taproom — this walk
 /** One office in a closure, with the walk hooks made observable.
  *  `hooks: "manual"` is what crossingDeps() hands an ordinary entry;
  *  `hooks: "arrival"` is what walkViaOffice overrides them to. */
-async function officeWith({ hooks, stopThrows = false, standing = { x: -30, y: 40 } }) {
+async function officeWith({ hooks, stopThrows = false, standing = { x: -9, y: 35.5 } }) { // POS-220: the post office's anchor — a door is entered only from within its extent, so the walker stands AT it (the old { -30, 40 } was ~21 m off, inside the retired 60 m reach)
   const worldState = JSON.parse(readFileSync(join(CLONE, "WORLD", "world-state.json"), "utf8"));
   const mod = await import(`file:///${join(CLONE, "tools", GRAMMAR).replace(/\\/g, "/")}`);
   const thresholds = mod.parseEnterExitLedger ? mod : { ...mod, parseEnterExitLedger: mod.parseThresholdLedger };
@@ -97,18 +103,18 @@ const enter = (deps) => import("../src/world-crossings.mjs")
   .then((m) => m.enterViaOffice(CLONE, { mark: SHIP, handle: WHO, accept: true }, { handles: new Set([WHO]) }, deps));
 
 test("an ORDINARY entry still ends the walk that carried you there — the fix takes nothing away from it",
-  { skip: !HAVE_CLONE && "no world clone" }, async () => {
+  { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const o = await officeWith({ hooks: "manual" });
   const answer = await enter(o.deps);
 
   assert.ok(answer.entered.length > 0, "the fixture must actually enter, or nothing below is exercised");
   assert.equal(o.stops.length, 1, "a manual entry by a walking resident writes the stop — #2685, and it is still law");
   assert.equal(answer.walk_ended?.recorded, true);
-  assert.deepEqual(answer.walk_ended.at, { x: -30, y: 40 });
+  assert.deepEqual(answer.walk_ended.at, { x: -9, y: 35.5 });
 });
 
 test("#2859 · the reported contradiction, reproduced: a successful entry whose own stop is refused",
-  { skip: !HAVE_CLONE && "no world clone" }, async () => {
+  { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   // This is the answer the resident was handed. It is the manual-entry wiring
   // reaching an arrival that has already happened — entry succeeds, and the
   // same response says the walk could not be terminated.
@@ -121,7 +127,7 @@ test("#2859 · the reported contradiction, reproduced: a successful entry whose 
 });
 
 test("#2859 · the arrival-bundled entry attempts no stop at all, so it cannot contradict itself",
-  { skip: !HAVE_CLONE && "no world clone" }, async () => {
+  { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   // The same door, the same refusing stop hook available in principle — but
   // walkViaOffice hands the arrival composition `walking: null, stop: null`,
   // and a hook that is never consulted cannot refuse. The walk needs no stop

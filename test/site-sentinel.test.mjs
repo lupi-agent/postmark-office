@@ -37,6 +37,7 @@ import {
   newestReleaseTag,
   tick,
   run,
+  classifyProblems,
   MINUTE,
   HOUR,
   CONFIG,
@@ -1053,4 +1054,120 @@ test("§7 the new probe's line reads as a SENTENCE in the Discord message", () =
     nowIso: "2026-09-17T08:20:00Z",
   });
   assert.match(msg, /DOWN — the box's site refresh: the box's site refresh failed: fetch-town\.mjs tripped\./);
+});
+
+// ── §2c the build that published WITH problems (POS-180, 2026-09-21) ────────
+//
+// Keemin, 2026-09-21: "Could we just let the site publish, but have the
+// postmark sentinel bark about the 404?" This is the bark.
+//
+// The site half (postmark-site POS-180) stops a single named entity's 404 from
+// freezing the whole town: the build publishes, the shed thing leaves, a 404'd
+// resident keeps the row they had, and the build writes down what it could not
+// get. That record only becomes actionable if something reads it — and until
+// POS-180 `problems` was assembled by the site's fetch and written to a build
+// log nobody reads on a schedule. These falsifiers hold the reading end.
+
+test("a build.json carrying problems REDS the sentinel — a published-with-problems build is a finding", () => {
+  const table = {
+    ...GREEN_TABLE,
+    "https://postmark.town/build.json": {
+      status: 200,
+      body: JSON.stringify({
+        channel: "release", code_sha: "relsha00000", town_data_sha: "sitetip0000", crossing: 149,
+        problems: ['residents: the roll named "wright" and the card door answered 404 — the row is HELD OVER'],
+      }),
+    },
+  };
+  const p = classifyProblems({ haveStamp: true, problems: ['residents: the roll named "wright" and the card door answered 404 — the row is HELD OVER'] });
+  assert.equal(p.verdict, "STALE", "a finding, not an outage — the site is fresh and something in it is not");
+  assert.ok(BAD.has(p.verdict), "and STALE is in BAD, so it actually alarms rather than only colouring a board");
+  // NAMED, NOT COUNTED: the reason must carry the entity and the door, because
+  // "1 problem" tells a reader nothing they can act on.
+  assert.match(p.reason, /the roll named "wright"/);
+  assert.match(p.reason, /404/);
+  return tick({ fetchImpl: stubFetch(table), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG })
+    .then(({ probes, alerts }) => {
+      const probe = probes.find((x) => x.key === "site_build_problems");
+      assert.ok(probe, "the probe must exist in a real tick, not only as a pure function");
+      assert.equal(probe.verdict, "STALE");
+      assert.ok(alerts.some((a) => a.key === "site_build_problems"), "and it must reach the alert channel");
+    });
+});
+
+test("the SAME build.json with an empty problems list does NOT red", () => {
+  const table = {
+    ...GREEN_TABLE,
+    "https://postmark.town/build.json": {
+      status: 200,
+      body: JSON.stringify({ channel: "release", code_sha: "relsha00000", town_data_sha: "sitetip0000", crossing: 149, problems: [] }),
+    },
+  };
+  assert.equal(classifyProblems({ haveStamp: true, problems: [] }).verdict, "OK");
+  return tick({ fetchImpl: stubFetch(table), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG })
+    .then(({ probes, alerts }) => {
+      const probe = probes.find((x) => x.key === "site_build_problems");
+      assert.equal(probe.verdict, "OK", "a build that got everything it asked for is green, not merely un-alarmed");
+      assert.deepEqual(alerts.filter((a) => a.key === "site_build_problems"), []);
+    });
+});
+
+test("THE DEPLOY-ORDER TRAP: a build.json with NO problems key at all must NOT red", () => {
+  // The two repos deploy independently. Between this probe shipping in the
+  // office and the `problems` field shipping in postmark-site, EVERY build.json
+  // prod serves is keyless — and prod keeps serving the last release for as
+  // long as it takes the site's train to land. A probe that alarmed there would
+  // page the founder for the whole rollout, about a site that is working
+  // correctly, which is precisely the alarm a reader learns to mute.
+  //
+  // INFO is this file's existing word for a probe that is counted, never
+  // alarmed and never silent. UNKNOWN would have been the other candidate and
+  // is deliberately NOT used: it would paint the whole board DEGRADED for the
+  // duration of an ordinary rollout.
+  const keyless = { channel: "release", code_sha: "relsha00000", town_data_sha: "sitetip0000", crossing: 149 };
+  assert.equal("problems" in keyless, false, "the fixture must actually be keyless or this proves nothing");
+  const p = classifyProblems({ haveStamp: true, problems: keyless.problems });
+  assert.equal(p.verdict, "INFO");
+  assert.equal(BAD.has(p.verdict), false, "an older stamper is not a fault");
+  assert.match(p.reason, /predates/, "and it says WHY, so a reader knows the field is new rather than the site being clean");
+
+  const table = { ...GREEN_TABLE, "https://postmark.town/build.json": { status: 200, body: JSON.stringify(keyless) } };
+  return tick({ fetchImpl: stubFetch(table), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG })
+    .then(({ probes, alerts }) => {
+      const probe = probes.find((x) => x.key === "site_build_problems");
+      assert.equal(probe.verdict, "INFO");
+      assert.deepEqual(alerts, [], "a keyless build.json must produce NO alert of any kind");
+    });
+});
+
+test("`problems: null` is UNREAD, not clean — UNKNOWN, and it never reads as green", () => {
+  // The site's stamper writes null when it could not read its own town
+  // manifest. Treating that as [] would be a false all-clear arriving exactly
+  // when the build had stopped being able to look.
+  const p = classifyProblems({ haveStamp: true, problems: null });
+  assert.equal(p.verdict, "UNKNOWN");
+  assert.equal(BAD.has(p.verdict), false, "unreadable is not itself an alarm");
+  assert.notEqual(p.verdict, "OK", "…but it must never be mistaken for a clean build");
+  assert.match(p.reason, /unread is never clean/);
+  // A shape that is neither list nor null is the same answer, not a crash.
+  assert.equal(classifyProblems({ haveStamp: true, problems: "one problem" }).verdict, "UNKNOWN");
+  assert.equal(classifyProblems({ haveStamp: true, problems: 3 }).verdict, "UNKNOWN");
+});
+
+test("no /build.json at all speaks in its own words rather than vanishing", () => {
+  const p = classifyProblems({ haveStamp: false });
+  assert.equal(p.verdict, "UNKNOWN");
+  assert.match(p.reason, /serves no \/build\.json/);
+});
+
+test("the bark names EVERY problem it can and says how many it held back", () => {
+  // A held-back remainder that is not counted is a silent truncation, and the
+  // reader would act on three when there were nine.
+  const nine = Array.from({ length: 9 }, (_, i) => `residents: handle-${i} answered 404`);
+  const p = classifyProblems({ haveStamp: true, problems: nine });
+  assert.equal(p.verdict, "STALE");
+  assert.match(p.reason, /published with 9 problems/);
+  assert.match(p.reason, /and 6 more/, "the remainder is counted, never dropped");
+  // and the singular reads as English
+  assert.match(classifyProblems({ haveStamp: true, problems: ["one thing"] }).reason, /published with 1 problem its build/);
 });

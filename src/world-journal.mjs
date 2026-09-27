@@ -152,6 +152,14 @@ export const CLASS_MOVE = "move";
 // not have to be read twice to tell the two apart. Machinery: world-ride.mjs.
 export const CLASS_RIDE = "ride";
 
+// The arena's beats. DECLARED HERE rather than in `arena.mjs` since G1
+// (POS-156): `appendArenaRow` below is the one sqlite INSERT the deletion
+// leaves standing, and it refuses any other class by name — so the constant it
+// checks against has to live beside the write it guards, not in the module that
+// calls it. `arena.mjs` re-exports it, so nothing that imported it from there
+// moved. It is a row class like the six above and it always was.
+export const CLASS_ARENA_ACT = "arena-act";
+
 // ── THE LEDGER CONTRACT (POS-5 §3's finisher) ───────────────────────────────
 //
 // The two PUBLIC ledgers — `WORLD/walk-ledger.md` and the passage record (then
@@ -301,17 +309,132 @@ export function pinWitnesses({ residents = null, unread = null, centreOf = null,
 const ROW_COLUMNS = "crossing, actor, action, object, at_anchor, at_dx, at_dy, witnesses, class, payload, effect, household, written_at";
 
 /**
- * One row. The whole write path, for every verb.
+ * ONE ROW, INTO THE RECORD — the whole write path, for every verb but the arena.
  *
  * Nothing here validates the world — a draft costs nothing (Keemin, 2026-08-22),
  * and the door above has already spoken every refusal a resident is owed. This
  * is the pen, not the gate.
  *
- * Returns the row as stored, `seq` included, because the seq is the answer's
- * receipt: a caller that cannot name the line it wrote cannot prove it wrote.
+ * ── THE STORE IS THE WRITE (G1 / POS-156, RULING 3, 2026-09-22) ─────────────
+ *
+ * This function used to INSERT a sqlite `journal` row and then hand the row to
+ * a fire-and-forget Postgres queue. The INSERT is gone, and with it the only
+ * thing that made the fire-and-forget defensible. Two sentences in this repo
+ * said so before the deletion existed, and they are the whole argument:
+ *
+ *   world2-pen.mjs § shadowWrite — the queue is "fire-and-forget for the
+ *   caller … acceptable ONLY because the sqlite journal is still the SoT on an
+ *   unflipped lane"
+ *
+ *   world2-acts.mjs § WRITE DISCIPLINE — "the cutover rewrite awaits the
+ *   insert and refuses at the door instead"
+ *
+ * So the write is AWAITED and a failure THROWS. A door whose act cannot reach
+ * the record refuses; it never answers 200 over an act no store holds. That is
+ * the cost of a store-of-record town and it was ruled with the cost named: when
+ * Postgres is down these doors answer 503 where they used to answer 200 on the
+ * strength of a sqlite row nobody was going to read.
+ *
+ * ⚑ ASYNC NOW, AND THE UN-AWAITED FORM IS SILENT — a caller that forgets the
+ * `await` gets a Promise whose `.seq` is `undefined` and whose rejection is
+ * unhandled, which reads downstream as a successful write of nothing. Every
+ * call site awaits, and the deletion's own falsifier pins that.
+ *
+ * ⚑ `db` IS STILL TAKEN AND STILL UNUSED HERE. The doors pass `null` since
+ * POS-269: each used to open the dynamic store in write mode only to hand the
+ * handle over, and that open was a WAL pragma, the whole DDL and a lock on every
+ * say, walk, crossing, ride, stance and mark, taken for nothing. The parameter
+ * stays because some forty test and tool call sites pass a store positionally.
+ * The arena is the one caller that still WRITES sqlite, through its own named
+ * function below.
+ *
+ * Returns the row as recorded. `seq` is `null` — there is no sqlite rowid any
+ * more — and `actId` is the record's own id, which is the receipt a caller
+ * names its write by.
  */
-export function appendJournal(db, entry = {}) {
+export async function appendJournal(db, entry = {}) {
   const row = normalizeRow(entry);
+
+  // World 2.0 is the record. A mark-class declaration also takes its place on
+  // the public docket (`claims`) on the SAME client in the SAME transaction —
+  // R1's one queue, unchanged by the deletion.
+  //
+  // ── THE DEFERRAL, and why the act is conditional (Phase 5.6) ─────────────
+  //
+  // A PRIVATE DRAFT MUST NOT REACH `acts`, because `acts` is the one table that
+  // leaves the box: the notary exports `archives/acts/<window>.jsonl` into a
+  // public git repo, frozen on write. A leave-mark's payload carries the mark's
+  // BODY — so writing an unstaked declaration there would publish a resident's
+  // private sentence permanently, and no row policy on `claims` could reach it.
+  // That is the whole privacy promise of Phase 5.6.
+  //
+  // So an unstaked mark-class row takes `act: false`: the claim is written, the
+  // deed is not, and the row rides on the draft (`data._deferred_act`) until a
+  // stake makes the mark public — dated at the putting-forward, which is when
+  // the world actually witnessed anything. The predicate is deliberately
+  // narrow: ONLY an unstaked mark-class declaration defers.
+  //
+  // ⚑ THE PRIVATE ARM RIDES THIS QUEUE, not a second one, and the reason is
+  // measured rather than argued: it used to be its own pen on its own pool, and
+  // an unstaked compose and its own withdrawal rode different queues with
+  // nothing ordering them — the withdrawal's DELETE ran 113 ms ahead of the
+  // INSERT it was meant to remove, five fresh stores, five times, leaving the
+  // resident's withdrawn draft on the docket with its slug still taken
+  // (jetto-b1-guards-report 2026-09-03 § Finding 1).
+  const draft = claimEligible(row) && privateDraftAct(row);
+  const { actId } = await penWrite(row, claimEligible(row)
+    ? {
+      act: !draft,
+      household: () => claimHouseholdFor(row),
+      // `seq` is NULL, and that is the point: there is no sqlite row to pair
+      // with. 001's own words — `journal_seq` is "the shadow-era pairing key,
+      // dying at cutover". The closure falsifier pairs an act to its claim by
+      // the claim's own slug and claimant, never by that column.
+      claimFn: (client, actId, household) => claimTxFromJournal(client, row, null, { household, actId }),
+    }
+    : {});   // throws PenUnreachableError — the door bounces, nothing was written
+
+  // `record` is what the door's `log:` field says, decided HERE because this is
+  // the line that knows which table received the row. A private draft has no
+  // deed by law, so answering "acts" for one would name a record that does not
+  // hold it.
+  return { seq: null, actId, record: draft ? "claims" : "acts", ...row };
+}
+
+// ── THE ARENA'S OWN ROW, NARROW AND NAMED (DEC-1 / P-143) ───────────────────
+//
+// The arena is the one lane that keeps writing sqlite, and it is an exception
+// BY RULING, carrying the ruling's own words — Keemin, 2026-08-29, the party's
+// own night: "we can just keep the arena on sqlite for now". P-143: "Keep
+// `dynamic.db` and the arena's journal path as a NAMED, manifested exception
+// carrying its own registry row and its own death condition."
+//
+// It has its own function rather than a flag on `appendJournal`, and that is
+// the whole shape of the exemption: G1 deletes the GENERAL insert, and what
+// survives is a narrow path with the arena's name on it that nothing else can
+// reach by passing an option. An exception you can opt into is not an
+// exception, it is a switch.
+//
+// WHY IT CANNOT SIMPLY MOVE TO `acts` WITH EVERYTHING ELSE: the beat's `seq` is
+// its IDENTITY inside the fold, not a receipt. `arena.mjs` keys the wheel, the
+// queue, the rolls and every driven beat on it (`bySeq`, `drivenRows`,
+// `mine.seq`), and `readJournal(db, { cls: arena-act })` reads the same rows
+// back. The hardened rebuild lands 2.0-native instead of porting this; until
+// then the rows stay where the fold reads them.
+//
+// IT STILL REACHES `acts` THE JOURNALLED WAY. The lane census is explicit that
+// the flip refusal "is a fact about `W2_PEN`, not about the mirror — a beat
+// still reaches `acts` the journalled way", so the mirror stays on this path
+// and stays fire-and-forget: here the sqlite row above genuinely IS the SoT,
+// which is the condition `shadowWrite`'s header names and the only place in
+// the office where it is still true.
+export function appendArenaRow(db, entry = {}) {
+  const row = normalizeRow(entry);
+  if (row.class !== CLASS_ARENA_ACT) {
+    throw new Error(
+      `appendArenaRow is the arena's exemption (DEC-1/P-143) and takes ${CLASS_ARENA_ACT} rows only — got "${row.class}". `
+      + "Every other class writes the record through appendJournal; the sqlite journal is not a store any other lane may reach.");
+  }
 
   const stmt = db.prepare(
     `INSERT INTO journal (${ROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -322,68 +445,7 @@ export function appendJournal(db, entry = {}) {
     row.household, row.written_at);
 
   const seq = Number(res.lastInsertRowid);
-  // World 2.0 shadow pens (dev era): mirror the row into Postgres `acts`, and
-  // a mark-class declaration also onto the public docket (`claims`). No-ops
-  // unless WORLD2_PG=1 (+ WORLD2_CANDLE=1 for the docket); fire-and-forget for
-  // this caller, loud on failure, parity-falsified. Death dates in the modules.
-  //
-  // ── THE DEFERRAL, and why the mirror is conditional (Phase 5.6) ───────────
-  //
-  // A PRIVATE DRAFT MUST NOT REACH `acts`, because `acts` is the one table that
-  // leaves the box: the notary exports `archives/acts/<window>.jsonl` into a
-  // public git repo, frozen on write. A leave-mark's payload carries the mark's
-  // BODY — so mirroring an unstaked declaration would publish a resident's
-  // private sentence permanently, and no row policy on `claims` could reach it
-  // there. That is the whole privacy promise of Phase 5.6, lost at this line.
-  //
-  // So the SQLITE JOURNAL always gets its row (it is local to this box, it is
-  // 1.0's live layer, and every 1.0 read depends on it), and the POSTGRES
-  // MIRROR waits. The docket pen carries the row on the draft claim itself
-  // (`data._deferred_act`) and mirrors it the moment a stake makes the mark
-  // public — dated at the putting-forward, which is when the world actually
-  // witnessed anything.
-  //
-  // The predicate is deliberately narrow: ONLY an unstaked mark-class
-  // declaration defers. Everything else — speech, walking, withdrawals of
-  // public marks, every non-mark class — mirrors exactly as before.
-  //
-  // ── R1'S ROUTING (2026-08-29): one act, one transaction ──────────────────
-  // A public mark-class row used to take TWO queues (mirrorAct's acts insert,
-  // submitClaimFromJournal's claims write) with nothing joining them — the
-  // design's two-pens disease. It now takes ONE `shadowWrite`, whose single
-  // transaction inserts the act and runs the claim logic on the same client.
-  // A private draft still touches claims ONLY (the deferral, unchanged), and
-  // a non-candle row keeps mirrorAct's single-table queue: with one table
-  // there is nothing to be atomic WITH, and its ordering guarantee for the
-  // lane acts stays where it has always been. (The two queues can interleave
-  // acts ids across lanes now; D6 already ruled replay order is `(at, id)`,
-  // so id order carries no meaning a reader may lean on.)
-  //
-  // ── THE PRIVATE ARM JOINS THE ONE QUEUE (2026-09-04, the mark lane's flip) ─
-  //
-  // It used to read `if (privateDraftAct(row)) submitClaimFromJournal(row, seq)`
-  // — a SECOND queue on a second pool, which is the disease R1's own header
-  // says it ended. It had not ended for this arm, and the cost was measured:
-  // an unstaked compose and its own withdrawal rode different queues with
-  // nothing ordering them, so the withdrawal's DELETE ran 113 ms ahead of the
-  // INSERT it was meant to remove — five fresh stores, five times — and the
-  // resident's withdrawn draft kept its docket row with the slug still taken
-  // (jetto-b1-guards-report 2026-09-03 § Finding 1).
-  //
-  // Now every mark-class row takes ONE `shadowWrite`, and the private arm is
-  // told apart by `act: false` rather than by a different pen: its claim rides
-  // the same client and the same serialized queue, and NOTHING about it touches
-  // `acts` — which is the whole of Phase 5.6's promise and is now a property of
-  // one option rather than of a whole separate code path.
-  if (claimEligible(row)) {
-    const draft = privateDraftAct(row);
-    shadowWrite(row, seq, {
-      act: !draft,
-      household: () => claimHouseholdFor(row),
-      claimFn: (client, actId, household) => claimTxFromJournal(client, row, seq, { household, actId }),
-    });
-  } else mirrorAct(row, seq);
-
+  mirrorAct(row, seq);
   return { seq, ...row };
 }
 
@@ -474,29 +536,28 @@ export async function appendActFlipped(db, entry = {}) {
       claimFn: (client, actId, household) => claimTxFromJournal(client, row, null, { household, actId }),
     }
     : {}); // throws PenUnreachableError — the door bounces, nothing was written
-  let seq = null;
-  try {
-    const stmt = db.prepare(
-      `INSERT INTO journal (${ROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    const res = stmt.run(
-      row.crossing, row.actor, row.action, row.object,
-      row.at_anchor, row.at_dx, row.at_dy,
-      row.witnesses, row.class, row.payload, row.effect,
-      row.household, row.written_at);
-    seq = Number(res.lastInsertRowid);
-  } catch (err) {
-    // The record is already committed; the convenience copy failed. Loud, and
-    // the reverse-parity check names the row — never a refusal, because
-    // refusing now would tell the resident an act the record holds did not
-    // happen, which is the exact lie R2 exists to prevent (in mirror image).
-    console.error(`[world-journal] REVERSE MIRROR FAILED (act ${actId}, ${row.actor} ${row.action}): ${String(err?.message ?? err)}`);
-  }
+
+  // ── THE REVERSE MIRROR IS GONE (G1 / POS-156, 2026-09-22) ─────────────────
+  //
+  // A sqlite `journal` row was written HERE, after the awaited pen, as D3's
+  // reverse mirror: "while it holds, every 1.0 read (the door guards included)
+  // stays valid, which is what lets a lane flip before the R3 read ports land."
+  // Every one of those ports has landed — POS-152 (the ride's entry stop),
+  // POS-153 and POS-162 (the hold shelf), POS-154 (walkers), POS-194
+  // (occupancy), POS-195 (the stance candidates) — so the copy has no reader
+  // left, and rule 6's deletion is what ends a shim rather than a date.
+  //
+  // `seq` IS NULL FROM HERE ON, and it is null in `appendJournal` too. There is
+  // no sqlite rowid to answer with; the receipt is `actId`, the record's own.
+  // The doors that used to answer `seq:` with the mirror's rowid answer it with
+  // the act's id now — one sequence, the one the record keeps.
+  //
   // `record` is what the door's `log:` field should say, decided HERE because
   // this is the line that knows which table actually received the row. A
   // private draft has no deed by law, so answering "acts" for one would name a
   // record that does not hold it — the same small dishonesty `composed_at`
-  // exists to avoid on the drafts read. Every other flipped row is an act.
-  return { seq, actId, flipped: true, record: draft ? "claims" : "acts", ...row };
+  // exists to avoid on the drafts read. Every other row is an act.
+  return { seq: null, actId, flipped: true, record: draft ? "claims" : "acts", ...row };
 }
 
 /** Which pen a lane's call site should use — the one switch the doors read. */
@@ -549,6 +610,33 @@ export function normalizeRow(entry = {}) {
     crossing = null, actor, action, object = null,
     at = null, witnesses = null, cls = CLASS_MARK,
     payload = null, effect = null, household = null,
+    // A say's retry key (POS-265, migration 027). Kept only when given, so
+    // every other row is the object it always was and names no such column.
+    nonce = null,
+    // ── `written_at` IS `acts.at`, AND THE DECLARED INSTANT OUTRANKS IT ──────
+    //
+    // The fallback below is this process's clock at NORMALIZE time — the
+    // mirror's, taken after the resident declared. It stays, because it is the
+    // only honest answer for an act class that has no instant of its own:
+    // `mark` (world.mjs, the declare and the withdraw), `ride`
+    // (world-apex.mjs), `stance` (world-stance.mjs) and the crossing's own
+    // rows (crossing-exec.mjs) all reach here with no `writtenAt` and nothing
+    // better to offer.
+    //
+    // An act class that DOES know when it happened passes `writtenAt` and this
+    // default never fires: `voice` (world.mjs § voiceEntry, the spoken
+    // instant), `holding` (world-hold.mjs, "the declaration's own stamp,
+    // strictly ordered by the door") and, since POS-198, `move` — the walk act
+    // carries the same string `dynamic.db/movements` is stamped with, from one
+    // `Date` read in `walkViaOffice`. That is what lets `acts` render the
+    // world's `STATE/log/` departure record: `live-reads § departureRecordOf`
+    // reads era 5's instant as `isoOf(row.at)`, and row.at is this column.
+    //
+    // ⚑ A DESTRUCTURING DEFAULT FIRES ON `undefined` AND NOT ON `null`. A
+    // caller that means "I have no instant" must omit the key or pass
+    // undefined; passing null would store the string "null" in the first field
+    // every reader of a departure reads. `walkEntry` coalesces for exactly
+    // this reason.
     writtenAt = new Date().toISOString(),
   } = entry;
 
@@ -597,6 +685,7 @@ export function normalizeRow(entry = {}) {
     effect: effect == null ? null : String(effect),
     household: household == null ? null : String(household),
     written_at: String(writtenAt),
+    ...(nonce == null ? {} : { nonce: String(nonce) }),
   };
 
   return row;

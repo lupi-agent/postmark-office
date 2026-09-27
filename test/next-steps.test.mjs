@@ -38,15 +38,14 @@ import { DISPATCHABLE as WORLD_DISPATCHABLE, dispatchToolFor as worldDispatchToo
 import { WORLD_WRITE_VERBS } from "../src/bouncer.mjs";
 import { nextStepsFor } from "../src/queries.mjs";
 import { fixtureDb } from "./fixture.mjs";
+import { townClone } from "./fixture-paths.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
 // The office's own resolution order, plus the checkout test/quests.test.mjs
 // already reads live. A MISSING clone fails loudly rather than skipping: a
 // guard that quietly opts out of running is worth less than no guard.
-const TOWN = process.env.TOWN_CLONE
-  ?? [resolve(ROOT, "town-clone"), "G:/Wright-HQ/postmark"].find((p) => existsSync(join(p, "quest-registry.json")))
-  ?? resolve(ROOT, "town-clone");
+const TOWN = townClone() ?? resolve(ROOT, "town-clone");
 
 const registry = () => {
   const p = join(TOWN, "quest-registry.json");

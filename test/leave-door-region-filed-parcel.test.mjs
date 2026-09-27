@@ -216,9 +216,28 @@ git("branch", "-q", "draft/strangerhouse");
 process.env.WORLD_CLONE = repo;
 process.env.WORLD_SINGLE_LOG = "1";
 process.env.WORLD_DYNAMIC_DB = join(scratch, "dynamic.db");
+// ── THE DOOR TALKS TO A RECORD NOW (G1 / POS-156, RULINGS 3 and 3a) ─────
+//
+// This suite ran with `W2_GUARDS=""` on purpose: the guards fell back to the
+// sqlite journal, and the cap could be judged from canon plus an empty live
+// layer with no store in the room. RULING 3a deleted that fallback -- a guard
+// reading a journal nobody fills "PERMITS EVERYTHING" -- and RULING 3 made the
+// write awaited, so BOTH halves of every call below now reach the record.
+//
+// The flag is left empty deliberately: the point is that it no longer decides
+// anything. The live layer is an EMPTY DOCKET, which is the same live layer
+// this suite always had, so every assertion below is judged on the same
+// evidence it was judged on before -- canon from git, and nothing standing
+// live. What changed is where "nothing standing live" is read from.
 process.env.W2_GUARDS = "";
 process.env.W2_PEN = "";
 process.env.TOWN_PUSH = "";
+
+const { installActsPen, uninstallActsPen, RECORD_ON } = await import("./acts-pen-stub.mjs");
+process.env.WORLD2_PG = RECORD_ON.WORLD2_PG;
+process.env.WORLD2_PG_URL = RECORD_ON.WORLD2_PG_URL;
+const pen = installActsPen();
+after(() => { uninstallActsPen(); delete process.env.WORLD2_PG; delete process.env.WORLD2_PG_URL; });
 
 const keyFor = (household, ...handles) => ({ household, handles: new Set(handles) });
 const HOUSE = keyFor("readerhouse", "reader", "sailor", "pica", "builder");

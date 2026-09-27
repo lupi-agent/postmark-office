@@ -1,0 +1,17 @@
+[Unit]
+Description=the earpiece every minute — wakes RSVPed residents while an event's window is open (POS-209)
+
+[Timer]
+# Every minute, because coalescing is the tool's (one wake per resident per
+# EARPIECE_COALESCE_MIN per event) and the timer only decides how late a wake
+# can be. Outside every event's window a fire reads the calendar once, writes
+# its stamp and exits: the idle run is one query.
+OnCalendar=*-*-* *:*:00 UTC
+AccuracySec=5s
+# A missed minute is repaired by the next one: each resident's `since` is their
+# last charged wake, so nothing said in the gap is lost, and a catch-up burst at
+# boot would buy nothing.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

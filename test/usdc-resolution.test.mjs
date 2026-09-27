@@ -24,15 +24,19 @@ import { execFileSync } from "node:child_process";
 import { INTAKE, USDC, TRANSFER_TOPIC, MIN_CONF } from "../src/usdc-witness.mjs";
 import { foldRegistry, readWalletRegistry, handleForAddress, registrationLine, DEFAULT_REGISTRY } from "../src/wallet-registry.mjs";
 import { CROSSING_MS } from "../src/crossings.mjs";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 import {
   watch, resolveArrivals, decodeArrival, readIntakeMap, intakeAddresses,
   sinkEnabled, SINK_FLAG, SINK_POT, SINK_AGE_DAYS, OUTSIDE_FROM, UNREGISTERED,
 } from "../tools/usdc-watch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const TOWN = [resolve(HERE, "..", "town-clone"), "G:/postmark/seam-overnight/town-clone"]
+const TOWN = [townClone()].filter(Boolean)
   .find((p) => existsSync(join(p, "tools", "stamp-mint.mjs")));
-const ENGINE = await import(`file:///${TOWN}/tools/stamp-mint.mjs`);
+// Guarded: a top-level await import of a clone that is not there takes the
+// whole module down at load, and its cases then neither pass nor fail.
+const ENGINE = TOWN ? await import(townModuleUrl("tools", "stamp-mint.mjs")) : null;
+const SKIP = !TOWN && NO_TOWN;
 
 const pad32 = (a) => "0x" + "0".repeat(24) + String(a).replace(/^0x/, "").toLowerCase();
 const usdcHex = (u) => "0x" + BigInt(Math.round(u * 1e6)).toString(16);
@@ -116,7 +120,7 @@ const HH = new Set(["paz", "stan"]);
 // THE REGISTRY — whose address is this
 // ════════════════════════════════════════════════════════════════════════════
 
-test("THE REGISTRY IS OFFICE-SIDE — nothing wallet-shaped may ever appear in the town repo", () => {
+test("THE REGISTRY IS OFFICE-SIDE — nothing wallet-shaped may ever appear in the town repo", { skip: SKIP }, () => {
   // FOUNDER RULING, 2026-08-25: "what if I don't want wallet information in the
   //     town repo?" An earlier draft of this lane put it at
   //     WHITE_PAGES/<handle>/wallet.json. This test is what stops that returning:
@@ -140,7 +144,7 @@ test("THE REGISTRY IS OFFICE-SIDE — nothing wallet-shaped may ever appear in t
   assert.ok(!DEFAULT_REGISTRY.startsWith("/srv/postmark-office"), "and not inside the office's own git checkout");
 });
 
-test("a registered address names its household, and case never matters", () => {
+test("a registered address names its household, and case never matters", { skip: SKIP }, () => {
   const { byAddress, invalid } = foldRegistry(reg("paz", PAZ_WALLET), { households: HH });
   assert.deepEqual(invalid, []);
   assert.equal(handleForAddress(byAddress, PAZ_WALLET), "paz");
@@ -148,7 +152,7 @@ test("a registered address names its household, and case never matters", () => {
   assert.equal(handleForAddress(byAddress, STRANGER_WALLET), null);
 });
 
-test("THE JOURNAL SHAPE IS THE MIGRATION-FREE ONE: the operator's line and the door's future line are the same line", () => {
+test("THE JOURNAL SHAPE IS THE MIGRATION-FREE ONE: the operator's line and the door's future line are the same line", { skip: SKIP }, () => {
   // The follow-up is an authenticated `household do: "register-wallet"` act that
   // appends an office journal row which materializes into this store. That is
   // WHY this is an append-only journal and not an object the operator edits: an
@@ -162,7 +166,7 @@ test("THE JOURNAL SHAPE IS THE MIGRATION-FREE ONE: the operator's line and the d
   assert.equal(JSON.parse(byDoor).by, "door:register-wallet", "and provenance is preserved, not flattened");
 });
 
-test("a revoke is an APPEND, never an edit — a lost wallet costs one line and no history", () => {
+test("a revoke is an APPEND, never an edit — a lost wallet costs one line and no history", { skip: SKIP }, () => {
   const journal = [reg("paz", PAZ_WALLET), JSON.stringify({ at: "2026-08-27T00:00:00Z", act: "revoke", address: PAZ_WALLET, by: "operator-pen" })].join("\n");
   const { byAddress, invalid, rows } = foldRegistry(journal, { households: HH });
   assert.deepEqual(invalid, []);
@@ -172,7 +176,7 @@ test("a revoke is an APPEND, never an edit — a lost wallet costs one line and 
   assert.equal(handleForAddress(back.byAddress, PAZ_WALLET), "paz");
 });
 
-test("an address with live claims from two households resolves to NOBODY, and both are surfaced", () => {
+test("an address with live claims from two households resolves to NOBODY, and both are surfaced", { skip: SKIP }, () => {
   // LAW (src/usdc-witness.mjs, what the witness cannot see, verbatim): "which
   //     pot the payer meant, whose household the payer keeps, and whether this
   //     hash was already recorded. Those three are the LEDGER's to hold".
@@ -185,7 +189,7 @@ test("an address with live claims from two households resolves to NOBODY, and bo
   assert.match(invalid[0].reason, /Append a `revoke` for the wrong one/);
 });
 
-test("A HANDLE THE TOWN DOES NOT KNOW IS REFUSED — the hole the relocation opened, closed", () => {
+test("A HANDLE THE TOWN DOES NOT KNOW IS REFUSED — the hole the relocation opened, closed", { skip: SKIP }, () => {
   // While the registry lived in the town repo the handle was a household BY
   // CONSTRUCTION: it was the folder's own name. Off the town repo nothing
   // guarantees it, and a receipt witnessed under a non-household handle is
@@ -199,7 +203,7 @@ test("A HANDLE THE TOWN DOES NOT KNOW IS REFUSED — the hole the relocation ope
   assert.equal(foldRegistry(reg("paz", PAZ_WALLET), { households: HH }).byAddress.size, 1);
 });
 
-test("a malformed registration is DISCLOSED rather than dropped", () => {
+test("a malformed registration is DISCLOSED rather than dropped", { skip: SKIP }, () => {
   // LAW (src/funding.mjs, verbatim): "Malformed rows are SURFACED, never
   //     silently rendered or silently dropped … refuse or disclose, never
   //     quietly substitute." A household that thinks it registered and did not
@@ -219,7 +223,7 @@ test("a malformed registration is DISCLOSED rather than dropped", () => {
   assert.ok(invalid.some((i) => /is not one of register, revoke/.test(i.reason)));
 });
 
-test("an absent registry is an empty registry, not an error — and it says it is absent", () => {
+test("an absent registry is an empty registry, not an error — and it says it is absent", { skip: SKIP }, () => {
   const r = readWalletRegistry(join(tmpdir(), "no-such-registry-" + Date.now() + ".jsonl"));
   assert.equal(r.present, false);
   assert.equal(r.byAddress.size, 0);
@@ -230,7 +234,7 @@ test("an absent registry is an empty registry, not an error — and it says it i
 // THE POT — which need did this address mean
 // ════════════════════════════════════════════════════════════════════════════
 
-test("the shipped intake map never names the SHARED address, whatever else it maps", () => {
+test("the shipped intake map never names the SHARED address, whatever else it maps", { skip: SKIP }, () => {
   // WHAT THIS ASSERTS, and what it deliberately stopped asserting.
   //
   // Until 2026-08-25 this read `map.size === 0` — a snapshot of a world with no
@@ -257,7 +261,7 @@ test("the shipped intake map never names the SHARED address, whatever else it ma
   assert.deepEqual(intakeAddresses(new Map([[POT_A_ADDRESS, "pot-a"]])), [INTAKE, POT_A_ADDRESS]);
 });
 
-test("a registered payer at an address that names no single pot is HELD as needs-pot, with a letter", async () => {
+test("a registered payer at an address that names no single pot is HELD as needs-pot, with a letter", { skip: SKIP }, async () => {
   // LAW (tools/epoch-close.mjs --receipt, verbatim): `no pot file
   //     WHITE_PAGES/pot-${pot}.json — a receipt needs the pot it pays`.
   //     Knowing WHOSE dollar it is does not tell the town WHICH need it meant.
@@ -275,7 +279,7 @@ test("a registered payer at an address that names no single pot is HELD as needs
   assert.match(r.needs_pot[0].letter, /nothing is lost while it waits/);
 });
 
-test("a mapped address names its pot, and the map is read off the RECIPIENT topic, never remembered from the filter", async () => {
+test("a mapped address names its pot, and the map is read off the RECIPIENT topic, never remembered from the filter", { skip: SKIP }, async () => {
   const town = seamTown({ wallets: { paz: null } });
   const now = 2_000_000_000_000;
   const potMap = new Map([[POT_A_ADDRESS, "pot-a"], [POT_B_ADDRESS, "pot-b"]]);
@@ -304,7 +308,7 @@ test("a mapped address names its pot, and the map is read off the RECIPIENT topi
 // THE ASYMMETRY WITH THE CARD RAIL — the part that must NOT be symmetric
 // ════════════════════════════════════════════════════════════════════════════
 
-test("an UNREGISTERED payer is never witnessed, however clearly the address names its pot", async () => {
+test("an UNREGISTERED payer is never witnessed, however clearly the address names its pot", { skip: SKIP }, async () => {
   // LAW (tools/usdc-watch.mjs's own receipt, and the ledger's grammar it quotes,
   //     verbatim): "ref is unique forever: one dollar, one mint chance, a
   //     re-recorded receipt bounces" — so witnessing an unknown payer's arrival
@@ -332,7 +336,7 @@ test("an UNREGISTERED payer is never witnessed, however clearly the address name
 // THE GRACE, AND THE DEPTH
 // ════════════════════════════════════════════════════════════════════════════
 
-test("a registered arrival younger than one crossing is HELD, and one exactly a crossing old is witnessed", async () => {
+test("a registered arrival younger than one crossing is HELD, and one exactly a crossing old is witnessed", { skip: SKIP }, async () => {
   const town = seamTown({ wallets: { paz: null } });
   const now = 2_000_000_000_000;
   const mk = (ts) => ({ ...decodeArrival(transfer({ txhash: HASH_A, block: 100, usd: 40, to: POT_A_ADDRESS })), ts });
@@ -347,7 +351,7 @@ test("a registered arrival younger than one crossing is HELD, and one exactly a 
   assert.equal(ripe.witness.length, 1);
 });
 
-test("an arrival whose block time cannot be read is HELD, never witnessed and never swept", async () => {
+test("an arrival whose block time cannot be read is HELD, never witnessed and never swept", { skip: SKIP }, async () => {
   // Swallowing the timestamp error is only defensible in the conservative
   // direction: an unknown age must not be able to satisfy a deadline. This is
   // that claim, made testable.
@@ -364,7 +368,7 @@ test("an arrival whose block time cannot be read is HELD, never witnessed and ne
   assert.equal(report.hold[0].witnesses_after, null);
 });
 
-test("depth still governs: an arrival shallower than MIN_CONF is not even read, so it cannot be witnessed", async () => {
+test("depth still governs: an arrival shallower than MIN_CONF is not even read, so it cannot be witnessed", { skip: SKIP }, async () => {
   // LAW (src/usdc-witness.mjs, check 4, verbatim): "confirmations >= MIN_CONF
   //     (finality is a claim about depth, not existence)".
   const town = seamTown({ wallets: { paz: null } });
@@ -384,7 +388,7 @@ test("depth still governs: an arrival shallower than MIN_CONF is not even read, 
 // THE CAP
 // ════════════════════════════════════════════════════════════════════════════
 
-test("a fully resolved arrival past the pot's posted target bounces to over-cap rather than witnessing", async () => {
+test("a fully resolved arrival past the pot's posted target bounces to over-cap rather than witnessing", { skip: SKIP }, async () => {
   // LAW (D5, Keemin 2026-08-21, verbatim): "intake refuses dollars past a pot's
   //     posted target, mechanically (recording tool / door bounce), except pots
   //     explicitly marked uncapped."
@@ -405,7 +409,7 @@ test("a fully resolved arrival past the pot's posted target bounces to over-cap 
 // THE SINK RULE — implemented, and OFF
 // ════════════════════════════════════════════════════════════════════════════
 
-test("THE SINK RULE IS OFF BY DEFAULT, and this test fails if anybody flips the default", () => {
+test("THE SINK RULE IS OFF BY DEFAULT, and this test fails if anybody flips the default", { skip: SKIP }, () => {
   // The brief that proposed it said so in its own words: "implement behind a
   // config flag default OFF, founder flips it". The default is the law here,
   // so it is asserted directly rather than inferred from behaviour.
@@ -417,7 +421,7 @@ test("THE SINK RULE IS OFF BY DEFAULT, and this test fails if anybody flips the 
   assert.equal(sinkEnabled({ [SINK_FLAG]: "1" }), true);
 });
 
-test("with the flag off, an old unclaimed arrival is LISTED as sink-eligible and still left unclaimed", async () => {
+test("with the flag off, an old unclaimed arrival is LISTED as sink-eligible and still left unclaimed", { skip: SKIP }, async () => {
   const town = seamTown();
   const now = 2_000_000_000_000;
   const before = ledgerText(town.repo);
@@ -434,7 +438,7 @@ test("with the flag off, an old unclaimed arrival is LISTED as sink-eligible and
   assert.equal(ledgerText(town.repo), before);
 });
 
-test("with the flag ON the rule runs, which is what makes the OFF assertion mean something", async () => {
+test("with the flag ON the rule runs, which is what makes the OFF assertion mean something", { skip: SKIP }, async () => {
   const town = seamTown();
   const now = 2_000_000_000_000;
   const a = { ...decodeArrival(transfer({ txhash: HASH_A, block: 100, usd: 40, from: STRANGER_WALLET })), ts: now - (SINK_AGE_DAYS + 1) * 86_400_000 };
@@ -448,7 +452,7 @@ test("with the flag ON the rule runs, which is what makes the OFF assertion mean
   assert.equal(r.witness[0].attributed, false);
 });
 
-test("a young unclaimed arrival is never sink-eligible, flag or no flag", async () => {
+test("a young unclaimed arrival is never sink-eligible, flag or no flag", { skip: SKIP }, async () => {
   const town = seamTown();
   const now = 2_000_000_000_000;
   const args = { entries: entriesOf(town.repo), engine: ENGINE, clone: town.repo, potFor: () => null, handleFor: () => null, now };
@@ -461,7 +465,7 @@ test("a young unclaimed arrival is never sink-eligible, flag or no flag", async 
 // THE WHOLE TICK STILL WRITES NOTHING
 // ════════════════════════════════════════════════════════════════════════════
 
-test("a quiet tick answers in the SAME SHAPE as a busy one — the commonest tick is not a degraded report", async () => {
+test("a quiet tick answers in the SAME SHAPE as a busy one — the commonest tick is not a degraded report", { skip: SKIP }, async () => {
   // A degraded shape is a second shape, and every reader of the first has to
   // learn about it the hard way. The quiet branch once dropped `intake`,
   // `generated_at` and the posture, and the CLI's very first line threw on the
@@ -478,7 +482,7 @@ test("a quiet tick answers in the SAME SHAPE as a busy one — the commonest tic
   assert.equal(quiet.cursor, head - MIN_CONF, "unchanged");
 });
 
-test("watch() decides and records nothing — the caller is the only thing that can write", async () => {
+test("watch() decides and records nothing — the caller is the only thing that can write", { skip: SKIP }, async () => {
   const town = seamTown({ wallets: { paz: null } });
   const now = 2_000_000_000_000;
   const before = ledgerText(town.repo);

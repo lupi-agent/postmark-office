@@ -20,7 +20,13 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const SOURCE_WORLD = "G:/Postmark/repo-clones/wright/postmark-world";
+import { NO_WORLD, worldClone } from "./fixture-paths.mjs";
+
+const SOURCE_WORLD = worldClone();
+// The fixture clone is COPIED out of a real world checkout, so with none at
+// hand there is nothing to copy and every case below is a skip with its
+// reason, never a red about a directory on somebody else's PC.
+const SKIP = !SOURCE_WORLD && NO_WORLD;
 const MEDIA_URL = "https://media.postmark.town/media/fixture/aaaabbbbccccdddd.jpg";
 const OFF_MEDIA_URL = "https://evil.example.test/steal.png";
 
@@ -35,6 +41,7 @@ const PNG_1x1 = Buffer.from(
 const repo = mkdtempSync(join(tmpdir(), "pm-world-fixture-"));
 const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
 
+if (SOURCE_WORLD) {
 mkdirSync(join(repo, "WORLD"), { recursive: true });
 cpSync(join(SOURCE_WORLD, "WORLD", "skeleton.json"), join(repo, "WORLD", "skeleton.json"));
 // The door materialises the ENGINE out of the clone at main (world.mjs
@@ -57,6 +64,7 @@ git("add", "-A");
 git("commit", "-qm", "fixture world");
 
 process.env.WORLD_CLONE = repo;
+}
 const { worldInvestigate, markImageBytes, INVESTIGATE_IMAGE_MAX_BYTES, IMAGE_READING_LAW_LINE, WORLD_TOOLS } =
   await import("../src/world.mjs");
 const { contentFor } = await import("../src/mcp.mjs");
@@ -87,7 +95,7 @@ test.after(() => { globalThis.fetch = realFetch; });
 
 // ── CONSTRAINT 1 ─────────────────────────────────────────────────────────────
 
-test('CONSTRAINT 1 — "DEFAULT OFF, byte-identical: absent the arg, nothing anywhere changes."', async () => {
+test('CONSTRAINT 1 — "DEFAULT OFF, byte-identical: absent the arg, nothing anywhere changes."', { skip: SKIP }, async () => {
   stubFetch(mediaAnswer());
   const off = await worldInvestigate({ mark: "fixture/media-picture" });
 
@@ -106,7 +114,7 @@ test('CONSTRAINT 1 — "DEFAULT OFF, byte-identical: absent the arg, nothing any
   assert.deepEqual(FETCHES, [], "a non-boolean with_image reached the media host");
 });
 
-test('CONSTRAINT 1 — the MCP content assembly is unchanged for an answer carrying no blocks', () => {
+test('CONSTRAINT 1 — the MCP content assembly is unchanged for an answer carrying no blocks', { skip: SKIP }, () => {
   const plain = { a: 1, image: MEDIA_URL };
   assert.deepEqual(contentFor(plain), [{ type: "text", text: JSON.stringify(plain, null, 1) }]);
   // and a malformed carrier degrades to the ordinary one-block answer
@@ -116,7 +124,7 @@ test('CONSTRAINT 1 — the MCP content assembly is unchanged for an answer carry
 
 // ── CONSTRAINT 2 ─────────────────────────────────────────────────────────────
 
-test('CONSTRAINT 2 — "over the cap ... the text answer says the image\'s byte size and that the URL stands — never silent omission."', async () => {
+test('CONSTRAINT 2 — "over the cap ... the text answer says the image\'s byte size and that the URL stands — never silent omission."', { skip: SKIP }, async () => {
   const oversize = Buffer.alloc(INVESTIGATE_IMAGE_MAX_BYTES + 1);
   stubFetch(mediaAnswer({ body: oversize, contentLength: oversize.length }));
 
@@ -127,7 +135,7 @@ test('CONSTRAINT 2 — "over the cap ... the text answer says the image\'s byte 
   assert.equal(r.image, MEDIA_URL, "the url must ride the answer whether or not the bytes did");
 });
 
-test('CONSTRAINT 2 — "The URL rides in the text block ALWAYS, with or without inlining."', async () => {
+test('CONSTRAINT 2 — "The URL rides in the text block ALWAYS, with or without inlining."', { skip: SKIP }, async () => {
   stubFetch(mediaAnswer());
   const inlined = await worldInvestigate({ mark: "fixture/media-picture", with_image: true });
   const text = JSON.parse(contentFor(inlined)[0].text);
@@ -139,7 +147,7 @@ test('CONSTRAINT 2 — "The URL rides in the text block ALWAYS, with or without 
     "the url is missing from the text block of a CAPPED answer");
 });
 
-test("CONSTRAINT 2 — a media host that declares no length, or lies about it, cannot talk the door past the cap", async () => {
+test("CONSTRAINT 2 — a media host that declares no length, or lies about it, cannot talk the door past the cap", { skip: SKIP }, async () => {
   const oversize = Buffer.alloc(INVESTIGATE_IMAGE_MAX_BYTES + 1);
   // no content-length at all
   stubFetch(mediaAnswer({ body: oversize }));
@@ -152,7 +160,7 @@ test("CONSTRAINT 2 — a media host that declares no length, or lies about it, c
   assert.ok(!lied.block, "a body that lied about its length was inlined");
 });
 
-test("CONSTRAINT 2 — a TRANSPORT budget, distinct from the seam's STORAGE ceiling, and deliberately below it", async () => {
+test("CONSTRAINT 2 — a TRANSPORT budget, distinct from the seam's STORAGE ceiling, and deliberately below it", { skip: SKIP }, async () => {
   // Two different questions. The seam asks what may live behind the door; this
   // door asks what may ride back inside a JSON-RPC answer. The gap between the
   // numbers is the feature, not an oversight — see the comment in world.mjs.
@@ -179,7 +187,7 @@ test("CONSTRAINT 2 — a TRANSPORT budget, distinct from the seam's STORAGE ceil
   assert.ok(exactly.block, "a file exactly at the budget was refused; the boundary is >= where it should be >");
 });
 
-test("CONSTRAINT 2 — the over-cap branch is REACHABLE BY A LAWFUL UPLOAD, which is what makes it testable", async () => {
+test("CONSTRAINT 2 — the over-cap branch is REACHABLE BY A LAWFUL UPLOAD, which is what makes it testable", { skip: SKIP }, async () => {
   // The whole reason the budget sits below the seam's ceiling: a resident can
   // shelve an image the seam admits and this door still declines to inline it.
   // Pinned to the seam's number this path would be dead code guarding only a
@@ -197,7 +205,7 @@ test("CONSTRAINT 2 — the over-cap branch is REACHABLE BY A LAWFUL UPLOAD, whic
 
 // ── CONSTRAINT 3 ─────────────────────────────────────────────────────────────
 
-test('CONSTRAINT 3 — "the office fetches ONLY urls passing mediaUrlOk ... the door must never become a generic fetch proxy"', async () => {
+test('CONSTRAINT 3 — "the office fetches ONLY urls passing mediaUrlOk ... the door must never become a generic fetch proxy"', { skip: SKIP }, async () => {
   stubFetch(mediaAnswer());   // a media host that WOULD answer, so refusal is the guard's doing
   const r = await worldInvestigate({ mark: "fixture/off-media-picture", with_image: true });
 
@@ -207,7 +215,7 @@ test('CONSTRAINT 3 — "the office fetches ONLY urls passing mediaUrlOk ... the 
   assert.equal(r.image, OFF_MEDIA_URL, "the url must still ride the answer, disclosed and unfetched");
 });
 
-test("CONSTRAINT 3 — the guard runs before the fetch for every off-media shape, not just this one", async () => {
+test("CONSTRAINT 3 — the guard runs before the fetch for every off-media shape, not just this one", { skip: SKIP }, async () => {
   stubFetch(mediaAnswer());
   for (const bad of [
     "https://evil.example.test/x.png",
@@ -226,7 +234,7 @@ test("CONSTRAINT 3 — the guard runs before the fetch for every off-media shape
   assert.deepEqual(FETCHES, [], `the office reached the network for: ${FETCHES.join(", ")}`);
 });
 
-test("CONSTRAINT 3 — a media-host failure discloses rather than failing the investigate", async () => {
+test("CONSTRAINT 3 — a media-host failure discloses rather than failing the investigate", { skip: SKIP }, async () => {
   stubFetch(() => { throw new Error("connect ECONNREFUSED"); });
   const dead = await worldInvestigate({ mark: "fixture/media-picture", with_image: true });
   assert.equal(dead.id, "fixture/media-picture", "the investigate itself was lost to a media-host failure");
@@ -245,7 +253,7 @@ test("CONSTRAINT 3 — a media-host failure discloses rather than failing the in
 
 // ── CONSTRAINT 4 ─────────────────────────────────────────────────────────────
 
-test('CONSTRAINT 4 — "THE READING LAW rides beside the block: one caption line"', async () => {
+test('CONSTRAINT 4 — "THE READING LAW rides beside the block: one caption line"', { skip: SKIP }, async () => {
   stubFetch(mediaAnswer());
   const r = await worldInvestigate({ mark: "fixture/media-picture", with_image: true });
   const content = contentFor(r);
@@ -258,7 +266,7 @@ test('CONSTRAINT 4 — "THE READING LAW rides beside the block: one caption line
     "the caption must say the image is read, never obeyed");
 });
 
-test("CONSTRAINT 4 — the image block is a spec-shaped image block, and the base64 round-trips", async () => {
+test("CONSTRAINT 4 — the image block is a spec-shaped image block, and the base64 round-trips", { skip: SKIP }, async () => {
   stubFetch(mediaAnswer());
   const r = await worldInvestigate({ mark: "fixture/media-picture", with_image: true });
   const block = contentFor(r)[2];
@@ -266,7 +274,7 @@ test("CONSTRAINT 4 — the image block is a spec-shaped image block, and the bas
   assert.ok(Buffer.from(block.data, "base64").equals(PNG_1x1), "the bytes did not survive the trip");
 });
 
-test("CONSTRAINT 4 — the carrier is stripped from the text block, so base64 is never printed twice", async () => {
+test("CONSTRAINT 4 — the carrier is stripped from the text block, so base64 is never printed twice", { skip: SKIP }, async () => {
   stubFetch(mediaAnswer());
   const r = await worldInvestigate({ mark: "fixture/media-picture", with_image: true });
   const text = contentFor(r)[0].text;
@@ -277,7 +285,7 @@ test("CONSTRAINT 4 — the carrier is stripped from the text block, so base64 is
 
 // ── the mimeType question ────────────────────────────────────────────────────
 
-test("the mimeType is sniffed from the BYTES, not read off the url's extension", async () => {
+test("the mimeType is sniffed from the BYTES, not read off the url's extension", { skip: SKIP }, async () => {
   // MEDIA_URL ends .jpg; the media host returns PNG bytes. Only sniffing gets this right.
   stubFetch(mediaAnswer({ body: PNG_1x1 }));
   const got = await markImageBytes(MEDIA_URL);
@@ -287,7 +295,7 @@ test("the mimeType is sniffed from the BYTES, not read off the url's extension",
 
 // ── the schema the prototype renders from ────────────────────────────────────
 
-test("the flat tool advertises with_image as a boolean, so a generated form draws it", () => {
+test("the flat tool advertises with_image as a boolean, so a generated form draws it", { skip: SKIP }, () => {
   const tool = WORLD_TOOLS.find((t) => t.name === "world_investigate");
   assert.equal(tool.inputSchema.properties.with_image.type, "boolean");
   assert.ok(!tool.inputSchema.required.includes("with_image"), "an opt-in must not be required");

@@ -19,8 +19,21 @@ import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-const TRAIN_ENGINE = "G:/Postmark/worktrees/town-w36/tools";
-const OLD_ENGINE = "G:/postmark/seam-overnight/town-clone/tools";
+import { NO_TOWN, townClone } from "./fixture-paths.mjs";
+
+// The town's own stamp engine — real law, no fake. It was pinned to
+// `G:/Postmark/worktrees/town-w36/tools`, a week-36 worktree on one operator's
+// disk: a calendar-pinned path that decayed the moment that worktree went, and
+// named a machine nobody else has.
+const TOWN = townClone();
+const TRAIN_ENGINE = TOWN && join(TOWN, "tools");
+const SKIP = !TOWN && NO_TOWN;
+
+// The PRE-RULE engine, which is a different artifact from the current one and
+// no live checkout provides — so it is named by env var and by nothing else.
+// Its one test already skips when it is absent; that skip is the whole
+// mechanism, and a hardcoded path to a retired directory added nothing to it.
+const OLD_ENGINE = process.env.OLD_STAMP_ENGINE_DIR ?? null;
 
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const PUB = publicKey.export({ type: "spki", format: "pem" });
@@ -29,7 +42,7 @@ const penDir = mkdtempSync(join(tmpdir(), "pm-fisweep-pen-"));
 const KEY = join(penDir, "stamp-key.pem");
 writeFileSync(KEY, PRIV);
 process.env.STAMP_KEY = KEY;
-process.env.STAMP_ENGINE_DIR = TRAIN_ENGINE;
+if (TRAIN_ENGINE) process.env.STAMP_ENGINE_DIR = TRAIN_ENGINE;
 
 const { planFirstIdeaSweep, writeFirstIdeaSweep, FIRST_IDEA_WINDOW_END } = await import("../src/first-idea-sweep.mjs");
 
@@ -58,7 +71,7 @@ async function verifyGreen(clone) {
   return verifyStampLedger(clone, { pubkeyPem: PUB });
 }
 
-test("HAPPY: two households' first ideas mint two signed lines, and the town's own verifier stays green", async () => {
+test("HAPPY: two households' first ideas mint two signed lines, and the town's own verifier stays green", { skip: SKIP }, async () => {
   const clone = foundedClone();
   const plan = planFirstIdeaSweep(clone, { date: "2026-08-30", ideas: [idea("alice", "a-town-calendar"), idea("bob", "a-harbor-bell")] });
   assert.equal(plan.mints.length, 2, JSON.stringify(plan));
@@ -72,7 +85,7 @@ test("HAPPY: two households' first ideas mint two signed lines, and the town's o
   rmSync(clone, { recursive: true, force: true });
 });
 
-test("IDEMPOTENT BY LEDGER: the next crossing re-reads the record and plans nothing — a re-run costs nothing", async () => {
+test("IDEMPOTENT BY LEDGER: the next crossing re-reads the record and plans nothing — a re-run costs nothing", { skip: SKIP }, async () => {
   const clone = foundedClone();
   const ideas = [idea("alice", "a-town-calendar")];
   writeFirstIdeaSweep(clone, planFirstIdeaSweep(clone, { date: "2026-08-30", ideas }));
@@ -84,7 +97,7 @@ test("IDEMPOTENT BY LEDGER: the next crossing re-reads the record and plans noth
   rmSync(clone, { recursive: true, force: true });
 });
 
-test("ONE PER HOUSEHOLD inside a single crossing: the second idea skips in-plan, the FIRST (by date) wins the receipt", () => {
+test("ONE PER HOUSEHOLD inside a single crossing: the second idea skips in-plan, the FIRST (by date) wins the receipt", { skip: SKIP }, () => {
   const clone = foundedClone();
   const plan = planFirstIdeaSweep(clone, {
     date: "2026-08-30",
@@ -96,7 +109,7 @@ test("ONE PER HOUSEHOLD inside a single crossing: the second idea skips in-plan,
   rmSync(clone, { recursive: true, force: true });
 });
 
-test("a roomless publisher skips by name — the mint waits for the room, never invents one", () => {
+test("a roomless publisher skips by name — the mint waits for the room, never invents one", { skip: SKIP }, () => {
   const clone = foundedClone();
   const plan = planFirstIdeaSweep(clone, { date: "2026-08-30", ideas: [idea("ghost", "an-unhoused-thought")] });
   assert.equal(plan.mints.length, 0);
@@ -104,7 +117,7 @@ test("a roomless publisher skips by name — the mint waits for the room, never 
   rmSync(clone, { recursive: true, force: true });
 });
 
-test("THE WRITER HOLDS THE WINDOW: past the end, the sweep plans nothing and says so", () => {
+test("THE WRITER HOLDS THE WINDOW: past the end, the sweep plans nothing and says so", { skip: SKIP }, () => {
   const clone = foundedClone();
   const plan = planFirstIdeaSweep(clone, { date: "2026-10-01", ideas: [idea("alice", "a-late-thought", "2026-10-01")] });
   assert.equal(plan.mints.length, 0);
@@ -113,8 +126,8 @@ test("THE WRITER HOLDS THE WINDOW: past the end, the sweep plans nothing and say
   rmSync(clone, { recursive: true, force: true });
 });
 
-test("ENGINE-PREDATES: a clone whose own stamp-mint lacks the rule is refused BY NAME, never law invented locally", (t) => {
-  if (!existsSync(join(OLD_ENGINE, "stamp-mint.mjs"))) return t.skip("no pre-rule engine on this machine");
+test("ENGINE-PREDATES: a clone whose own stamp-mint lacks the rule is refused BY NAME, never law invented locally", { skip: SKIP }, (t) => {
+  if (!OLD_ENGINE || !existsSync(join(OLD_ENGINE, "stamp-mint.mjs"))) return t.skip("no pre-rule engine on this machine — set OLD_STAMP_ENGINE_DIR");
   const clone = foundedClone();
   const prev = process.env.STAMP_ENGINE_DIR;
   try {

@@ -21,6 +21,14 @@
 #                                  why keeping it would have been the wrong kind
 #                                  of spare.
 #
+#  OFF-BOX (git, private)          roles.db, copied with VACUUM INTO, in the
+#                                  SAME commit as the dump. RPO <= 24h. It is
+#                                  here because it is the one office file with
+#                                  authored state and no other copy anywhere:
+#                                  src/roles.mjs:71-82, "losing roles.db loses
+#                                  who paid". See § 1b for the mechanic, and
+#                                  why it is never a cp.
+#
 #  ON-BOX (spool)                  pg_basebackup + archived WAL.
 #                                  RPO ≈ one WAL segment. Survives a bad
 #                                  migration, a bad clearing, a dropped table
@@ -138,6 +146,84 @@ DUMP_BYTES=$(stat -c %s "$DUMP")
 TOC_ENTRIES=$(pg_restore --list "$DUMP" 2>/dev/null | grep -c '^[0-9]')
 [ "${TOC_ENTRIES:-0}" -gt 0 ] || fail "pg_restore --list found no entries in $DUMP — the dump is not readable" dump
 
+# ── 1b · roles.db, the one file that holds WHO PAID ─────────────────────────
+# POS-185, 2026-09-21. src/roles.mjs:71-82 states this gap in its own voice and
+# then declines to close it, correctly:
+#
+#   "roles.db is its own file beside oauth.db and dynamic.db, and *.db is
+#    gitignored, so it lives on the box and nowhere else. It is NOT the same
+#    durability class as its neighbours … office.db and world.db are pure
+#    indexes, deleted and rebuilt whole from a clone; oauth.db is auth paperwork
+#    whose loss only forces everyone to sign in again; dynamic.db carries an
+#    explicit covenant that every row re-derives or recovers from a
+#    crossing-save. This file carries NO such covenant, because a grant exists
+#    nowhere else in the world — no repo holds it, no fold recomputes it.
+#    LOSING roles.db LOSES WHO PAID. … a backup discipline for this one file is
+#    an operations decision that is not this module's to make, only to state."
+#
+# This is operations making it. The file rides in THIS lane's commit instead of
+# a unit of its own: it wants the same nightly clock, the same private repo and
+# the same deploy key, and a second lane for one small file would be a second
+# thing to watch and a second thing to forget. No new credential, no new unit,
+# no new roll-call row — the row this lane already has now covers this file too.
+#
+# ── NEVER `cp`, AND THAT IS THE WHOLE MECHANIC ──────────────────────────────
+# A SQLite file copied with cp/rsync while a writer is mid-transaction is TORN:
+# it has the size and the magic bytes of a database and restores as nothing,
+# which is the exact failure class this script is written against — a backup
+# that exists and cannot be used. `VACUUM INTO` takes a read transaction and
+# emits a self-consistent database, so the copy is sound no matter what the
+# office is doing at 08:10.
+#
+# It runs through node's built-in `node:sqlite` RATHER THAN THE sqlite3 CLI, so
+# the box needs no new package: the office already imports DatabaseSync to serve
+# the gate (src/roles.mjs:141, src/server.mjs:36), so the runtime that reads
+# roles.db in anger is the runtime that copies it. A lane whose correctness
+# depended on a CLI nobody installed would be a lane that works until the day
+# the box is rebuilt.
+#
+# THE HANDLE IS READ-ONLY, and that is deliberate rather than tidy: VACUUM INTO
+# writes to the TARGET, never the source, so read-only is sufficient — measured,
+# not assumed. A backup lane holding a pen over who paid could corrupt the one
+# thing it exists to preserve, and this lane already declines that trade once
+# (§ 3, the notary's key it does not hold).
+#
+# ABSENT IS NOT FAILED. OFFICE_ROLE_GATES is unset on every office today
+# (src/server.mjs:170), so a box that has never granted a role has no roles.db
+# at all. That is reported as `absent` and does not redden the unit — but an
+# UNREADABLE or UNCOPYABLE roles.db does, because that is a file that exists and
+# cannot be preserved, which is the state worth waking somebody for.
+ROLES_SRC="${W2_ROLES_DB:-$WORLD2_OFFICE/roles.db}"
+ROLES_COPY="$DUMPS/roles-$STAMP.db"
+ROLES_ERR="$(mktemp -t w2-roles.XXXXXX)"
+ROLES_BYTES=0; ROLES_AUDIT=0; ROLES_GRANTS=0; ROLES_STATUS=absent
+if [ -f "$ROLES_SRC" ]; then
+  ROLES_JSON="$(node - "$ROLES_SRC" "$ROLES_COPY" 2>"$ROLES_ERR" <<'NODE'
+const { DatabaseSync } = require("node:sqlite");
+const { rmSync, statSync } = require("node:fs");
+const [src, dst] = process.argv.slice(2);
+rmSync(dst, { force: true });          // VACUUM INTO refuses a target that exists
+const db = new DatabaseSync(src, { readOnly: true });
+db.prepare("VACUUM INTO ?").run(dst);
+const n = (t) => db.prepare(`SELECT count(*) AS c FROM ${t}`).get().c;
+// role_audit is APPEND-ONLY and `roles` is not: a revoke deletes the state row
+// and ADDS a receipt row (src/roles.mjs § THE STATE AND THE RECEIPT). So the
+// audit count is the one that only ever grows, which makes it the number a
+// reader can compare between two nights without knowing the town's history.
+const out = { audit_rows: n("role_audit"), grant_rows: n("roles"), bytes: statSync(dst).size };
+db.close();
+process.stdout.write(JSON.stringify(out));
+NODE
+)" || fail "roles.db VACUUM INTO failed — $(cat "$ROLES_ERR")" roles
+  ROLES_AUDIT=$(printf '%s' "$ROLES_JSON" | sed -n 's/.*"audit_rows":\([0-9]*\).*/\1/p')
+  ROLES_GRANTS=$(printf '%s' "$ROLES_JSON" | sed -n 's/.*"grant_rows":\([0-9]*\).*/\1/p')
+  ROLES_BYTES=$(printf '%s' "$ROLES_JSON" | sed -n 's/.*"bytes":\([0-9]*\).*/\1/p')
+  [ -n "$ROLES_AUDIT" ] && [ -n "$ROLES_BYTES" ] || fail "roles.db copy returned no counts: $ROLES_JSON" roles
+  chmod 600 "$ROLES_COPY"
+  ROLES_STATUS=copied
+fi
+rm -f "$ROLES_ERR"
+
 # ── 2 · the physical base backup, so the WAL means something ────────────────
 BASE="$BASEBACKUPS/base-$STAMP"
 if PGPASSWORD="$OWNER_PW" pg_basebackup --host "${WORLD2_PGHOST:-localhost}" --port "${WORLD2_PGPORT:-5432}" \
@@ -198,6 +284,14 @@ git -C "$REPO" fetch -q origin main   || fail "backup repo fetch failed (deploy 
 git -C "$REPO" reset -q --hard origin/main
 mkdir -p "$REPO/dumps"
 cp "$DUMP" "$REPO/dumps/"
+# roles.db rides in the SAME commit as the dump it is filed beside, so a clone
+# on the one night anybody clones it carries who paid as well as what happened.
+# Its own directory: a reader who finds this repo must not have to tell a 3 MB
+# Postgres archive from a 24 KB SQLite file by reading the extension.
+if [ "$ROLES_STATUS" = copied ]; then
+  mkdir -p "$REPO/roles"
+  cp "$ROLES_COPY" "$REPO/roles/"
+fi
 
 # The bundles this lane shipped before 2026-09-03 stay in the repo's history and
 # in its tree, untouched. They are a closed record, not a stale copy pretending
@@ -227,6 +321,7 @@ fi
 # of a git destination — but the tree stays small so a clone is quick when it
 # matters, which is the one night anybody clones it.
 ls -1 "$REPO/dumps"  2>/dev/null | sort | head -n -"$KEEP_DUMPS" | while read -r f; do git -C "$REPO" rm -q --cached "dumps/$f" >/dev/null 2>&1; rm -f "$REPO/dumps/$f"; done
+ls -1 "$REPO/roles"  2>/dev/null | sort | head -n -"$KEEP_DUMPS" | while read -r f; do git -C "$REPO" rm -q --cached "roles/$f" >/dev/null 2>&1; rm -f "$REPO/roles/$f"; done
 # NO retention pass over $REPO/notary any more, and its absence is deliberate:
 # nothing adds to that directory now, so a count-based prune would only ever
 # delete from a closed record — and RETIRED.md sorts before every bundle
@@ -255,7 +350,20 @@ cat > "$REPO/LATEST.json" <<JSON
     "wal_archive_bytes": $WAL_BYTES,
     "wal_archive_files": $WAL_FILES
   },
-  "restore": "pg_restore --clean --if-exists --no-owner --no-acl -d <db> dumps/<file>"
+  "roles_db": {
+    "status": "$ROLES_STATUS",
+    "source": "$ROLES_SRC",
+    "file": $([ "$ROLES_STATUS" = copied ] && printf '"roles/%s"' "$(basename "$ROLES_COPY")" || echo null),
+    "roles_db_bytes": $ROLES_BYTES,
+    "role_audit_rows": $ROLES_AUDIT,
+    "grant_rows": $ROLES_GRANTS,
+    "how": "VACUUM INTO through node:sqlite from a READ-ONLY handle — never cp, which tears a live SQLite file",
+    "why": "src/roles.mjs:71-82 — a grant exists nowhere else in the world, no repo holds it and no fold recomputes it; losing roles.db loses who paid",
+    "read": "role_audit is append-only, so its count only ever grows; grant_rows is live standing and falls on a revoke",
+    "absent_is_legal": "OFFICE_ROLE_GATES is unset on every office today (src/server.mjs:170), so a box that has never granted a role has no file to copy"
+  },
+  "restore": "pg_restore --clean --if-exists --no-owner --no-acl -d <db> dumps/<file>",
+  "restore_roles": "cp roles/<file> /srv/postmark-office/roles.db (the office opens it at boot; it is a whole database, not a delta)"
 }
 JSON
 
@@ -271,6 +379,7 @@ REMOTE_TIP=$(git -C "$REPO" ls-remote origin refs/heads/main | cut -f1)
 
 # ── 5 · local retention ─────────────────────────────────────────────────────
 ls -1t "$DUMPS"/world2-*.dump 2>/dev/null | tail -n +$((KEEP_DUMPS + 1)) | xargs -r rm -f
+ls -1t "$DUMPS"/roles-*.db 2>/dev/null | tail -n +$((KEEP_DUMPS + 1)) | xargs -r rm -f
 # The notary bundles this lane stopped making on 2026-09-03. A count-based rule
 # would keep the newest fourteen of them on the disk forever, which is the
 # residue class exactly — a cache with no ceiling, left behind by a lane that
@@ -301,11 +410,19 @@ ls -1dt "$BASEBACKUPS"/base-* 2>/dev/null | tail -n +$((KEEP_BASE + 1)) | xargs 
 WAL_BYTES_AFTER=$(du -sb "$WAL" 2>/dev/null | cut -f1); WAL_BYTES_AFTER=${WAL_BYTES_AFTER:-0}
 WAL_FILES=$(find "$WAL" -type f 2>/dev/null | wc -l)   # recounted AFTER the prune
 
-w2_state backup.json "$(printf '"status":"%s","database":"%s","dump_bytes":%d,"toc_entries":%d,"basebackup_ok":%s,"basebackup_bytes":%d,"wal_bytes":%d,"wal_files":%d,"remote_tip":"%s","destination":"github.com/wright-starforge/postmark-world2-backups (private)"' \
+# The receipt gains the roles numbers rather than a receipt of its own, because
+# the roll-call row that reads this file is the row that now covers roles.db:
+# one lane, one heartbeat, one thing to watch. `roles_status` is the field that
+# distinguishes the two silences a reader must never confuse — `absent` (no role
+# was ever granted on this box) from a copy that FAILED, which exits 1 above and
+# never reaches this line at all.
+w2_state backup.json "$(printf '"status":"%s","database":"%s","dump_bytes":%d,"toc_entries":%d,"basebackup_ok":%s,"basebackup_bytes":%d,"wal_bytes":%d,"wal_files":%d,"roles_status":"%s","roles_db_bytes":%d,"role_audit_rows":%d,"grant_rows":%d,"remote_tip":"%s","destination":"github.com/wright-starforge/postmark-world2-backups (private)"' \
   "$([ "$BASE_OK" = true ] && echo shipped || echo shipped-no-basebackup)" \
-  "$DB" "$DUMP_BYTES" "$TOC_ENTRIES" "$BASE_OK" "$BASE_BYTES" "$WAL_BYTES_AFTER" "$WAL_FILES" "$REMOTE_TIP")"
+  "$DB" "$DUMP_BYTES" "$TOC_ENTRIES" "$BASE_OK" "$BASE_BYTES" "$WAL_BYTES_AFTER" "$WAL_FILES" \
+  "$ROLES_STATUS" "$ROLES_BYTES" "$ROLES_AUDIT" "$ROLES_GRANTS" "$REMOTE_TIP")"
 
 echo "[world2-backup] $DB → $(numfmt --to=iec "$DUMP_BYTES") dump, $TOC_ENTRIES toc entries; remote main = $REMOTE_TIP"
 echo "[world2-backup] on-box: basebackup=$BASE_OK ($(numfmt --to=iec "$BASE_BYTES")), wal $WAL_FILES files $(numfmt --to=iec "$WAL_BYTES_AFTER")"
+echo "[world2-backup] roles.db: $ROLES_STATUS — $ROLES_AUDIT audit rows, $ROLES_GRANTS live grants, $(numfmt --to=iec "$ROLES_BYTES")"
 [ "$BASE_OK" = true ] || exit 1
 exit 0

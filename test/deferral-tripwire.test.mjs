@@ -61,6 +61,7 @@ import { runTownDrain, TOWN_DOORS } from "../src/town-bridge.mjs";
 import { REGISTRY_PATH } from "../src/residency.mjs";
 import { MAIL_ACT } from "../src/town-mail.mjs";
 import { outboxRelPath } from "../src/write.mjs";
+import { withRecordFrom } from "./registry-pool-stub.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 delete process.env.TOWN_PUSH; // nothing here may leave the machine
@@ -135,10 +136,19 @@ const seedLetter = (o, { from = "wright", to = "limen", date = "2026-08-24", slu
 const db = fixtureDb();
 /** The threshold sentences carry em-dashes and parentheses; match them literally. */
 const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const run = (o, over = {}) => runTownDrain(o, { db, doors: TOWN_DOORS, lockHeld: () => true, log: () => {}, ...over });
-const flagOn = (fn) => {
+// POINTED AT THE RECORD, AND AWAITED (POS-158). A crossing reads the town's
+// registry from the store and writes its membership rows there, so the helper
+// seeds the store from whatever registry the clone already holds — the same
+// fixture these tests were already writing — and awaits the drain. Without it
+// every crossing here would answer "the record is unreachable" and defer every
+// row, which is correct behaviour answering the wrong question.
+const run = (o, over = {}) => withRecordFrom(over.clone, () => runTownDrain(o, { db, doors: TOWN_DOORS, lockHeld: () => true, log: () => {}, ...over }));
+// ASYNC-AWARE SINCE POS-158. `return fn()` handed back a promise and the
+// `finally` then cleared the flag while the work was still running — a teardown
+// racing the thing it tears down, which fails somewhere else entirely.
+const flagOn = async (fn) => {
   process.env.TOWN_SINGLE_LOG = "1";
-  try { return fn(); } finally { delete process.env.TOWN_SINGLE_LOG; }
+  try { return await fn(); } finally { delete process.env.TOWN_SINGLE_LOG; }
 };
 const ashore = (clone, h) => existsSync(join(clone, "WHITE_PAGES", h, "ADDRESS.md"));
 
@@ -148,14 +158,14 @@ test.after(dropAll);
 // T1-T4 · THE TRIPWIRE
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("T1 · A DEFERRED ROW STOPS THE CROSSING: nothing written, cursor unmoved, row still there", () => {
+test("T1 · A DEFERRED ROW STOPS THE CROSSING: nothing written, cursor unmoved, row still there", async () => {
   const clone = townClone();
   const o = liveOdb();
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       const seq = seedUnanchored(o, "unanchored");
 
-      const r = run(o, { clone, date: "2026-08-24" });
+      const r = await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(r.ran, false);
       assert.equal(r.refused, "deferred-rows");
@@ -184,7 +194,7 @@ test("T1 · A DEFERRED ROW STOPS THE CROSSING: nothing written, cursor unmoved, 
 
       // …and a --dry-run gets the same answer, because "it would refuse" IS
       // what this crossing would do — with the dry-run marker still on it.
-      const dry = run(o, { clone, date: "2026-08-24", dryRun: true });
+      const dry = await run(o, { clone, date: "2026-08-24", dryRun: true });
       assert.equal(dry.refused, "deferred-rows");
       assert.equal(dry.dry_run, true);
       assert.deepEqual(dry.waiting.map((w) => w.handle), ["unanchored"]);
@@ -193,15 +203,15 @@ test("T1 · A DEFERRED ROW STOPS THE CROSSING: nothing written, cursor unmoved, 
   } finally { o.close(); }
 });
 
-test("T1b · EVERY deferred row is named, each with its OWN reason beside it", () => {
+test("T1b · EVERY deferred row is named, each with its OWN reason beside it", async () => {
   const clone = townClone();
   const o = liveOdb();
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       const first = seedUnanchored(o, "first-adrift");
       const second = seedUnanchored(o, "second-adrift");
 
-      const r = run(o, { clone, date: "2026-08-24" });
+      const r = await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(r.refused, "deferred-rows");
       assert.match(r.skipped, /defers 2 row\(s\)/, "the count is the count");
@@ -218,14 +228,14 @@ test("T1b · EVERY deferred row is named, each with its OWN reason beside it", (
   } finally { o.close(); }
 });
 
-test("T2 · THE FLIP: the same crossing with the row ANCHORED settles it and advances the cursor", () => {
+test("T2 · THE FLIP: the same crossing with the row ANCHORED settles it and advances the cursor", async () => {
   const clone = townClone();
   const o = liveOdb();
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       const seq = seedAnchored(o, "anchored");
 
-      const r = run(o, { clone, date: "2026-08-24" });
+      const r = await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(r.refused, undefined, "an anchored row is not deferred, so there is nothing to refuse");
       assert.deepEqual(r.settled, ["anchored"]);
@@ -236,17 +246,17 @@ test("T2 · THE FLIP: the same crossing with the row ANCHORED settles it and adv
   } finally { o.close(); }
 });
 
-test("T3 · A JUDGED ROW IS NOT A DEFERRED ONE — `skipped` still passes the cursor", () => {
+test("T3 · A JUDGED ROW IS NOT A DEFERRED ONE — `skipped` still passes the cursor", async () => {
   const clone = townClone();
   const o = liveOdb();
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       // "already stands in the white pages" — a decision, not a deferral. The
       // tripwire must not confuse the two, or every re-run of a settled join
       // would halt the ferry.
       const seq = seedAnchored(o, "wright"); // wright is already ashore in the fixture
 
-      const r = run(o, { clone, date: "2026-08-24" });
+      const r = await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(r.refused, undefined, "judged and done is a fine thing to walk past");
       assert.deepEqual(r.settled, []);
@@ -258,16 +268,16 @@ test("T3 · A JUDGED ROW IS NOT A DEFERRED ONE — `skipped` still passes the cu
   } finally { o.close(); }
 });
 
-test("T4 · IT COMPOSES WITH THE GANGWAY: a frozen crossing defers and does NOT refuse", () => {
+test("T4 · IT COMPOSES WITH THE GANGWAY: a frozen crossing defers and does NOT refuse", async () => {
   const clone = townClone();
   const o = liveOdb();
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       seedAnchored(o, "newcomer");
       seedLetter(o);
       setGangway(clone, "frozen");
 
-      const r = run(o, { clone, date: "2026-08-24" });
+      const r = await run(o, { clone, date: "2026-08-24" });
 
       // The gangway defers its rows too — but it keeps the promise the stronger
       // way, by freezing the cursor. Refusing here would stop the town's mail
@@ -283,18 +293,18 @@ test("T4 · IT COMPOSES WITH THE GANGWAY: a frozen crossing defers and does NOT 
   } finally { o.close(); }
 });
 
-test("T4b · …and a frozen gangway covers a tier-line row too: held, not stranded", () => {
+test("T4b · …and a frozen gangway covers a tier-line row too: held, not stranded", async () => {
   const clone = townClone();
   const o = liveOdb();
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       // The exemption is "the gangway is holding the cursor", not "the gangway
       // is up". A frozen gangway freezes the cursor, so an unanchored row on
       // that crossing is NOT stranded — it is held with everything else.
       seedUnanchored(o, "unanchored");
       setGangway(clone, "frozen");
 
-      const r = run(o, { clone, date: "2026-08-24" });
+      const r = await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(r.refused, undefined,
         "a frozen gangway holds every join row including this one — the cursor is frozen, so nothing is lost");

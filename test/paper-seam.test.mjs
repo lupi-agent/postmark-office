@@ -39,6 +39,7 @@ import { PAPER_ACTS, paperDoor, replayPaperAct, SETTLES_AT } from "../src/town-u
 import { updateProfile, updateHome, updateWindow, updateAddressBody, updateAddressFields } from "../src/edit.mjs";
 import * as doorsModule from "../src/edit.mjs";
 import { runTownDrain, TOWN_DOORS } from "../src/town-bridge.mjs";
+import { withRecordFrom } from "./registry-pool-stub.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 delete process.env.TOWN_PUSH; // nothing here may leave the machine
@@ -78,9 +79,12 @@ const rowsIn = (path) => {
   try { ensureTownJournal(o); return readTownJournal(o); } finally { o.close(); }
 };
 
-const flagOn = (fn) => {
+// ASYNC-AWARE SINCE POS-158. `return fn()` handed back a promise and the
+// `finally` then cleared the flag while the work was still running — a teardown
+// racing the thing it tears down, which fails somewhere else entirely.
+const flagOn = async (fn) => {
   process.env.TOWN_SINGLE_LOG = "1";
-  try { return fn(); } finally { delete process.env.TOWN_SINGLE_LOG; }
+  try { return await fn(); } finally { delete process.env.TOWN_SINGLE_LOG; }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -219,12 +223,12 @@ test("P6 · FLAG-OFF: no row, and the answer is the answer it always was", () =>
 // P7 · THE DRAIN'S REPLAY WRITES NO ROW — the re-entrancy guard
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("P7 · A WHOLE CROSSING REPLAYS THE ACT AND WRITES NO NEW ROW", () => {
+test("P7 · A WHOLE CROSSING REPLAYS THE ACT AND WRITES NO NEW ROW", async () => {
   const clone = townClone();
   const path = logHome();
   const o = openOauthDb(path);
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       // one real edit, logged by the door
       updateProfile({ handle: "wright", bio: "the original act" }, key, db, clone, o);
       const before = readTownJournal(o);
@@ -243,7 +247,7 @@ test("P7 · A WHOLE CROSSING REPLAYS THE ACT AND WRITES NO NEW ROW", () => {
       // arguments, so `odb` defaults to null and the wrapper returns before
       // its log line. The bridge HAS an odb the whole time — it just has no way
       // to hand it over.
-      const r = runTownDrain(o, { db, clone, doors: TOWN_DOORS, date: "2026-08-25", lockHeld: () => true, log: () => {} });
+      const r = await withRecordFrom(clone, () => runTownDrain(o, { db, clone, doors: TOWN_DOORS, date: "2026-08-25", lockHeld: () => true, log: () => {} }));
       assert.equal(r.ran, true);
       // "the crossing did replay the paper act" until #2302. It no longer does,
       // and that is the fix rather than a regression: the row was written by a

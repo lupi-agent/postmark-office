@@ -155,6 +155,23 @@ export const townDrainCursor = (db) => {
 /** Rows the ferry has not yet drained into the record. */
 export const pendingRows = (db) => readTownJournal(db, { sinceSeq: townDrainCursor(db) });
 
+// ── THE RETRY KEY'S TWO SHARED FACTS (office#45; POS-70 §5, ruled 2026-09-24) ─
+//
+// A nonce rides a row's own arguments (`payload.args.nonce`, stored verbatim
+// with everything else the door was handed), and the row that already spent it
+// is found by reading those arguments back. The send (town-mail.mjs §
+// spentNonce) asked that question first; the five paper acts ask it too now
+// (town-updates.mjs § paperDoor). One lookup and one cap, here, beside the rows
+// both of them read — the caller supplies the rows its own scope allows.
+
+/** A nonce is a retry key, not a payload — bounded, and refused rather than
+ *  trimmed (town-mail.mjs § NONCE_MAX says why a trim would be the defect). */
+export const NONCE_MAX = 200;
+
+/** The row among `rows` that already spent this nonce, or null. */
+export const rowSpendingNonce = (rows, nonce) => (!nonce ? null
+  : rows.find((r) => (r.payload?.args?.nonce ?? null) === nonce) ?? null);
+
 /**
  * THE PENDING NAMES — the fourth register a handle can be spoken for in.
  *

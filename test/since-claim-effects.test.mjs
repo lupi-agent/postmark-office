@@ -240,20 +240,28 @@ test("the fixture's crossing arithmetic is the town's, not this file's", () => {
 
 // ── the doorstep's eighth segment ──────────────────────────────────────────
 
-test("the manifest names nine, and `rulings` is one of them", async () => {
+// RENAMED `outcomes` (POS-70; Keemin, 2026-09-17: "rulings" is what the
+// founder decides, what a crossing decides about your things is an outcome).
+// Still nine, and the segment that carries a refusal is still named — under
+// its new name, with the old one a pointer on the page for one cycle.
+test("the manifest names nine, and `outcomes` (which was `rulings`) is one of them", async () => {
   const { DOORSTEP_SEGMENTS } = await import("../src/queries.mjs");
   assert.equal(DOORSTEP_SEGMENTS.length, 9, "nine since 2026-09-18 — `stakes` joined (postmark#2919)");
-  assert.ok(DOORSTEP_SEGMENTS.includes("rulings"),
+  assert.ok(DOORSTEP_SEGMENTS.includes("outcomes"),
     "a manifest that did not name it would hide the segment that carries a refusal");
+  assert.ok(!DOORSTEP_SEGMENTS.includes("rulings"), "renamed, not doubled — the old key is a pointer, not a segment");
 });
 
-test("`household read: \"rulings\"` is a real door, advertised and accepted", async () => {
+test("`household read: \"outcomes\"` is a real door, advertised and accepted — and `rulings` still answers for one cycle", async () => {
   const { HOUSEHOLD_READS, HOUSEHOLD_READ_ENUM, HOUSEHOLD_READABLE } = await import("../src/household-apex.mjs");
-  assert.ok(HOUSEHOLD_READABLE.includes("rulings"),
+  assert.ok(HOUSEHOLD_READABLE.includes("outcomes"),
     "the doorstep's segment points at this read by name — a segment whose `serves` names no door is a restatement, which the bundle law forbids");
-  assert.ok(HOUSEHOLD_READ_ENUM.includes("rulings"), "and the tool schema advertises it");
-  assert.match(HOUSEHOLD_READS.rulings, /bulletin's own words/,
+  assert.ok(HOUSEHOLD_READ_ENUM.includes("outcomes"), "and the tool schema advertises it");
+  assert.match(HOUSEHOLD_READS.outcomes, /bulletin's own words/,
     "the door's own blurb carries the promise it keeps");
+  assert.ok(HOUSEHOLD_READABLE.includes("rulings") && HOUSEHOLD_READ_ENUM.includes("rulings"),
+    "the old name answers one cycle (POS-70) — a cached caller is pointed, not refused");
+  assert.match(HOUSEHOLD_READS.rulings, /renamed: outcomes/);
 });
 
 // ── the class: three prose surfaces enumerating one list ───────────────────

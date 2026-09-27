@@ -54,7 +54,7 @@
 // ── ONE READER, NEVER A SECOND RENDERER ────────────────────────────────────
 //
 // The VALUE always comes from the checkout, parsed by the same readers the
-// hydration uses (vendor/town.mjs's `parseFrontmatter`, profiles.mjs,
+// hydration uses (vendor/tools/lib/town.mjs's `parseFrontmatter`, profiles.mjs,
 // panes.mjs). It is never re-derived from a journal row's arguments. That is
 // town-updates.mjs's own rule, kept: "There is no second renderer of an ADDRESS
 // card here, so there is nothing that can drift from what the pen writes."
@@ -86,7 +86,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { parseFrontmatter } from "../vendor/town.mjs";
+import { parseFrontmatter } from "../vendor/tools/lib/town.mjs";
 import { readProfile } from "./profiles.mjs";
 import { readWindowState } from "./panes.mjs";
 import { pendingPaperRows, PAPER_ACTS, SETTLES_AT } from "./town-updates.mjs";

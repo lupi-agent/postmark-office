@@ -14,9 +14,11 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { SCHEMA } from "../src/schema.mjs";
 import { search, mailAwaiting, townClock, paneUrl, resident, questBoardFor } from "../src/queries.mjs";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 
-const TOWN = "G:/Wright-HQ/postmark";
-const { townDay } = await import(`file:///${TOWN}/tools/quest-progress.mjs`);
+const TOWN = townClone();
+const { townDay } = TOWN ? await import(townModuleUrl("tools", "quest-progress.mjs")) : {};
+const SKIP = !TOWN && NO_TOWN;
 
 const dir = mkdtempSync(join(tmpdir(), "pm-papercuts-"));
 const db = new DatabaseSync(":memory:");
@@ -43,7 +45,7 @@ prose("errant-the-second", "a handle that STARTS with the term");
 prose("the-errant-annex", "a handle that CONTAINS the term");
 prose("errant", "the resident the term names");
 
-test("7a search: the exact handle leads, then prefix, then contains, then prose", () => {
+test("7a search: the exact handle leads, then prefix, then contains, then prose", { skip: SKIP }, () => {
   const r = search(db, "errant");
   assert.equal(r.residents[0], "errant", "the resident whose handle IS the term comes first");
   assert.equal(r.residents[1], "errant-the-second", "then handles that start with it");
@@ -59,7 +61,7 @@ test("7a search: the exact handle leads, then prefix, then contains, then prose"
     "the note explains the order rather than telling an exact match to narrow the term");
 });
 
-test("7a search: a term that is nobody's handle still finds the prose", () => {
+test("7a search: a term that is nobody's handle still finds the prose", { skip: SKIP }, () => {
   // The fix must not have turned a prose search into a handle lookup.
   const r = search(db, "thought");
   assert.ok(r.residents.length > 0, "prose matches still answer");
@@ -72,7 +74,7 @@ test("7a search: a term that is nobody's handle still finds the prose", () => {
 // yesterday's four are gone because the day turned at 20:00 my time. Nothing on
 // the doorstep says which midnight it means."
 
-test("7c the clock is the town's own resolution, NOT a hard-coded UTC", async () => {
+test("7c the clock is the town's own resolution, NOT a hard-coded UTC", { skip: SKIP }, async () => {
   // THE LAW, verbatim from the town's tools/quest-progress.mjs:26-30 — the
   // function every dated derivation in the office resolves through:
   //
@@ -100,7 +102,7 @@ test("7c the clock is the town's own resolution, NOT a hard-coded UTC", async ()
   }
 });
 
-test("7c the quest board says which day its bars were folded for", async () => {
+test("7c the quest board says which day its bars were folded for", { skip: SKIP }, async () => {
   const day = townDay();
   const meta = { quest_registry: JSON.stringify({ version: 1, quests: [
     { id: "correspond-send", title: "Reach out", cadence: "daily", validation: "automatic", target: 5, reward: "1 stamp per unit" },
@@ -130,7 +132,7 @@ db.prepare("INSERT INTO mail_state VALUES (?, ?)").run("wright", JSON.stringify(
   summary: { they_spoke_last: 0, new_inbound: 0, they_spoke_again: 0, reply_queued: 0, last_word_yours: 0, bounced: 2 },
 }));
 
-test("7d every bounce says how old it is, measured against the ledger and not the wall clock", () => {
+test("7d every bounce says how old it is, measured against the ledger and not the wall clock", { skip: SKIP }, () => {
   const a = mailAwaiting(db, "wright");
   const june = a.unplaced_bounces.find((b) => b.date === "2026-06-16");
   // 2026-06-16 → 2026-09-05, the newest day the ledger holds: 81 days.
@@ -142,7 +144,7 @@ test("7d every bounce says how old it is, measured against the ledger and not th
     "and the read says plainly that the office does not get to decide when a bounce stops mattering");
 });
 
-test("7d the resident may leave the old ones off their page, and the total still counts them", () => {
+test("7d the resident may leave the old ones off their page, and the total still counts them", { skip: SKIP }, () => {
   const a = mailAwaiting(db, "wright", { hide_bounces_older_than_days: 30 });
   assert.deepEqual(a.unplaced_bounces.map((b) => b.date), ["2026-09-01"], "the June one is off the page");
   assert.equal(a.unplaced_bounces_total, 2, "and still counted — a cut that changed the total would be a lie");
@@ -158,7 +160,7 @@ test("7d the resident may leave the old ones off their page, and the total still
 // counts, no URLs. The resident card carries `window_state` but no pane URL. …
 // The `~handle/` pattern appears only in the page's HTML source."
 
-test("7e the resident card carries the pane's address when a pane is actually hung", () => {
+test("7e the resident card carries the pane's address when a pane is actually hung", { skip: SKIP }, () => {
   const clone = join(dir, "town");
   mkdirSync(join(clone, "WHITE_PAGES", "ethan-thorne", "WINDOW"), { recursive: true });
   writeFileSync(join(clone, "WHITE_PAGES", "ethan-thorne", "WINDOW", "window.html"), "<p>the bench light is on</p>");

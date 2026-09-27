@@ -81,7 +81,7 @@ import { pathToFileURL } from "node:url";
 
 import { WORLD_CLONE } from "../src/world-store.mjs";
 import { openDynamic, putMeta } from "../src/dynamic-store.mjs";
-import { declareMovement, readMovements } from "../src/dynamic-entities.mjs";
+import { readMovements } from "../src/dynamic-entities.mjs";
 
 const argOf = (name, fallback = null) => { const i = process.argv.indexOf(name); return i !== -1 ? process.argv[i + 1] : fallback; };
 const rawFlag = (name) => process.argv.includes(name);
@@ -207,6 +207,24 @@ export function execCallers(dir = OFFICE_SRC) {
  * alone, no timetable consulted. `after` is Stage D's — `vessel.positionAt`,
  * the same record read with the schedule running. A resident whose two answers
  * differ is a resident the seam would move, and the freeze names them.
+ *
+ * ⚑ THIS SEAM IS AGREEMENT-BLIND, AND SILENTLY SO. The world's
+ * `positionAt(departure, instant, service, agreements)` takes a fourth
+ * argument; the call below passes three, and `main()` passes none either, so
+ * the default empty list governs every read this instrument makes. Under the
+ * agreement law (Keemin, 2026-08-11; world commit 64e66ed7, "boarding is
+ * declared, never inferred") an empty list means NOBODY RIDES — so today this
+ * function's "0 residents moved" is the true answer, because the office holds
+ * no passenger agreements at all: `declareAttachment` admits only
+ * cascade|detach, and the boarding verb lands with the vessel work.
+ *
+ * The day that verb ships, this stops being true and nothing here will say so.
+ * The seam will keep reporting "0 residents moved" while residents are being
+ * carried, and no test will red, because the blindness is in the call and not
+ * in the arithmetic. BEFORE the boarding verb ships, `seamDiff` must take an
+ * `agreementsOf` reader and pass its rows as the fourth argument — here and at
+ * `main()`. The office test that guards this pins the refusal, not the carry:
+ * see `the freeze names who the seam would move` in test/world-movement.test.mjs.
  */
 export function seamDiff({ departures, service, walk, vessel, atFc, toleranceM = 1 }) {
   const handles = [...new Set(departures.map((d) => d.handle))];
@@ -337,24 +355,35 @@ async function main() {
   for (const r of deck.residents ?? []) setDown.set(r.handle, r);
   for (const m of moved) if (m.handle && !setDown.has(m.handle)) setDown.set(m.handle, { handle: m.handle });
   if (flag("--apply") && flag("--set-down-ashore") && ashore && setDown.size) {
+    // ── THE SET-DOWN'S PEN IS GONE, AND THIS REFUSES RATHER THAN NO-OPS ───
+    //
+    // This wrote a zero-length departure per set-down resident into
+    // `dynamic.db/movements`. G1 (POS-156) deleted that pen: nothing reads the
+    // table live any more (`storedDepartures` moved to `acts` in POS-154, the
+    // entity derivation and the `<N>.jsonl` half in POS-156 part 0), so rows
+    // written here would be placements no reader would ever see.
+    //
+    // It REFUSES by name instead of quietly writing nowhere, because the two
+    // are indistinguishable from the report otherwise -- `seeded: {set_down:
+    // 27}` over a table nobody reads is the worst of the three outcomes. The
+    // freeze itself already happened (2026-08-10) and this arm is a one-off
+    // whose event has passed; if it is ever needed again it writes the record
+    // through `walkEntry` + `appendJournal`, the way `world-apex.mjs §
+    // spawnOnEnter` does since G1.
     const db = openDynamic(DB_PATH ?? undefined);
     try {
       const already = new Set(readMovements(db).map((m) => `${m.actor}|${m.at}`));
-      let n = 0;
-      for (const r of setDown.values()) {
-        if (already.has(`${r.handle}|${atIso}`)) continue;
-        declareMovement(db, {
-          actor: r.handle, at: atIso, from: ashore, toward: ashore, crossing: atFc,
-          declaredBy: "the-town",
-          note: "set down ashore at the ledger freeze — ENGINE.md's second boarding rule, applied to a ride that was written as a walk",
-        });
-        n++;
-      }
-      putMeta(db, "ledger_frozen_at", atIso);
-      putMeta(db, "ledger_freeze_set_down", String(n));
-      seeded = { set_down: n, at: ashore };
+      const owed = [...setDown.values()].filter((r) => !already.has(`${r.handle}|${atIso}`));
+      report.seeded = null;
+      report.set_down_refused = owed.length === 0
+        ? "nothing owed — every resident in the set-down set already has a departure at this instant"
+        : `REFUSED: ${owed.length} resident(s) would need a set-down departure, and G1 (POS-156) deleted the `
+          + "`dynamic.db/movements` pen this arm wrote through. Rows written there now would be placements no "
+          + "reader sees. Port this arm to the record (`walkEntry` + `appendJournal`, as world-apex.mjs § "
+          + "spawnOnEnter does) before running it again.";
+      if (owed.length) { console.error(report.set_down_refused); }
+      else { putMeta(db, "ledger_frozen_at", atIso); putMeta(db, "ledger_freeze_set_down", "0"); }
     } finally { db.close(); }
-    report.seeded = seeded;
   }
 
   if (flag("--apply") && !report.would_freeze && !(flag("--set-down-ashore") && seeded)) {

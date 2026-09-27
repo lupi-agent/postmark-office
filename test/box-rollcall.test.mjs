@@ -36,9 +36,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -1032,6 +1033,95 @@ test("FALSIFIER (i5): three raced-out crossings count as unsettled too", () => {
   assert.match(row.reason, /race, race, race/);
 });
 
+// ── ONE READER OF THE SETTLEMENT LOG (postmark#2979, POS-130) ───────────────
+//
+// postmark#2974 gave deploy/settlement-history.mjs a `by_hand` field and taught
+// the crossing's own 05:45Z escalation to ask its question of SCHEDULED lines
+// only, for a reason it states in its own words: a person rescuing the town by
+// hand is not the timer being healthy.
+//
+// This file kept a SECOND copy of that law — its own `UNSETTLED` set and its own
+// unfiltered `history.slice(-n)` — so the escalation and the board an operator
+// reads at 8am could disagree about the same log. Measured on the code as it
+// stood at bcdede7: (o1) and (o3) were SILENT and (o2) ALARMED, which is all
+// three of them wrong, and (o2) was wrong by printing the exact sentence (o1)
+// should have printed. Both windows now judge `scheduledRuns(history)`.
+//
+// THE WINDOW IS MANIFEST DATA, so each fixture asserts the threshold it was
+// built against before it asserts any verdict. A falsifier that quietly stops
+// covering its own case when a number moves is worse than no falsifier.
+//
+// THE CAN-FAIL FLIP: in `judgeOutcome`, restore `const UNSETTLED = new Set([
+// "refused", "starving", "race"])` and slice `history` in place of
+// `scheduledRuns(history)` in both windows. (o1) and (o3) go green-to-red;
+// (o2) reddens the other way, which is why all three are here.
+
+const outcomeOf = (m, unit = SETTLEMENT) => m.units.find((u) => u.unit === unit).outcome;
+
+test("FALSIFIER (o1): a by-hand publication between refusals does not break the timer's streak", () => {
+  // THE READING #2786 EXISTS TO FORBID. Before this, a person publishing by hand
+  // between two refusals broke the run and silenced the board — the operator
+  // rescuing the town by hand read back as the town being well.
+  const m = manifest();
+  assert.equal(Number(outcomeOf(m).unsettled_runs), 3, "this fixture is built for a window of 3");
+
+  const rescued = plantHistory(healthy(m), m, [
+    { at: "2026-08-29T17:45:00Z", status: "refused", class: "input-bad", published: 0, left_drafted: 40 },
+    { at: "2026-08-30T05:45:00Z", status: "refused", class: "input-bad", published: 0, left_drafted: 44 },
+    { at: "2026-08-30T11:02:00Z", status: "published", class: null, published: 9, left_drafted: 35, by_hand: true },
+    { at: "2026-08-30T17:45:00Z", status: "refused", class: "input-bad", published: 0, left_drafted: 39 },
+  ]);
+
+  const row = rowFor(rollcall(m, rescued, T0), SETTLEMENT);
+  assert.equal(row.verdict, ALARM_OUTCOME);
+  // The statuses inside the sentence are the discriminator: three refusals, not
+  // the last three LINES, which would read "refused, published, refused".
+  assert.match(row.reason, /has not completed a crossing in its last 3 attempts — refused, refused, refused/);
+  assert.match(row.reason, /upstream of the rerun/);
+});
+
+test("FALSIFIER (o2): a run of BY-HAND refusals is not the timer refusing, and the board stays quiet", () => {
+  // The control for (o1), and the half that can only be got wrong in the other
+  // direction: a week of by-hand probes ("nothing to publish") must not read as
+  // a week of refusals. The schedule is not stuck; nobody asked it anything.
+  //
+  // left_drafted is flat on purpose. It keeps the starvation rule out of the
+  // answer, so a green here is the unsettled window being silent rather than a
+  // second rule happening not to fire.
+  const m = manifest();
+  assert.equal(Number(outcomeOf(m).unsettled_runs), 3, "this fixture is built for a window of 3");
+
+  const probes = plantHistory(healthy(m), m, [
+    { at: "2026-08-29T14:05:02Z", status: "refused", class: "input-bad", published: 0, left_drafted: 0, by_hand: true },
+    { at: "2026-08-30T14:05:02Z", status: "refused", class: "input-bad", published: 0, left_drafted: 0, by_hand: true },
+    { at: "2026-08-31T14:05:02Z", status: "refused", class: "input-bad", published: 0, left_drafted: 0, by_hand: true },
+  ]);
+
+  assert.equal(rowFor(rollcall(m, probes, T0), SETTLEMENT).verdict, OK);
+});
+
+test("FALSIFIER (o3): a by-hand publication inside an otherwise-empty window does not mask a starving timer", () => {
+  // The same gap from the other side. A by-hand publication is still a published
+  // crossing, so one of them anywhere in the last three lines made `noneOut`
+  // false and the starvation alarm went quiet — while the timer published
+  // nothing and left_drafted climbed.
+  const m = manifest();
+  assert.equal(Number(outcomeOf(m).zero_published_runs), 3, "this fixture is built for a window of 3");
+
+  const masked = plantHistory(healthy(m), m, [
+    { at: "2026-08-25T17:45:00Z", status: "quiet", class: null, published: 0, left_drafted: 12 },
+    { at: "2026-08-26T11:02:00Z", status: "published", class: null, published: 7, left_drafted: 20, by_hand: true },
+    { at: "2026-08-26T17:45:00Z", status: "quiet", class: null, published: 0, left_drafted: 30 },
+    { at: "2026-08-27T05:45:00Z", status: "quiet", class: null, published: 0, left_drafted: 42 },
+  ]);
+
+  const row = rowFor(rollcall(m, masked, T0), SETTLEMENT);
+  assert.equal(row.verdict, ALARM_OUTCOME);
+  // 12 -> 42 are the SCHEDULED window's own ends. The unfiltered last three
+  // lines would read 20 -> 42, so this string is what proves which was judged.
+  assert.match(row.reason, /published nothing across its last 3 crossings while left_drafted grew 12 -> 42/);
+});
+
 test("a row judged by its output must declare unsettled_runs — the manifest refuses one that does not", () => {
   // Without it a refusal that returns twice a day forever reads green, which is
   // the exact silence this whole block exists to end.
@@ -1148,6 +1238,145 @@ test("the custody scan walks a real tree and finds the one file somebody else ow
   // And the bound is real: the same tree under a cap of 2 reports truncated.
   const capped = scanCustody(G, 1001, { readdir, lstat, cap: 2 });
   assert.equal(capped.truncated, true);
+});
+
+// ── §2b reaches the DEV office's clones, and the dev freshen fails loud ─────
+// (POS-192, 2026-09-22)
+//
+// Found by hand while wiring dev to the store: postmark-dev-freshen (runs as
+// meepo) had been failing its `git reset` on 1,918 root-owned files in
+// /srv/postmark-office-dev/world-clone and town-clone — Permission denied — for
+// an unknown time, and no row said so. Two holes, one each side:
+//   · the custody rows covered prod's clones and not dev's, so the foreign
+//     owner was invisible;
+//   · the freshen printed "stood back" past the errors and exited 0, so the
+//     timer's service row read success. Its `set -euo pipefail` sat in the
+//     OUTER shell; the work runs in the `bash -c` child that flock starts, and a
+//     child shell does not inherit -e.
+
+const DEV_CUSTODY = {
+  "dev-world-clone": "/srv/postmark-office-dev/world-clone",
+  "dev-town-clone": "/srv/postmark-office-dev/town-clone",
+};
+
+test("the dev office's two clones carry custody rows in the prod rows' own grammar, owned by meepo", () => {
+  const m = manifest();
+  const prod = m.custody.find((r) => r.id === CUSTODY_ID);
+  assert.ok(prod, "the prod settlement-clone row this test compares against is gone");
+  for (const [id, path] of Object.entries(DEV_CUSTODY)) {
+    const row = m.custody.find((r) => r.id === id);
+    assert.ok(row, `no custody row ${id} — the dev clones are unwatched again`);
+    assert.equal(row.path, path);
+    assert.equal(row.must_be_owned_by, "meepo", "postmark-dev-freshen.service runs as User=meepo");
+    // Same field set as the prod row: a dev row missing `repair` or `label`
+    // would pass loadManifest and still read worse on the board at 8am.
+    assert.deepEqual(Object.keys(row).sort(), Object.keys(prod).sort());
+    assert.match(row.why, /1,918/, "the why must name the instance it exists for");
+    assert.match(row.repair, new RegExp(`chown -R meepo:meepo ${path}`));
+  }
+});
+
+test("FALSIFIER (k5): a root-owned file in either dev clone is ALARM-custody, NAMES the path, and exits 1", () => {
+  const m = manifest();
+  // The control first: both dev rows green on the planted healthy state, so
+  // the red below is the mutation's doing and not the fixture's.
+  const clean = rollcall(m, healthy(m), T0);
+  for (const id of Object.keys(DEV_CUSTODY)) assert.equal(rowFor(clean, `custody:${id}`).verdict, OK);
+
+  for (const [id, path] of Object.entries(DEV_CUSTODY)) {
+    const planted = `${path}/records/letters/2026-09-22.json`;
+    const wounded = mutate(healthy(m), (s) => { s.custody[id].offenders = [{ path: planted, uid: 0 }]; });
+    const result = rollcall(m, wounded, T0);
+    const row = rowFor(result, `custody:${id}`);
+    assert.equal(row.verdict, ALARM_CUSTODY);
+    assert.ok(row.reason.includes(`${planted} (uid 0)`), "the alarm must name the foreign-owned path");
+    assert.match(row.reason, /chown -R meepo/);
+    assert.equal(result.exitCode, 1);
+  }
+});
+
+// The freshen itself, run for real under bash with two stubs on the road: a
+// `flock` that drops its lock arguments and execs the command, and a `git` that
+// logs every call and — when FRESHEN_FAIL names a verb — refuses that verb the
+// way the box did (Permission denied, exit 128). The script is the shipped
+// file, unedited; POSTMARK_DEV_ROOT / POSTMARK_DEV_FLOCK are the two seams it
+// declares, and the unit sets neither.
+//
+// THE CAN-FAIL FLIP: delete the `  set -euo pipefail` line INSIDE the bash -c
+// body of deploy/postmark-dev-freshen.sh. The two refusal tests below go red —
+// the script exits 0 and prints "stood back" past a refused reset, which is the
+// 2026-09-22 instance exactly.
+const FRESHEN = join(HERE, "..", "deploy", "postmark-dev-freshen.sh");
+const posix = (p) => p.replaceAll("\\", "/");
+const bashProbe = spawnSync("bash", ["-c", "exit 0"], { encoding: "utf8" });
+const noBash = bashProbe.status === 0 ? false : "no bash on this host — the freshen is a bash script and cannot be run without one";
+
+function runFreshen(failVerb) {
+  const dir = mkdtempSync(join(tmpdir(), "pos192-freshen-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const log = join(dir, "git.log");
+  writeFileSync(join(bin, "git"), [
+    "#!/usr/bin/env bash",
+    'echo "$*" >> "$FRESHEN_LOG"',
+    'if [ -n "${FRESHEN_FAIL:-}" ] && [[ " $* " == *" $FRESHEN_FAIL "* ]]; then',
+    "  echo \"error: unable to unlink old 'records/x.json': Permission denied\" >&2",
+    "  exit 128",
+    "fi",
+    "exit 0",
+    "",
+  ].join("\n"), { mode: 0o755 });
+  writeFileSync(join(bin, "flock"), [
+    "#!/usr/bin/env bash",
+    "# drop -x, -w, 120 and the lock file; run the command",
+    'shift 4; exec "$@"',
+    "",
+  ].join("\n"), { mode: 0o755 });
+  writeFileSync(log, "");
+  // Windows keeps PATH under whatever case it was born with; write the one key.
+  const env = { ...process.env };
+  const pathKey = Object.keys(env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+  env[pathKey] = `${bin}${delimiter}${env[pathKey] ?? ""}`;
+  Object.assign(env, {
+    FRESHEN_LOG: posix(log),
+    POSTMARK_DEV_ROOT: "/srv/postmark-office-dev",
+    POSTMARK_DEV_FLOCK: posix(join(bin, "flock")),
+  });
+  if (failVerb) env.FRESHEN_FAIL = failVerb; else delete env.FRESHEN_FAIL;
+  const r = spawnSync("bash", [posix(FRESHEN)], { encoding: "utf8", env });
+  const calls = readFileSync(log, "utf8").split("\n").filter(Boolean);
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr, calls };
+}
+
+const STOOD_BACK = /dev clones stood back on sandbox\/seed/;
+
+test("the dev freshen, every step succeeding: exit 0, the stand-back line, all seven git calls in order", { skip: noBash }, () => {
+  const r = runFreshen(null);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, STOOD_BACK);
+  assert.deepEqual(r.calls.map((c) => c.split(" ").slice(2, 4).join(" ")), [
+    "fetch -q", "switch -q", "reset -q",
+    "fetch -q", "switch -q", "reset -q",
+    "fetch -q",
+  ]);
+  assert.ok(r.calls[2].startsWith("-C /srv/postmark-office-dev/world-clone reset"));
+  assert.ok(r.calls[5].startsWith("-C /srv/postmark-office-dev/town-clone reset"));
+});
+
+test("FALSIFIER (freshen): a refused `git reset` exits nonzero with git's code and prints NO stand-back line", { skip: noBash }, () => {
+  const r = runFreshen("reset");
+  assert.equal(r.status, 128, "the failing git's own exit code must be the unit's exit code");
+  assert.doesNotMatch(r.stdout, STOOD_BACK, "the success line printed past a refused reset — the 2026-09-22 instance");
+  assert.match(r.stderr, /Permission denied/);
+  // It stopped AT the refusal: world-clone's reset was the last call made.
+  assert.ok(r.calls.at(-1).startsWith("-C /srv/postmark-office-dev/world-clone reset"), r.calls.join(" | "));
+});
+
+test("FALSIFIER (freshen): a refused draft-ref fetch, the LAST step, still exits nonzero with no stand-back line", { skip: noBash }, () => {
+  const r = runFreshen("--prune");
+  assert.equal(r.status, 128);
+  assert.doesNotMatch(r.stdout, STOOD_BACK);
+  assert.equal(r.calls.length, 7, "every step before the last one must have run");
 });
 
 // ── the list that must be empty (postmark#2594, ruled 2026-09-08) ───────────

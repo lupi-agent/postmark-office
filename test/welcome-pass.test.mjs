@@ -23,8 +23,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { parseWelcomePlan, townDate, mintArgv, main } from "../deploy/welcome-pass.mjs";
+import { NO_TOWN, townClone } from "./fixture-paths.mjs";
 
-const TOWN = "G:/Wright-HQ/postmark"; // the same real checkout every office test imports the town's tools from
+const TOWN = townClone(); // the same real checkout every office test imports the town's tools from
+const SKIP = !TOWN && NO_TOWN;
 
 // ── a throwaway town carrying the town's OWN mint ────────────────────────────
 //
@@ -137,7 +139,7 @@ test("an unreadable row inside the owed block stops the pass", () => {
 
 // ── the pass against a real mint ─────────────────────────────────────────────
 
-test("every owed household is paid ✦5 once, to its FIRST resident, by the town", async () => {
+test("every owed household is paid ✦5 once, to its FIRST resident, by the town", { skip: SKIP }, async () => {
   const { repo, keyFile } = fixtureTown({
     // alice and bob share one house; alice is pinned earlier, so the bundle is
     // hers. carol is her own house. The first-resident rule is the TOWN's and is
@@ -158,7 +160,7 @@ test("every owed household is paid ✦5 once, to its FIRST resident, by the town
   rmSync(repo, { recursive: true, force: true });
 });
 
-test("a SECOND pass mints nothing more — and the town's own law is what refuses", async () => {
+test("a SECOND pass mints nothing more — and the town's own law is what refuses", { skip: SKIP }, async () => {
   const { repo, keyFile } = fixtureTown({
     pins: { alice: { id: 1, pinned: "2026-06-01" } },
     deliveries: [D("2026-06-12", "a-1", "alice", "alice")],
@@ -175,7 +177,7 @@ test("a SECOND pass mints nothing more — and the town's own law is what refuse
   rmSync(repo, { recursive: true, force: true });
 });
 
-test("the once-per-household refusal is the real guard, and it fires", async () => {
+test("the once-per-household refusal is the real guard, and it fires", { skip: SKIP }, async () => {
   const { repo, keyFile } = fixtureTown({
     pins: { alice: { id: 1, pinned: "2026-06-01" } },
     deliveries: [D("2026-06-12", "a-1", "alice", "alice")],
@@ -197,7 +199,7 @@ test("the once-per-household refusal is the real guard, and it fires", async () 
   rmSync(repo, { recursive: true, force: true });
 });
 
-test("a town with every household welcomed is a no-op that says so", async () => {
+test("a town with every household welcomed is a no-op that says so", { skip: SKIP }, async () => {
   const { repo, keyFile } = fixtureTown({
     pins: { alice: { id: 1, pinned: "2026-06-01" } },
     deliveries: [D("2026-06-12", "a-1", "alice", "alice")],
@@ -209,7 +211,7 @@ test("a town with every household welcomed is a no-op that says so", async () =>
   rmSync(repo, { recursive: true, force: true });
 });
 
-test("--dry-run writes nothing and signs nothing, with no key at all", async () => {
+test("--dry-run writes nothing and signs nothing, with no key at all", { skip: SKIP }, async () => {
   const { repo } = fixtureTown({
     pins: { alice: { id: 1, pinned: "2026-06-01" } },
     deliveries: [D("2026-06-12", "a-1", "alice", "alice")],
@@ -221,7 +223,7 @@ test("--dry-run writes nothing and signs nothing, with no key at all", async () 
   rmSync(repo, { recursive: true, force: true });
 });
 
-test("a missing town and a missing key are refused before anything is read", async () => {
+test("a missing town and a missing key are refused before anything is read", { skip: SKIP }, async () => {
   assert.equal(await main(["--town", join(tmpdir(), "no-such-town-ever")]), 1);
   const { repo } = fixtureTown({ pins: { alice: { id: 1, pinned: "2026-06-01" } }, deliveries: [] });
   assert.equal(await main(["--town", repo, "--key", join(repo, "no-such-key.pem")]), 1,

@@ -156,7 +156,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 // The town's kind strings (classifyEntry), in its own order.
-export const FUNDING_KINDS = ["pot-stake", "pot-return", "pot-unstake", "keeping-burn", "keeping-mint", "pot-receipt", "holo"];
+export const FUNDING_KINDS = ["pot-stake", "pot-return", "pot-unstake", "keeping-burn", "keeping-mint", "pot-receipt", "pot-correction", "holo"];
 // Claimed so they can be refused by name, never parsed as good — see the σ-leg
 // note above. A retired shape that reads as silence is indistinguishable from a
 // row the door failed to notice.
@@ -247,6 +247,13 @@ export function parseLedgerText(text) {
 const POT_ID_CLASS = String.raw`[a-z0-9][a-z0-9-]*`;
 const EPOCH_CLASS = String.raw`\d{4}-\d{2}`;
 const POT_RECEIPT_RE = new RegExp(String.raw`^- (\d{4}-\d{2}-\d{2}) · pot-receipt · pot:(${POT_ID_CLASS}) · rail: (stripe|usdc|grant) · usd: ([1-9]\d*) · from: (\S+) · ref: (\S+)$`);
+// THE HAND, CORRECTED (the town's `pot-correction`, founder-ruled 2026-08-27):
+// a witnessed dollar's payer was wrong, and this row says whose it really was.
+// ARROW-FREE, no usd and no pot — it corrects WHOSE dollar, never how many or
+// which pot. Copied byte for byte from tools/stamp-mint.mjs POT_CORRECTION_RE
+// (town main @ 7ca61113), and applied by foldFunding below with the town's own
+// rule from foldPotReceipts — the rule the close mints by.
+const POT_CORRECTION_RE = new RegExp(String.raw`^- (\d{4}-\d{2}-\d{2}) · pot-correction · ref: (\S+) · from (\S+) to (\S+) · (\S+) · by: (\S+)$`);
 const POT_STAKE_RE = new RegExp(String.raw`^- (\d{4}-\d{2}-\d{2}) · (\S+) → stake:pot\/(${POT_ID_CLASS}) · ([1-9]\d*) · via: (\S+)$`);
 const POT_RETURN_RE = new RegExp(String.raw`^- (\d{4}-\d{2}-\d{2}) · stake:pot\/(${POT_ID_CLASS}) → (\S+) · ([1-9]\d*) · for: pot-return:(${EPOCH_CLASS})$`);
 // A stake taken back before the close (the town's `pot-unstake`, 2026-09-17):
@@ -282,6 +289,7 @@ export function fundingKindOf(canonical) {
     return "pot-stake"; // arrow-free: a keeping stake that forgot it is a movement
   }
   if (/ · pot-receipt( |·|$)/.test(canonical)) return "pot-receipt";
+  if (/ · pot-correction( |·|$)/.test(canonical)) return "pot-correction";
   // ` · holo · ` (the row) and ` · holo-mint → ` (the shape holo must never
   // wear) both claim holo. A trailing `holo:` FIELD claims nothing — no landed
   // row carries one, and the test demands a space or end-of-line after the
@@ -425,6 +433,8 @@ function diagnose(kind, canonical) {
       if (!isEpoch(L.get("epoch"))) return epochReason("keeping mint");
       return "keeping mint has every field but not the landed order: `- <date> · minted · <staker> · <n> · for: keeping:<pot> · epoch:<epoch>`";
     }
+    case "pot-correction":
+      return "pot-correction does not match the landed shape `- <date> · pot-correction · ref: <ref> · from <old-payer> to <new-payer> · <reason> · by: <who>` — arrow-free, no usd and no pot; only a hand-run `epoch-close.mjs --correct-hand` writes one";
     case "keeper-equity":
       return "keeper-equity is RETIRED and names nothing in the grammar — the σ share does not go to the pot's beneficiary as a spendable mint. It goes home to the stakers, at par of their own burn, as an arrow-free `· minted · <staker> · <n> · for: keeping:<pot> · epoch:<epoch>` row. The town's own reader returns unknown for this shape and the verifier fails the walk on it";
     case "keeping-equity":
@@ -447,6 +457,9 @@ export function classifyFundingRow(canonical) {
 
   if (claimed === "pot-receipt" && (m = POT_RECEIPT_RE.exec(canonical)))
     return { kind: "pot-receipt", date: m[1], pot: m[2], rail: m[3], usd: Number(m[4]), from: m[5], ref: m[6] };
+
+  if (claimed === "pot-correction" && (m = POT_CORRECTION_RE.exec(canonical)))
+    return { kind: "pot-correction", date: m[1], ref: m[2], from: m[3], to: m[4], reason: m[5], by: m[6] };
 
   if (claimed === "pot-stake" && (m = POT_STAKE_RE.exec(canonical))) {
     if (m[3] === TREASURY_POT) return bad(`"${TREASURY_POT}" is the reserved direct-to-town pot; it takes direct-to-town receipts, never stakes`);
@@ -511,6 +524,8 @@ export function foldFunding(entries) {
   // holo row is not required to arrive after the receipt it settles.
   const holoRows = [];
   const byRef = new Map();         // receipt ref -> the pot-receipt row
+  const receiptRows = [];          // [{ row, entry }] in ledger order, for the correction pass
+  const proposed = new Map();      // receipt ref -> the pot-correction that wins for it
   const push = (map, key, v) => { if (!map.has(key)) map.set(key, []); map.get(key).push(v); };
   const escrow = (pot, delta, handle) => {
     potEscrow.set(pot, (potEscrow.get(pot) ?? 0) + delta);
@@ -541,9 +556,20 @@ export function foldFunding(entries) {
         holoRows.push(row);
         break;
       case "pot-receipt":
-        push(receiptsByPot, row.pot, { date: row.date, rail: row.rail, usd: row.usd, from: row.from, receipt: row.ref });
+      {
+        const entry = { date: row.date, rail: row.rail, usd: row.usd, from: row.from, receipt: row.ref };
+        push(receiptsByPot, row.pot, entry);
         byRef.set(row.ref, row);
+        receiptRows.push({ row, entry });
         break;
+      }
+      // LATEST DATED WINS, a same-day tie to the later row — the town's rule
+      // (foldPotReceipts), so a correction can itself be corrected.
+      case "pot-correction": {
+        const held = proposed.get(row.ref);
+        if (!held || row.date >= held.date) proposed.set(row.ref, row);
+        break;
+      }
       // The σ leg (R12: mint, source-tagged, no liquid coin). Its own map, so
       // the ownership read can count it deliberately and no tense can catch it
       // by accident.
@@ -552,6 +578,34 @@ export function foldFunding(entries) {
         break;
     }
   }
+  // THE HAND, CORRECTED — the close's rule, applied the close's way. This pass
+  // is tools/stamp-mint.mjs § foldPotReceipts at town main, restated and not
+  // re-decided: a second pass (a correction may sit before the receipt it
+  // names), the correction must name the hand the receipt currently carries or
+  // it is REFUSED by name ('stale-from'), a corrected receipt's `from` becomes
+  // the new hand and keeps `corrected_from` and `correction` beside it, a ref a
+  // holo row already settled is corrected and flagged `after_close` (its holo
+  // row is not touched), and a correction naming no receipt is surfaced as
+  // 'no-such-receipt'. It runs BEFORE the join so the roll names the same payer
+  // the close minted to. The close reads this rule; the report must not print
+  // a third.
+  const settledRefs = new Set(holoRows.map((h) => h.ref));
+  const corrections = [];
+  for (const { row, entry } of receiptRows) {
+    const k = proposed.get(row.ref);
+    if (!k) continue;
+    if (k.from !== row.from) {
+      corrections.push({ ref: row.ref, applied: false, refused: "stale-from", says: k.from, receipt: row.from, correction: k });
+      continue;
+    }
+    const correction = { date: k.date, reason: k.reason, by: k.by, from: k.from, to: k.to };
+    if (settledRefs.has(row.ref)) correction.after_close = true;
+    for (const r of [row, entry]) { r.corrected_from = r.from; r.from = k.to; r.correction = correction; }
+    corrections.push({ ref: row.ref, applied: true, after_close: settledRefs.has(row.ref), correction: k });
+  }
+  for (const [ref, k] of proposed)
+    if (!byRef.has(ref)) corrections.push({ ref, applied: false, refused: "no-such-receipt", correction: k });
+
   // THE JOIN. Attribution lives on the pot-receipt — who paid (`from:`), how
   // many dollars (`usd:`), when (its date) — and a holo row names the receipt
   // it settles in `ref:`. So the roll a patron page reads is holo ⋈ receipt on
@@ -578,7 +632,7 @@ export function foldFunding(entries) {
     for (const [pot, v] of m) if (v === 0) m.delete(pot);
     if (m.size === 0) potEscrowByHandle.delete(h);
   }
-  return { holoByParty, keepingByParty, rollByParty, rollByPot, receiptsByPot, potEscrow, potEscrowByHandle, invalid };
+  return { holoByParty, keepingByParty, rollByParty, rollByPot, receiptsByPot, potEscrow, potEscrowByHandle, corrections, invalid };
 }
 
 // ── pot files (the bounty files on the quest board) ─────────────────────────

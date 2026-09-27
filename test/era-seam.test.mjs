@@ -28,8 +28,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { openDynamic } from "../src/dynamic-store.mjs";
-import { declareMovement } from "../src/dynamic-entities.mjs";
 import { dedupeRecords, recordsAcrossEras, storedDepartures, storedRecordsFor } from "../src/world-movement.mjs";
+import { useGuardReader } from "../src/world2-guards.mjs";
 import { positionsAt } from "../src/dynamic-presence.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "era-seam-"));
@@ -48,48 +48,87 @@ const era1 = (handle) => ({
   at: 117.0, targetExtent: { w: 9, h: 26 }, targetMarkId: "the-town/the-post-office", pace: 405,
 });
 
-function seed() {
-  const db = openDynamic(DB);
-  for (const h of ["hal", "limen", "aion-solare", "caelum-reeves"]) {
-    declareMovement(db, {
-      actor: h, at: ERA2_ISO, from: ASHORE, toward: ASHORE, crossing: 118.5,
-      declaredBy: "the-town", note: "set down ashore at the ledger freeze",
-    });
-  }
+// ── ERA TWO IS THE RECORD NOW, NOT A FILE ───────────────────────────────────
+//
+// POS-154: `storedDepartures` folded `dynamic.db/movements` and reads `acts`
+// through the read worker's road. The fixture below is the same five departures
+// this file always seeded — four residents set down ashore at the freeze, and
+// wright's zero-metre record — written as the acts the movement-store pen files,
+// so every assertion here is unchanged and only the pen that wrote them moved.
+//
+// The sqlite file survives for ONE reason: `positionsAt` reads the `entities`
+// table out of it, which is a different reader on a different row of the
+// inventory and not this lane's. It is created EMPTY and is never the source of
+// a departure again.
+openDynamic(DB).close();
+
+const env = { pg: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL };
+process.env.WORLD2_PG = "1";
+process.env.WORLD2_PG_URL = "postgres://era-seam-test/none";
+after(() => {
+  if (env.pg == null) delete process.env.WORLD2_PG; else process.env.WORLD2_PG = env.pg;
+  if (env.url == null) delete process.env.WORLD2_PG_URL; else process.env.WORLD2_PG_URL = env.url;
+});
+
+/** One movement-store act, shaped as `pg` hands it over. */
+const act = ({ id, actor, at, from, toward, crossing = 118.5 }) => ({
+  id, at: new Date(at), crossing: String(crossing), actor, action: "walk",
+  payload: { from, toward, within: null, to: null, pace: null, declared_by: actor, source: "dynamic.db/movements" },
+});
+
+const FREEZE_ACTS = [
+  ...["hal", "limen", "aion-solare", "caelum-reeves"].map((h, i) =>
+    act({ id: 100 + i, actor: h, at: ERA2_ISO, from: ASHORE, toward: ASHORE })),
   // wright's zero-metre record: he is standing where he stood, and the seam
   // must not move him. (The acceptance check names him.)
-  declareMovement(db, {
-    actor: "wright", at: ERA2_ISO, from: { x: 575, y: -2600 }, toward: { x: 575, y: -2600 },
-    crossing: 118.5, declaredBy: "wright",
-  });
-  db.close();
+  act({ id: 200, actor: "wright", at: ERA2_ISO, from: { x: 575, y: -2600 }, toward: { x: 575, y: -2600 } }),
+];
+
+/** A record that answers the departure query, and one that will not be reached. */
+function recording(rows = FREEZE_ACTS, { throws = null } = {}) {
+  return useGuardReader(async (fn) => fn({
+    query: async (sql, params) => {
+      if (throws) throw throws;
+      if (!/FROM acts/i.test(String(sql))) return { rows: [] };
+      const actions = params?.[0] ?? [];
+      return { rows: rows.filter((r) => actions.includes(r.action)) };
+    },
+  }));
 }
-seed();
 
 // ── the store read ───────────────────────────────────────────────────────────
 
-test("the store yields era-two departures in the LEDGER'S own shape", () => {
-  const { records, absent } = storedDepartures({ dbPath: DB });
-  assert.equal(absent, null);
-  assert.equal(records.length, 5);
-  const hal = records.find((r) => r.handle === "hal");
-  // The shape is what walk.mjs reads — `targetExtent`/`targetMarkId`, not the
-  // store's own `within`/`to`. One converter, or the two eras are two languages.
-  assert.deepEqual(Object.keys(hal).sort(),
-    ["at", "from", "handle", "iso", "pace", "source", "targetExtent", "targetMarkId", "toward"]);
-  assert.deepEqual(hal.toward, ASHORE);
-  assert.equal(hal.source, "store");
+test("the store yields era-two departures in the LEDGER'S own shape", async () => {
+  const restore = recording();
+  try {
+    const { records, absent } = await storedDepartures({});
+    assert.equal(absent, null);
+    assert.equal(records.length, 5);
+    const hal = records.find((r) => r.handle === "hal");
+    // The shape is what walk.mjs reads — `targetExtent`/`targetMarkId`, not the
+    // store's own `within`/`to`. One converter, or the two eras are two languages.
+    assert.deepEqual(Object.keys(hal).sort(),
+      ["at", "from", "handle", "iso", "pace", "source", "targetExtent", "targetMarkId", "toward"]);
+    assert.deepEqual(hal.toward, ASHORE);
+    assert.equal(hal.source, "store");
+  } finally { restore(); }
 });
 
-test("a store that has never been opened is era-one-only, DISCLOSED, never a throw", () => {
-  const { records, absent } = storedDepartures({ dbPath: join(dir, "no-such.db") });
-  assert.deepEqual(records, []);
-  assert.match(absent, /no dynamic store/);
+test("a record that cannot be reached is era-one-only, DISCLOSED, never a throw", async () => {
+  const restore = recording(FREEZE_ACTS, { throws: new Error("the record is not reachable from here") });
+  try {
+    const { records, absent } = await storedDepartures({});
+    assert.deepEqual(records, []);
+    assert.match(absent, /not reachable/);
+  } finally { restore(); }
 });
 
-test("the per-handle slice is the same records, filtered", () => {
-  assert.deepEqual(storedRecordsFor("hal", { dbPath: DB }).map((r) => r.toward), [ASHORE]);
-  assert.deepEqual(storedRecordsFor("nobody", { dbPath: DB }), []);
+test("the per-handle slice is the same records, filtered", async () => {
+  const restore = recording();
+  try {
+    assert.deepEqual((await storedRecordsFor("hal", {})).map((r) => r.toward), [ASHORE]);
+    assert.deepEqual(await storedRecordsFor("nobody", {}), []);
+  } finally { restore(); }
 });
 
 // ── the merge ────────────────────────────────────────────────────────────────
@@ -106,17 +145,23 @@ test("the per-handle slice is the same records, filtered", () => {
 // half and the ORDERING RULE are the real ones.
 const mergeEras = (ledger, stored) => recordsAcrossEras(ledger, stored);
 
-test("era two lands AFTER era one, so latest-wins answers ashore", () => {
-  const merged = mergeEras([era1("hal")], storedRecordsFor("hal", { dbPath: DB }));
-  assert.equal(merged.length, 2);
-  assert.deepEqual(merged.at(-1).toward, ASHORE, "the last match is the one the engine takes");
-  assert.deepEqual(merged[0].toward, DECK);
+test("era two lands AFTER era one, so latest-wins answers ashore", async () => {
+  const restore = recording();
+  try {
+    const merged = mergeEras([era1("hal")], await storedRecordsFor("hal", {}));
+    assert.equal(merged.length, 2);
+    assert.deepEqual(merged.at(-1).toward, ASHORE, "the last match is the one the engine takes");
+    assert.deepEqual(merged[0].toward, DECK);
+  } finally { restore(); }
 });
 
-test("a tie goes to the store — the ledger cannot gain a line after the freeze", () => {
-  const sameInstant = { ...era1("hal"), iso: ERA2_ISO };
-  const merged = mergeEras([sameInstant], storedRecordsFor("hal", { dbPath: DB }));
-  assert.equal(merged.at(-1).source, "store");
+test("a tie goes to the store — the ledger cannot gain a line after the freeze", async () => {
+  const restore = recording();
+  try {
+    const sameInstant = { ...era1("hal"), iso: ERA2_ISO };
+    const merged = mergeEras([sameInstant], await storedRecordsFor("hal", {}));
+    assert.equal(merged.at(-1).source, "store");
+  } finally { restore(); }
 });
 
 test("APPENDED, not sorted — era one keeps the order it was written in", () => {
@@ -136,7 +181,7 @@ test("APPENDED, not sorted — era one keeps the order it was written in", () =>
 
 // ── the presence fold ────────────────────────────────────────────────────────
 
-test("presence reads era two at the instant it is asked, not at the last refresh", () => {
+test("presence reads era two at the instant it is asked, not at the last refresh", async () => {
   // The exact failure: the entities table is a crystallization refreshed on a
   // tick, so between the freeze and the next refresh it holds only era one.
   // `stored` is merged at read time, so presence answers ashore anyway.
@@ -152,7 +197,10 @@ test("presence reads era two at the instant it is asked, not at the last refresh
       return mine && { handle: h, x: mine.toward.x, y: mine.toward.y, source: "walk", moving: false, remaining_m: 0, eta_crossings: 0 };
     }).filter(Boolean),
   };
-  const stored = storedDepartures({ db, atMs: Date.parse("2026-08-11T00:00:00Z") }).records;
+  const restore = recording();
+  let stored;
+  try { stored = (await storedDepartures({ atMs: Date.parse("2026-08-11T00:00:00Z") })).records; }
+  finally { restore(); }
 
   // The entities table is STALE — it holds era one only, which is what a
   // presence read between the freeze and the next refresh actually saw.
@@ -174,30 +222,35 @@ test("presence reads era two at the instant it is asked, not at the last refresh
   assert.deepEqual({ x: hal.x, y: hal.y }, ASHORE);
 });
 
-test("the acceptance set lands ashore, and wright's zero-metre record does not move him", () => {
-  const stored = storedDepartures({ dbPath: DB }).records;
-  for (const h of ["hal", "limen", "aion-solare", "caelum-reeves"]) {
-    const merged = mergeEras([era1(h)], stored.filter((r) => r.handle === h));
-    assert.deepEqual(merged.at(-1).toward, ASHORE, `${h} must read ashore`);
-  }
-  const w = stored.find((r) => r.handle === "wright");
-  assert.deepEqual(w.from, w.toward, "a zero-distance departure is 'I am standing here'");
-  assert.deepEqual(w.toward, { x: 575, y: -2600 });
+test("the acceptance set lands ashore, and wright's zero-metre record does not move him", async () => {
+  const restore = recording();
+  try {
+    const stored = (await storedDepartures({})).records;
+    for (const h of ["hal", "limen", "aion-solare", "caelum-reeves"]) {
+      const merged = mergeEras([era1(h)], stored.filter((r) => r.handle === h));
+      assert.deepEqual(merged.at(-1).toward, ASHORE, `${h} must read ashore`);
+    }
+    const w = stored.find((r) => r.handle === "wright");
+    assert.deepEqual(w.from, w.toward, "a zero-distance departure is 'I am standing here'");
+    assert.deepEqual(w.toward, { x: 575, y: -2600 });
+  } finally { restore(); }
 });
 
 // ── the flag ─────────────────────────────────────────────────────────────────
 
-test("FLAG OFF: era two is not read, and the answer is era one's alone", () => {
+test("FLAG OFF: era two is not read, and the answer is era one's alone", async () => {
   const was = process.env.WORLD_MOVEMENT_V2;
   delete process.env.WORLD_MOVEMENT_V2;
+  const restore = recording();
   try {
     // The reader is gated by the flag at its call sites; what this pins is that
-    // the store read itself is a pure function of the store and never of the
+    // the store read itself is a pure function of the record and never of the
     // flag — so flipping the flag changes which records are CONSULTED, never
     // which records EXIST. Nobody's declaration is lost by switching off.
-    const { records } = storedDepartures({ dbPath: DB });
+    const { records } = await storedDepartures({});
     assert.equal(records.length, 5, "the rows are still there; the flag decides who looks");
   } finally {
+    restore();
     if (was === undefined) delete process.env.WORLD_MOVEMENT_V2; else process.env.WORLD_MOVEMENT_V2 = was;
   }
 });
@@ -210,8 +263,7 @@ test("FLAG OFF: era two is not read, and the answer is era one's alone", () => {
 // ashore record. The frame fold must see BOTH — reading era one alone used to
 // re-derive the resident onto a boat that has since sailed, which is not a wrong
 // position, it is a disappearance. Since POS-247 (2026-09-26) a walk never
-// boards, so era one alone leaves him on the quay; the seam cases below seed
-// the frame (`aboard`) to keep proving what stepping off does.
+// boards, so era one alone leaves him on the quay.
 
 import { carriersFrom, carrierReader, recordsAcrossEras as acrossEras, vesselServiceFrom } from "../src/world-movement.mjs";
 import { foldFrames } from "../src/world-frames.mjs";
@@ -238,12 +290,10 @@ const era2Ashore = (handle) => ({
   at: 10.2, targetExtent: null, targetMarkId: null, pace: null, source: "store",
 });
 
-async function foldFor(records, atMs, { seeded = false } = {}) {
+async function foldFor(records, atMs) {
   const { service, mod, walk } = await vesselServiceFrom(CARRIER_MARKS, CARRIER_REPO);
   const carrierAt = carrierReader(CARRIER_MARKS, { repo: carrierClone.dir, service, mod });
-  const carriers = carriersFrom(CARRIER_MARKS);
-  const aboard = seeded ? { carrier: carriers[0], local: { x: 0, y: 0 } } : null;
-  return foldFrames(records, { carriers, carrierAt, walk, atMs, aboard });
+  return foldFrames(records, { carriers: carriersFrom(CARRIER_MARKS), carrierAt, walk, atMs });
 }
 
 test("ERA ONE ALONE no longer sails anyone away — a walk onto her deck never boarded (POS-247)", async () => {
@@ -256,14 +306,14 @@ test("ERA ONE ALONE no longer sails anyone away — a walk onto her deck never b
 test("BOTH ERAS: the same resident is ashore, and stays there while she sails", async () => {
   const mid = atCrossing(10.55);
   const records = acrossEras([era1Aboard("hal"), era2Ashore("hal")], []);
-  const fold = await foldFor(records, mid, { seeded: true });
+  const fold = await foldFor(records, mid);
   assert.equal(fold.frame, null, "he stepped off, so his frame is the world again");
   assert.deepEqual(fold.world, SHORE_POINT, "and he is where he walked to, not where she went");
 });
 
 test("the walkers overlay puts him ashore, not aboard", async () => {
   const mid = atCrossing(10.55);
-  const fold = await foldFor(acrossEras([era1Aboard("hal"), era2Ashore("hal")], []), mid, { seeded: true });
+  const fold = await foldFor(acrossEras([era1Aboard("hal"), era2Ashore("hal")], []), mid);
   const rows = withFrames(
     [{ handle: "hal", x: DECK_POINT.x, y: DECK_POINT.y, source: "walk", moving: false, remaining_m: 0, eta_crossings: 0 }],
     fold.frame ? new Map([["hal", fold]]) : new Map(),
@@ -284,7 +334,7 @@ test("a resident whose ONLY record is era two is still folded", async () => {
 
 // ── the de-dup (finding 4, made deliberate) ──────────────────────────────────
 
-test("the same era-two record arriving twice is ONE record, and ends ONE edge", async () => {
+test("the same era-two record arriving twice is ONE record", async () => {
   // Both callers of `recordsAcrossEras` take injected records and then add the
   // store's themselves, so since the doors began passing era-spanning records in
   // the store half arrives twice. `foldFrames` is idempotent over repeated
@@ -292,10 +342,6 @@ test("the same era-two record arriving twice is ONE record, and ends ONE edge", 
   const stored = [era2Ashore("hal")];
   const doubled = acrossEras([era1Aboard("hal"), ...stored], stored);
   assert.equal(doubled.length, 2, "the duplicate is collapsed, not carried");
-
-  const fold = await foldFor(doubled, atCrossing(10.55), { seeded: true });
-  assert.equal(fold.transitions.filter((t) => t.kind === "born").length, 0);
-  assert.equal(fold.transitions.filter((t) => t.kind === "died").length, 1);
 });
 
 test("de-dup keeps genuinely distinct records — it keys on the whole record, not the instant", () => {
@@ -336,20 +382,23 @@ test("FINDING 3: a clone with no ledger answers the SAME SHAPE it always did", a
   }
 });
 
-test("FLAG OFF at the door: the store is never consulted, whatever it holds", async () => {
-  // The store here has five records. With the flag off the reader must return
-  // era one alone and say so — not "era one because the store happened to be
-  // empty", which is the same answer for the wrong reason.
-  const was = process.env.WORLD_DYNAMIC_DB;
-  process.env.WORLD_DYNAMIC_DB = DB;
+test("FLAG OFF at the door: the record is never consulted, whatever it holds", async () => {
+  // The record here has five departures. With the flag off the reader must
+  // return era one alone and say so — not "era one because the record happened
+  // to be empty", which is the same answer for the wrong reason.
+  //
+  // POS-154: this pointed `WORLD_DYNAMIC_DB` at the seeded file. Era two is the
+  // store now, so the fixture reader is what makes era two non-empty, and the
+  // claim is unchanged: flag off must not consult it.
+  const restore = recording();
   try {
     if (!existsSync(join(WORLD_CLONE, "WORLD", "walk-ledger.md"))) return;   // no clone: the door test below covers the shape
     const off = await withFlag(false, () => departuresAcrossEras(WORLD_CLONE));
     const on = await withFlag(true, () => departuresAcrossEras(WORLD_CLONE));
     assert.deepEqual(off.eras, ["ledger"], "flag off names one era");
-    assert.equal(off.store_records, undefined, "and never counted the store");
+    assert.equal(off.store_records, undefined, "and never counted the record");
     assert.ok(on.departures.length > off.departures.length,
-      `flag on must actually add the store's records (${off.departures.length} -> ${on.departures.length})`);
+      `flag on must actually add the record's departures (${off.departures.length} -> ${on.departures.length})`);
     // NOT a prefix: the merge SORTS BY INSTANT, so era-two records interleave
     // with the ledger's later lines rather than landing in a block at the end.
     // (This assertion originally claimed prefix and the test caught it.) What
@@ -357,9 +406,7 @@ test("FLAG OFF at the door: the store is never consulted, whatever it holds", as
     // in order underneath — the flag adds records, it never edits them.
     assert.deepEqual(on.departures.filter((d) => d.source !== "store"), off.departures,
       "era one is carried through unchanged and in the same order");
-  } finally {
-    if (was === undefined) delete process.env.WORLD_DYNAMIC_DB; else process.env.WORLD_DYNAMIC_DB = was;
-  }
+  } finally { restore(); }
 });
 
 test("the disclosure REACHES the reply rather than being assembled and dropped", async () => {

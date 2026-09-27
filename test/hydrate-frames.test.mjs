@@ -33,7 +33,10 @@ import { tmpdir } from "node:os";
 import { compareStores, diffMaps, hydrateInto, mergeBase, readMarkGeometry, readVersions } from "../tools/hydrate-equivalence.mjs";
 import { WORLD_CLONE } from "../src/world-store.mjs";
 
-const COORDS = process.env.STAGE_D_COORDS_WORKTREE ?? "G:/postmark/worktrees/stageD-coords";
+// A relative-coords checkout is a dev artifact no live clone provides, so it
+// is named by env var and by nothing else; the two skips below are the whole
+// mechanism, and a path to a retired worktree on one PC added nothing to them.
+const COORDS = process.env.STAGE_D_COORDS_WORKTREE ?? null;
 
 // THE HYDRATOR INSISTS A WORLD CLONE IS ITS OWN GIT TOPLEVEL, and it is right to:
 // `git -C <dir> rev-parse HEAD` happily answers from an ancestor repo, which
@@ -54,7 +57,7 @@ const declaresRelative = (dir) => {
 
 test("a relative tree and its absolute twin hydrate to the same world", { timeout: 120_000 }, async (t) => {
   if (!existsSync(join(WORLD_CLONE, "WORLD", "marks"))) return t.skip(`no world clone at ${WORLD_CLONE}`);
-  if (!existsSync(join(COORDS, "WORLD", "marks"))) return t.skip(`no relative-coords checkout at ${COORDS} (set STAGE_D_COORDS_WORKTREE)`);
+  if (!COORDS || !existsSync(join(COORDS, "WORLD", "marks"))) return t.skip(`no relative-coords checkout (set STAGE_D_COORDS_WORKTREE)`);
   if (!declaresRelative(COORDS)) return t.skip(`${COORDS} does not declare \`coords: relative\` on its root — nothing to compare`);
 
   // ONE WORLD, TWO FRAMES — so main is pinned to the instant the relative branch

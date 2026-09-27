@@ -64,7 +64,10 @@ import { DatabaseSync } from "node:sqlite";
 // apply to an unflipped lane." The dates live PER LANE in `LANE_MIRROR`
 // (src/world2-acts.mjs) since DEC-2 was ruled; this file's expiry gate names the
 // lanes it reds on and never counts one exempt by ruling.
-import { mirrorExpiresFor, expiredLanes, exemptLanes, mirrorExpiryLine } from "../../src/world2-acts.mjs";
+// The mirror-expiry imports are GONE (G1 / POS-156): `LANE_MIRROR` and the
+// functions over it were deleted with the journal INSERT they were pressuring,
+// which is what DEC-2 said ends a lane's obligation -- removing the row, ports
+// landed and deletion ruled, never a clock running out.
 
 const arg = (name) => {
   const i = process.argv.indexOf(name);
@@ -242,17 +245,13 @@ if (has("--prove-can-fail")) {
   if (matchAct(acts, { actor: "wright", action: "say", at: "2026-08-28T12:09:00.000Z" }) != null)
     fails.push("matcher: an act nine minutes away was accepted as a twin");
 
-  // the expiry gate (DEC-2), proved on the same `expiredLanes` the gate calls
-  const far = new Date("2099-01-01T00:00:00Z");
-  const mixed = { stance: { expires: "2026-09-30" }, arena: { expires: null } };
-  if (!expiredLanes(far, mixed).includes("stance"))
-    fails.push("expiry: a governed lane past its backstop was NOT caught (rule 5 defeated)");
-  if (expiredLanes(far, mixed).includes("arena"))
-    fails.push("expiry: a lane exempt BY RULING (P-143) was counted expired");
-  if (expiredLanes(far, { arena: { expires: null } }).length)
-    fails.push("expiry: with every governed lane closed, the gate still claims an expiry");
-  if (!expiredLanes(far, { "brand-new": {} }).includes("brand-new"))
-    fails.push("expiry: an unnamed lane did NOT inherit the shared backstop");
+  // THE EXPIRY GATE'S CAN-FAIL PROOF IS GONE WITH THE GATE (G1 / POS-156).
+  // Four probes proved `expiredLanes` caught a governed lane past its backstop,
+  // spared one exempt by ruling, went quiet once every governed row was
+  // removed, and refused to let an unnamed lane buy immortality. All four were
+  // about a map that no longer exists, and the state the third one described --
+  // every governed row removed -- is the state this office is now in
+  // permanently.
 
   if (fails.length) { for (const f of fails) console.error(`RED (falsifier broken): ${f}`); process.exit(1); }
   console.log(
@@ -304,6 +303,41 @@ if (has("--census")) {
   const verbProblems = checkCensus([...DISPATCHABLE]);
   const verbLine = `check 0 asked ${DISPATCHABLE.length} dispatchable verb(s) against LANE_OF — ${verbProblems.length ? "RED" : "every one is named"}`;
 
+  // ── CHECK 0b ASKS THE STORE IT CAN REACH, AND SAYS WHICH (G1 / POS-156) ──
+  //
+  // The two modes read DIFFERENT STORES after G1, and that is deliberate rather
+  // than an oversight. Check 0b's question is fixed — "does every KIND OF ACT
+  // the store actually holds have a ruling in CLASS_LANE_OF" — and what changes
+  // between the modes is which store is reachable to ask it of.
+  //
+  //   the FULL run   has Postgres, so the store is `acts` and the check runs
+  //                  there (check 0b, below). It read the sqlite journal until
+  //                  G1; after G1 that table holds the arena's rows and nothing
+  //                  else, so a census over it THERE would have gone quiet
+  //                  about every other class while still reporting green — the
+  //                  exact failure this check exists to prevent.
+  //
+  //   the CENSUS     has NO POSTGRES. That is the whole of it: this mode exists
+  //   (`--census`)   "to be asked on the day a verb lands, on a branch, with no
+  //                  Postgres", which is why it takes `--db` and reads whatever
+  //                  journal it is pointed at. Pointing it at `acts` would not
+  //                  narrow this mode, it would DELETE it.
+  //
+  // ⚑ AN EARLIER CUT OF G1 DID DELETE IT, by moving this arm to "runs against
+  // the RECORD, below" — below a `process.exit` this mode never reaches, in a
+  // mode that has no record to reach. It cost the four tests in
+  // `test/lane-closure-census.test.mjs`, which are about this mode's CONTRACT
+  // (a per-check verdict, a refusal when `--db` cannot be read, a disclosure
+  // when it was not given) and not about which table production fills.
+  //
+  // WHAT THE CENSUS CAN SEE HAS NARROWED, and the honest place to say so is
+  // here rather than in a silently weaker check: pointed at a post-G1 office's
+  // `dynamic.db` it sees the arena's classes and no others, because that is
+  // what that table now holds. The question is still a real one — the arena is
+  // the lane still writing there, and a new arena class nobody ruled on is
+  // exactly what this catches — and the line it prints names the count AND the
+  // classes, so an operator reading "1 journal class(es) (arena-act)" can see
+  // the narrowing rather than read it as a clean bill of health.
   let classes = null;
   let classProblems = [];
   let classLine;
@@ -356,20 +390,16 @@ function matchAct(acts, { actor, action, at, object = undefined }) {
   return null;
 }
 
-// THE EXPIRY, PER LANE (DEC-2) — same gate, same words, as falsifier-acts-parity.
-const expired = expiredLanes();
-if (expired.length) {
-  for (const lane of expired) {
-    console.error(
-      `RED: the "${lane}" lane's reverse mirror passed its backstop ${mirrorExpiresFor(lane)} — `
-      + "land that lane's read ports, rule its deletion (rule 6), and remove its row from LANE_MIRROR "
-      + "in src/world2-acts.mjs. Moving the date is how a shim becomes furniture. No immortal twins.");
-  }
-  const exempt = exemptLanes();
-  console.error(`RED: ${expired.length} lane(s) expired — ${expired.join(", ")}. `
-    + `Not counted, exempt by ruling: ${exempt.length ? exempt.join(", ") : "none"}.`);
-  process.exit(1);
-}
+// THE EXPIRY GATE IS GONE (G1 / POS-156). It reddened when a lane's reverse
+// mirror outlived its backstop, and told the reader to land that lane's read
+// ports, rule its deletion, and remove its row. Every one of those happened --
+// POS-152/153/154/162/194/195 landed the ports, RULING 3 ruled the deletion,
+// and the map went with the INSERT in the same commit. A gate watching for a
+// shim that no longer exists is the furniture rule 5 is about.
+//
+// The ARENA's exemption outlives the gate and is stated where it is implemented
+// now: `FLIP_REFUSED` and `appendArenaRow` in `src/world-journal.mjs`, the one
+// sqlite INSERT G1 left standing, which refuses any other class by name.
 
 const dbPath = arg("--db");
 const voicesPath = arg("--voices");
@@ -432,8 +462,19 @@ for (const line of readFileSync(voicesPath, "utf8").split("\n")) {
 const sqlite = new DatabaseSync(dbPath, { readOnly: true });
 
 // ── check 0b · the class census, against what the store actually holds ──────
-reds.push(...checkClassCensus(
-  sqlite.prepare("SELECT DISTINCT class FROM journal").all().map((r) => String(r.class))));
+//
+// THE STORE IS `acts` (G1 / POS-156). Derived from the rows already read above
+// rather than asked for again, so the census can only ever be about the same
+// window this run is about -- a second query would let the two disagree.
+//
+// ⚑ IT IS SCOPED TO `--since`, and that is a change worth naming: the journal
+// it used to read was the whole live table, and this is the window. A class
+// that last appeared before the floor is not asked about here. That is the
+// honest reading of "what the store actually holds" for a tool whose every
+// other check is windowed, and the alternative -- an unbounded DISTINCT over a
+// growing record on every run -- is the cost this tool refused everywhere else.
+const liveClasses = [...new Set(acts.map((a) => a.class).filter(Boolean).map(String))].sort();
+reds.push(...checkClassCensus(liveClasses));
 
 // ── check 2 · HOLDING · dynamic.db/attachments → acts ───────────────────────
 //
@@ -478,4 +519,5 @@ if (reds.length) {
 const line = (k) => `${k} ${counts[k][0]}/${counts[k][1]}`;
 console.log(
   `GREEN: every write lane reaches acts since ${since} — ${line("say")}, ${line("holding")}, ${line("walk")} twinned; `
-  + `census clean (${DISPATCHABLE.length} apex actions, each answering which pen writes it). ${mirrorExpiryLine()}`);
+  + `census clean (${DISPATCHABLE.length} apex actions, each answering which pen writes it). `
+  + "No lane owes a reverse mirror: G1 deleted the journal INSERT and the map that governed it (POS-156).");

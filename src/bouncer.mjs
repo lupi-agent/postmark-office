@@ -226,23 +226,48 @@ export class Bouncer {
     );
   }
 
+  // ── THE ONE DERIVATION OF A HOUSEHOLD'S LIVE WORLD-WRITE WINDOW ───────────
+  //
+  // Both the refusal (`checkHouseholdWorldWrite`) and the read
+  // (`worldWriteBudget`) resolve their window HERE and nowhere else, which is
+  // the whole point of the function existing (POS-139/#2432). Until the read
+  // was built, the 429 was the only surface that ever stated the count, so a
+  // resident learned their number by being refused; the moment a second
+  // surface states it, the two can disagree, and a budget read that is off by
+  // one from the bouncer that enforces it is worse than no read at all. So
+  // there is no second copy of the count, the cap or the reset instant to
+  // drift — the read and the refusal are the same arithmetic, called twice.
+  //
+  // Returns the LIVE state object when the held window is current (so the
+  // write path's `state.count += 1` still mutates what is stored), and a fresh
+  // zero when it is stale or absent. Storing is the CALLER's job: the read must
+  // never write, or learning your number would cost you one.
+  #worldWriteWindow(household) {
+    const now = this.now();
+    const window = hourWindow(now);
+    const held = this.households.get(household);
+    return {
+      now,
+      state: held && held.hour === window.hour ? held : { hour: window.hour, count: 0 },
+      cap: this.limits.household.worldWritesPerHour,
+      resetAtMs: window.resetAtMs,
+      resetsAt: new Date(window.resetAtMs).toISOString(),
+    };
+  }
+
   checkHouseholdWorldWrite({ household, verb }) {
     if (!WORLD_WRITE_VERBS.has(verb)) return null;
 
-    const now = this.now();
-    const window = hourWindow(now);
-    let state = this.households.get(household);
-    if (!state || state.hour !== window.hour) state = { hour: window.hour, count: 0 };
+    const { now, state, cap, resetAtMs, resetsAt } = this.#worldWriteWindow(household);
 
-    const cap = this.limits.household.worldWritesPerHour;
     if (state.count >= cap) {
       this.households.set(household, state);
-      const retryAfterS = Math.max(1, Math.ceil((window.resetAtMs - now) / 1000));
+      const retryAfterS = Math.max(1, Math.ceil((resetAtMs - now) / 1000));
       return this.#throttle(
         "household",
         verb,
         household,
-        `the household world-write cap is ${cap} per hour; count is ${state.count}; resets at ${new Date(window.resetAtMs).toISOString()} (the top of the UTC hour).`,
+        `the household world-write cap is ${cap} per hour; count is ${state.count}; resets at ${resetsAt} (the top of the UTC hour).`,
         retryAfterS
       );
     }
@@ -250,6 +275,39 @@ export class Bouncer {
     state.count += 1;
     this.households.set(household, state);
     return null;
+  }
+
+  /**
+   * The world-write budget as a READ — the same window the refusal above is
+   * computed from, stated before you hit it (POS-139/#2432, Wright's filing
+   * from Nyx's 2026-09-03 question: "how do I know my number without being
+   * told no?").
+   *
+   * `used` is what the NEXT counted write would be refused against, so
+   * `used === cap` is the answer "the next one bounces" — the same comparison
+   * `checkHouseholdWorldWrite` makes one method up. `counted_verbs` is
+   * WORLD_WRITE_VERBS itself, spread in its own order, never a hand-kept copy:
+   * a verb added to the ledger appears in this answer the same commit.
+   *
+   * Counts nothing and stores nothing.
+   */
+  worldWriteBudget(household) {
+    const { now, state, cap, resetsAt } = this.#worldWriteWindow(household);
+    return {
+      used: state.count,
+      cap,
+      // The window is the UTC clock-hour, founder-ruled 2026-09-03 ("200/hour
+      // instead of day"). NAMED IN THE ANSWER because `cap` beside `town_day`
+      // otherwise reads as a per-day number, and being wrong about this one by
+      // a factor of 24 is exactly the misreading the read exists to prevent.
+      per: "hour",
+      resets_at: resetsAt,
+      counted_verbs: [...WORLD_WRITE_VERBS],
+      // The town day the window sits inside — the standing card is town-shaped
+      // and a resident thinks in town days, so the answer says which one it is.
+      // It is NOT the budget's window; `per` is.
+      town_day: townDayWindow(now, this.limits.household.timeZone).day,
+    };
   }
 
   telemetrySnapshot() {

@@ -23,13 +23,15 @@ import { execFileSync } from "node:child_process";
 
 import { INTAKE, USDC, TRANSFER_TOPIC, MIN_CONF, verifyUsdcPayment } from "../src/usdc-witness.mjs";
 import { fundVerify } from "../src/fund.mjs";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 import {
   watch, scanRange, reconcile, decodeArrival, ledgerEntries,
   MIN_USD, UNDER_A_DOLLAR, MAX_SPAN,
 } from "../tools/usdc-watch.mjs";
 
-const TOWN = "G:/postmark/seam-overnight/town-clone";
-const ENGINE = await import(`file:///${TOWN}/tools/stamp-mint.mjs`);
+const TOWN = townClone();
+const ENGINE = TOWN ? await import(townModuleUrl("tools", "stamp-mint.mjs")) : null;
+const SKIP = !TOWN && NO_TOWN;
 
 // ── a hand-built Base that actually filters ─────────────────────────────────
 const pad32 = (a) => "0x" + "0".repeat(24) + String(a).replace(/^0x/, "").toLowerCase();
@@ -105,7 +107,7 @@ const caught = async (fn) => { try { await fn(); return null; } catch (e) { retu
 // THE FILTER — what the watch asks Base for
 // ════════════════════════════════════════════════════════════════════════════
 
-test("a wrong-token or wrong-recipient transfer is never even asked for", async () => {
+test("a wrong-token or wrong-recipient transfer is never even asked for", { skip: SKIP }, async () => {
   // LAW (usdc-witness.mjs, the scope of the check): the witness requires that
   //     the tx "emits a USDC Transfer TO the town's intake address", and refuses
   //     otherwise with "no USDC Transfer to the town's intake address in this tx
@@ -132,7 +134,7 @@ test("a wrong-token or wrong-recipient transfer is never even asked for", async 
   assert.equal(String(f.topics[2]).toLowerCase(), pad32(INTAKE), "the intake address in the RECIPIENT slot");
 });
 
-test("the ref a log yields is the ref the door mints, character for character", async () => {
+test("the ref a log yields is the ref the door mints, character for character", { skip: SKIP }, async () => {
   // LAW (stamp-mint.mjs, the pot-receipt grammar): "ref is unique forever: one
   //     dollar, one mint chance, a re-recorded receipt bounces." The watch can
   //     only tell a claimed arrival from an unclaimed one if its ref and the
@@ -151,7 +153,7 @@ test("the ref a log yields is the ref the door mints, character for character", 
 // THE SPLIT — witnessed, unclaimed, dust
 // ════════════════════════════════════════════════════════════════════════════
 
-test("a payment under a dollar is set aside with the door's own sentence", async () => {
+test("a payment under a dollar is set aside with the door's own sentence", { skip: SKIP }, async () => {
   // LAW (fund.mjs, guard 5): "$X is less than a dollar — the ledger records
   //     whole dollars, so a payment under $1 cannot be witnessed as a receipt.
   //     It reached the town and it is not lost — write to the postmaster."
@@ -171,7 +173,7 @@ test("a payment under a dollar is set aside with the door's own sentence", async
   assert.deepEqual(report.unclaimed.map((u) => u.txhash), [HASH_A]);
 });
 
-test("an arrival nobody has claimed is reported as unclaimed, and never as a receipt", async () => {
+test("an arrival nobody has claimed is reported as unclaimed, and never as a receipt", { skip: SKIP }, async () => {
   // LAW (the fund page, the card rail's second warning): "a payment the office
   //     cannot attach to a hand can still be a gift, but it cannot mint your holo."
   //     Unclaimed money is a thing the office must SEE; it is not a thing the
@@ -200,7 +202,7 @@ test("an arrival nobody has claimed is reported as unclaimed, and never as a rec
   assert.match(report.posture, /consume that hash's one mint chance and cost the patron their holo forever/);
 });
 
-test("once the patron pastes, the SAME arrival reports as witnessed — the watch is idempotent", async () => {
+test("once the patron pastes, the SAME arrival reports as witnessed — the watch is idempotent", { skip: SKIP }, async () => {
   // LAW (harbor-watch.mjs, the posture this file inherits): "This script only
   //     reads and reports — it never writes to any world." Re-running it must
   //     therefore be free: the second run over the same chain discovers nothing
@@ -235,7 +237,7 @@ test("once the patron pastes, the SAME arrival reports as witnessed — the watc
 // THE CURSOR
 // ════════════════════════════════════════════════════════════════════════════
 
-test("the cursor never crosses a block that is not buried deep enough", async () => {
+test("the cursor never crosses a block that is not buried deep enough", { skip: SKIP }, async () => {
   // LAW (usdc-witness.mjs, check 4): "confirmations >= MIN_CONF (finality is a
   //     claim about depth, not existence)", and the door's refusal: "only N
   //     confirmations (< 12) — call again in a minute; depth is part of the
@@ -260,7 +262,7 @@ test("the cursor never crosses a block that is not buried deep enough", async ()
   assert.deepEqual(r2.unclaimed.map((u) => u.txhash), [HASH_B]);
 });
 
-test("an unreachable chain exits loud, reports nothing, and leaves the cursor where it was", async () => {
+test("an unreachable chain exits loud, reports nothing, and leaves the cursor where it was", { skip: SKIP }, async () => {
   // LAW (usdc-witness.mjs, on an unreadable chain): "NOT a refusal: the payer's
   //     tx may be perfectly good and the town simply cannot see the chain this
   //     minute... Disclose the blindness instead." For a watch, disclosing the
@@ -279,7 +281,7 @@ test("an unreachable chain exits loud, reports nothing, and leaves the cursor wh
   assert.equal(c.calls.filter((x) => x.method === "eth_getLogs").length, 0);
 });
 
-test("a tick with nothing newly settled moves nothing", async () => {
+test("a tick with nothing newly settled moves nothing", { skip: SKIP }, async () => {
   // The cursor is only ever advanced over blocks that were actually READ.
   const town = seamTown();
   const head = 5000;
@@ -290,7 +292,7 @@ test("a tick with nothing newly settled moves nothing", async () => {
   assert.equal(c.calls.filter((x) => x.method === "eth_getLogs").length, 0);
 });
 
-test("a long catch-up is read in bounded chunks, not one enormous request", async () => {
+test("a long catch-up is read in bounded chunks, not one enormous request", { skip: SKIP }, async () => {
   // Public Base RPCs cap an eth_getLogs range; a cold start must not ask for
   // a span no endpoint will answer, and must not silently lose the remainder.
   const town = seamTown();
@@ -310,7 +312,7 @@ test("a long catch-up is read in bounded chunks, not one enormous request", asyn
 // THE RECEIPT FOR WHAT WAS *NOT* BUILT
 // ════════════════════════════════════════════════════════════════════════════
 
-test("AUTO-WITNESSING WOULD DESTROY THE PATRON'S HOLO — the reason this watch only reads", async () => {
+test("AUTO-WITNESSING WOULD DESTROY THE PATRON'S HOLO — the reason this watch only reads", { skip: SKIP }, async () => {
   // LAW (stamp-mint.mjs, the pot-receipt grammar, verbatim): "ref is unique
   //     forever: one dollar, one mint chance, a re-recorded receipt bounces."
   //
@@ -352,7 +354,7 @@ test("AUTO-WITNESSING WOULD DESTROY THE PATRON'S HOLO — the reason this watch 
   assert.ok(!kinds.has("pot-receipt-correct"), "and no correction row kind");
 });
 
-test("one dollar cannot become two by respelling its hash", async () => {
+test("one dollar cannot become two by respelling its hash", { skip: SKIP }, async () => {
   // LAW (stamp-mint.mjs, the pot-receipt grammar, verbatim): "ref is unique
   //     forever: one dollar, one mint chance, a re-recorded receipt bounces."
   //

@@ -24,11 +24,17 @@ import { appendTownJournal, ensureTownJournal, townDrainCursor } from "../src/to
 import { planTownDrain, writeTownDrain } from "../src/town-drain.mjs";
 import { runTownDrain } from "../src/town-bridge.mjs";
 import { REGISTRY_PATH } from "../src/residency.mjs";
+import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 
-const TOWN = "G:/postmark/seam-overnight/town-clone";
-const VERIFY = await import(`file:///${TOWN}/tools/stamp-verify.mjs`);
-const ENGINE = await import(`file:///${TOWN}/tools/stamp-mint.mjs`);
+const TOWN = townClone();
+// The town's own verifier and mint, imported live. CONDITIONALLY, because a
+// top-level await import of a clone that is not there takes the whole module
+// down at load and its cases neither pass nor fail — they vanish.
+const VERIFY = TOWN ? await import(townModuleUrl("tools", "stamp-verify.mjs")) : null;
+const ENGINE = TOWN ? await import(townModuleUrl("tools", "stamp-mint.mjs")) : null;
+const SKIP = !TOWN && NO_TOWN;
 import { createPrivateKey, sign as edSign } from "node:crypto";
+import { withRecordFrom } from "./registry-pool-stub.mjs";
 
 const odb = () => {
   const db = new DatabaseSync(":memory:");
@@ -59,22 +65,25 @@ function sealedTown() {
   return { dir, keyFile };
 }
 
-const withEnv = (over, fn) => {
+const withEnv = async (over, fn) => {
   const prev = {};
   for (const [k, v] of Object.entries(over)) { prev[k] = process.env[k]; if (v == null) delete process.env[k]; else process.env[k] = v; }
-  try { return fn(); }
+  // AWAITED SINCE POS-158: the drain is async, and a `finally` that restored the
+  // environment while the drain was still running would pull STAMP_KEY out from
+  // under the signing subprocess.
+  try { return await fn(); }
   finally { for (const [k, v] of Object.entries(prev)) { if (v == null) delete process.env[k]; else process.env[k] = v; } }
 };
 
-test("GREEN, the real pipe: a drained join appends a registry line the town's own verifier seals green", () => {
+test("GREEN, the real pipe: a drained join appends a registry line the town's own verifier seals green", { skip: SKIP }, async () => {
   const { dir, keyFile } = sealedTown();
   const db = odb();
   appendTownJournal(db, joinRow());
-  withEnv({ STAMP_KEY: keyFile, STAMP_ENGINE_DIR: join(TOWN, "tools") }, () => {
-    const plan = planTownDrain(db, dir, { date: "2026-08-29" });
-    const touched = writeTownDrain(dir, plan, { date: "2026-08-29" });
+  await withEnv({ STAMP_KEY: keyFile, STAMP_ENGINE_DIR: join(TOWN, "tools") }, () => withRecordFrom(dir, async () => {
+    const plan = await planTownDrain(db, dir, { date: "2026-08-29" });
+    const touched = await writeTownDrain(dir, plan, { date: "2026-08-29" });
     assert.ok(touched.includes("WHITE_PAGES/stamp-ledger.md"), "the ledger was appended");
-  });
+  }));
   const text = readFileSync(join(dir, "WHITE_PAGES/stamp-ledger.md"), "utf8");
   assert.match(text, /registry: tester = hh:testers · sig: [A-Za-z0-9_-]{60,}/, "the line carries a base64url sig");
   const v = VERIFY.verifyStampLedger(dir);
@@ -82,13 +91,13 @@ test("GREEN, the real pipe: a drained join appends a registry line the town's ow
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("CAN-FAIL: a mangled sig on the drain's line turns the town's verifier red — the oracle sees this line", () => {
+test("CAN-FAIL: a mangled sig on the drain's line turns the town's verifier red — the oracle sees this line", { skip: SKIP }, async () => {
   const { dir, keyFile } = sealedTown();
   const db = odb();
   appendTownJournal(db, joinRow());
-  withEnv({ STAMP_KEY: keyFile, STAMP_ENGINE_DIR: join(TOWN, "tools") }, () => {
-    writeTownDrain(dir, planTownDrain(db, dir, { date: "2026-08-29" }), { date: "2026-08-29" });
-  });
+  await withEnv({ STAMP_KEY: keyFile, STAMP_ENGINE_DIR: join(TOWN, "tools") }, () => withRecordFrom(dir, async () => {
+    await writeTownDrain(dir, await planTownDrain(db, dir, { date: "2026-08-29" }), { date: "2026-08-29" });
+  }));
   const p = join(dir, "WHITE_PAGES/stamp-ledger.md");
   // Mangle the DRAIN's line deliberately and deterministically: a fixed wrong
   // sig of valid base64url shape (the first draft replaced one char with "X",
@@ -101,13 +110,13 @@ test("CAN-FAIL: a mangled sig on the drain's line turns the town's verifier red 
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("REFUSE, never degrade: with the pen key absent the crossing writes NOTHING and every row stays queued", () => {
+test("REFUSE, never degrade: with the pen key absent the crossing writes NOTHING and every row stays queued", { skip: SKIP }, async () => {
   const { dir } = sealedTown();
   const db = odb();
   appendTownJournal(db, joinRow());
   const before = readFileSync(join(dir, "WHITE_PAGES/stamp-ledger.md"), "utf8");
-  const report = withEnv({ TOWN_SINGLE_LOG: "1", STAMP_KEY: join(dir, "no-such-key.pem"), STAMP_ENGINE_DIR: join(TOWN, "tools") }, () =>
-    runTownDrain(db, { db, clone: dir, lockHeld: () => true, log: () => {} }));
+  const report = await withEnv({ TOWN_SINGLE_LOG: "1", STAMP_KEY: join(dir, "no-such-key.pem"), STAMP_ENGINE_DIR: join(TOWN, "tools") }, () =>
+    withRecordFrom(dir, () => runTownDrain(db, { db, clone: dir, lockHeld: () => true, log: () => {} })));
   assert.equal(report.refused, "ledger-pen-not-ready", "the crossing refuses by name");
   assert.equal(readFileSync(join(dir, "WHITE_PAGES/stamp-ledger.md"), "utf8"), before, "the ledger is byte-identical");
   assert.equal(townDrainCursor(db), 0, "the cursor did not move — every row is still here");

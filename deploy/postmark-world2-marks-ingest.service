@@ -1,0 +1,32 @@
+[Unit]
+# THE MARKS PEN (POS-142, Keemin-ruled 2026-09-23: "the class fix goes — a marks
+# ingest at every bless, then prod's fold flips to the store").
+#
+# The store had no ingest for the world repo's marks. Door-made writes reach it
+# through the clearing; every FILE-SIDE change after the 08-28 seed (sweep
+# publications of amended drafts, operator pre-acts, founder commits) did not,
+# and PR #173's rows fold differed from the published file by 7 missing marks
+# and ~50 stale rows. world2/tools/marks-ingest.mjs is the pen; this unit runs it
+# at the newest blessing. The bless is the trigger (the tool is a no-op while its
+# head is at the newest settlement tag); the timer is how the box notices one.
+Description=World 2.0 marks ingest — the world repo's marks at the newest blessing -> marks (+ locked claims)
+Documentation=file:///srv/world2-lab/ops/world2-marks-ingest.sh
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=meepo
+# Root reads the credential file and hands the values in; meepo never opens it
+# (the law pen's unit says why the file is never loosened for a lane).
+# THIS LINE IS THE PROD RENAME, as on the law pen: point it at the prod
+# credential file whose WORLD2_DB says `world2`.
+EnvironmentFile=/etc/postmark-world2-dev.env
+# Exit 0 ingested or nothing to ingest · 1 refused/failed (the reason is in
+# /srv/world2-lab/state/ingest-marks.json) · 2 the lane could not run.
+ExecStart=/bin/bash /srv/world2-lab/ops/world2-marks-ingest.sh
+TimeoutStartSec=900
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

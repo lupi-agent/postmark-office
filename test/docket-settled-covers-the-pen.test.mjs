@@ -94,8 +94,19 @@ beforeEach(() => {
 test("`docketSettled()` does not resolve until the population is ON THE DOCKET", async () => {
   const db = freshDb();
   try {
+    // ── AWAITED, BECAUSE THE WRITE IS (G1 / POS-156, RULING 3) ───────────
+    //
+    // These were fire-and-forget: `appendJournal` queued the docket write and
+    // returned, and `docketSettled()` existed to tell a caller when that queue
+    // had drained. The write is awaited and refusable now, so the await here is
+    // the same discipline one level up -- and `docketSettled()` keeps its job,
+    // because the docket's own writes may still have a queue behind them.
+    //
+    // The claim is untouched: a `docketSettled()` that returns early lets a
+    // guard-equality run compare a finished journal against a half-written
+    // docket and report the port as holding nothing.
     for (const slug of ["the-quiet-shed", "the-long-fence", "the-lit-window", "the-open-gate"]) {
-      appendJournal(db, declare(slug));
+      await appendJournal(db, declare(slug));
     }
     await docketSettled();
 
@@ -111,7 +122,7 @@ test("`docketSettled()` does not resolve until the population is ON THE DOCKET",
 test("it is awaitable more than once and stays true", async () => {
   const db = freshDb();
   try {
-    appendJournal(db, declare("the-second-look"));
+    await appendJournal(db, declare("the-second-look"));
     await docketSettled();
     const first = theStore().claims.length;
     await docketSettled();

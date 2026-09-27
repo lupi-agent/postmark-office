@@ -377,11 +377,20 @@ export function liveMarkRecords(rows, { strict = true } = {}) {
  * household. That is a finding, not a bug in this function, and
  * `DISCLOSURES.cross_household` is what the door has to say about it.
  */
-export async function pgLiveMarks(client, { household = null, statuses = LIVE_STATUSES, strict = true } = {}) {
-  if (household != null) await assertHouseholdDeclared(client, household);
+export async function pgLiveMarks(client, { household = null, statuses = LIVE_STATUSES, strict = true, keys: given = null } = {}) {
+  // `given` is the set a CALLER already asserted on this same connection — one
+  // round trip instead of two, and never a way to supply a set that was not
+  // checked: `pgDraftsForKey` is the only caller that passes it and it passes
+  // `assertHouseholdDeclared`'s own return value.
+  const keys = household == null ? null : (given ?? await assertHouseholdDeclared(client, household));
   const where = ["status = ANY($1)"];
   const args = [statuses];
-  if (household != null) { where.push(`household = $${args.length + 1}`); args.push(household); }
+  // `= ANY(keys)`, and the keys are the connection's own declared set — the
+  // array `024_household_spellings.sql`'s policy is comparing against, handed
+  // back by the assertion above. A house's rows keep the spelling they were
+  // written under forever, so a guard that asked for one spelling would see
+  // part of a house and PERMIT on the rest of it.
+  if (household != null) { where.push(`household = ANY($${args.length + 1})`); args.push(keys); }
   // ORDER BY slug, and it is not decoration: 1.0's `liveMarks` returns Map
   // insertion order, which is journal order, which nothing downstream depends on
   // — but a comparison does, and an unordered read makes a diff report row moves
@@ -416,15 +425,54 @@ export async function pgLiveChildrenOf(client, id, opts = {}) {
  * is the same call 007's policy makes — so this asks the policy's own question
  * and gets the policy's own answer, instead of a second notion of "declared".
  */
+/**
+ * ── IT ASSERTS BOTH SETTINGS NOW, AND RETURNS THE SET ───────────────────────
+ *
+ * `024_household_spellings.sql` made the draft policies compare against
+ * `app.household_keys` — every spelling this house has ever carried — because
+ * the store never re-spells a row (three guards refuse it; see 022's retirement
+ * header). So a connection that declared only `app.household` would now be read
+ * by a policy that looks at NOTHING, and this file's whole argument applies with
+ * more force than it did at one key: the guard sees no drafts at all, finds no
+ * collision, and PERMITS A DUPLICATE.
+ *
+ * The set must also CONTAIN the household the read is scoped to. A set that did
+ * not would be a session declaring one house and reading under another's names.
+ *
+ * It RETURNS the array so `pgLiveMarks` filters on exactly the value the policy
+ * is comparing against, in the same round trip. Two notions of "this house"
+ * inside one function is the drift `household-deriver.mjs` exists to have ended.
+ */
 export async function assertHouseholdDeclared(client, household) {
-  const { rows: [r] } = await client.query("SELECT current_setting('app.household', true) AS declared");
+  const { rows: [r] } = await client.query(
+    `SELECT current_setting('app.household', true) AS declared,
+            string_to_array(NULLIF(current_setting('app.household_keys', true), ''), ',') AS keys`);
   const declared = r?.declared ?? null;
-  if (declared === household) return;
-  throw new Error(
-    `guard-reads: this connection has declared app.household = ${declared === null ? "(nothing)" : JSON.stringify(declared)}, ` +
-    `and the read is scoped to ${JSON.stringify(household)}. 007's row policy would answer WITHOUT this household's ` +
-    `drafts and say nothing about it — a slug-collision guard would then permit a duplicate, and a parcel cap would ` +
-    `undercount. Run this inside world2-claims.mjs's withHousehold(pool, household, …).`);
+  const keys = Array.isArray(r?.keys) ? r.keys : null;
+  const said = (v) => (v === null ? "(nothing)" : JSON.stringify(v));
+
+  if (declared !== household)
+    throw new Error(
+      `guard-reads: this connection has declared app.household = ${said(declared)}, ` +
+      `and the read is scoped to ${JSON.stringify(household)}. 007's row policy would answer WITHOUT this household's ` +
+      `drafts and say nothing about it — a slug-collision guard would then permit a duplicate, and a parcel cap would ` +
+      `undercount. Run this inside world2-claims.mjs's withHousehold(pool, household, …).`);
+
+  if (!keys?.length)
+    throw new Error(
+      `guard-reads: this connection declared app.household = ${said(declared)} and app.household_keys = ${said(keys)}. ` +
+      `024_household_spellings.sql's policies compare against the SECOND one, so a draft row is unreadable here and a ` +
+      `guard would permit a duplicate slug or a parcel past the cap. withHousehold and officeWrite declare both; ` +
+      `a connection that declared only the first is running against the pre-024 office.`);
+
+  if (!keys.includes(household))
+    throw new Error(
+      `guard-reads: this connection declared app.household = ${said(declared)}, which is not in its own ` +
+      `app.household_keys ${said(keys)}. The set is every spelling of ONE house and must contain the house it is ` +
+      `scoped to (src/household-deriver.mjs § sessionKeysFor puts it first) — these two settings are describing ` +
+      `two different households.`);
+
+  return keys;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -496,12 +544,27 @@ export async function assertHouseholdDeclared(client, household) {
 // optionally widens it for the registry-lag case the fold names — "registry lag
 // never blocks a new resident, it only leaves them ungrouped" — where a handle
 // has acts but no roster line yet.
+//
+// ── AND `identities.household` IS ITSELF SPELLED TWO WAYS ───────────────────
+//
+// The paragraph above is now true one hop further in. `identities.household` is
+// a projection of the WORLD repo's copy of the town's pins, and it carries
+// whatever spelling that copy happened to hold when each row landed: measured
+// 2026-09-22 on the live registry, 173 of 190 handles wore `gh:<id>` and 17
+// wore `hh:<slug>`, and umbraliminalis wore BOTH AT ONCE because a ledger re-key
+// had reached its first resident and not its other seven. So `household = $1`
+// against a `hh:`-keyed session returned two of that house's eight residents,
+// and the overlay lost the other six's withdrawals with nothing to say so.
+//
+// `= ANY($1)` is the spelling set — the same one 024's policy compares against.
+// The store does not re-spell `identities` either: `law_ingester` owns every row
+// of it, which is POS-160's second STOP and not this ship's.
 export const WITHDRAW_ACT_SELECT =
   `SELECT a.id, a.at, a.actor, a.object, a.household, a.payload
      FROM acts a
     WHERE a.class = 'mark' AND a.action = 'withdraw'
-      AND (a.actor IN (SELECT handle FROM identities WHERE household = $1)
-           OR ($2::text IS NOT NULL AND a.household = $2))`;
+      AND (a.actor IN (SELECT handle FROM identities WHERE household = ANY($1))
+           OR (COALESCE(array_length($2::text[], 1), 0) > 0 AND a.household = ANY($2)))`;
 
 /**
  * `draftsForKey`'s JOURNAL HALF, over 2.0's stores.
@@ -537,7 +600,12 @@ export async function pgDraftsForKey(client, {
   strict = true,
 } = {}) {
   if (household == null) throw new Error("pgDraftsForKey: a draft overlay is one household's own — pass household");
-  const { marks: live, refusals } = await pgLiveMarks(client, { household, strict });
+  // The connection's own declared spelling set, asserted before anything reads
+  // a row (`assertHouseholdDeclared` returns it). Both arms below take it, so
+  // the live half and the deleted half are scoped to the SAME house by the same
+  // array, which is what they came apart over the first time.
+  const keys = await assertHouseholdDeclared(client, household);
+  const { marks: live, refusals } = await pgLiveMarks(client, { household, strict, keys });
 
   const pathOf = (record) => {
     if (typeof pathFor !== "function") return null;
@@ -557,8 +625,16 @@ export async function pgDraftsForKey(client, {
 
   // THE DELETED ARM. Scoped to withdrawals whose mark still stands in canon —
   // see § THE DELETED ARM above for why the scope is canon's and not the log's.
+  //
+  // $1 is the SPELLING SET (the roster is keyed in whichever spelling the world
+  // repo's copy carried — see WITHDRAW_ACT_SELECT § AND `identities.household`).
+  // $2 stays the ONE 1.0 household NAME, wrapped, and is deliberately NOT
+  // widened: `acts.household` carries the office key's name, a different
+  // namespace from the roster's keys, and the deriver has no spelling set for
+  // it. `[]` is the old `$2::text IS NOT NULL` false arm, exactly.
   const { rows: withdrawn } = await client.query(
-    `${WITHDRAW_ACT_SELECT} ORDER BY a.id`, [household, journalHousehold]);
+    `${WITHDRAW_ACT_SELECT} ORDER BY a.id`,
+    [keys, journalHousehold == null ? [] : [journalHousehold]]);
   const seen = new Set(out.map((m) => m.id));
   for (const act of withdrawn) {
     const id = act.object ?? (act.payload?.by && act.payload?.slug ? `${act.payload.by}/${act.payload.slug}` : null);
@@ -901,6 +977,252 @@ export async function pgAttachmentsFor(client, { target = null, until = null, st
   return until == null ? read : { ...read, rows: read.rows.filter((a) => Date.parse(a.born_at) <= until) };
 }
 
+// ── THE HOLDING JOURNAL, over `acts` (POS-162) ──────────────────────────────
+//
+// `readJournal(db, { cls: "holding" })` is the OTHER half of what a holder
+// question needs, and the two are not the same read. The attachments half above
+// answers WHO HOLDS IT; this one answers WHERE IT WAS SET DOWN — world-hold.mjs
+// § latestDrop reads a `drop` act's witnessed line, and the-town/the-reach makes
+// that position canon at the next fold rather than a fall-back to the last place
+// the thing was folded.
+//
+// ⚑ THE ANCHOR IS THREE COLUMNS, NOT A PAYLOAD KEY, and this is the fact the
+// port has to carry. A journal row's witnessed line is stored as
+// `at_anchor / at_dx / at_dy` (world-journal.mjs § ROW_COLUMNS) and `hydrateRow`
+// reassembles it into the one `at` field the ruling named. `holdingEntry`'s
+// payload is `{thing, holder, previous_holder, made_by, policy}` and has never
+// carried the line at all. `acts` holds the SAME three columns
+// (001_tables.sql § acts), written by both pens — `mirrorAct` and `insertAct`
+// name them in their INSERT lists — so the composition here is `hydrateRow`'s
+// own expression and not a second reading of a payload.
+//
+// ⚑ THE ORDER IS `(at, id)` AND NOT `journal_seq`. 001's own words call
+// `journal_seq` the shadow-era pairing key that dies at cutover, and a flipped
+// lane writes Postgres FIRST — so at insert there is no sqlite rowid to carry
+// and the column is null on exactly the rows a flipped town writes. D6 ruled
+// replay order is `(at, id)`; ordering a holding read by a pairing key would put
+// a town's own set-downs last, or nowhere.
+//
+// ⚑ THE PREDICATE IS `class`, BECAUSE THAT IS THE PREDICATE. `readJournal`'s
+// `cls` filter is `class = ?` and nothing narrower; an `action IN (…)` filter
+// here would be a DIFFERENT predicate wearing this one's name, and it would
+// silently drop the first holding verb somebody adds.
+//
+// SECOND READER OF THIS CLASS, said out loud so POS-153 can share it:
+// `world-hold.mjs § readHoldEffects` reads the same `class = 'holding'` rows out
+// of sqlite for a different question (the effects shelf, scoped by handle rather
+// than by thing). When that one ports, it wants this function with the `thing`
+// narrowing dropped and a handle filter in its place — not a second query.
+
+/**
+ * `readJournal(db, { cls: "holding" })` for ONE thing, oldest first, over `acts`.
+ *
+ * One line over `pgHoldingRows` (POS-153 folded the two into one reader). It
+ * keeps the `{ rows }` envelope its own caller and suite were written against;
+ * the shared reader answers a bare array, because that is the shape
+ * `readJournal` itself answers.
+ */
+export async function pgHoldingRowsFor(client, thingId) {
+  return { rows: await pgHoldingRows(client, { thing: thingId }) };
+}
+
+/** The class name `readJournal` is asked for — 1.0's own constant, restated here because the port imports nothing from `src/`. */
+export const CLASS_HOLDING = "holding";
+
+/**
+ * One `acts` row in `hydrateRow`'s vocabulary.
+ *
+ * `seq` IS THE ACT'S OWN ID, AND IT IS A DIFFERENT REGISTRY'S COUNTER. 1.0 put
+ * the sqlite journal rowid here and the door hands it on as `act_seq`. The
+ * record that answers now is `acts`, so the honest line number is `acts.id`;
+ * carrying null instead would dim a field that has an answer. Nothing in the
+ * office reads `act_seq` — it is a receipt a resident reads — so this changes
+ * which registry the number comes from and no derivation anywhere.
+ *
+ * NOT COMPARABLE TO A sqlite SEQ, which is why it is never used as an ORDER key
+ * here (`attachmentRowOf` refuses it in `seq` for exactly that reason, and it is
+ * right: there the field feeds `ATTACHMENT_ORDER_SQL`). The ordering above is
+ * done in SQL; this field is carried into the answer and read by nobody else.
+ *
+ * ── THE FIELD SET IS `hydrateRow`'s WHOLE ONE (POS-153) ──────────────────────
+ *
+ * This mapper served one caller when it was written — the stands block, which
+ * reads `object`, `action`, `at`, `actor` and `seq`. The effects shelf is the
+ * second caller and it reads THREE MORE: `crossing` is the filter
+ * `holdEffectsFrom` narrows by, and `written_at` is put straight into the event
+ * a resident reads. So the columns below are `hydrateRow`'s complete set rather
+ * than the first caller's, and the SELECT carries them; a mapper narrowed to its
+ * first consumer is a mapper the second one has to widen, which is how a second
+ * copy gets born.
+ *
+ * `witnesses` and `effect` are here for the same reason and are read by neither
+ * caller today: they are columns `hydrateRow` returns, and a row that claims to
+ * be a journal row and silently drops two of its fields is a shape that agrees
+ * with nothing. A fixture that omits them (POS-162's `holdingAct` does) yields
+ * null, which is what the journal answers for an unset column.
+ *
+ * `at` IS TEXT IN THE JOURNAL AND `timestamptz` IN `acts`, so the driver hands
+ * back a Date where `holdEffectsFrom` puts `written_at` straight into its
+ * answer. The one visible difference this port makes to any answer is precision:
+ * the journal held the stamp exactly as the door wrote it (`…:16Z`), a Date
+ * round-trips to milliseconds (`…:16.000Z`). Same instant, one more field of it.
+ */
+export const holdingRowOf = (r) => ({
+  seq: r.id == null ? null : Number(r.id),
+  crossing: r.crossing == null ? null : Number(r.crossing),
+  actor: r.actor,
+  action: r.action,
+  object: r.object ?? null,
+  at: { anchor: r.at_anchor ?? null, dx: r.at_dx ?? null, dy: r.at_dy ?? null },
+  witnesses: jsonColumn(r.witnesses),
+  class: r.class,
+  // `acts.payload` is `jsonb`, so the driver hands back a PARSED OBJECT and
+  // 1.0's `JSON.parse` line would throw on every row. The string arm is the
+  // dead one here, kept only so a driver configured to hand over text does not
+  // silently answer null; the null fallback is `hydrateRow`'s own (`parse(text,
+  // null)`) and is parity, not a swallow — `whereThingStands` reads `object`,
+  // `action`, `at`, `actor` and `seq`, and never this field.
+  payload: jsonColumn(r.payload),
+  effect: r.effect ?? null,
+  household: r.household ?? null,
+  written_at: r.at instanceof Date ? r.at.toISOString() : r.at == null ? null : String(r.at),
+});
+
+/**
+ * A `jsonb` column as the derivations want it, whichever way the driver hands
+ * it over — POS-162's expression, lifted out because two columns need it.
+ *
+ * The string arm is the dead one against today's driver and is kept so a store
+ * migrated with a text column does not silently answer null; the null fallback
+ * is `hydrateRow`'s own (`parse(text, null)`) and is parity, not a swallow.
+ */
+function jsonColumn(v) {
+  if (v == null) return null;
+  if (typeof v === "object") return v;
+  try { return JSON.parse(String(v)); } catch { return null; }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// HOLDING, THE OTHER SHELF — `readJournal(db, { cls: "holding" })` over `acts`
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The section above answers "who holds what" out of the ATTACHMENTS edge. This
+// one answers a different question out of the same acts: what HAPPENED to a
+// thing — the give/drop/take events themselves, in the journal's own row shape.
+// Three 1.0 readers wanted it (POS-153): `groundWithinReach`'s set-down source,
+// `whereThingStands`'s `latestDrop`, and the `since:` shelf's hold effects.
+//
+// ── WHY THIS IS NOT A LIKE-FOR-LIKE PORT — THE STORE HOLDS MORE ─────────────
+//
+// The sqlite journal's holding rows are a WINDOW, and a narrow one, for two
+// independent reasons that compound:
+//
+//   1. UNFLIPPED, A HOLDING ACT TAKES NO JOURNAL ROW AT ALL. `declareHolding`
+//      writes the `attachments` edge and `mirrorHoldingAct` calls
+//      `mirrorLaneAct` → `mirrorAct` → INSERT INTO `acts`, and nothing else.
+//      world-journal.mjs names this itself (§ THE LANE HOOK · "an act the
+//      sqlite journal never held"): a SAY, a HOLDING and a movement-v2 WALK are
+//      the three acts with no journal row. So every holding act written before
+//      the hold lane's pen flipped is in `acts` and in no journal, ever.
+//   2. FLIPPED, THE JOURNAL ROW IS A BEST-EFFORT COPY. `LANE_FLIPPED_AT.hold`
+//      is 2026-09-03T18:58:05Z: since then `appendActFlipped` commits Postgres
+//      FIRST and then writes the sqlite row, and a failure there is logged and
+//      swallowed by design ("the record is already committed; the convenience
+//      copy failed"). And `world-drain.mjs` truncates the journal at each drain.
+//
+// So reading `acts` is a widening, not a translation, and the readers that take
+// it stop losing set-downs to the drain.
+//
+// ── THE ORDER IS `(at, id)`, AND `journal_seq` IS THE TRAP ──────────────────
+//
+// POS-152's finding, and it binds harder here: `hold` flipped BEFORE `frame`
+// did, so every flipped-era holding row was written Postgres-first with no
+// sqlite seq in hand — `journal_seq` is NULL for the whole live era by the
+// write path's own design (world2-pen.mjs § `seq` IS NULL HERE, AND THAT IS THE
+// POINT). Ordering by the column whose NAME says "the order" would sort the
+// live era into one undefined heap. `(at, id)` is D6's ruled replay order.
+//
+// ── CLASS ONLY, NEVER AN ACTION LIST ────────────────────────────────────────
+//
+// `readJournal(db, { cls })` filters on the class column and nothing else, so
+// this does too. An `action IN ('give','drop','take')` narrowing would read as
+// harmless today and would silently DROP a fourth face the day the hold lane
+// grows one — a narrowing the reader being replaced does not have. The frozen
+// era cannot leak in through the class: `seed-import.mjs` files every imported
+// event as `class = 'legacy'` ("one word that is in neither census keeps 2,400
+// imported rows from voting in a vocabulary they predate"), so a
+// `legacy:attachment` act is invisible here and reaches `liveHolder` through
+// `pgAttachmentsFor` above, where its own era mapping is written.
+
+/** `readJournal`'s order, in the store's terms. NEVER `journal_seq` (§ above).
+ *  The class word itself is `CLASS_HOLDING` above — one constant, not two. */
+export const HOLDING_ORDER_SQL = "ORDER BY acts.at, acts.id";
+
+/**
+ * `readJournal(db, { cls: "holding" })`, over `acts`. Oldest first.
+ *
+ * `since` / `until` are CROSSING bounds and both are optional. They exist
+ * because the `since:` shelf already narrows by crossing in JS
+ * (`holdEffectsFrom`: `c < sinceCrossing || c > nowCrossing` → skip), and
+ * pushing a bound it is going to apply anyway costs one clause and saves the
+ * whole frozen prefix.
+ *
+ * ⚑ A BOUND IS PUSHED ONLY WHEN IT IS A FINITE NUMBER, and that is not defensive
+ * typing — it is the equality. `holdEffectsFrom` is called with `sinceCrossing`
+ * UNDEFINED on every read that carries no cursor, and `c < undefined` is false,
+ * so an undefined bound filters NOTHING there. `crossing >= NULL` in SQL matches
+ * nothing at all. The two would disagree completely on the commonest call, so
+ * the guard is what makes the narrowed read and the unnarrowed one the same
+ * answer. The JS filter still runs afterwards and is still the one that decides.
+ *
+ * A row with a NULL crossing is dropped by a bound here and by
+ * `holdEffectsFrom`'s own `c == null` line there — but only the unbounded read
+ * reaches `latestDrop`, which wants every row whether or not it carries a
+ * crossing. That is why the ground readers ask for no bounds.
+ *
+ * `madeBy` (POS-138, 2026-09-24) narrows to the things a set of handles MADE —
+ * the author is the `<by>` half of the thing's id, which is the same reading
+ * `world-hold.mjs § whereThingStands` and `world-stance.mjs § setDownFor` make
+ * (`id.split("/")[0]`). It is how the author's stances read finds the
+ * set-downs waiting on its word without asking about every thing in town: the
+ * rows it returns are the holding acts on the house's own things and no others.
+ * Pushed AFTER `thing`, for the reason the `thing` clause gives.
+ */
+export async function pgHoldingRows(client, { thing = null, since = null, until = null, madeBy = null } = {}) {
+  const args = [CLASS_HOLDING];
+  let sql = `SELECT id, at, crossing, actor, action, object,
+                    at_anchor, at_dx, at_dy, witnesses, class, payload, effect, household
+             FROM acts WHERE class = $1`;
+  // `thing` IS PUSHED FIRST, and the position is load-bearing: POS-162's
+  // `pgHoldingRowsFor` fixture reads `params[1]` as the thing, so a bound
+  // squeezed in ahead of it would hand that suite a crossing where it expects an
+  // id. POS-162's own narrowing, verbatim — `object` is the thing for a live
+  // act and the payload key is the belt-and-braces for one written without it.
+  if (thing != null) {
+    args.push(String(thing));
+    // ⚑ `$$`: the placeholder's own dollar, then the template's. One `$` here
+    // (1626f2f4) sent `= 2` to Postgres — an integer against text, and a bind
+    // of two parameters to a statement that names one — so every per-thing
+    // holding read refused on the real store while the fixture, which reads
+    // `params` and never the text, answered green.
+    sql += ` AND COALESCE(object, payload->>'thing') = $${args.length}`;
+  }
+  if (madeBy != null) {
+    args.push([...madeBy].map(String));
+    sql += ` AND split_part(COALESCE(object, payload->>'thing'), '/', 1) = ANY($${args.length})`;
+  }
+  if (Number.isFinite(Number(since)) && since != null) {
+    args.push(Number(since));
+    sql += ` AND crossing >= $${args.length}`;
+  }
+  if (Number.isFinite(Number(until)) && until != null) {
+    args.push(Number(until));
+    sql += ` AND crossing <= $${args.length}`;
+  }
+  const { rows } = await client.query(`${sql} ${HOLDING_ORDER_SQL}`, args);
+  return rows.map(holdingRowOf);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // THE TRIPWIRES — premises that are FACTS OF TODAY'S STORE, not law
 // ═════════════════════════════════════════════════════════════════════════════
@@ -987,7 +1309,10 @@ export const DISCLOSURES = Object.freeze({
     "there is no household to name here. 1.0's `worldForStances` deliberately surfaces another household's " +
     "sketch when it overlaps ground you hold — 'the ONE place a sketch becomes visible to somebody who did not " +
     "write it', which the-late-welcome asks for. Under 007 that is not narrowable, it is unrepresentable for " +
-    "office_api. Which law gives way is a ruling, and it is not this port's to make.",
+    "office_api. Which law gives way is a ruling, and it is not this port's to make. RULED 2026-09-22 " +
+    "(POS-195, G1 overnight RULING 2): NEITHER gives way — a third credential, `stance_reader` " +
+    "(world2/schema/023), reads that ONE list through a policy carve admitting drafts to that role alone. " +
+    "This read is unchanged and office_api stays blind to other households' drafts, here and everywhere.",
   holdings_source:
     "holdings answer from `acts` alone. Measured 2026-08-28: `acts` holds all 43 attachment events the world " +
     "repo's STATE/log carries at settlement/S47 and S50, and the `attachments` tables in BOTH the lab office " +

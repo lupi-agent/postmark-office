@@ -76,6 +76,9 @@ test("the REST skin asks the same decision on its two apex routes, with the same
   assert.match(server, /import \{[^}]*visitorBounces[^}]*VISITOR_BOUNCE[^}]*\} from "\.\/mcp\.mjs"/, "server.mjs imports the decision and the words");
   assert.match(server, /visitorBounces\("household", payload, key\)/, "POST /household asks it before the household apex acts");
   assert.match(server, /visitorBounces\("world", payload, key\)/, "POST /world/apex asks it in the do: branch");
-  assert.equal((server.match(/VISITOR_BOUNCE\.defect, VISITOR_BOUNCE\.hint/g) ?? []).length, 2, "both routes answer with the one constant's words");
+  // THREE since POS-70: POST /town/apex is the town verb's plain door, and it
+  // asks the same decision in its do: branch, in the same words.
+  assert.match(server, /visitorBounces\("town", payload, key\)/, "POST /town/apex asks it in the do: branch");
+  assert.equal((server.match(/VISITOR_BOUNCE\.defect, VISITOR_BOUNCE\.hint/g) ?? []).length, 3, "all three routes answer with the one constant's words");
   // ⚑ THE FLIP: drop either route's line and its match reads zero.
 });
