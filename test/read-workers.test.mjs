@@ -149,6 +149,8 @@ test("the dispatch rule: GETs go to workers except the main thread's RAM reads; 
   assert.equal(workerTakes("GET", "/world/conversations"), false);
   assert.equal(workerTakes("GET", "/world/dynamic"), false);
   assert.equal(workerTakes("GET", "/household"), false);
+  // the say stream waits on voices, which land on the main thread (merge seam, POS-265 × POS-266)
+  assert.equal(workerTakes("GET", "/world/say/stream"), false);
   assert.equal(workerTakes("POST", "/world/walks"), false);
   assert.equal(workerTakes("GET", "/mcp"), false);
   assert.equal(workerTakes("GET", "/oauth/authorize"), false);

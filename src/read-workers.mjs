@@ -61,7 +61,9 @@ export const IN_READ_WORKER = !isMainThread && workerData?.readWorker === true;
  *
  * A read not named here and not refused by `workerSafe` goes to a worker.
  */
-export const MAIN_ONLY_READS = new Set(["/world/conversations", "/world/dynamic", "/household"]);
+// /world/say/stream (POS-265's push) waits on new voices, and voices land on the
+// main thread: served from a worker, the stream would open and never hear a word.
+export const MAIN_ONLY_READS = new Set(["/world/conversations", "/world/dynamic", "/household", "/world/say/stream"]);
 
 /** Does a read with this method and path go to a worker? */
 export function workerTakes(method, path) {
