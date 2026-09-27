@@ -58,7 +58,14 @@ import { causeOf } from "./mark-receipt.mjs";
  */
 export function claimEffectsFrom({ rows = [], sinceCrossing, nowCrossing, mine = () => false, onMyGround = new Set() }) {
   const events = [];
-  const at = (t) => (t == null ? null : String(t));
+  // `at` IS ISO (Keemin, 2026-09-27: "yeah everything iso please"). The store
+  // hands `decided_at` back as a Date, and String(Date) is "Sat Sep 26 2026 …",
+  // which three doors served and this file sorted by weekday name (POS-276).
+  const at = (t) => {
+    if (t == null) return null;
+    const ms = t instanceof Date ? t.getTime() : Date.parse(String(t));
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : String(t);
+  };
   const crossingAt = (t) => {
     const ms = Date.parse(String(t ?? ""));
     return Number.isFinite(ms) ? currentCrossing(ms) : null;
@@ -124,7 +131,8 @@ export function claimEffectsFrom({ rows = [], sinceCrossing, nowCrossing, mine =
       }
     }
   }
-  return events.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  // ISO sorts as text in instant order; a null `at` sorts first.
+  return events.sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")));
 }
 
 /**

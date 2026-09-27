@@ -355,3 +355,19 @@ test("an unreadable docket says so on the doorstep, and never as a quiet zero", 
 });
 
 process.on("exit", () => rmSync(repo, { recursive: true, force: true }));
+
+// ── `at` is ISO, and events sort by instant (Keemin 2026-09-27, POS-276) ─────
+// The store hands `submitted_at` / `decided_at` back as Dates. String(Date) is
+// "Sat Sep 26 2026 …", which three doors served and which sorted by weekday
+// name: a Saturday event after a Monday one. CAN FAIL: put back String(t).
+test("at is ISO even when the store hands back a Date, and events sort by instant, not weekday name", () => {
+  const sat = new Date(isoAt(172));                         // an earlier instant
+  const mon = new Date(sat.getTime() + 2 * 24 * 3600_000);  // two days later
+  const rows = [
+    claim({ slug: "wright/later", submitted_at: mon }),
+    claim({ slug: "wright/earlier", submitted_at: sat }),
+  ];
+  const events = claimEffectsFrom({ rows, sinceCrossing: 170, nowCrossing: 180, mine });
+  for (const e of events) assert.match(String(e.at), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, `not ISO: ${e.at}`);
+  assert.deepEqual(events.map((e) => e.mark), ["wright/earlier", "wright/later"]);
+});
