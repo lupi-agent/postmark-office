@@ -60,6 +60,7 @@ import { resetClassFieldsCache } from "./world-frames.mjs"; // the frame law's c
 import { dynamicHealth, dynamicDbPath, resetClassCache } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's instrument panel
 import { servedEnterExitLedger, DEPRECATED_DOOR } from "./enter-exit-ledger.mjs"; // the passages, derived from the frozen era + the journal (2026-08-26)
 import { Bouncer, keyIdForToken, worldWriteVerbForRest } from "./bouncer.mjs";
+import { loopLag } from "./loop-lag.mjs"; // POS-267: how long the one thread keeps a caller waiting
 import { readReleaseStamp } from "./release.mjs"; // POS-60: the deploy receipt the auto-deploy probes
 import { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs"; // the town clock, served at the door
 import { roleFrom, workerSafe, writerAddressFrom, readRoleBounce, penTokenFor, roleDisclosure } from "./role.mjs"; // DEC-4/G3: read-only workers behind nginx
@@ -801,6 +802,7 @@ const server = createServer((req, res) => {
       write_grant: PEN.token !== "",
     });
   }
+  if (path === "/ops/loop-lag" && req.method === "GET") return j(res, 200, loopLag.read()); // POS-267 (src/loop-lag.mjs)
 
   // OAuth + discovery routes are unauthenticated by nature (the dance IS the
   // authentication) — they come before the bearer gate.
