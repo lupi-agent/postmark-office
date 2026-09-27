@@ -57,8 +57,12 @@
 // the client held open at once. COLLAPSE is the probe's p50 at or past
 // --collapse-s (default 10 s): past that the thread is the queue. With
 // --stop-on-collapse (default) the ramp stops at the first collapsed step, and
-// the verdict names the agents and viewers at which it started. --out writes the
-// whole run as JSON.
+// the verdict names the agents and viewers at which it started. A route whose own
+// p50 passes the same line is named too, with the step it first did, because on
+// dev the acts and reads went past it while the probe still answered in a
+// second: the thread was free and the requests were waiting on something else.
+// --out writes the whole run as JSON. (Under Git Bash, prefix MSYS_NO_PATHCONV=1
+// when passing --without, or /world/present arrives as a Windows path.)
 //
 // It writes into DEV: N berths (they sunset in seven days) and their voices.
 
@@ -268,6 +272,7 @@ async function main() {
   probe();
   const steps = [];
   let collapsedAt = null;
+  let slowAt = null;
   for (const [k, step] of STEPS.entries()) {
     while (agents.length < step.agents) { const n = agents.length; agents.push({ n }); agent(n); }
     const viewersNow = steps.reduce((m, s) => Math.max(m, s.viewers), 0);
@@ -284,8 +289,12 @@ async function main() {
     const backlog = { probe_p50_ms: pct(probeMs, 0.5), probe_p95_ms: pct(probeMs, 0.95), probe_max_ms: probeMs.at(-1) ?? null,
       max_open: maxOpen, open_at_end: open, viewer_polls_skipped: stacked };
     const collapsed = backlog.probe_p50_ms !== null && backlog.probe_p50_ms >= COLLAPSE_MS;
+    // The other way a crowd breaks: the thread still answers the probe, but a
+    // route waits on something else (measured on dev 2026-09-27: at 10 agents
+    // the say waited 47 s at p50 while /release answered in about 1 s).
+    const slowRoutes = Object.entries(sum.routes).filter(([, r]) => r.p50_ms >= COLLAPSE_MS).map(([route]) => route);
     const out = { step: k + 1, agents: step.agents, viewers: step.viewers, seconds: Math.round(seconds),
-      failed_agents: agents.filter((a) => a.failed).length, ...sum, backlog, loop_lag_last_minute: loopLagSeen, collapsed };
+      failed_agents: agents.filter((a) => a.failed).length, ...sum, backlog, loop_lag_last_minute: loopLagSeen, collapsed, slow_routes: slowRoutes };
     steps.push(out);
     line(`\n── step ${k + 1}: ${step.agents} agents, ${step.viewers} viewers, ${Math.round(seconds)} s ── ${sum.responses_per_s} responses/s · ` +
       `probe p50 ${backlog.probe_p50_ms} ms p95 ${backlog.probe_p95_ms} ms max ${backlog.probe_max_ms} ms · open max ${backlog.max_open}` +
@@ -293,6 +302,8 @@ async function main() {
     for (const [route, r] of Object.entries(sum.routes))
       line(`  ${String(r.n).padStart(5)}  p50 ${String(r.p50_ms).padStart(6)}  p95 ${String(r.p95_ms).padStart(6)}  max ${String(r.max_ms).padStart(6)}` +
         `${r.errors ? `  errors ${r.errors}` : ""}${r.timeouts ? `  timeouts ${r.timeouts}` : ""}  ${route}`);
+    if (slowRoutes.length) line(`  past ${COLLAPSE_MS} ms at p50, while the probe ${collapsed ? "waited too" : "did not"}: ${slowRoutes.join(", ")}`);
+    if (slowRoutes.length && slowAt === null) slowAt = out;
     if (loopLagSeen) line(`  office loop lag, last minute: max ${loopLagSeen.max_ms} ms, p99 ${loopLagSeen.p99_ms} ms, blocked ${loopLagSeen.blocked_ms} ms`);
     if (collapsed && collapsedAt === null) collapsedAt = out;
     if (collapsed && STOP_ON_COLLAPSE) break;
@@ -302,11 +313,12 @@ async function main() {
     ? `COLLAPSE starts at ${collapsedAt.agents} agents and ${collapsedAt.viewers} viewers (step ${collapsedAt.step}): the cheapest door waited ${collapsedAt.backlog.probe_p50_ms} ms at p50`
     : `no collapse through ${STEPS.at(-1).agents} agents and ${STEPS.at(-1).viewers} viewers (probe p50 stayed under ${COLLAPSE_MS} ms)`;
   line(`\n${verdict}`);
+  if (slowAt) line(`routes first passed ${COLLAPSE_MS} ms at p50 at ${slowAt.agents} agents and ${slowAt.viewers} viewers (step ${slowAt.step}): ${slowAt.slow_routes.join(", ")}`);
   if (OUT) {
     writeFileSync(OUT, JSON.stringify({ run: RUN, base: BASE, release: rel, started: new Date(t0).toISOString(),
       shape: { say_s: [SAY_MIN, SAY_MAX], poll_s: POLL_S, step_s: STEP_S, timeout_ms: TIMEOUT_MS, collapse_ms: COLLAPSE_MS, page_load: PAGE_LOAD, page_poll: PAGE_POLL, without: [...WITHOUT],
         agents_are: "berths on the quay (POST /berth); residents' movement-derived standpoints are not exercised" },
-      steps, verdict }, null, 1));
+      steps, verdict, slow_routes_from_step: slowAt?.step ?? null }, null, 1));
     line(`written: ${OUT}`);
   }
   // Requests still out are left to their own timeouts; the process does not
