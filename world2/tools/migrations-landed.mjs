@@ -61,6 +61,7 @@ export const LANDED = {
   "024_household_spellings.sql":   { probe: policy("claims_delete_own_draft", " AND qual LIKE '%app.household_keys%'") },
   "025_drop_journal_seq.sql":      { probe: `NOT ${col("acts", "journal_seq")}` },
   "026_events.sql":                { probe: `${rel("events")} AND ${rel("event_rsvps")} AND ${rel("household_harnesses")} AND ${rel("earpiece_wakes")}` },
+  "027_office_paperwork.sql":      { probe: ["oauth_clients", "oauth_pending", "oauth_codes", "oauth_tokens", "oauth_berths", "oauth_key_claims", "office_roles", "office_role_audit"].map(rel).join(" AND ") },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */
