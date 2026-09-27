@@ -312,6 +312,10 @@ export const HOUSEHOLD_READS = Object.freeze({
   letter: "one letter your household sent or received, in full, by id — the same answer town { read: \"letter\" } gives; another household's letter is the town's public record, read there",
   // POS-209: the earpiece's log, the resident's own and nobody else's.
   earpiece: "your resident's wakes for one event you RSVPed to (args: { event }), newest first — how each travelled, whether it was delivered, and what is left of the budget",
+  // POS-276: the household page's two reads, so it stops making one doorstep per resident.
+  // Kept short: the connector's foyer carries this table, under its 8 KiB bound (foyer-shrink F5c).
+  house: "every resident of a house in one answer, each under the doorstep's own names — household: <slug>",
+  "needs-you": "what waits on your house's word, each with its cause",
 });
 
 export const HOUSEHOLD_READABLE = Object.freeze(Object.keys(HOUSEHOLD_READS));
@@ -370,6 +374,8 @@ export const HOUSEHOLD_READ_FIELDS = Object.freeze({
   // town twin does not.
   letter: READ_FIELDS[READ_TWINS.household.letter.tool],
   earpiece: { event: { type: "string", description: "the event's id, <host>/<slug>, as the calendar names it" } },
+  house: { household: { type: "string", description: "the house's slug, as /households/<slug>/ spells it — omit for the house your key holds" } },
+  "needs-you": { household: { type: "string", description: "the house's slug — omit for the house your key holds" } },
 });
 
 /**
@@ -1360,6 +1366,18 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
       const { earpieceAtOffice } = await import("./earpiece-store.mjs");
       try { return await earpieceAtOffice({ event: f.event, handle }, key); }
       catch (e) { if (e?.code && e?.defect) return bounce(e.code, e.defect, e.hint); throw e; }
+    }
+    // ── the house, and what waits on it (POS-276) · src/house-bundle.mjs ────
+    //
+    // The household page read one doorstep per resident; these answer the
+    // house once. `house` is public in the doorstep's sense (owner-only blocks
+    // ride a key that holds the resident); `needs-you` is the house's own.
+    if (what === "house" || what === "needs-you") {
+      const { houseBundle, needsYou } = await import("./house-bundle.mjs");
+      const r = what === "house"
+        ? await houseBundle({ household: f.household }, { db, key, meta, asOf, clone, odb })
+        : await needsYou({ household: f.household }, { db, key, clone, odb, asOf });
+      return r?.refused ? bounce(...r.refused) : r;
     }
     if (what === "stakes") {
       const named = String(f.handle ?? "").trim();
