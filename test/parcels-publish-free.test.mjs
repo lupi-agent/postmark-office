@@ -12,8 +12,12 @@
 // nor the candle's "commons needs escrow > 0" reaches one. The door was the
 // only holder of the nominal stamp.
 //
-// THE CAN-FAIL FLIP: remove the parcel line from `groundMinimumStake` → the
-// first three legs go red; the sited control stays green.
+// THE CAN-FAIL FLIPS: remove the parcel line from `groundMinimumStake` → the
+// ✦0 leg and the own-ground leg go red; remove `publishNoteFor`'s parcel line
+// → the note leg goes red. The controls stay green under both.
+//
+// NOT DRIVEN HERE: the stake door passing `kind` into its own-ground read
+// (world-stake.mjs). The own-ground leg holds the function it calls.
 //
 //   node --test test/parcels-publish-free.test.mjs
 
