@@ -206,10 +206,15 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
         const hit = state.claims.filter((c) => c.status === "pending" && c.geometry?.slug === slug && c.claimant === claimant);
         return { rows: hit.slice(-1).map((c) => ({ id: c.id })), rowCount: hit.length ? 1 : 0 };
       }
+      // `asked` is `household = ANY($2)` since POS-160 / #165 — the spelling
+      // SET, an array — so a scalar comparison matched no claim at all and
+      // every household-scoped live read here answered empty (POS-233 found it:
+      // a resident's amend could never see the draft it was amending).
       const [statuses, asked] = params;
       const want = Array.isArray(statuses) ? statuses : null;
       const rows = state.claims.filter((c) =>
-        (want ? want.includes(c.status) : true) && (asked == null ? true : c.household === asked));
+        (want ? want.includes(c.status) : true)
+        && (asked == null ? true : Array.isArray(asked) ? asked.includes(c.household) : c.household === asked));
       return { rows: rows.map((c) => ({ ...c })), rowCount: rows.length };
     }
     // THE STANDING MARKS, for the one question the write path asks of them:
