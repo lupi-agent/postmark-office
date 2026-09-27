@@ -221,7 +221,7 @@ export function mirrorAct(row, seq, env = process.env) {
       // at crossing 157 — certified history — while the pen's insertAct would
       // have refused or re-stamped them. One guard, both pens: a row that may
       // not file through the door may not file through the mirror either.
-      const { lateCrossingGuard } = await import("./world2-pen.mjs");
+      const { lateCrossingGuard, actsInsert } = await import("./world2-pen.mjs");
       const guarded = lateCrossingGuard(row, { env });
       const household = guarded.household == null ? null : await householdKeyFor(p, guarded.household);
       // `acts.journal_seq` IS DROPPED (G1 / POS-156, migration 025). This path
@@ -229,15 +229,8 @@ export function mirrorAct(row, seq, env = process.env) {
       // so the one caller that still HAS a seq -- and even here the column has
       // no job: nothing pairs the two stores any more, and the arena's seq is
       // its identity inside its own fold, not a key into the record.
-      await p.query(
-        `INSERT INTO acts (at, crossing, actor, action, object,
-                           at_anchor, at_dx, at_dy, witnesses, class,
-                           payload, effect, household)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [guarded.written_at, guarded.crossing, guarded.actor, guarded.action, guarded.object,
-         guarded.at_anchor, guarded.at_dx, guarded.at_dy, guarded.witnesses, guarded.class,
-         guarded.payload, guarded.effect, household],
-      );
+      const { text, values } = actsInsert(guarded, household);
+      await p.query(text, values);
       state.written += 1;
     } catch (err) {
       state.failed += 1;

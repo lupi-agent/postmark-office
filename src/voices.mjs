@@ -287,6 +287,15 @@ export function createVoices({
   vesselAt = null,
   heardFrom = null,
   structuralHearing = () => Boolean(heardFrom),
+  // `spentNonce(handle, nonce, sinceMs)` is the eighth (POS-265, the durable
+  // half of THE RETRY KEY below): the instant a say carrying this nonce landed
+  // in the record at or after `sinceMs`, or null. Asked only when this
+  // process's own memory does not hold the nonce. `nonceKept()` says whether
+  // the record is keeping nonces at all (migration 027 stands on the store),
+  // which is what the receipt promises. Null / false: the register is this
+  // process's memory, exactly as it was.
+  spentNonce = null,
+  nonceKept = async () => false,
   logPath = voicesLogPath,
   now = () => Date.now(),
   earshotM = EARSHOT_M,
@@ -307,6 +316,12 @@ export function createVoices({
   const sent = new Map();     // handle -> { latest, at, lists } — the lists the last reply carried (THE DELTA, below)
   const spentNonces = new Map(); // "<handle> <nonce>" -> the instant that voice was spoken (THE RETRY KEY, below)
   const nonceInFlight = new Map(); // "<handle> <nonce>" -> the say still being spoken under it
+  const landedListeners = new Set(); // THE PUSH's ear (say-push.mjs): told, after the log line, that a voice landed
+  // What a room costs, counted where it is spent: `rooms` is every snapshot
+  // built (one derivation of what the town can hear at an instant), and the
+  // three beneath it are the expensive reads a snapshot makes. The push's
+  // falsifier reads these to show fifty waiters cost one room per voice.
+  const stats = { rooms: 0, heardFrom: 0, clusters: 0, nearby: 0 };
   // THE PRESENCE MAP is RAM (see lastPresent below): it records that a handle
   // spoke or listened here, and it is evicted by `presenceMs` below.
   //
@@ -375,6 +390,12 @@ export function createVoices({
       try { onSpoke(voice, spoken); }
       catch (e) { console.error(`[voices] a voice listener threw (${String(e?.message ?? e).slice(0, 120)}) — the log and the room are unaffected`); }
     }
+    // And the waiters (say-push.mjs), last of all and on the same terms: told
+    // that a voice landed, never able to cost the speaker their words.
+    for (const fn of landedListeners) {
+      try { fn(voice); }
+      catch (e) { console.error(`[voices] a waiter's ear threw (${String(e?.message ?? e).slice(0, 120)}) — the log and the room are unaffected`); }
+    }
   }
 
   // THE DECK RULE, ON HEARING — INTERIM (issue #5 §3, jetto-of-starforge).
@@ -416,23 +437,53 @@ export function createVoices({
   // hearer is riding, because the standpoint that produced it derived through
   // the same attachment (world-movement.mjs § movementStandpoint).
   //
-  // The relocation is awaited per voice, so this is async where the interim is
-  // not; every caller of `heardBy` was already inside an async function.
-  async function heardBy(here, t, vessel = null) {
-    const ear = { x: here.at.x, y: here.at.y, aboard: Boolean(here.aboard) };
+  // The relocation is awaited per voice, so the snapshot below is async where
+  // the ear's own test is not.
+  //
+  // ── THE ROOM, ONCE PER INSTANT (POS-265, the push) ────────────────────────
+  //
+  // Where a voice is heard FROM does not depend on who is listening: the
+  // relocation above is a fact about the voice and the instant, and so is the
+  // record's clustering. Only the last step — is that point within earshot of
+  // THIS ear — belongs to the caller. So the work is split there. `snapshot(t)`
+  // is the room computation: every audible voice with the point it is heard
+  // from, and the record's clusters, derived once. `heardBy(here, snap)` is
+  // the ear's arithmetic over it. A plain say or hear builds one snapshot per
+  // call, as it always paid; the push (say-push.mjs) builds one per landed
+  // voice and hands it to every waiter, which is what keeps fifty open waiters
+  // at one room per voice rather than fifty.
+  async function snapshot(t) {
+    stats.rooms += 1;
+    let vessel = null;
+    if (vesselAt) { try { vessel = await vesselAt(); } catch { vessel = null; } }
     const structural = Boolean(heardFrom) && structuralHearing() === true;
-    const out = [];
+    const audible = [];
     for (const v of hydrate()) {
       if (v.at > t || t - v.at > fadeMs) continue;
       if (structural) {
         let from = null;
+        stats.heardFrom += 1;
         try { from = await heardFrom(v, t); } catch { from = null; }
         const point = from ?? { x: v.x, y: v.y };
-        if (distM(point, ear) <= earshotM) out.push({ ...v, heardFrom: { x: point.x, y: point.y } });
+        audible.push({ v, x: point.x, y: point.y, structural: true });
         continue;
       }
-      const heard = v.aboard && vessel ? { ...v, x: vessel.x, y: vessel.y } : v;
-      if (chains(heard, ear, earshotM)) out.push({ ...v, heardFrom: { x: heard.x, y: heard.y } });
+      const heard = v.aboard && vessel ? { x: vessel.x, y: vessel.y } : { x: v.x, y: v.y };
+      audible.push({ v, x: heard.x, y: heard.y, structural: false });
+    }
+    stats.clusters += 1;
+    const clusters = clusterVoices(hydrate(), { earshotM, fadeMs: closeMs });
+    return { t, audible, clusters };
+  }
+
+  function heardBy(here, snap) {
+    const ear = { x: here.at.x, y: here.at.y, aboard: Boolean(here.aboard) };
+    const out = [];
+    for (const a of snap.audible) {
+      const hit = a.structural
+        ? distM(a, ear) <= earshotM
+        : chains({ x: a.x, y: a.y, aboard: a.v.aboard }, ear, earshotM);
+      if (hit) out.push({ ...a.v, heardFrom: { x: a.x, y: a.y } });
     }
     return out;
   }
@@ -469,8 +520,7 @@ export function createVoices({
   // it (Keemin, party night: an agent arriving mid-lull heard silence while the
   // page showed a twenty-voice thread; hearing is five minutes, a conversation
   // is longer than an ear). Chains exactly like the page: earshot or shared deck.
-  function openConversationAt(here, t) {
-    const clusters = clusterVoices(hydrate(), { earshotM, fadeMs: closeMs });
+  function openConversationAt(here, t, clusters) {
     const mine = clusters.find((c) =>
       t - c.latest <= closeMs &&
       c.voices.some((v) => (v.aboard && here.aboard) || distM(v, here.at) <= earshotM));
@@ -492,11 +542,14 @@ export function createVoices({
   // the reply's `latest` stamp, echoed back on the next call, filters both
   // voice arrays to strictly-newer. First call rich (arrival needs the room),
   // lingering calls near-empty. Stateless — the cursor lives with the caller.
-  async function reply(handle, here, t, spoke, since = null) {
+  //
+  // `snap` and `presentIn` are the push's: a snapshot already built for this
+  // instant, and `present` already read for this ear from one read of the kept
+  // positions. Absent, the reply builds and reads its own, as it always has.
+  async function reply(handle, here, t, spoke, since = null, { snap = null, presentIn } = {}) {
     const fresh = (v) => !(Number.isFinite(since) && v.at <= since);
-    let vessel = null;
-    if (vesselAt) { try { vessel = await vesselAt(); } catch { vessel = null; } }
-    const within = (await heardBy(here, t, vessel)).filter(fresh).slice(-hearMax); // newest last
+    snap ??= await snapshot(t);
+    const within = heardBy(here, snap).filter(fresh).slice(-hearMax); // newest last
 
     // WHO IS HERE vs WHO HAS BEEN TALKING (issue #5 §2).
     //
@@ -522,7 +575,11 @@ export function createVoices({
     // has never walked. Being in earshot by either reckoning is being here.
     const atTheDoor = listenersAround(here.at, t).filter((h) => h !== handle);
     let present = null;
-    if (nearby) { try { present = await nearby(here.at, { aboard: Boolean(here.aboard) }); } catch { present = null; } }
+    if (presentIn !== undefined) present = presentIn;
+    else if (nearby) {
+      stats.nearby += 1;
+      try { present = await nearby(here.at, { aboard: Boolean(here.aboard) }); } catch { present = null; }
+    }
     const here_ = present ? [...new Set([...present, ...atTheDoor])].filter((h) => h !== handle).sort() : atTheDoor;
     const out = {
       where: { place: here.place, x: Math.round(here.at.x), y: Math.round(here.at.y), ...(here.aboard ? { aboard: true } : {}) },
@@ -548,7 +605,7 @@ export function createVoices({
     // answer you — which is simply not the same question as who is here. Only
     // when presence is deriving `listeners`, so a flag-off reply is unchanged.
     if (present) out.at_the_door = atTheDoor;
-    const convo = openConversationAt(here, t);
+    const convo = openConversationAt(here, t, snap.clusters);
     if (convo) {
       if (Number.isFinite(since)) {
         const newRecord = convo.record.filter((v) => v.at_ms > since);
@@ -671,15 +728,16 @@ export function createVoices({
   // lands, and that await is where a second call carrying the same nonce
   // would otherwise walk past the first. A bounce spends nothing.
   //
-  // ⚠ WHERE THE SPENT NONCE LIVES, and the gap that leaves. The send reads its
-  // nonces back off the town-log rows it writes. A voice's durable line (the
-  // voices log, ruled and durable) does not carry a nonce, and the world's
-  // `acts` table has no column for one until 027_act_nonce.sql — so the say's
-  // spent register is this process's memory, for `closeMs` (a retry into the
-  // same conversation). A restart between the first say and its retry forgets
-  // the nonce and the retry speaks again; the log line and the acts column are
-  // the two places a durable register could live, and choosing between them is
-  // a shape question left for Wright, not taken here.
+  // WHERE THE SPENT NONCE LIVES. The send reads its nonces back off the
+  // town-log rows it writes; the say reads its back off the act it wrote
+  // (Keemin's go, 2026-09-27: "a say's nonce is stored on its act in Postgres").
+  // `acts.nonce` is migration 027, written in the act's own INSERT and asked
+  // through `spentNonce` below. The voices log's shape is ruled and does not
+  // carry it. Two registers still, for two reasons: this process's memory
+  // answers every retry it saw without a query, and the record answers the
+  // retry that arrives after a restart. An office whose store has not taken
+  // 027 keeps the memory alone, and its receipt says so ("while this office
+  // stays up").
   //
   // The receipt is re-derived rather than replayed: the room is the room NOW,
   // the way the send recomputes the crossing that would otherwise lie. What
@@ -699,17 +757,38 @@ export function createVoices({
       if (first && !first.error) return { ...first, duplicate: true,
         note: "this nonce was already in flight when your call arrived — a voice carrying it was mid-speech, and this is that voice's receipt. NOTHING WAS SAID A SECOND TIME." };
     }
+    // The in-flight entry now covers the RECORD's lookup as well as the speech:
+    // the lookup is awaited, and a second call carrying the same nonce must not
+    // walk past the first while it is asking.
+    const p = spendOrSpeak(handle, text, { standAs, since, household, key });
+    nonceInFlight.set(slot, p);
+    try { return await p; } finally { nonceInFlight.delete(slot); }
+  }
+
+  // ── THE DURABLE HALF (POS-265, ruled 2026-09-27) ──────────────────────────
+  //
+  // Memory first, because it is free and it is right for every retry this
+  // process saw. On a miss the RECORD is asked: the say's act carries its nonce
+  // (migration 027), so a retry after a restart finds the first say there and
+  // gets its receipt. The window is the same `closeMs` either way — the key is
+  // honoured into the same conversation, not forever. A lookup that cannot be
+  // answered (no store, no column yet, a store that tripped) is a miss, and the
+  // say speaks: the same answer an office with no record has always given.
+  async function spendOrSpeak(handle, text, { standAs, since, household, key }) {
     const t = now();
-    const spentAt = spentNonces.get(slot);
-    if (spentAt != null && t - spentAt <= closeMs) {
+    let spentAt = spentNonces.get(`${handle} ${key}`);
+    if (spentAt != null && t - spentAt > closeMs) spentAt = null;
+    if (spentAt == null && spentNonce) {
+      try { spentAt = await spentNonce(handle, key, t - closeMs); } catch { spentAt = null; }
+      if (!Number.isFinite(spentAt) || t - spentAt > closeMs) spentAt = null;
+    }
+    if (spentAt != null) {
       const here = await standing(standAs);
       const room = here.bounce ? { spoke: true } : await reply(handle, here, t, true, since);
       return { ...room, duplicate: true, nonce: key, spoken_at: new Date(spentAt).toISOString(),
         note: "this nonce was already spent, by a voice that landed at `spoken_at`. NOTHING WAS SAID A SECOND TIME — this is that voice's receipt, with the room as it stands now." };
     }
-    const p = speak(handle, text, { standAs, since, household, nonce: key });
-    nonceInFlight.set(slot, p);
-    try { return await p; } finally { nonceInFlight.delete(slot); }
+    return speak(handle, text, { standAs, since, household, nonce: key });
   }
 
   async function speak(handle, text, { standAs, since, household, nonce = null }) {
@@ -731,16 +810,23 @@ export function createVoices({
     if (beforeSpoke) {
       // The pen first, refusable: a refusal here is the answer, and the log
       // never learns the voice existed (R2: nothing written anywhere else).
-      const refused = await beforeSpoke(voice, { standAs, household });
+      // `nonce` rides to the pen so the act carries it (migration 027) — the
+      // durable register is the act itself, written in the same INSERT.
+      const refused = await beforeSpoke(voice, { standAs, household, ...(nonce ? { nonce } : {}) });
       if (refused) return refused;
     }
-    append(voice, { standAs, household });
+    append(voice, { standAs, household, ...(nonce ? { nonce } : {}) });
     touch(handle, here.at, t, "spoke");
     if (!nonce) return reply(handle, here, t, true, since);
     spentNonces.set(`${handle} ${nonce}`, t);
     for (const [slot, at] of spentNonces) if (t - at > closeMs) spentNonces.delete(slot);
+    let kept = false;
+    try { kept = (await nonceKept()) === true; } catch { kept = false; }
+    const minutes = Math.round(closeMs / 60000);
     return { ...(await reply(handle, here, t, true, since)), nonce,
-      idempotent: `retry this exact call with the same nonce and you will get this receipt back rather than a second voice — for the next ${Math.round(closeMs / 60000)} minutes, while this office stays up` };
+      idempotent: kept
+        ? `retry this exact call with the same nonce and you will get this receipt back rather than a second voice — for the next ${minutes} minutes; the nonce is kept on this voice's act in the town's record, so an office restart does not forget it`
+        : `retry this exact call with the same nonce and you will get this receipt back rather than a second voice — for the next ${minutes} minutes, while this office stays up` };
   }
 
   // The page's read: every conversation in the world, live ones first. Served
@@ -792,5 +878,25 @@ export function createVoices({
     return null;
   }
 
-  return { say, hear, conversations, lastPresent, log: pathOf, _voices: () => hydrate(), _presence: presence };
+  // THE ROOM, FOR THE PUSH (say-push.mjs). The waiters need the reply split at
+  // the seam `snapshot` names — one room per instant, then each ear's own
+  // arithmetic — and a word when a voice lands. Nothing here is a second
+  // derivation: the push dresses its answers with this module's own `reply`.
+  const room = {
+    snapshot,
+    standing,
+    /** The voices this ear hears in `snap`, newer than `since` — the waiter's "is there news". */
+    heard: (here, snap, since = null) => heardBy(here, snap).filter((v) => !(Number.isFinite(since) && v.at <= since)),
+    /** A listen's reply, dressed from a snapshot already built (and `present`, when the push read it). */
+    reply: (handle, here, t, since, opts) => reply(handle, here, t, false, since, opts),
+    /** Listening is presence — a waiter is standing here while it waits. */
+    listened: (handle, here, t) => touch(handle, here.at, t, "listened"),
+    onLanded(fn) { landedListeners.add(fn); return () => landedListeners.delete(fn); },
+    /** The newest voice's instant, or -Infinity — lets a waiter skip a room when nothing is newer than its cursor. */
+    latestAt: () => { const v = hydrate(); return v.length ? v.at(-1).at : -Infinity; },
+    stats,
+    now,
+  };
+
+  return { say, hear, conversations, lastPresent, room, log: pathOf, _voices: () => hydrate(), _presence: presence };
 }

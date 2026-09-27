@@ -257,7 +257,10 @@ class FakeClient {
       // into a named key, is what makes "the pen did not send it" and "the pen
       // sent null" different facts here -- which is the difference migration
       // 024 turns into a failed write on a real store.
-      if (rest.length) row.journal_seq = rest[0];
+      // Named, not positional, past the thirteenth: since migration 027 a say's
+      // row may carry `nonce` there, and it must not be filed as `journal_seq`.
+      const extra = (/INSERT INTO acts \(([^)]*)\)/i.exec(t)?.[1] ?? "").split(",").map((c) => c.trim()).slice(13);
+      extra.forEach((c, i) => { row[c] = rest[i]; });
       defer(() => store.acts.push(row));
       return { rows: [{ id }], rowCount: 1 };
     }
