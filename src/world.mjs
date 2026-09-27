@@ -70,6 +70,7 @@ import { byBand, presenceEnabled, presentNear, near as presenceNear, everyone as
 import { MEDIA_BASE, mediaUrlOk } from "./media.mjs"; // the mark door's image allowlist: only the town's own media hangs on marks
 import { imageFormat, MEDIA_FORMATS } from "./edit.mjs"; // the bytes decide the type, never the filename (with_image, below)
 import { everyonePlaced, withFrames } from "./positions.mjs"; // where is everyone: walk records ∪ parcel households, one derivation — plus Stage D's frame overlay
+import { createPositionGrid, createPositionProjection, recordOfMovement } from "./position-projection.mjs"; // POS-264: the governing departure per resident, kept current by the walk door
 import { ORIGIN, NO_GROUND_NEIGHBOURHOOD, isGroundlessDefault, groundlessStandpoint } from "./groundless.mjs"; // where a resident with no ground stands: the Origin, said once (#2900)
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -432,6 +433,133 @@ export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Da
 /** The array alone, for the many callers that want only that. */
 export const departuresNow = async (worldClone = WORLD_CLONE, opts = {}) =>
   (await departuresAcrossEras(worldClone, opts)).departures;
+
+// ── THE POSITIONS PROJECTION (POS-264, behind WORLD_POSITIONS=1) ─────────────
+//
+// `departuresAcrossEras` above is the derivation and it stays: it is how the
+// projection is born (`rebuild`), re-born after PROJECTION_MAX_AGE_MS, and what
+// `test/position-projection.test.mjs` holds it equal to. What changes is who
+// pays for it. Every door below used to read both eras per call and hearing
+// read them per VOICE; with the flag on, the office reads them once and the
+// walk door keeps the answer current in the same step it writes the act
+// (`walkViaOffice § ONE WRITE, INTO THE RECORD`).
+//
+// Bound to THIS office's clone. A caller asking about another clone (the test
+// suite's fixtures) gets the derivation, because a projection of one record is
+// not an answer about another.
+//
+// The flag is read per call and never latched, the discipline `movementV2Enabled`
+// and `presenceEnabled` keep. With it off every door below answers exactly what
+// it answered before this block existed.
+export const positionsProjected = () => process.env.WORLD_POSITIONS === "1";
+export const positionProjection = createPositionProjection({
+  rebuild: (atMs) => departuresAcrossEras(WORLD_CLONE, { atMs }),
+});
+
+/** `departuresAcrossEras`' shape — from the projection when this office keeps one for this clone. */
+async function erasFor(worldClone) {
+  if (positionsProjected() && worldClone === WORLD_CLONE) return positionProjection.snapshot();
+  return departuresAcrossEras(worldClone);
+}
+
+// The clone's walk.mjs for the clock, held the way `whereMod` holds where-is:
+// once, at the blessed ref. `engineImport` re-materialises the tree per call.
+let _walkClock = null;
+async function walkClock() {
+  _walkClock ??= await engineImport("walk.mjs");
+  return _walkClock;
+}
+
+/**
+ * THE HEARING HOOK, OVER THE PROJECTION. `world-movement.mjs § heardFromV2`
+ * with the speaker's records taken from the projection instead of from both
+ * eras re-read per voice. Flag off, it is the hook `voices` is built with
+ * below, call for call.
+ *
+ * WHY THE GOVERNING RECORD IS ENOUGH: the records matter to `heardFromV2` only
+ * through `foldFrames`, and since POS-247 that fold cannot produce a frame from
+ * a walk (it starts at `frame = null` and only ever reassigns null). So one
+ * record or the whole history folds to the same null, and the answer is the
+ * position floor either way. The falsifier holds that; the day a walk can
+ * frame again, it goes red here first.
+ */
+export async function projectedHeardFrom(voice, t) {
+  try {
+    const governing = positionsProjected() ? await positionProjection.departures() : null;
+    return await heardFromV2(voice, await world(), {
+      repo: WORLD_CLONE, atMs: t,
+      recordsOf: async (h) => {
+        if (governing) return governing.filter((d) => d.handle === h);
+        try { return (await departuresNow(WORLD_CLONE)).filter((d) => d.handle === h); }
+        catch { return []; }
+      },
+      ...(governing ? { storeRecordsOf: async () => [] } : {}),
+    });
+  } catch { return null; }
+}
+
+// ── near(point, radius), over the projection ─────────────────────────────────
+//
+// The grid is rebuilt whenever what it was built from moves: a recorded walk
+// (the projection's epoch), a new fold (the world's sha), or a change in who
+// rides (the rider frames' handles). Each is a pure recompute over the
+// projection's hundred-odd rows; none reads the record.
+let _grid = null;   // { key, grid }
+
+/**
+ * Presence's rows, from the projection: the vessel is a mark that moves and is
+ * never a resident here (`dynamic-presence.mjs § positionsAt`), and riders read
+ * at the hull (`withVehicleRiders`, read once per question, as presence reads it).
+ */
+async function projectedPresenceRows(atMs) {
+  const w = await foldForPresence();
+  const where = await whereMod();
+  const clock = await walkClock();
+  let frames = null;
+  if (w && worldHasVehicle(w)) {
+    try {
+      const { withVehicleRiders } = await import("./dynamic-presence.mjs");
+      frames = await withVehicleRiders(null, { world: w, repo: WORLD_CLONE, atMs });
+    } catch { frames = null; }
+  }
+  const departures = (await positionProjection.departures()).filter((d) => d.handle !== VESSEL_HANDLE);
+  const rowsFor = async (handles, at) => {
+    const rows = withFrames(everyonePlaced({ world: w, departures, at: clock.fractionalCrossing(at), where }), frames);
+    if (!handles) return rows;
+    const want = new Set(handles);
+    return rows.filter((r) => want.has(r.handle));
+  };
+  const key = `${positionProjection.epoch}|${w?._raw?.sha ?? "no-fold"}|${frames ? [...frames.keys()].sort().join(",") : ""}`;
+  if (_grid?.key !== key) _grid = { key, grid: await createPositionGrid({ rowsFor, frames }).build(atMs) };
+  return { grid: _grid.grid, rowsFor };
+}
+
+/** Everyone within `radiusM` of a point, nearest first — the projection's `near`. */
+export async function projectedNear(point, radiusM, atMs = Date.now()) {
+  const { grid } = await projectedPresenceRows(atMs);
+  return grid.near(point, radiusM, atMs);
+}
+
+/**
+ * THE LISTENERS HOOK, OVER THE PROJECTION — `nearby` below, answered by
+ * `near()`. Same gate (WORLD_PRESENCE), same radius, same cap, same sorted
+ * handles. Flag off, it is the hook `voices` is built with, call for call.
+ */
+export async function projectedNearby(at) {
+  if (!positionsProjected()) {
+    const r = await presentNear(at, { radiusM: EARSHOT_M, limit: EARSHOT_PRESENCE_CAP, repo: WORLD_CLONE, world: await foldForPresence() });
+    if (!r || r.unavailable || !Array.isArray(r.residents)) return null;
+    return r.residents.map((p) => p.handle).sort();
+  }
+  if (!presenceEnabled()) return null;
+  try {
+    const hits = await projectedNear(at, EARSHOT_M);
+    return hits.slice(0, EARSHOT_PRESENCE_CAP).map((r) => r.handle).sort();
+  } catch (e) {
+    console.error(`[world] the projected presence read tripped (${String(e?.message ?? e).slice(0, 160)}) — the door answers without it`);
+    return null;
+  }
+}
 
 // Where a bare call stands you: your BODY first — the walk ledger's derived
 // position (presence lives in the walk ledger, the invariant recorded
@@ -1644,10 +1772,14 @@ export async function worldPresent(args = {}, { roll = null } = {}) {
   // split-brain issue #7 and DEC-11 each paid for once. That argument is why it
   // is parked from all three IN ONE COMMIT rather than door by door: the
   // symmetry is the point in both directions.
-  if (!has) return presenceEveryone({ place, repo: WORLD_CLONE, world: w, roll: roll ?? [] });
+  // THE PROJECTION (POS-264): the governing departure per resident, both eras,
+  // in place of the entities table plus a store read per request. Its rebuild
+  // disclosure rides along; presence carries it into `disclosed`.
+  const projected = positionsProjected() ? await positionProjection.snapshot().catch(() => null) : null;
+  if (!has) return presenceEveryone({ place, repo: WORLD_CLONE, world: w, roll: roll ?? [], projected });
   const radiusM = Number.isFinite(Number(args.radius_m)) ? Math.max(1, Number(args.radius_m)) : undefined;
   const limit = Number.isFinite(Number(args.limit)) ? Math.max(1, Math.floor(Number(args.limit))) : undefined;
-  return presenceNear({ x, y, place, repo: WORLD_CLONE, world: w, roll: roll ?? [], ...(radiusM ? { radiusM } : {}), ...(limit ? { limit } : {}) });
+  return presenceNear({ x, y, place, repo: WORLD_CLONE, world: w, roll: roll ?? [], projected, ...(radiusM ? { radiusM } : {}), ...(limit ? { limit } : {}) });
 }
 
 // ── a mark's image, as bytes (world_investigate with_image, 2026-08-23) ──────
@@ -4387,6 +4519,12 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
             "this door's pen is the office's record; when it cannot be reached the door refuses rather than writing anywhere else — you are exactly where you were, and the walk is safe to declare again");
         throw err;
       }
+      // THE PROJECTION, IN THE SAME STEP (POS-264). Only after the record took
+      // the act, and in the exact shape `storedDepartures` hands that act back
+      // (position-projection.mjs § recordOfMovement). Recorded whether or not
+      // the flag is on — a projection nobody reads costs a Map.set, and one
+      // switched on mid-life is then already current.
+      if (worldClone === WORLD_CLONE) positionProjection.record(recordOfMovement(movement));
     }
 
     result = {
@@ -4716,7 +4854,10 @@ export async function worldWalkers(worldClone, key = null, { roll = null } = {})
   // silently made that branch unreachable and changed the reply's shape for a
   // clone with no ledger. It reports the failure instead, and the branch is
   // restored where it always was.
-  const eras = await departuresAcrossEras(worldClone).catch(() => null);
+  // THE PROJECTION WHEN THE OFFICE KEEPS ONE (POS-264): the same shape, the
+  // governing record per resident, which `everyonePlaced` answers from exactly
+  // as it answers from the whole record (position-projection.mjs § governingOf).
+  const eras = await erasFor(worldClone).catch(() => null);
   if (!eras || (eras.ledgerUnreadable && !eras.departures.length)) return { at, walkers: [], standing: [] };
   const departures = eras.departures;
   // ONE list. Briefly this door published `walkers` and `standing` separately and

@@ -95,7 +95,7 @@ export function governingDepartures(db) {
  * never in this list: she is a mark that moves, not a resident, and the entities
  * table she is excluded from is what feeds the departures below.
  */
-export function positionsAt(db, atMs, walk, vessel = null, { world = null, where = null, frames = null, stored = null, roll = [] } = {}) {
+export function positionsAt(db, atMs, walk, vessel = null, { world = null, where = null, frames = null, stored = null, roll = [], projected = null } = {}) {
   const deps = governingDepartures(db);
   deps.delete(VESSEL_HANDLE);   // belt and braces: she is not in this table to begin with
   const at = walk.fractionalCrossing(atMs);
@@ -122,7 +122,13 @@ export function positionsAt(db, atMs, walk, vessel = null, { world = null, where
   // APPENDED, NOT SORTED — the same law world.mjs follows. Latest wins means
   // latest in array order (the engine's `currentDeparture`), and re-sorting by
   // instant would override the order era one was written in.
-  const departures = (stored?.length ? [...fromEntities, ...stored] : fromEntities)
+  //
+  // THE PROJECTION, WHEN THE OFFICE KEEPS ONE (POS-264, `WORLD_POSITIONS`).
+  // `projected` is the governing departure per handle across BOTH eras, kept
+  // current by the walk door (`position-projection.mjs`). It replaces the two
+  // halves above rather than joining them: it is already their union, one
+  // record per resident, and it does not wait for a refresh.
+  const departures = (projected ?? (stored?.length ? [...fromEntities, ...stored] : fromEntities))
     .filter((d) => d.handle !== VESSEL_HANDLE);
 
   // THE GOVERNING RECORD MUST COME FROM THE SAME LIST THE POSITION DID.
@@ -276,7 +282,7 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
  * Never throws: a presence read that could take down `orient` would be a worse
  * bargain than not knowing who is nearby.
  */
-async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now(), walk = null, engine = null, world = null, where = null, roll = [] } = {}) {
+async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now(), walk = null, engine = null, world = null, where = null, roll = [], projected = null } = {}) {
   const path = dbPath ?? dynamicDbPath();
   if (!existsSync(path))
     return { error: "store-absent", detail: `no dynamic store at ${path} — run: npm run dynamic:rebuild` };
@@ -304,7 +310,9 @@ async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now
     // Stage D: derive every frame once, here, and hand the map down. Flag-off
     // this is null and `withFrames` returns its input untouched.
     let frames = null, stored = null, storeAbsent = null;
-    if (movementV2Enabled()) {
+    // A projection already holds era two; reading the store again for the same
+    // answer is the cost POS-264 exists to remove.
+    if (movementV2Enabled() && !projected) {
       try {
         const { storedDepartures } = await import("./world-movement.mjs");
         // AWAITED (POS-154). The read is the record's now, and the un-awaited
@@ -314,10 +322,10 @@ async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now
         stored = read.records;
         storeAbsent = read.absent;
       } catch (e) { stored = null; storeAbsent = String(e?.message ?? e).slice(0, 160); }
-      if (world) {
-        try { frames = await framesForPresence({ db, world, repo, atMs, walk: w, stored }); }
-        catch { frames = null; }  // a frame read must never cost anyone their presence
-      }
+    }
+    if (movementV2Enabled() && world) {
+      try { frames = await framesForPresence({ db, world, repo, atMs, walk: w, stored }); }
+      catch { frames = null; }  // a frame read must never cost anyone their presence
     }
     // Gated on the fold: a world with no vehicle-class mark pays nothing and
     // reads exactly as it did. Never throws, for the same reason the fold above
@@ -327,7 +335,7 @@ async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now
       try { frames = await withVehicleRiders(frames, { world, repo, atMs }); }
       catch { /* the riders read as ashore for this call, and nobody loses presence */ }
     }
-    rows = positionsAt(db, atMs, w, vessel, { world, where: whereMod, frames, stored, roll });
+    rows = positionsAt(db, atMs, w, vessel, { world, where: whereMod, frames, stored, roll, projected: projected?.departures ?? null });
     db.close();
     return {
       rows, engine: eng,
@@ -336,7 +344,9 @@ async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now
       ledger_moved: moved,
       disclosed: [
         ...(asOf ? [] : ["entities-never-derived: the presence table has never been filled — run dynamic:rebuild"]),
-        ...(moved === true ? ["ledger-moved-since-refresh: someone has walked since these departures were read, and their leg here is the previous one"] : []),
+        // The entities table's staleness describes this answer only when the
+        // answer was read from it. A projected answer was not.
+        ...(moved === true && !projected ? ["ledger-moved-since-refresh: someone has walked since these departures were read, and their leg here is the previous one"] : []),
         // The gap that made issue #7 §1 possible, now named instead of silent.
         // Half the union is GROUND, and ground needs the fold. A caller that
         // cannot hand one over gets the walk half and is told which half it is.
@@ -350,6 +360,10 @@ async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now
         ...(movementV2Enabled() && storeAbsent
           ? [`era-two-unread: ${storeAbsent} — this answer is the frozen walk ledger alone, so anyone who has moved since the freeze is at their pre-freeze position`]
           : []),
+        // The projection's own rebuild disclosure, carried whole — an unreadable
+        // record at its last rebuild is the same absence, said in the reader's
+        // words (`world.mjs § departuresAcrossEras`).
+        ...(projected?.disclosed ?? []),
       ],
     };
   } catch (e) {
@@ -369,9 +383,9 @@ async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now
 export async function near({
   x, y, radiusM = PRESENCE_DIALS.near_radius_m, limit = PRESENCE_DIALS.near_cap,
   exclude = [], place = null, dbPath = null, repo = WORLD_CLONE, atMs = Date.now(),
-  walk = null, engine = null, world = null, where = null, roll = [],
+  walk = null, engine = null, world = null, where = null, roll = [], projected = null,
 } = {}) {
-  const read = await readPresence({ dbPath, repo, atMs, walk, engine, world, where, roll });
+  const read = await readPresence({ dbPath, repo, atMs, walk, engine, world, where, roll, projected });
   if (read.error) return { error: read.error, detail: read.detail, residents: [], count: 0 };
 
   const skip = new Set(exclude);
@@ -434,9 +448,9 @@ export async function near({
  */
 export async function everyone({
   place = null, dbPath = null, repo = WORLD_CLONE, atMs = Date.now(), walk = null, engine = null,
-  world = null, where = null, roll = [],
+  world = null, where = null, roll = [], projected = null,
 } = {}) {
-  const read = await readPresence({ dbPath, repo, atMs, walk, engine, world, where, roll });
+  const read = await readPresence({ dbPath, repo, atMs, walk, engine, world, where, roll, projected });
   if (read.error) return { error: read.error, detail: read.detail, residents: [], count: 0 };
 
   const residents = [];

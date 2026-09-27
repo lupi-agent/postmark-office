@@ -663,8 +663,14 @@ export async function movementStandpoint(handle, worldState, {
  *
  * Returns `{ x, y, frame }` — the point to hear it from — or null, meaning
  * "heard where it was spoken", the ordinary case for everyone ashore.
+ *
+ * `storeRecordsOf(handle, spokenMs)` replaces the per-voice store read, which
+ * is the default. A caller that already holds era two — the positions
+ * projection (POS-264), whose governing records ride in through `recordsOf` —
+ * passes `async () => []`, so the record is not read once per voice to answer a
+ * question it has already answered.
  */
-export async function heardFromV2(voice, worldState, { repo = WORLD_CLONE, atMs = Date.now(), recordsOf = null } = {}) {
+export async function heardFromV2(voice, worldState, { repo = WORLD_CLONE, atMs = Date.now(), recordsOf = null, storeRecordsOf = null } = {}) {
   const { service, mod, carriers } = await vesselServiceFrom(worldState, { repo });
   if (!service || !mod || !carriers.length) return null;
   const spokenMs = Number(voice?.at);
@@ -674,7 +680,9 @@ export async function heardFromV2(voice, worldState, { repo = WORLD_CLONE, atMs 
   // WHICH FRAME THE SPEAKER WAS IN WHEN THEY SPOKE — not now. A voice records
   // where it happened; the question is what it was riding at that instant.
   const ledgerRecords = recordsOf ? (await recordsOf(voice.handle)) ?? [] : [];
-  const storeRecords = await storedRecordsFor(voice.handle, { atMs: spokenMs });
+  const storeRecords = storeRecordsOf
+    ? (await storeRecordsOf(voice.handle, spokenMs)) ?? []
+    : await storedRecordsFor(voice.handle, { atMs: spokenMs });
   const records = recordsAcrossEras(ledgerRecords, storeRecords).filter((r) => Date.parse(r.iso) <= spokenMs);
 
   let frame = null, local = null;
