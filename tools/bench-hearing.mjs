@@ -103,6 +103,8 @@ queries = 0; hookCalls = 0;
 const r = await time("heardBy (one hear in the room, via voices.hear)", () => voices.hear(handles[0]));
 console.log(`  voices heard ${r.voices?.length} · heardFrom calls ${hookCalls} · store queries ${queries} (3 runs)`);
 await time("departuresAcrossEras x1", () => departuresNow(WORLD_CLONE), 5);
+const { storedDepartures } = await import("../src/world-movement.mjs");
+await time("storedDepartures x1 (fixture store — Postgres round trip excluded)", () => storedDepartures({}), 5);
 
 // ── AFTER: the same hear, the hook over the positions projection ─────────────
 // `world.mjs § projectedHeardFrom` in what it calls, with this bench's fold
