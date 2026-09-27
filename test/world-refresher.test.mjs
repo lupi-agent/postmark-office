@@ -24,7 +24,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
-  blessed, draftDeltaForKey, draftRefForHousehold, freshestMainRef, mainRef,
+  blessed, draftDeltaForKey, draftRefForHousehold, ensureDraftCheckout, freshestMainRef, mainRef,
   materializeAtRef, publishedState, readAtRef, refExists,
 } from "../src/world-branches.mjs";
 import { questionKind, startWorldRefresher, worldRefresher } from "../src/world-refresher.mjs";
@@ -140,6 +140,41 @@ test("after a ref moves, a read answers from the last refresh until the refreshe
   assert.equal(after.value.sha, C2);
   assert.deepEqual(after.seen, []);
   r.stop();
+});
+
+test("a write sees the refs it just moved: the pen reseats on origin's new tip, not on the refresher's memory of it", async () => {
+  const base = mkdtempSync(join(tmpdir(), "postmark-refresher-pen-"));
+  try {
+    const at = (dir) => (...a) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const who = ["-c", "user.name=f", "-c", "user.email=f@t.invalid"];
+    const origin = join(base, "origin.git"), work = join(base, "work"), other = join(base, "other");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
+    execFileSync("git", ["clone", "-q", origin, work], { stdio: "ignore" });
+    const w = at(work);
+    writeFileSync(join(work, "a.md"), "one\n");
+    w("add", "-A"); w(...who, "commit", "-q", "-m", "one"); w("push", "-q", "origin", "HEAD:main");
+    w("switch", "-q", "-c", "draft/h"); w("push", "-q", "-u", "origin", "draft/h"); w("switch", "-q", "main");
+    const old = w("rev-parse", "refs/remotes/origin/draft/h").trim();
+
+    const r = startWorldRefresher(work, { intervalMs: 0 });
+    await r.refreshNow();
+    draftDeltaForKey(work, { household: "h", handles: new Set(["h"]) });   // the reads that teach it origin/draft/h
+    await r.refreshNow();
+
+    execFileSync("git", ["clone", "-q", "-b", "draft/h", origin, other], { stdio: "ignore" });
+    const o = at(other);
+    writeFileSync(join(other, "b.md"), "two\n");
+    o("add", "-A"); o(...who, "commit", "-q", "-m", "two"); o("push", "-q", "origin", "draft/h");
+    const tip = o("rev-parse", "HEAD").trim();
+    assert.notEqual(tip, old);
+
+    ensureDraftCheckout(work, "h");
+    assert.equal(w("rev-parse", "HEAD").trim(), tip, "the pen's fetch moved origin/draft/h, and the pen must reseat on where it moved to");
+    r.stop();
+  } finally {
+    worldRefresher(join(base, "work"))?.stop();
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test("what the refresher will and will not answer", () => {
