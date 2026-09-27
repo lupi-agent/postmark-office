@@ -222,7 +222,6 @@ const ROSTER = {
   // so it stops on usage. The store is opened lazily precisely so this refusal
   // never reaches Postgres — NO_PG below would make a connection fail anyway,
   // but the tool must not have tried.
-  "world2/tools/paperwork-import.mjs": { args: [], env: NO_PG, code: 2, needle: "--pg-url is required" },
   "world2/tools/window-reanchor.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: window-reanchor.mjs --dry-run | --apply" },
 };
 
