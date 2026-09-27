@@ -34,6 +34,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { IN_READ_WORKER } from "./read-workers.mjs";
 
 // A caller that arrives at the worst moment of a minute waits this long for the
 // thread before its own handler even starts. Five seconds: a pre-party minute
@@ -132,5 +133,9 @@ export function createLoopLag({ file = null, now = Date.now, histogram = null, a
 // first written at the first minute, not at import: on the box the previous
 // process's file (and its calm_at) stands until then, and a process that lives
 // less than a minute (every suite that imports server.mjs) writes nothing.
-export const loopLag = createLoopLag({ file: stateFileFor(portFromArgv()) });
+//
+// A READ WORKER (POS-266) keeps its own instance and writes NO file: it shares
+// the writer's port and telemetry folder, so its file would be the writer's,
+// and a worker's calm minute would overwrite the thread the roll call watches.
+export const loopLag = createLoopLag({ file: IN_READ_WORKER ? null : stateFileFor(portFromArgv()) });
 setInterval(() => loopLag.tick(), MINUTE_MS).unref();

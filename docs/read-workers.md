@@ -37,7 +37,7 @@ worker rebuild after `PROJECTION_MAX_AGE_MS` (60 s).
 | `GET /world/dynamic` | `channel.mjs`: `acts_by_channel`, counted per act |
 | `GET /household` | the standing read's `world_writes`, the bouncer's live budget |
 | admission (every request) | `bouncer.mjs` buckets, `berthHits`, `claimHits`, `oauth.mjs regHits`. The main thread admits a read before a worker sees it, and a worker's handler skips the bucket checks. |
-| `GET /release`, `GET /ops/loop-lag`, `GET /`, the OAuth dance, `/keys/claim` | answered above the dispatch point, always on the main thread. `/ops/loop-lag` therefore measures the main thread only. |
+| `GET /release`, `GET /ops/loop-lag`, `GET /`, the OAuth dance, `/keys/claim` | answered above the dispatch point, always on the main thread. `/ops/loop-lag` therefore measures the main thread only, and only the main thread writes `telemetry/loop-lag-<port>.json` (a worker's calm minute would otherwise overwrite the thread the roll call watches). |
 
 ## STAMP
 
