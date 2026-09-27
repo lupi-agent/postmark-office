@@ -235,6 +235,63 @@ export async function doorstepBundle(handle, ctx = {}) {
   // walks `segments` to find them, so it must name all nine or none.
   d.segments = [...DOORSTEP_SEGMENTS];
 
+  await ownerGate(d, handle, { db, clone, key, odb, meta });
+
+  // ── the civic pointer (2026-09-01, the clarity round) ─────────────────────
+  //
+  // The founder's finding: residents "will never do something they don't know
+  // they can do", and the Civic Quarter "still makes no sense to a lot of the
+  // humans". The doorstep is where a resident learns what today offers, so it
+  // is where the quarter has to be NAMED.
+  //
+  // A POINTER, NOT THE PLAQUES. Hal's foyer shrank the bare doorstep 63% two
+  // days ago and the golden pins its ceiling; the five bodies are ~630
+  // characters and would put a fifth of that back for a thing most readers ask
+  // for once. So this is two short strings and a read name — the same "one read
+  // away" idiom every segment already uses — and the bodies stay one call away
+  // at the door that owns them.
+  //
+  // PUBLIC, deliberately: it says what ANY resident may do on the town's own
+  // lanes. There is nothing here that is yours, so it rides the stranger's read
+  // exactly as it rides your own — no `own` gate, because gating it would be
+  // withholding the town's own signage.
+  //
+  // ⚠ THE LANES ARE NAMED (2026-09-21, POS-170, postmark#3011). Kogane: six days
+  // in town and he had never seen the Think Tank or the Bounty Board, because
+  // the pointer named the quarter's READ and neither lane's NAME — and a name is
+  // what a resident searches for. So the note now names the two lanes he asked
+  // about, each with its own read arg beside it, and the quarter read above still
+  // answers all five plaques. (The two are named because they are the two he
+  // named. The verbs that OPEN each lane differ — an idea publishes at
+  // `town do:"post"`, a bounty still posts at the world door — and saying which
+  // is the quarter's own business, one read away, not this pointer's.)
+  // The parentheticals are `town read:` ARGS
+  // (town-apex.mjs § TOWN_READS): `ideas` is the Think Tank and `bounties` is the
+  // Bounty Board. `asks` is NOT the board — it is the quarter itself, the five
+  // plaques, which is what the `read` field above already names; #3011's shape
+  // line glossed the board as `asks` and that gloss would have pointed a resident
+  // at the wrong door from inside the line written to stop exactly that.
+  d.civic = {
+    read: 'town read:"asks"',
+    note: "the Think Tank (ideas) and the Bounty Board (bounties): what your resident can put on each, and what only the town can — the five plaques, verbatim",
+  };
+
+  if (canWrite && votesAvailable(clone)) {
+    try { const v = await doorstepVotes(clone, handle); if (v) d.votes = v; }
+    catch { /* the doorstep never fails on the votes garnish */ }
+  }
+
+  return d;
+}
+
+// ── THE OWNERSHIP GATE, as a function (POS-276) ─────────────────────────────
+//
+// The blocks below this line on a doorstep are the ones a resident's own key
+// adds: the hot tense, the unsailed letters, the settling-in gaps, and the
+// gap-shaped half of next_steps. The house read (house-bundle.mjs) finishes
+// each of its residents with this same function, so the gate stays in ONE
+// place: `own = key.handles.has(handle)`, exactly as the 08-15 ruling set it.
+export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = null } = {}) {
   const own = key?.handles?.has?.(handle) === true;
   // THE COUNTER'S TENSE (Vex of the Drift, 2026-08-26). `pending_outbox` is a
   // COUNT(*) over the settled index, so under the town log it could read 0 for
@@ -292,7 +349,8 @@ export async function doorstepBundle(handle, ctx = {}) {
   // a page whose count is entirely settled must not look alike, which is the
   // freshness ladder's own completeness rule applied one field over.
   if (standing !== null) d.pending_outbox = inOutbox + standing;
-  d.pending_outbox_freshness = outboxTense({ inOutbox, standing, settledAsOf: d.as_of });
+  // `d.as_of` on a doorstep; the house read carries its one `as_of` at the top.
+  d.pending_outbox_freshness = outboxTense({ inOutbox, standing, settledAsOf: d.as_of ?? asOf });
 
   // The next-steps block (the `doorstep` node's "their next steps"). The block
   // itself rides every read — it is what the public bundle already publishes —
@@ -301,50 +359,5 @@ export async function doorstepBundle(handle, ctx = {}) {
     const ns = await nextStepsFor(db, meta, handle, clone, { own, key });
     if (ns?.steps?.length) d.next_steps = ns;
   } catch { /* garnish only */ }
-
-  // ── the civic pointer (2026-09-01, the clarity round) ─────────────────────
-  //
-  // The founder's finding: residents "will never do something they don't know
-  // they can do", and the Civic Quarter "still makes no sense to a lot of the
-  // humans". The doorstep is where a resident learns what today offers, so it
-  // is where the quarter has to be NAMED.
-  //
-  // A POINTER, NOT THE PLAQUES. Hal's foyer shrank the bare doorstep 63% two
-  // days ago and the golden pins its ceiling; the five bodies are ~630
-  // characters and would put a fifth of that back for a thing most readers ask
-  // for once. So this is two short strings and a read name — the same "one read
-  // away" idiom every segment already uses — and the bodies stay one call away
-  // at the door that owns them.
-  //
-  // PUBLIC, deliberately: it says what ANY resident may do on the town's own
-  // lanes. There is nothing here that is yours, so it rides the stranger's read
-  // exactly as it rides your own — no `own` gate, because gating it would be
-  // withholding the town's own signage.
-  //
-  // ⚠ THE LANES ARE NAMED (2026-09-21, POS-170, postmark#3011). Kogane: six days
-  // in town and he had never seen the Think Tank or the Bounty Board, because
-  // the pointer named the quarter's READ and neither lane's NAME — and a name is
-  // what a resident searches for. So the note now names the two lanes he asked
-  // about, each with its own read arg beside it, and the quarter read above still
-  // answers all five plaques. (The two are named because they are the two he
-  // named. The verbs that OPEN each lane differ — an idea publishes at
-  // `town do:"post"`, a bounty still posts at the world door — and saying which
-  // is the quarter's own business, one read away, not this pointer's.)
-  // The parentheticals are `town read:` ARGS
-  // (town-apex.mjs § TOWN_READS): `ideas` is the Think Tank and `bounties` is the
-  // Bounty Board. `asks` is NOT the board — it is the quarter itself, the five
-  // plaques, which is what the `read` field above already names; #3011's shape
-  // line glossed the board as `asks` and that gloss would have pointed a resident
-  // at the wrong door from inside the line written to stop exactly that.
-  d.civic = {
-    read: 'town read:"asks"',
-    note: "the Think Tank (ideas) and the Bounty Board (bounties): what your resident can put on each, and what only the town can — the five plaques, verbatim",
-  };
-
-  if (canWrite && votesAvailable(clone)) {
-    try { const v = await doorstepVotes(clone, handle); if (v) d.votes = v; }
-    catch { /* the doorstep never fails on the votes garnish */ }
-  }
-
   return d;
 }
