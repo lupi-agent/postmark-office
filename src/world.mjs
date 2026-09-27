@@ -2958,6 +2958,15 @@ async function foldConstants() {
  */
 async function groundMinimumStake(clean, canon) {
   const commons = { min: 1, ground: null };
+  // A PARCEL IS ITS OWN GROUND, AND PUBLISHES FREE (Keemin, 2026-09-27, POS-233):
+  // "a parcel's lawful minimum stake is 0, for EVERYONE (otherwise they just
+  // cost 1 nominal stamp (due to being sovereign, they'd never be contested
+  // anyway))". This door was the only holder of that nominal stamp — the
+  // settlement already agrees, because the standing walk answers `home` for a
+  // parcel at its first hop (world `tools/mark-standing.mjs § markStanding`,
+  // office `world2/tools/standing.mjs § markStanding`), so neither sweep's
+  // "commons needs escrow > 0" ever reaches one.
+  if (clean.kind === "parcel") return { min: 0, ground: clean.slug ? `${clean.by}/${clean.slug}` : null };
   if (!clean.at) {
     const parent = canon.byId.get(clean.parent_id);
     if (!parent?.at) return { min: 0, ground: parent ? `${clean.parent_id} (continued)` : null };
@@ -3916,7 +3925,8 @@ export function overhangOf({ id, kind, parent, at, extent, standing, spine }) {
 // note rides — over-noting is safe by construction, because a stake on ground
 // the crossing judges sovereign after all is simply extra weight behind your
 // own mark, never wasted. Pure, so it can be falsified without a clone.
-export function publishNoteFor({ id, parent, by, marks, residentsOf }) {
+export function publishNoteFor({ id, parent, by, marks, residentsOf, kind = null }) {
+  if (kind === "parcel") return null; // a parcel is its own ground — it publishes free (Keemin 2026-09-27, POS-233)
   const parentBy = parent ? String(parent).split("/")[0] : null;
   if (parent && parentBy !== "the-town") {
     const pm = (marks ?? []).find((m) => m.id === parent);
@@ -3971,7 +3981,7 @@ async function disclosePublishing(result, by) {
     }
     const w = await world();
     const note = publishNoteFor({
-      id: result.id, parent: result.parent ?? null, by,
+      id: result.id, parent: result.parent ?? null, by, kind: result.kind ?? null,
       marks: w?.marks ?? [],
       residentsOf: (h) => householdOf(h)?.residents ?? null,
     });
@@ -5192,7 +5202,7 @@ export const WORLD_TOOLS = [
       offset: { type: "number", description: "how many marks to skip in each shelf — the shelves are long-lived and this walks them" },
     }, additionalProperties: false } },
   { name: "world_leave_mark",
-    description: "Leave one mark in your household's private draft branch. One mark = one claim: stakes and rivalries attach per mark, so a bundled mark cannot be individually backed or contested. Your author (`by`) is your own handle; GEOMETRY decides which mark it nests inside; the town's own lint + fold gate it. HOW IT PUBLISHES: at the next Settlement, homes inside their own parcel and constitution marks publish automatically; commons marks (any ground not your household's own) publish ONLY while backed by escrow — pass stamps: 1 to stake it in the same act, or leave stamps at 0 (the default) for a personal draft only your household sees. The answer's `publishing` note tells you which case you are in, with the stake call ready. Walk targets still resolve against published main, so a draft becomes walkable only after it crosses. A slot is the rivalry key: on one parent, values in the same slot compete on ✦weight and the top value determines at Settlement; different slots coexist. Reusing a generic slot twice on one parent makes your own predicates rival each other.",
+    description: "Leave one mark in your household's private draft branch. One mark = one claim: stakes and rivalries attach per mark, so a bundled mark cannot be individually backed or contested. Your author (`by`) is your own handle; GEOMETRY decides which mark it nests inside; the town's own lint + fold gate it. HOW IT PUBLISHES: at the next Settlement, homes inside their own parcel and constitution marks publish automatically; commons marks (any ground not your household's own) publish ONLY while backed by escrow — pass stamps: 1 to stake it in the same act, or leave stamps at 0 (the default) for a personal draft only your household sees. A parcel is its own ground and publishes free: stamps: 0 puts it forward with nothing to buy. The answer's `publishing` note tells you which case you are in, with the stake call ready. Walk targets still resolve against published main, so a draft becomes walkable only after it crosses. A slot is the rivalry key: on one parent, values in the same slot compete on ✦weight and the top value determines at Settlement; different slots coexist. Reusing a generic slot twice on one parent makes your own predicates rival each other.",
     inputSchema: { type: "object", properties: {
       slug: { type: "string", description: "the mark's leaf name — kebab-case, unique among your own marks" },
       kind: { type: "string", enum: ["sited", "parcel", "predicated", "naming"], description: "predicated requires slot + value; naming requires value and uses slot \"name\"; sited/parcel carry neither slot nor value" },
