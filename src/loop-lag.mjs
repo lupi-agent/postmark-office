@@ -128,7 +128,9 @@ export function createLoopLag({ file = null, now = Date.now, histogram = null, a
 }
 
 // The office's own instance: started at import, one row a minute, the timer
-// unref'd so it never holds a test process or a shutdown open.
+// unref'd so it never holds a test process or a shutdown open. The file is
+// first written at the first minute, not at import: on the box the previous
+// process's file (and its calm_at) stands until then, and a process that lives
+// less than a minute (every suite that imports server.mjs) writes nothing.
 export const loopLag = createLoopLag({ file: stateFileFor(portFromArgv()) });
-loopLag.write();
 setInterval(() => loopLag.tick(), MINUTE_MS).unref();

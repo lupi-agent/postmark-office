@@ -230,7 +230,7 @@
    "label": "the office's thread",
    "stage": "live",
    "activation_owner": "Keemin — POS-267 part 2, briefed by Wright and built by the lane jetto-office-measure (2026-09-27, after the Snug Harbour night's two brownouts, when the office answered 18-22 s late and nothing on the box recorded it). The office writes the file itself from src/loop-lag.mjs, so it goes live with the first release that carries that module; until then this row reads ALARM-noheartbeat (the file does not exist), which is correct",
-   "cadence": "read as: last CALM — calm_at is the last minute in which every caller got the thread within 5 s; the office rewrites the file every minute and once at boot",
+   "cadence": "read as: last CALM — calm_at is the last minute in which every caller got the thread within 5 s; the office rewrites the file every minute",
    "cadence_source": "src/loop-lag.mjs (MINUTE_MS); the row above this one says whether the process is up",
    "heartbeat": {
     "kind": "state_file",

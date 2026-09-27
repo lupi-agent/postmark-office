@@ -149,12 +149,13 @@ after(async () => {
   rmSync(stateFileFor(PORT), { force: true });
 });
 
-test("GET /ops/loop-lag answers keyless, and the office wrote its file at boot", async () => {
+test("GET /ops/loop-lag answers keyless, and a process younger than a minute writes no file", async () => {
   const r = await fetch(`http://127.0.0.1:${PORT}/ops/loop-lag`);
   assert.equal(r.status, 200);
   const body = await r.json();
   assert.equal(body.threshold_ms, LAG_ALARM_MS);
   assert.ok(Number.isFinite(Date.parse(body.started_at)));
   assert.ok(Array.isArray(body.minutes));
-  assert.ok(existsSync(stateFileFor(PORT)), "the office did not write telemetry/loop-lag-<port>.json at boot");
+  assert.equal(body.last_minute, null);
+  assert.equal(existsSync(stateFileFor(PORT)), false, "the office wrote its state file before its first minute");
 });
