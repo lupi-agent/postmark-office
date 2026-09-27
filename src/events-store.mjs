@@ -31,6 +31,7 @@
 import { officeRead, officeWrite, insertAct, PenUnreachableError } from "./world2-pen.mjs";
 import { householdKeyFor } from "./world2-claims.mjs";
 import { currentCrossing } from "./crossings.mjs";
+import { wakesNote, earpieceEnabled } from "./earpiece.mjs";
 import { WORLD_ANCHOR } from "./world-journal.mjs";
 import {
   EVENT_CLASS, ACT_HOST, ACT_AMEND, ACT_CANCEL, ACT_RSVP, ACT_ANNOUNCE, ENDED_LIST_DAYS,
@@ -322,10 +323,13 @@ export async function rsvpAtOffice(fields, key, { now = Date.now(), env = proces
       ...(secret ? { secret, secret_note: SECRET_NOTE } : {}),
       ...(plan === "reuse" && row.harness === "webhook" ? { harness_note: HARNESS_REUSED_NOTE } : {}),
       budget: row.budget,
-      budget_note: `at most ${row.budget} wake${row.budget === 1 ? "" : "s"} for this event (default ${BUDGET_DEFAULT}, most ${BUDGET_MAX}); the earpiece sends them while the event's doors are open, when the office has it switched on`,
+      budget_note: `at most ${row.budget} wake${row.budget === 1 ? "" : "s"} for this event (default ${BUDGET_DEFAULT}, most ${BUDGET_MAX}), sent only while its doors are open`,
+      wakes_note: wakesNote({ kind: row.harness, event: prev, enabled: earpieceEnabled(env) }),
       receipt: fell_back
         ? `RSVPed to ${id} by mail: ${fell_back}, so the ferry carries it`
-        : `RSVPed to ${id} by ${row.harness}`,
+        : row.harness === "letta"
+          ? `RSVPed to ${id} by letta, delivered by mail until this office has a Letta client (POS-210)`
+          : `RSVPed to ${id} by ${row.harness}`,
       read: READ_HINT(id),
     };
   }, env, household);
