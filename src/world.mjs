@@ -1114,11 +1114,9 @@ const voices = createVoices({
   // on their ground whether or not they have ever declared a departure (issue #7
   // §1). Without it `listeners` would keep the very gap the say disclosure
   // promises it does not have.
-  nearby: async (at) => {
-    const r = await presentNear(at, { radiusM: EARSHOT_M, limit: EARSHOT_PRESENCE_CAP, repo: WORLD_CLONE, world: await foldForPresence() });
-    if (!r || r.unavailable || !Array.isArray(r.residents)) return null;
-    return r.residents.map((p) => p.handle).sort();
-  },
+  // POS-264: behind WORLD_POSITIONS the kept projection answers; with the flag
+  // off projectedNearby runs this same presentNear read unchanged.
+  nearby: projectedNearby,
   // WHERE THE BOAT IS NOW (issue #5 §3). The same derivation every other door
   // uses — her own line in the walk ledger, evaluated at this instant — so the
   // deck the hearing test relocates voices to is the deck the walkers API draws.
@@ -1137,19 +1135,10 @@ const voices = createVoices({
   // declaration, and it comes from the same standpoint every other door uses —
   // so a voice cannot be relocated onto a deck its speaker was never standing on.
   structuralHearing: () => movementV2Enabled(),
-  heardFrom: async (voice, t) => {
-    try {
-      return await heardFromV2(voice, await world(), {
-        repo: WORLD_CLONE, atMs: t,
-        recordsOf: async (h) => {
-          // Both eras: a speaker's frame at the instant they spoke is a fold
-          // over their whole history, and half a history folds to the wrong deck.
-          try { return (await departuresNow(WORLD_CLONE)).filter((d) => d.handle === h); }
-          catch { return []; }
-        },
-      });
-    } catch { return null; }
-  },
+  // POS-264: the governing record per resident from the kept projection (behind
+  // WORLD_POSITIONS), in place of a whole-history departures read per listener.
+  // With the flag off projectedHeardFrom is this hook as it was.
+  heardFrom: projectedHeardFrom,
 });
 
 export async function worldSay(args = {}, key = null) {
