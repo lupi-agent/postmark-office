@@ -278,16 +278,24 @@ export async function deriveLaw({ lawRepo }) {
   //
   // The same relation world-hydrate.mjs draws as a `describes` edge: a
   // non-geometric mark nested under the class mark (its `_parentMarkId`, the
-  // loader's own), carrying a `slot`. Keyed by (class, slot), which is how the
-  // door asks; `id` rides so `dialNode` can point at the node, not guess it.
+  // loader's own), carrying a `slot`. `id` rides so `dialNode` can point at the
+  // node, not guess it.
+  //
+  // KEYED BY (class, slot, id), NOT (class, slot): two children may name one
+  // slot (the suite's own world carries vehicle/aboard twice), and a coarser key
+  // would make this pen THROW on that world — the clearing's rulebook held
+  // hostage by a duplicate dial. world.db answers such a pair by row order — the
+  // LAST for classPredicates, the FIRST for dialNode's `LIMIT 1` — and `ord`
+  // (the loader's order, which is the order the hydrator writes its edges in)
+  // lets law-classes.mjs answer the same way.
   const isGeometric = (m) => m?.kind === "sited" || m?.kind === "parcel";
   const classOfId = new Map(declarations.map((m) => [m.id, String(m.class)]));
-  for (const m of marks) {
+  marks.forEach((m, ord) => {
     const klass = classOfId.get(m._parentMarkId);
-    if (klass === undefined || isGeometric(m) || m.slot === undefined || m.slot === null) continue;
-    push("predicate", relPath(repo, join(m._dir, "mark.md")), `${klass}/${m.slot}`,
-      { class: klass, slot: m.slot, value: m.value ?? null, id: m.id });
-  }
+    if (klass === undefined || isGeometric(m) || m.slot === undefined || m.slot === null) return;
+    push("predicate", relPath(repo, join(m._dir, "mark.md")), `${klass}/${m.slot}/${m.id}`,
+      { class: klass, slot: m.slot, value: m.value ?? null, id: m.id, ord });
+  });
 
   // ── kind: threshold ────────────────────────────────────────────────────────
   // The entry law a mark answers at its threshold — `termsAt` is the world's own
