@@ -91,7 +91,7 @@ function worldReaders() {
       walkers: async () => { calls.walkers += 1;
         return { at: 190.5, walkers: [{ handle: "r000", x: 10, y: -4, mark_id: "the-town/quay", moving: false, toward: null }] }; },
       // The store's own shape on prod: `decided_at` comes back a Date, and
-      // claim-effects String()s it — so the events arrive in toString form.
+      // claim-effects String()ed it until 2026-09-27; the Date is kept here so isoAt still proves it takes one.
       claimEffects: async (args) => { calls.claimEffects.push(args);
         return { readable: true, store: "docket", events: [
           { kind: "claim-locked", mark: "r000/garden", at: String(new Date("2026-09-26T12:05:00Z")), crossing: 190 },

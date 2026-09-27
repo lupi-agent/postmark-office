@@ -36,8 +36,8 @@
 // hands `decided_at` back as a Date, so on prod the doorstep's outcomes say
 // "Sat Sep 26 2026 08:00:00 GMT+0000 (Coordinated Universal Time)" — and sort
 // by weekday name. These two reads carry ISO and sort by instant. The shared
-// derivation is NOT changed here: three existing doors read it, and changing
-// what they answer is a contract call, not this lane's (POS-276 brief, item 4).
+// derivation was made ISO too on 2026-09-27 (Keemin: "yeah everything iso
+// please"), so isoAt here is now belt-and-braces over an ISO string.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
