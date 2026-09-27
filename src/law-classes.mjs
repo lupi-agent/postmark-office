@@ -40,14 +40,17 @@ export function lawSnapshotFromRows(rows) {
   const { number, tag_sha, newest } = rows[0];
   const classes = new Map();
   const predicates = new Map();
-  for (const r of rows) {
-    if (r.kind === "class") classes.set(String(r.key), r.data ?? {});
-    else if (r.kind === "predicate") {
-      const d = r.data ?? {};
-      const k = String(d.class);
-      if (!predicates.has(k)) predicates.set(k, new Map());
-      predicates.get(k).set(String(d.slot), { value: d.value ?? null, id: d.id ?? null });
-    }
+  for (const r of rows) if (r.kind === "class") classes.set(String(r.key), r.data ?? {});
+  // Two children may name one slot. world.db answers the pair by row order —
+  // classPredicates keeps the LAST value, dialNode's `LIMIT 1` the FIRST node —
+  // so the rows are walked in the loader's order (`ord`) and answered the same.
+  const preds = rows.filter((r) => r.kind === "predicate").map((r) => r.data ?? {})
+    .sort((a, b) => (Number(a.ord ?? 0) - Number(b.ord ?? 0)));
+  for (const d of preds) {
+    const k = String(d.class), slot = String(d.slot);
+    if (!predicates.has(k)) predicates.set(k, new Map());
+    const seen = predicates.get(k).get(slot);
+    predicates.get(k).set(slot, { value: d.value ?? null, id: seen ? seen.id : (d.id ?? null) });
   }
   const settlement = Number(number);
   const newestN = newest == null ? settlement : Number(newest);

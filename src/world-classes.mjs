@@ -36,6 +36,19 @@ import { statSync } from "node:fs";
 
 import { CLASS_ROSTER_GATE_SQL, worksClause } from "./world-store.mjs"; // the roster gate is also the type/instance seam — see markClass
 import { storeDbPath } from "./world-serve.mjs";
+import { lawSnapshot } from "./law-snapshot.mjs";
+import { rosterOf, dialsOf, predicatesOf, predicateNodeOf } from "./law-classes.mjs";
+
+// ── THE FOURTH RUNG, ABOVE THE OTHER THREE (POS-270, 2026-09-27) ─────────────
+// The class layer answers from the STORE first: law_projection at the newest
+// blessing, held in memory by law-snapshot.mjs and refreshed off the request
+// path, so every reader below stays synchronous. Only when no snapshot has been
+// published (a fresh process, or an office with no store engaged) do they read
+// world.db as before, and only when that is absent too do they stand on their
+// floors. A caller that passes `worldDb` asked for THAT file and gets it — the
+// parity suite and the fixtures depend on reading a named store.
+// Held equal, class by class and slot by slot: test/law-classes-parity.test.mjs.
+const lawFor = (worldDb) => (worldDb == null ? lawSnapshot() : null);
 
 // THE FLOOR, not the law. Every name here is also in the record; this list is
 // what the door falls back to when it cannot read the record, and it is
@@ -71,6 +84,13 @@ let _snap = null;
  * was not told.
  */
 export function classRoster({ worldDb = null } = {}) {
+  const law = lawFor(worldDb);
+  if (law) {
+    const roster = rosterOf(law);
+    if (roster.size) {
+      return { roster, source: "law", path: `law_projection@S${law.pin.settlement}:${law.pin.sha}`, disclosed: law.disclosed };
+    }
+  }
   const path = worldDb ?? storeDbPath();
   let st;
   try { st = statSync(path); }
@@ -639,6 +659,8 @@ const DIAL_NODE_SQL = `
  * point you at.
  */
 export function dialNode(className, slot, { worldDb = null } = {}) {
+  const law = lawFor(worldDb);
+  if (law) return predicateNodeOf(law, className, slot);
   const path = worldDb ?? storeDbPath();
   try {
     const db = new DatabaseSync(path, { readOnly: true });
@@ -649,6 +671,8 @@ export function dialNode(className, slot, { worldDb = null } = {}) {
 }
 
 export function classDials(name, { worldDb = null } = {}) {
+  const law = lawFor(worldDb);
+  if (law) return dialsOf(law, name);
   const path = worldDb ?? storeDbPath();
   try {
     const db = new DatabaseSync(path, { readOnly: true });
@@ -676,6 +700,8 @@ export function classDials(name, { worldDb = null } = {}) {
  * Values are TEXT: a predicated mark's `value:` is a string in the record.
  */
 export function classPredicates(name, { worldDb = null } = {}) {
+  const law = lawFor(worldDb);
+  if (law) return predicatesOf(law, name);
   const path = worldDb ?? storeDbPath();
   try {
     const db = new DatabaseSync(path, { readOnly: true });
