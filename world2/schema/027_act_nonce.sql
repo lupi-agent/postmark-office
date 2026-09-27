@@ -1,0 +1,53 @@
+-- 027 — acts.nonce: A SAY'S RETRY KEY IS KEPT ON ITS ACT (POS-265, w41)
+--
+-- LAW-TIER, per 001's discipline note and anti-rebake rule 4 ("Schema DDL is
+-- law-tier: it goes through REVIEW like a grant change, because it is one").
+--
+-- RULED (Keemin's go, 2026-09-27): "a say's nonce is stored on its act in
+-- Postgres (acts), so a retry after an office restart returns the first say's
+-- receipt and records nothing new."
+--
+-- ── WHY A COLUMN, AND NOT THE PAYLOAD ───────────────────────────────────────
+--
+-- `acts` leaves the box: the notary exports every row into a public git repo,
+-- frozen on write (world2/tools/snapshot-export.mjs). The archive line is built
+-- from a FIXED field list (`ACT_FIELDS`), and the payload is on that list. A
+-- nonce is the caller's own string — a retry key, not a fact about what was
+-- said — so it must not ride the payload into a public, append-only archive.
+-- A column the list does not name never reaches an archive line, and the
+-- archives already frozen stay byte for byte what they were (a regenerated
+-- window reproduces its line exactly, so the notary's refuse-on-diff holds).
+--
+-- ── WHAT READS IT ───────────────────────────────────────────────────────────
+--
+-- One reader: the say's spent-nonce lookup (src/world.mjs § spentSayNonce),
+-- asked only when the office's own memory does not hold the nonce — after a
+-- restart, or past the process's memory. It asks for (actor, nonce) among
+-- `say` acts inside the conversation-lull window, so the index below is
+-- partial on `nonce IS NOT NULL`: the great majority of acts carry none and
+-- cost it nothing.
+--
+-- NOT UNIQUE, deliberately. The retry key is honoured for one window (the
+-- conversation lull, voices.mjs § THE RETRY KEY); the same nonce from the same
+-- speaker after that window is a new say, and a unique index would refuse its
+-- INSERT — a refused pen, which on a flipped lane is a refused voice. The
+-- window is the law; the lookup reads it.
+--
+-- ── WHAT WRITES IT ──────────────────────────────────────────────────────────
+--
+-- The say's pen (src/world2-pen.mjs § insertAct, flipped) and its mirror
+-- (src/world2-acts.mjs § mirrorAct, unflipped), and only for a row that
+-- carries a nonce. A row with no nonce names no such column in its INSERT, so
+-- an office on this code runs unchanged against a store that has not taken
+-- this migration; the say asks the store whether the column stands before it
+-- writes one (world.mjs § actsHaveNonce), and until it does the retry key
+-- stays process memory, exactly as it was.
+--
+-- `office_api` already holds INSERT on `acts` table-wide (002), which covers
+-- a new column. The append-only trigger (002) is untouched: the nonce is
+-- written at INSERT and never after.
+--
+-- ⚑ IDEMPOTENT, because it is applied by hand (025's reason).
+
+ALTER TABLE acts ADD COLUMN IF NOT EXISTS nonce text;
+CREATE INDEX IF NOT EXISTS acts_actor_nonce_idx ON acts (actor, nonce) WHERE nonce IS NOT NULL;

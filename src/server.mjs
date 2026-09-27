@@ -45,7 +45,7 @@ import { fundVerifyViaOffice, intakeDisclosure, POT_RE as FUND_POT_RE, INTAKE as
 import { channelOf, countAct, actsByChannel } from "./channel.mjs";
 import { logAccess } from "./telemetry.mjs";
 import { settlements } from "./settlements.mjs";
-import { worldSummary, worldOrient, worldEyes, worldInvestigate, worldFind, worldStateRaw, worldSkeletonRaw, worldMyMarks, leaveMarkViaOffice, walkViaOffice, worldNoteViaOffice, worldWalkers, worldPresent, worldConversations, worldSay, worldSayHuman, whoami, worldBlockForHandle, resetPlaceWordsCache, WORLD_CLONE } from "./world.mjs";
+import { worldSummary, worldOrient, worldEyes, worldInvestigate, worldFind, worldStateRaw, worldSkeletonRaw, worldMyMarks, leaveMarkViaOffice, walkViaOffice, worldNoteViaOffice, worldWalkers, worldPresent, worldConversations, worldSay, worldSayHuman, worldSayStream, serveSayStream, whoami, worldBlockForHandle, resetPlaceWordsCache, WORLD_CLONE } from "./world.mjs";
 import { world2MyDrafts, world2MyMarks, world2Pool, world2Serve, world2ServeEnabled } from "./world2-serve.mjs";
 import { blessedSha } from "./world-branches.mjs";
 import { officeStoreFold, storeFingerprint, worldStateServed } from "./world2-fold.mjs"; // POS-142: /world/state from the store's rows, behind W2_FOLD
@@ -1401,6 +1401,18 @@ const server = createServer((req, res) => {
             return bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200));
           }
         })();
+        return;
+      }
+      // GET /world/say/stream — the page's stream (POS-265): the say's room
+      // deltas as Server-Sent Events. Keyed like POST /world/say, because it
+      // listens as one of the key's residents; the handler lives beside the say
+      // (world.mjs § worldSayStream, say-push.mjs § serveSayStream).
+      if (path === "/world/say/stream") {
+        if (!key) return bounce(res, 401, "a stream needs a key", "a stream listens where one of your residents stands — send your household key or signed-in token as a Bearer token (fetch with a ReadableStream carries it; EventSource cannot)");
+        const q = Object.fromEntries(url.searchParams);
+        serveSayStream(req, res, (send) => worldSayStream(q, key, send),
+          { onBounce: (b) => bounce(res, b.code ?? 422, b.defect, b.hint) })
+          .catch((e) => { if (!res.headersSent) bounce(res, 500, "the world door tripped", String(e?.message ?? e).slice(0, 200)); else res.end(); });
         return;
       }
       // GET /world/conversations — every conversation in the world, live threads

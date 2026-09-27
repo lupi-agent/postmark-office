@@ -608,6 +608,9 @@ export function normalizeRow(entry = {}) {
     crossing = null, actor, action, object = null,
     at = null, witnesses = null, cls = CLASS_MARK,
     payload = null, effect = null, household = null,
+    // A say's retry key (POS-265, migration 027). Kept only when given, so
+    // every other row is the object it always was and names no such column.
+    nonce = null,
     // ── `written_at` IS `acts.at`, AND THE DECLARED INSTANT OUTRANKS IT ──────
     //
     // The fallback below is this process's clock at NORMALIZE time — the
@@ -680,6 +683,7 @@ export function normalizeRow(entry = {}) {
     effect: effect == null ? null : String(effect),
     household: household == null ? null : String(household),
     written_at: String(writtenAt),
+    ...(nonce == null ? {} : { nonce: String(nonce) }),
   };
 
   return row;

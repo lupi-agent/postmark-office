@@ -126,18 +126,19 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
     // `mirrorAct`'s, in their order, and the id is assigned here because that is
     // what the sequence does — a caller reads it back as the act's receipt.
     if (/^INSERT INTO acts/i.test(q)) {
-      const [at, crossing, actor, action, object,
-        at_anchor, at_dx, at_dy, witnesses, cls,
-        payload, effect, household, journal_seq] = params;
+      // READ BY NAME off the statement's own column list, not by position:
+      // since migration 027 a say's row names a fourteenth column (`nonce`),
+      // and a positional read would file it as `journal_seq`.
+      const cols = (/^INSERT INTO acts \(([^)]*)\)/i.exec(q)?.[1] ?? "").split(",").map((c) => c.trim());
+      const { class: cls, journal_seq, nonce, ...rest } = Object.fromEntries(cols.map((c, i) => [c, params[i]]));
       const id = state.nextId++;
       state.acts.push({
-        id, at, crossing, actor, action, object,
-        at_anchor, at_dx, at_dy, witnesses, class: cls,
-        payload, effect, household,
+        id, ...rest, class: cls,
         // ⚑ CARRIED SO ITS ABSENCE IS ASSERTABLE. G1 drops `acts.journal_seq`;
         // a suite proving the column is gone reads this and expects undefined,
         // which it cannot do if the stub silently omitted the field.
         ...(journal_seq === undefined ? {} : { journal_seq }),
+        ...(nonce === undefined ? {} : { nonce }),
       });
       return { rows: [{ id }], rowCount: 1 };
     }
@@ -163,10 +164,15 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
       // event act back as an announcement, and the reader would look right.
       const wantAction = /\baction = \$(\d+)/i.exec(q);
       const wantObjects = /\bobject = ANY\(\$(\d+)\)/i.exec(q);
+      // The say's spent-nonce lookup (POS-265) asks by actor and nonce.
+      const wantActor = /\bactor = \$(\d+)/i.exec(q);
+      const wantNonce = /\bnonce = \$(\d+)/i.exec(q);
       const rows = state.acts
         .filter((r) => (wantClass ? r.class === params[Number(wantClass[1]) - 1] : true))
         .filter((r) => (wantAction ? r.action === params[Number(wantAction[1]) - 1] : true))
         .filter((r) => (wantObjects ? params[Number(wantObjects[1]) - 1].includes(r.object) : true))
+        .filter((r) => (wantActor ? r.actor === params[Number(wantActor[1]) - 1] : true))
+        .filter((r) => (wantNonce ? r.nonce === params[Number(wantNonce[1]) - 1] : true))
         .map((r) => ({
           ...r,
           at: r.at instanceof Date ? r.at : new Date(r.at),

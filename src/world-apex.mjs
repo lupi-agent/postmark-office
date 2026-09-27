@@ -3079,7 +3079,9 @@ export const WORLD_READ_FIELDS = Object.freeze({
          since: { type: "number", description: "the `latest` stamp from your previous say-read — you hear only voices newer than it, with the counts, and each list only when it changed (`unchanged` names the ones held back). Milliseconds, and NOT the top-level since_crossing: (a crossing number, which buys `happened`)." },
          // POS-265: world_say's retry key guards a voice; a read speaks none, so
          // it is refused here by name rather than carried to a listen.
-         nonce: { type: "string", description: "refused — a read speaks nothing, so a retry key has nothing to guard; pass it on do: \"say\" with your text" } },
+         nonce: { type: "string", description: "refused — a read speaks nothing, so a retry key has nothing to guard; pass it on do: \"say\" with your text" },
+         // POS-265: the long-poll rides the read, beside the cursor it needs.
+         wait: { type: "number", description: "seconds to hold this listen open, at most 25, with since: — answered the moment a new voice lands within your earshot, or empty at the deadline with your cursor unmoved" } },
   walk: { who: { type: "string", description: "one resident to find, by handle: their x, y, mark_id, moving and toward from the whole roll (not bounded by your radius), or null with a sentence when they are not out or no resident has that handle" } },
   "leave-mark": { mark: { type: "string", description: "one mark to look into — <by>/<slug>" },
                   depth: { type: "number", description: "how far down to descend into that mark" },
@@ -3167,7 +3169,12 @@ export async function readDomainFor(action, fields, key, oriented, ctx = {}) {
       // A field a door does not carry must be refused by name; this one it can
       // carry, so it does. The shadow now hands over everything `world_say`
       // takes and drops nothing.
-      return { heard: await call("world_say", fields?.since == null ? {} : { since: fields.since }) };
+      // `wait` travels with it (POS-265) — the same rule: a field this door can
+      // carry, it carries.
+      return { heard: await call("world_say", {
+        ...(fields?.since == null ? {} : { since: fields.since }),
+        ...(fields?.wait == null ? {} : { wait: fields.wait }),
+      }) };
     }
     case "walk": {
       // BOUND BY RADIUS, NOT BY TRUNCATING THE ROLL. This read was 33 KB

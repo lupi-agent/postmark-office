@@ -1316,8 +1316,8 @@ test("PARITY · an unknown envelope field on a shadow read bounces BY NAME, with
   assert.equal(r.defect, 'unknown argument "bogus" for world { read: "say" }');
   // `nonce` (POS-265) is declared the way `text` is: named here, then answered
   // by the shadow's own teaching refusal rather than the generic one.
-  assert.equal(r.hint, "this read takes: text, since, nonce", "and the hint names what this shadow does answer to");
-  assert.deepEqual(r.accepted, ["text", "since", "nonce"]);
+  assert.equal(r.hint, "this read takes: text, since, nonce, wait", "and the hint names what this shadow does answer to");
+  assert.deepEqual(r.accepted, ["text", "since", "nonce", "wait"]);
 });
 
 // ── #2559 · THE SHADOW CARRIES THE CURSOR IT WAS HANDED ─────────────────────
@@ -1370,6 +1370,23 @@ test("#2559 a say-read threads its cursor: the shadow answers what the flat tool
   // And the cursor did something: past the room's own latest, nothing is left.
   assert.deepEqual(viaApex.heard.voices ?? [], [],
     "a cursor at the room's latest stamp must leave no voices behind it");
+});
+
+// POS-265: the long-poll rides the read. `wait` is carried the way `since` is,
+// so the flat tool's own rules answer it — refused without a cursor, and held
+// open (here, one second) with one, answering empty with the cursor unmoved.
+test("POS-265 a say-read carries wait: refused without since, held to its deadline with one", async () => {
+  on();
+  const bare = await worldApex({ read: "say", args: { wait: 1 } }, KEY_ALPHA);
+  assert.equal(bare.heard?.error, "bounce", JSON.stringify(bare).slice(0, 300));
+  assert.match(bare.heard.defect, /wait needs since/);
+  const cursor = (await worldApex({ read: "say" }, KEY_ALPHA)).heard.latest;
+  const t0 = Date.now();
+  const held = await worldApex({ read: "say", args: { since: cursor, wait: 1 } }, KEY_ALPHA);
+  assert.ok(Date.now() - t0 >= 900, "the read was held open, not answered at once");
+  assert.deepEqual(held.heard.voices, []);
+  assert.equal(held.heard.latest, cursor, "the cursor has not moved");
+  assert.ok(Number.isFinite(held.heard.waited_ms));
 });
 
 test("#2559 the shadow carries every field the flat tool takes, and drops none", async () => {

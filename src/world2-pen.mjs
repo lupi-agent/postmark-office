@@ -315,16 +315,33 @@ export async function insertAct(client, rowIn, seq = null, { lateArrival = null 
   // is the cutover. `seq` is still TAKEN, because the arena's mirror still has
   // one to offer and a caller that passed it would otherwise think it landed;
   // it is ignored here, deliberately and in writing.
-  const { rows: [r] } = await client.query(
-    `INSERT INTO acts (at, crossing, actor, action, object,
-                       at_anchor, at_dx, at_dy, witnesses, class,
-                       payload, effect, household)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-     RETURNING id`,
-    [row.written_at, row.crossing, row.actor, row.action, row.object,
-     row.at_anchor, row.at_dx, row.at_dy, row.witnesses, row.class,
-     row.payload, row.effect, household]);
+  const { text, values } = actsInsert(row, household);
+  const { rows: [r] } = await client.query(`${text} RETURNING id`, values);
   return r.id;
+}
+
+/**
+ * THE ACTS INSERT, ONE SPELLING FOR BOTH PENS (this one and world2-acts.mjs §
+ * mirrorAct). `household` is the already-resolved key.
+ *
+ * `nonce` (migration 027, POS-265) is named ONLY for a row that carries one.
+ * A row without it is the thirteen-column INSERT it has always been, so an
+ * office on this code runs unchanged against a store that has not taken 027;
+ * the say is the one writer that sets it, and it asks the store first
+ * (world.mjs § actsHaveNonce).
+ */
+export function actsInsert(row, household) {
+  const cols = ["at", "crossing", "actor", "action", "object",
+    "at_anchor", "at_dx", "at_dy", "witnesses", "class",
+    "payload", "effect", "household"];
+  const values = [row.written_at, row.crossing, row.actor, row.action, row.object,
+    row.at_anchor, row.at_dx, row.at_dy, row.witnesses, row.class,
+    row.payload, row.effect, household];
+  if (row.nonce != null) { cols.push("nonce"); values.push(row.nonce); }
+  return {
+    text: `INSERT INTO acts (${cols.join(", ")}) VALUES (${values.map((_, i) => `$${i + 1}`).join(",")})`,
+    values,
+  };
 }
 
 /**
