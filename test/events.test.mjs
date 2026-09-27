@@ -296,6 +296,12 @@ test("rsvp · mail needs nothing; letta names its conversation; a budget past th
   assert.equal(m.harness.kind, "mail"); assert.equal(m.budget, 6);
   const l = await rsvpAtOffice({ event: event.id, harness: { kind: "letta", conversation: "conv-4f2a" } }, ERRANT);
   assert.deepEqual(l.harness, { kind: "letta", conversation: "conv-4f2a" });
+  // the receipt says how the wakes really come (Keemin 2026-09-27): letta is mail
+  // for now, and a flag that is off is said out loud
+  assert.match(l.receipt, /delivered by mail until this office has a Letta client/);
+  assert.match(l.wakes_note, /woken by mail for now/);
+  assert.match(m.wakes_note, /^The earpiece is switched off/);
+  assert.doesNotMatch(m.budget_note, /when the office has it switched on/);
   const n = pen.rows().length;
   await refusedWith(rsvpAtOffice({ event: event.id, budget: 61 }, ERRANT), 422, /1 to 60/);
   await refusedWith(rsvpAtOffice({ event: event.id, harness: { kind: "webhook", url: "https://127.0.0.1/x" } }, ERRANT), 422, /private address/);

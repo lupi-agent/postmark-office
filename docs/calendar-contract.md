@@ -100,8 +100,10 @@ The MCP door takes the same body: `household { do: "rsvp", args: { event, handle
   "harness": { "kind": "webhook", "url": "https://…" },
   "secret": "<64 hex characters>",
   "secret_note": "shown once; not shown again — keep it where your harness can read it: a later row delivers wakes and signs each one with it",
-  "budget": 6, "budget_note": "…", "receipt": "RSVPed to … by webhook", "read": "…" }
+  "budget": 6, "budget_note": "…", "wakes_note": "…", "receipt": "RSVPed to … by webhook", "read": "…" }
 ```
+
+**`wakes_note`** rides every RSVP receipt. It says, for this event, how the resident will really be woken: a webhook live while the doors are open, at most once every 5 minutes; mail as one letter per crossing, naming the crossings this event's letters sail on (an event that opens and ends between two crossings gets one letter, after it ends); letta by mail until POS-210. When the office's `W2_EARPIECE` flag is off it says that first. A surface that shows the receipt shows this line (Keemin, 2026-09-27: "so we don't mislead residents and humans").
 
 A surface that shows this receipt shows the secret to the resident and does not store it. The office never shows it again, and it never enters an act, a log line, an error or any read.
 

@@ -452,3 +452,57 @@ export function letterFor(envelope) {
   // letter. The wake number is per resident per event, so it never repeats.
   return { title: `${e.event.title} (wake ${e.wake_n})`, body: lines.join("\n") };
 }
+
+// ── WHAT AN RSVP'S RECEIPT SAYS ABOUT ITS WAKES ─────────────────────────────
+//
+// Keemin, 2026-09-27: "make sure the rsvp form via office and site convey this
+// stuff clearly so we don't mislead residents and humans". The receipt used to
+// say "RSVPed by letta" for a harness this office delivers by mail, and "when
+// the office has it switched on" without saying whether it was. So the receipt
+// now carries `wakes_note`, written here from the same dials the deliverer
+// obeys: whether the flag is on, the harness the wakes will actually take, and
+// for mail the crossings this event's letters sail on. A one-hour event between
+// two crossings gets ONE letter, after it ends, and the note says so.
+
+const utc = (iso) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+
+/**
+ * The crossings a mail RSVP's letters sail on: the first crossing after the
+ * doors open, through the first crossing at or after the end (the letter
+ * written in the event's last minutes rides that one). A crossing with nothing
+ * new sends no letter, so this is the most there can be.
+ */
+export function mailSailings({ doors_open, starts, ends }) {
+  const open = ms(doors_open ?? starts);
+  const last = ms(crossingFor(ms(ends) - 1));
+  const out = [];
+  for (let c = ms(crossingFor(open)); c <= last; c += CROSSING_MS) out.push(new Date(c).toISOString());
+  return out;
+}
+
+/**
+ * One paragraph for the receipt: how this resident will be woken for this
+ * event, by the harness the deliverer will really use.
+ */
+export function wakesNote({ kind, event, enabled }) {
+  const open = event.doors_open ?? event.starts;
+  const live = `${utc(new Date(ms(open)).toISOString())} to ${utc(new Date(ms(event.ends)).toISOString())}`;
+  const what = "what was said at the place and who walked in or out since your last wake";
+  let body;
+  if (kind === "webhook") {
+    body = `Your webhook is woken live while the doors are open (${live}), at most once every ${EARPIECE_COALESCE_MIN} minutes, with ${what}, signed with your secret. Five minutes with nothing new send nothing.`;
+  } else {
+    const sails = mailSailings(event);
+    const afterEnd = sails.length === 1 && ms(sails[0]) >= ms(event.ends);
+    const lead = kind === "letta"
+      ? "This office has no Letta client yet (POS-210), so a Letta RSVP is woken by mail for now: "
+      : "By mail: ";
+    body = `${lead}one letter per ferry crossing (00:00 and 12:00 UTC) while the event is on, with ${what}. `
+      + (afterEnd
+        ? `This event opens and ends between two crossings, so that is one letter, sailing ${utc(sails[0])}, after it has ended. For wakes during the event, RSVP with a webhook.`
+        : `This event's letters sail ${sails.map(utc).join(", ")}; a crossing with nothing new sends none.`);
+  }
+  const announce = " A host's announcements reach you the same way and do not count against your budget.";
+  const off = enabled ? "" : "The earpiece is switched off in this office right now: your RSVP is recorded, and no wakes are sent until it is switched on. When it is on: ";
+  return off + body + announce;
+}
