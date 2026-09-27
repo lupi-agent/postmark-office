@@ -226,6 +226,21 @@
    "stale_means": "Not applicable. Down is the failure, and down is caught as ALARM-disabled. site-sentinel's office_api probe watches the same thing from outside the box; both are kept, because a door that answers 200 to the outside while systemd reports it restarting is a finding, and so is the reverse."
   },
   {
+   "unit": "postmark-office.service",
+   "label": "the office's thread",
+   "stage": "live",
+   "activation_owner": "Keemin — POS-267 part 2, briefed by Wright and built by the lane jetto-office-measure (2026-09-27, after the Snug Harbour night's two brownouts, when the office answered 18-22 s late and nothing on the box recorded it). The office writes the file itself from src/loop-lag.mjs, so it goes live with the first release that carries that module; until then this row reads ALARM-noheartbeat (the file does not exist), which is correct",
+   "cadence": "read as: last CALM — calm_at is the last minute in which every caller got the thread within 5 s; the office rewrites the file every minute",
+   "cadence_source": "src/loop-lag.mjs (MINUTE_MS); the row above this one says whether the process is up",
+   "heartbeat": {
+    "kind": "state_file",
+    "path": "/srv/postmark-office/telemetry/loop-lag-4380.json",
+    "stamp_field": "calm_at",
+    "stale_after_minutes": 10
+   },
+   "stale_means": "For ten minutes or more, no minute passed in which every caller got the office's one thread within 5 s (LAG_ALARM_MS, judged on the minute's MAX lag, because one 48 s synchronous read is a single late sample that p99 hides). That is the brownout itself: requests queue behind the thread, nginx's cached reads keep answering, and everything else waits. The same alarm reads when the office stops writing the file at all. Read the file's worst_24h and minutes for the shape, and GET /api/ops/loop-lag for the live numbers. THE LIMIT, said once: this is a point-in-time reader like the rest of the board, so a brownout that ended before the roll-call ran is not an alarm here; it is in worst_24h."
+  },
+  {
    "unit": "postmark-office-dev.service",
    "label": "the dev office",
    "stage": "live",
