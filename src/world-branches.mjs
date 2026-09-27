@@ -465,7 +465,11 @@ export function materializeAtRef(repo, ref, subdir, cacheRoot = ENGINE_CACHE) {
   // ^{commit}: a settlement tag is an ANNOTATED tag object, and a cache keyed on
   // the tag object rather than the commit it blesses would be keyed on a thing
   // no `git log` can find (settlements.mjs:120 learned the same lesson).
-  const sha = git(repo, ["rev-parse", `${ref}^{commit}`]).trim();
+  // A branch or remote-tracking ref points at a commit already, so its sha comes
+  // from git's own ref file (refShaFromDisk, the w39.14 relief) with no process;
+  // a tag still asks git, because a cache key must be the PEELED commit.
+  const onDisk = /^refs\/(heads|remotes)\//.test(ref) ? refShaFromDisk(repo, ref) : undefined;
+  const sha = onDisk || git(repo, ["rev-parse", `${ref}^{commit}`]).trim();
   const dir = join(cacheRoot, `${sha}--${subdir.replace(/[^\w.-]/g, "_")}`);
   const stamp = join(dir, ".materialized");
   if (existsSync(stamp)) return dir;

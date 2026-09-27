@@ -98,11 +98,11 @@
 //
 // None of those writes anything. The deleted file was the only half that could.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { openDynamic } from "./dynamic-store.mjs";
+import { dynamicDbPath, openDynamic } from "./dynamic-store.mjs";
 import { readJournal } from "./world-journal.mjs";
 
 /** The derived record, under its own name. */
@@ -281,7 +281,26 @@ export async function enterExitLedgerText(repo, rows) {
  * mis-resolved path made the read throw, and the draft answered 155 acts with a
  * straight face.)
  */
+// THE JOURNAL MEMO (the Snug night, 2026-09-27): the live profile put ~16% of the
+// office's thread in re-reading and re-hydrating the WHOLE journal on every apex
+// and ledger read. The rows are kept per store file and re-read only when the
+// file or its WAL changes (mtime and size), the same stamp as w39.13's
+// movements memo: same rows, same order, never older than the file. A failed
+// read is never cached, so its sentence is re-tried on the next call.
+const journalMemo = new Map();
+function storeStamp(path) {
+  return [path, `${path}-wal`].map((p) => { try { const s = statSync(p); return `${s.mtimeMs}:${s.size}`; } catch { return "-"; } }).join("|");
+}
 export function liveJournalRows({ dbPath = undefined } = {}) {
+  const path = dbPath ?? dynamicDbPath();
+  const stamp = storeStamp(path);
+  const hit = journalMemo.get(path);
+  if (hit && hit.stamp === stamp) return hit.answer;
+  const answer = liveJournalRowsUncached({ dbPath: path });
+  if (!answer.unread) journalMemo.set(path, { stamp, answer });
+  return answer;
+}
+function liveJournalRowsUncached({ dbPath = undefined } = {}) {
   let db = null;
   try {
     db = openDynamic(dbPath, { readOnly: true });
