@@ -537,8 +537,11 @@ export function joinBody({ handle, agent, ghLogin, ghId, household, registryUnre
 }
 
 // ── the GitHub API dance (injectable base; mockable end to end) ─────────────
+//
+// EXPORTED for `src/settle-join.mjs` (#3231), which reads a merged join PR back
+// through the same pen that opened it rather than through a second client.
 
-const ghFetch = async (pen, method, path, body) => {
+export const ghFetch = async (pen, method, path, body) => {
   const res = await fetch(`${pen.apiBase}${path}`, {
     method,
     headers: {
