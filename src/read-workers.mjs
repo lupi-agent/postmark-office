@@ -59,15 +59,28 @@ export const IN_READ_WORKER = !isMainThread && workerData?.readWorker === true;
  *   /household           — the standing read carries `world_writes`, the
  *                          bouncer's live budget, which is main-thread RAM.
  *
- * A read not named here and not refused by `workerSafe` goes to a worker.
+ * A read not named here, not refused by `workerSafe` and not the REST listen
+ * (`listensToVoices` below) goes to a worker.
  */
 // /world/say/stream (POS-265's push) waits on new voices, and voices land on the
 // main thread: served from a worker, the stream would open and never hear a word.
 export const MAIN_ONLY_READS = new Set(["/world/conversations", "/world/dynamic", "/household", "/world/say/stream"]);
 
-/** Does a read with this method and path go to a worker? */
-export function workerTakes(method, path) {
-  return method === "GET" && workerSafe(method, path) && !MAIN_ONLY_READS.has(path);
+/**
+ * GET /world/apex?read=say is the one read whose answer is the voices window by
+ * its QUERY, not its path: the same listen as the MCP `world { read: "say" }`,
+ * which `mcpWorkerTakes` below keeps home. Handed to a worker, it heard the
+ * worker's window as it hydrated and never another voice (POS-284's hotfix,
+ * measured before the fix: a say on the main thread, then this GET on worker-0,
+ * and the voice was not in it). `read` is trimmed as the apex trims it.
+ */
+function listensToVoices(path, query) {
+  return path === "/world/apex" && String(query?.get("read") ?? "").trim() === "say";
+}
+
+/** Does a read with this method, path and query go to a worker? */
+export function workerTakes(method, path, query = null) {
+  return method === "GET" && workerSafe(method, path) && !MAIN_ONLY_READS.has(path) && !listensToVoices(path, query);
 }
 
 /**
