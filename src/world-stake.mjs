@@ -162,7 +162,7 @@ export function unbackedRefusalFor({ mark, n, promoted, applied, ownGround }) {
 // Which resident is acting. Mirrors world.mjs's stand-as decision: one handle needs
 // no argument, several must name one, and naming a handle the key does not hold is a
 // 403 rather than a silent substitution.
-function actingAs(named, key) {
+export function actingAs(named, key) {
   const handles = [...(key?.handles ?? [])];
   if (named) {
     if (!key?.handles?.has(named))
