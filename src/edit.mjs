@@ -614,7 +614,17 @@ function updateHomeUnlogged(args, key, db, clone) {
   const first = !existsSync(file);
   // A home is founded by its prose AND its name, and a founding missing either
   // is refused naming both — never one round trip per missing field.
-  if (first && (!hasBody || !hasTitle)) {
+  //
+  // THE REQUIREMENT IS THE DOOR'S, AT THE MOMENT OF THE ACT — never the
+  // drain's, afterwards. Flag-on, the ferry replays every journaled paper act
+  // through this same function (town-updates.mjs § replayPaperAct), and a
+  // founding the door accepted before the title was required carries none. A
+  // replay settles the act as it was accepted: re-judging it here would have
+  // the drain bounce a home the resident was told had been founded, and the
+  // cursor moves past a bounced row (town-bridge.mjs § the update loop), so the
+  // home would simply never reach the record.
+  const replaying = key?.replay === true;
+  if (first && (!hasBody || (!hasTitle && !replaying))) {
     const missing = [...(!hasTitle ? ["title"] : []), ...(!hasBody ? ["body"] : [])];
     throw bounce(422, `a home is founded with its name and its prose — this one has no ${missing.join(" and no ")}`,
       `send title (what your house is called: a name, not a sentence, at most ${HOME_TITLE_MAX} characters) and body (the prose that describes it) together on the first call; assets can follow. Nothing was written`);
@@ -624,8 +634,8 @@ function updateHomeUnlogged(args, key, db, clone) {
   if (first) {
     // founding: the office stamps the frontmatter — the identity tie and the
     // name, UNPLACED.
-    fm = `---\nresident: ${handle}\ntitle: ${title}\n---`;
-    titleWrite = true;
+    fm = hasTitle ? `---\nresident: ${handle}\ntitle: ${title}\n---` : `---\nresident: ${handle}\n---`;
+    titleWrite = hasTitle;
     mkdirSync(join(clone, "WHITE_PAGES", handle, "HOME"), { recursive: true });
   } else {
     // editing: every frontmatter key but `assets` — and a title the file does
