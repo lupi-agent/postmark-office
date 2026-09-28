@@ -44,7 +44,7 @@ import { ACTION_AMEND, ACTION_LEAVE, ACTION_WITHDRAW, CLASS_MARK, CLASS_MOVE, CL
 // sentence, minted once and shared with the crossing's write-down.
 import { declaredParentIdOf, declaredParentRefusal, idOfMarkFileFrom, outsideParentBounce } from "./mark-declared-parent.mjs";
 import { guardedDraftsForKey, guardedLiveChildrenOf, guardedLiveMarks } from "./world2-guards.mjs"; // B1: the door guards' own reads, behind W2_GUARDS (runbook §4 B1)
-import { WORLD_STAKE_TOOLS, callWorldStakeTool, worldPortfolioStakeSlice, markStakeBlock } from "./world-stake.mjs"; // P3 draft, append-shaped
+import { WORLD_STAKE_TOOLS, actingAs, callWorldStakeTool, worldPortfolioStakeSlice, markStakeBlock } from "./world-stake.mjs"; // P3 draft, append-shaped
 import { toConfirm } from "./stamps-preview.mjs"; // POS-83: the inline stake's half of the confirmation step
 import { classNames, classRoster, classDials, departurePace, freeCellIn, RESIDENT_INSTANTIABLE, residentMayInstantiate, STRIDE_MARK_ID } from "./world-classes.mjs"; // which classes exist — read from the record, never held
 import { HOLD_TOOLS, callHoldTool } from "./world-hold.mjs"; // the object primitive: who holds what
@@ -3729,6 +3729,18 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
   const household = onBehalf ? onBehalf.household : String(key?.household ?? "").trim();
   if (!household) throw bounce(403, "this credential has no resident household", "sign in as a resident household before leaving a mark");
   if (onBehalf) await refuseHeldParcel(by, household, bounce);
+
+  // THE INLINE STAKE'S CALLER, ASKED BEFORE THE ACT IS WRITTEN (office #226).
+  // The stake runs on THIS key with `handle: by`, and the stake door's first
+  // gate (`actingAs`) is pure: a key that does not hold `by` (a placer's key)
+  // is refused there before anything moves. Asked only after the write, the
+  // declaration had already been ruled on stamps nothing would back, so the
+  // claim filed at the asked stake and the answer said `put_forward: true` over
+  // a stake that bounced. A stake that cannot run is ruled as the ✦0 it will
+  // land: a parcel (minimum 0) still goes forward, a commons mark stays the
+  // author's draft, and the bounce is named on the answer.
+  const stakeBounce = stakeN >= 1 ? actingAs(by, key).bounce ?? null : null;
+  const stakeLands = stakeBounce ? 0 : stakeN;
   // The class's OWN fields ride the record; another class's do not. This used to
   // read `klass === undefined ? {} : {class, ask, reward, status}` — correct while
   // bounty was the only class, and it would have written `ask: "undefined"` into
@@ -3748,7 +3760,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     // is what decides whether this act is public, and only the journal pass can
     // rule on it (the ground question is a canon question). The ledger move is
     // still the stake verb's; this is the declaration saying what was asked for.
-    ...(payload.stamps === undefined || payload.stamps === null ? {} : { stamps: stakeN }) };
+    ...(payload.stamps === undefined || payload.stamps === null ? {} : { stamps: stakeLands }) };
   const exec = join(HERE, "leave-exec.mjs");
   let result;
   if (singleLogEnabled()) {
@@ -3783,7 +3795,8 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
   // charging for a publication that did not happen. And ✦0 on your own ground is
   // a real putting-forward with nothing to move: the promotion already happened
   // in the docket pen, and there is no escrow row for zero stamps.
-  if (stakeN >= 1 && result?.put_forward === true && result?.preview !== true) {
+  if (stakeBounce) result.stake_bounce = { defect: stakeBounce.defect, hint: stakeBounce.hint };
+  if (stakeLands >= 1 && result?.put_forward === true && result?.preview !== true) {
     const staked = await callWorldStakeTool("world_stake", { mark: result.id, stamps: stakeN, handle: by }, key);
     if (staked?.error) {
       result.stake_bounce = { defect: staked.defect, hint: staked.hint };
@@ -3816,7 +3829,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
   // there is no verdict here to gate on and no block rides. That asymmetry is
   // older than this lane (the same gate gives the flag-off lane no inline stake
   // at all) and is reported rather than papered over.
-  if (result?.preview === true && stakeN >= 1 && result?.put_forward === true) {
+  if (result?.preview === true && stakeLands >= 1 && result?.put_forward === true) {
     result.stamps = await markStakeBlock({
       handle: by, stamps: stakeN,
       to_confirm: toConfirm(`world { do: "leave-mark", args: { …, stamps: ${stakeN} } }`),
