@@ -589,20 +589,22 @@ export async function projectedNearby(at) {
 // thread keeps its own; a read worker places the town once per change too,
 // never once per request.
 const keptPlacement = createPlacement();
-const _worldIds = new WeakMap();
-let _worldIdNext = 0;
-// A fold with no sha (a test's hand-built world) is named by the object itself.
-const worldIdOf = (w) => {
-  if (!w) return "no-fold";
-  if (w._raw?.sha) return w._raw.sha;
-  if (!_worldIds.has(w)) _worldIds.set(w, `fold-${++_worldIdNext}`);
-  return _worldIds.get(w);
+const _objectIds = new WeakMap();
+let _objectIdNext = 0;
+const objectIdOf = (o) => {
+  if (!_objectIds.has(o)) _objectIds.set(o, ++_objectIdNext);
+  return _objectIds.get(o);
 };
+// A fold is named by its sha; one with none (a test's hand-built world) by the
+// object itself. The engine's where-is is named by the module object: presence
+// imports it at the main ref, the hearing grid at the blessed one, and a kept
+// answer must not cross from one to the other.
+const worldIdOf = (w) => (!w ? "no-fold" : w._raw?.sha ?? `fold-${objectIdOf(w)}`);
 
 /** An `everyonePlaced` whose answer is kept for this epoch. `tag` names which departures the caller passes. */
 function placedAt(tag, epoch) {
   return (args) => keptPlacement.rows({
-    key: `${tag}|${epoch}|${worldIdOf(args.world)}|${(args.roll ?? []).join(",")}`,
+    key: `${tag}|${epoch}|${worldIdOf(args.world)}|where-${args.where ? objectIdOf(args.where) : "none"}|${(args.roll ?? []).join(",")}`,
     at: args.at,
     place: (only, at) => everyonePlaced({ ...args, at, only }),
   });
