@@ -668,9 +668,33 @@ export async function heardFromV2(voice, worldState, { repo = WORLD_CLONE, atMs 
   if (!service || !mod || !carriers.length) return null;
   const spokenMs = Number(voice?.at);
   if (!Number.isFinite(spokenMs)) return null;
-  const carrierAt = carrierReader(worldState, { repo, service, mod });
+  const spoken = await spokenOn(voice, spokenMs, worldState, { repo, service, mod, carriers });
+  if (!spoken) return null;
+  const now = await carrierStateAt(spoken.frame, worldState, atMs, { repo, service, mod });
+  if (!now) return null;
+  return { x: now.at.x + spoken.local.x, y: now.at.y + spoken.local.y, frame: spoken.frame.id };
+}
 
-  let frame = null, local = null;
+// WHAT A VOICE WAS SPOKEN ON, ONCE PER VOICE PER FOLD (POS-226). Which carrier
+// a voice was spoken on, and where on her deck, depends on the voice (its
+// instant and its point) and the fold's timetable — never on when it is heard.
+// Since POS-226 an ear hears everything since the settlement, and the snapshot
+// asks this of every voice in the window on every say (~2,000 voices, ~33 ms),
+// so the answer is kept per fold: a new fold (a new `marks` array) starts a
+// fresh memo, and a voice ashore is remembered as ashore. Only a voice spoken
+// ON a moving carrier still asks where she is at the hearing instant.
+const _spokenOn = new WeakMap();   // fold marks -> Map(voice key -> { frame, local } | null)
+const SPOKEN_ON_MAX = 20_000;      // a fold that lives long past many windows starts over, never grows unbounded
+export const spokenOnStats = { computed: 0 };
+
+async function spokenOn(voice, spokenMs, worldState, { repo, service, mod, carriers }) {
+  let memo = _spokenOn.get(worldState.marks);
+  if (!memo) { memo = new Map(); _spokenOn.set(worldState.marks, memo); }
+  const key = `${voice.handle ?? ""}|${spokenMs}|${voice.x}|${voice.y}`;
+  if (memo.has(key)) return memo.get(key);
+  spokenOnStats.computed += 1;
+  const carrierAt = carrierReader(worldState, { repo, service, mod });
+  let found = null;
   // THE POSITION FLOOR. A voice spoken from inside a carrier's footprint while
   // she was under way was spoken ON HER, whatever the records say — the
   // coordinates in the log are the fact, and a record the office cannot read
@@ -678,16 +702,13 @@ export async function heardFromV2(voice, worldState, { repo = WORLD_CLONE, atMs 
   for (const c of carriers) {
     const st = await carrierAt(c, spokenMs);
     if (st && st.moving && inRect({ x: voice.x, y: voice.y }, st.footprint)) {
-      frame = c;
-      local = { x: voice.x - st.at.x, y: voice.y - st.at.y };
+      found = { frame: c, local: { x: voice.x - st.at.x, y: voice.y - st.at.y } };
       break;
     }
   }
-  if (!frame) return null;
-
-  const now = await carrierAt(frame, atMs);
-  if (!now) return null;
-  return { x: now.at.x + (local?.x ?? 0), y: now.at.y + (local?.y ?? 0), frame: frame.id };
+  if (memo.size >= SPOKEN_ON_MAX) memo.clear();
+  memo.set(key, found);
+  return found;
 }
 
 // ── the walk answer's boundary terms ─────────────────────────────────────────

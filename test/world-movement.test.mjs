@@ -34,7 +34,7 @@ import {
   carriersFrom, carriersWithDisclosure, foldFrames, gunwaleWarning, inRect, boundariesOnRoad,
 } from "../src/world-frames.mjs";
 import {
-  carrierReader, heardFromV2, movementStandpoint, recordsAcrossEras,
+  carrierReader, heardFromV2, movementStandpoint, recordsAcrossEras, spokenOnStats,
   storedRecordsFor, vesselPositionAt, vesselServiceFrom,
 } from "../src/world-movement.mjs";
 import { aroundYou, happenedBlock, toYou, townShelf, HAPPENED_DIALS } from "../src/world-happened.mjs";
@@ -204,6 +204,33 @@ test("a voice spoken ashore is heard where it was spoken", async () => {
   const voice = { handle: "landlubber", at: atCrossing(10.52), x: 2500, y: 400, text: "nice day" };
   const from = await heardFromV2(voice, MARKS, { ...REPO, atMs: MID_CROSSING });
   assert.equal(from, null, "null means heard where it happened — the ordinary case for everyone ashore");
+});
+
+// POS-226: an ear hears everything since the settlement, so the snapshot asks
+// this of every voice in the window on every say. What a voice was spoken ON is
+// the voice's and the fold's alone, so it is worked out once per voice per fold;
+// where the carrier is NOW is still asked at each hearing instant.
+// FLIP: drop `if (memo.has(key)) return memo.get(key);` in spokenOn and the
+// second listen recomputes.
+test("POS-226: a second listen does not recompute what a voice was spoken on — and a deck voice still follows her", async () => {
+  const deck = { handle: "speaker", at: atCrossing(10.52), x: 800, y: 0, text: "on her deck" };
+  const shore = { handle: "landlubber", at: atCrossing(10.52), x: 2500, y: 400, text: "ashore" };
+  const W = { ...MARKS, marks: [...MARKS.marks] };            // a fold of its own, so no earlier test warmed it
+  const before = spokenOnStats.computed;
+  const first = [await heardFromV2(deck, W, { ...REPO, atMs: MID_CROSSING }), await heardFromV2(shore, W, { ...REPO, atMs: MID_CROSSING })];
+  assert.equal(spokenOnStats.computed - before, 2, "the first listen works out both");
+  const later = MID_CROSSING + 60_000;
+  const second = [await heardFromV2(deck, W, { ...REPO, atMs: later }), await heardFromV2(shore, W, { ...REPO, atMs: later })];
+  assert.equal(spokenOnStats.computed - before, 2, "the second listen recomputed nothing");
+  assert.equal(second[1], null, "ashore stays ashore");
+  const boatThen = await vesselPositionAt(MARKS, MID_CROSSING, REPO);
+  const boatNow = await vesselPositionAt(MARKS, later, REPO);
+  assert.equal(second[0].frame, "the-town/the-post-office");
+  assert.deepEqual([second[0].x - first[0].x, second[0].y - first[0].y].map(Math.round),
+    [boatNow.x - boatThen.x, boatNow.y - boatThen.y].map(Math.round), "the deck voice moved exactly as she did");
+  const refolded = { ...MARKS, marks: [...MARKS.marks] };
+  await heardFromV2(deck, refolded, { ...REPO, atMs: later });
+  assert.equal(spokenOnStats.computed - before, 3, "a new fold works it out afresh");
 });
 
 test("two on one deck are one room with no pair-test at all — the room is structural", async () => {
