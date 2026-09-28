@@ -459,6 +459,42 @@
    "repair": "sudo chown -R meepo:meepo /srv/postmark-office-dev/town-clone && sudo -u meepo git -C /srv/postmark-office-dev/town-clone fsck --no-progress"
   }
  ],
+ "_clones_readme": [
+  "§2d — THE CLONES THE OFFICE WRITES THROUGH, AND WHETHER THEY ARE CLEAN.",
+  "",
+  "Every office write to the town begins `git pull --rebase` in the town clone, so",
+  "one uncommitted tracked change there refuses them ALL. On 2026-09-28 the tick's",
+  "mint catch-up appended a signed welcome line, its stamp-verify refused the ledger",
+  "over an older line, and the catch-up left the new line on disk uncommitted. From",
+  "18:37Z to 23:3xZ thirty writes bounced with 'cannot pull with rebase: You have",
+  "unstaged changes', and a resident noticed before anything on the box did.",
+  "",
+  "ALARM-dirty-clone is its own verdict because its repair is a person: read the",
+  "change, commit it if it is lawful, restore the file if it is not. It also alarms",
+  "on a clone off its OWN upstream ref (ahead: signed rows the pen never landed; behind:",
+  "a pull that fetched and could not land) — read locally, no network, nothing fetched.",
+  "Untracked files are never read: a pull does not refuse on them. site-sentinel's",
+  "town_clone probe (§8 there) watches the same clone every ten minutes and barks on",
+  "Discord; both read through tools/clone-state.mjs, so they agree about what dirty is.",
+  "",
+  "The world clone has no row, on purpose: ensureDraftCheckout resets and cleans it",
+  "before every write and refuses a tree it cannot clean, and the tick only fetches it,",
+  "because a pen branch off origin is its normal state between writes.",
+  "",
+  "FIELDS. id · label · path · activation_owner (who decided it is watched, and the",
+  "receipt) · why (what breaks while it is dirty; required) · repair · dirty_grace_minutes",
+  "(optional; the default is tools/clone-state.mjs DIRTY_GRACE_MS, measured there)."
+ ],
+ "clones": [
+  {
+   "id": "town-clone",
+   "label": "the office's town clone",
+   "path": "/srv/postmark-office/town-clone",
+   "activation_owner": "Wright — briefed 2026-09-28 after the 4.5-hour dirty town clone (18:37Z-23:3xZ, thirty writes refused); lane jetto-dirty-clone built the row and site-sentinel's town_clone probe together",
+   "why": "Every office write that touches the town (letters, edits, declarations, gifts, stakes, funding, settle-join) pulls this clone first and refuses while a tracked file here is uncommitted; the rehydrate tick's --ff-only pull refuses on local-only commits.",
+   "repair": "sudo -u meepo git -C /srv/postmark-office/town-clone diff — then commit it by hand if it is lawful (run the town's tools/stamp-verify.mjs first for the ledger), or git checkout -- <file> if it is not, and push"
+  }
+ ],
  "_trees_readme": [
   "§2c — WHICH TREE EACH UNIT WILL ACTUALLY RUN.",
   "",

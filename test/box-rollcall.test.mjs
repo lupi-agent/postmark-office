@@ -245,6 +245,16 @@ function healthy(m = manifest()) {
     };
   }
 
+  // §2d: every clone clean by construction — readable, nothing uncommitted, and
+  // level with its own upstream ref.
+  const clones = {};
+  for (const row of m.clones ?? []) {
+    clones[row.id] = {
+      path: row.path, exists: true, readable: true, dirty: [], head: "c0ffee0000",
+      upstream: "origin/main", local_ahead: 0, local_behind: 0,
+    };
+  }
+
   // §2c: every tree row healthy by construction — each unit running the tree its
   // row says it must, and the deployed stamp readable. Generated from the shipped
   // manifest for the reason everything else here is: a tree row somebody adds
@@ -281,7 +291,7 @@ function healthy(m = manifest()) {
     }
   }
 
-  return { schema: 1, collected_at: new Date(T0).toISOString(), host: "meepo-ec2", discovered, units, services, files, custody, tree_sources, tree_realpath, releases, file_copies };
+  return { schema: 1, collected_at: new Date(T0).toISOString(), host: "meepo-ec2", discovered, units, services, files, custody, clones, tree_sources, tree_realpath, releases, file_copies };
 }
 
 // Deep-equality guard. A mutation that changes nothing is a falsifier that never
@@ -319,8 +329,9 @@ test("THE CONTROL: the planted healthy state is entirely green and exits 0", () 
   // a verdict rather than an omission. Whether the SHIPPED manifest carries a
   // parked row today is a fact about the town, not about this checker, so the
   // PARKED path itself is proven below over a row this file plants.
-  assert.equal(result.rows.length, m.units.length + (m.custody ?? []).length + (m.trees?.rows ?? []).length);
+  assert.equal(result.rows.length, m.units.length + (m.custody ?? []).length + (m.clones ?? []).length + (m.trees?.rows ?? []).length);
   assert.ok((m.custody ?? []).length > 0, "the manifest declares no custody row — §2b is not being run at all");
+  assert.ok((m.clones ?? []).length > 0, "the manifest declares no clone row — §2d is not being run at all");
   assert.ok((m.trees?.rows ?? []).length > 0, "the manifest declares no tree row — §2c is not being run at all");
   for (const p of m.units.filter((u) => u.stage === "parked")) {
     assert.equal(rowFor(result, p.unit).verdict, PARKED);
