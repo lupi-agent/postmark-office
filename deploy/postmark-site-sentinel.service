@@ -11,9 +11,11 @@ Description=site-sentinel — is the town UP, and is it FRESH; say so loudly whe
 # predicted. It reads the two workflows too, as a second opinion.
 #
 # It records nothing and repairs nothing. No pen, no ledger write, no clone
-# touched, so no town.lock — exactly like postmark-harbor-watch and
-# postmark-usdc-watch. Its only writes are its own state, its own status board,
-# and an HTTPS POST to a Discord webhook.
+# written, so no town.lock — exactly like postmark-harbor-watch and
+# postmark-usdc-watch. It READS the office's town clone (probe §8, git with its
+# optional index lock off, so it never contends with a write's `git add`). Its
+# only writes are its own state, its own status board, and an HTTPS POST to a
+# Discord webhook.
 #
 # It cannot see its own death: if this box is down, nothing here alarms. That
 # needs an off-box heartbeat and is deliberately NOT solved here — see the
@@ -49,6 +51,10 @@ EnvironmentFile=-/etc/postmark-sentinel.env
 # 60-requests-per-hour anonymous budget and merely spends less of the box's
 # shared allowance when the token is present.
 Environment=SENTINEL_GITHUB_TOKEN_FILE=/srv/postmark-office/git-metrics-token
+# §8's clone. Named here rather than read from /etc/postmark-office.env, which
+# carries the office's keys and which this watch has no business loading. The
+# same line postmark-usdc-watch.service carries.
+Environment=TOWN_CLONE=/srv/postmark-office/town-clone
 ExecStart=/usr/bin/node tools/site-sentinel.mjs \
   --state /srv/postmark-sentinel/state.json \
   --out /srv/postmark-sentinel/status.json

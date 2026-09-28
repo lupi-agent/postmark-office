@@ -603,8 +603,18 @@ _wf(_rrep, JSON.stringify({
   passes: 2,
   detail: "converged after 2 pass(es) at town 9468d6e3",
 }, null, 1));
+// §8 fixture, same discipline again: a real, clean git clone in a temp dir, so
+// the healthy tick EXERCISES the clone probe — and the suite never reads the
+// box's own /srv/postmark-office/town-clone when it runs there.
+import { execFileSync as _ex } from "node:child_process";
+const _clone = join(_wdir, "town-clone");
+_ex("git", ["init", "-q", "-b", "main", _clone]);
+_wf(join(_clone, "ledger.md"), "line\n");
+_ex("git", ["-C", _clone, "add", "ledger.md"]);
+_ex("git", ["-C", _clone, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed"]);
 const FIXTURE_CONFIG = {
   ..._CFG,
+  clones: [{ key: "town_clone", label: "the office's town clone", path: _clone }],
   watchers: [{ key: "usdc_watch", label: "the usdc-watch timer", state: _wstate, cadenceMs: 6 * 60 * 60_000 }],
   siteRefresh: { ..._CFG.siteRefresh, report: _rrep, cadenceMs: 6 * 60 * 60_000 },
 };

@@ -136,6 +136,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // A HAND-CARRY OF THIS FILE ALONE could still ship a reader older than what it
 // imports; the hand-carry recipe in deploy/DEPLOY.md is where that is answered.
 import { readHistory, recurringUnsettled, scheduledRuns } from "../deploy/settlement-history.mjs";
+// The clone reader is the sentinel's own (§8 there, §3d/§5e here), so the loud
+// eye and the morning board cannot disagree about what "dirty" means.
+import { DIRTY_GRACE_MS, readCloneState, judgeDirt, nameFiles } from "./clone-state.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_MANIFEST = join(HERE, "..", "deploy", "box-rollcall-manifest.json");
@@ -174,6 +177,12 @@ export const ALARM_CUSTODY = "ALARM-custody";
 // drop-in, a symlink, or a file copy that the release workflow never performs.
 // See §2c in the manifest's readme for the incident that earned it.
 export const ALARM_TREE = "ALARM-tree";
+// A clone the office writes through holds uncommitted tracked changes, or sits
+// off its own upstream. Its own class because the repair is a person reading a
+// change and committing or restoring it — not systemctl, chown or a drop-in.
+// 2026-09-28: a failed stamp-verify stranded one signed ledger line in the town
+// clone and every pulling write refused for four and a half hours.
+export const ALARM_DIRTY_CLONE = "ALARM-dirty-clone";
 
 export function isAlarm(verdict) {
   return String(verdict).startsWith("ALARM");
@@ -212,6 +221,14 @@ export function loadManifest(path = DEFAULT_MANIFEST) {
     if (!row.path) throw new Error(`custody row ${row.id} names no path`);
     if (!row.must_be_owned_by) throw new Error(`custody row ${row.id} names no must_be_owned_by`);
     if (!row.why) throw new Error(`custody row ${row.id} does not say what breaks when custody slips`);
+  }
+  // §2d, the clone rows. Same discipline: a row that cannot say who decided it
+  // runs, or what breaks when the clone is dirty, is a row nobody acts on.
+  for (const row of m.clones ?? []) {
+    if (!row.id) throw new Error(`clone row with no id: ${JSON.stringify(row)}`);
+    if (!row.path) throw new Error(`clone row ${row.id} names no path`);
+    if (!row.activation_owner) throw new Error(`clone row ${row.id} names no activation_owner`);
+    if (!row.why) throw new Error(`clone row ${row.id} does not say what breaks when the clone is dirty`);
   }
   // §2c, the tree rows. Same discipline again, and one clause of its own: a row
   // that permits a tree OTHER than the deployed release must say why in a
@@ -676,6 +693,12 @@ export function collect(manifest, { now = Date.now() } = {}) {
     };
   }
 
+  // §3d — each clone's working tree and its standing against its OWN upstream
+  // ref. No network, and nothing fetched: the ref is as the clone's last pull
+  // or fetch left it, which is also what the office's next write will see.
+  const clones = Object.create(null);
+  for (const row of manifest.clones ?? []) clones[row.id] = readCloneState(row.path);
+
   return {
     schema: 1,
     collected_at: new Date(now).toISOString(),
@@ -685,6 +708,7 @@ export function collect(manifest, { now = Date.now() } = {}) {
     services,
     files,
     custody,
+    clones,
     ...collectTrees(manifest),
   };
 }
@@ -1300,6 +1324,38 @@ export function classifyCustody(row, snapshot) {
   };
 }
 
+// ── §5e judging a clone the office writes through ──────────────────────────
+
+export function classifyDirtyClone(row, snapshot, now) {
+  const seen = (snapshot.clones || {})[row.id];
+  const label = row.label || row.id;
+  const unit = `clone:${row.id}`;
+  const alarm = (what) => ({ unit, label, verdict: ALARM_DIRTY_CLONE, reason: `${label} — ${what}. ${row.why}` });
+
+  if (!seen || seen.exists === false) return alarm(`${row.path} is not on the box, so nothing can say it is clean`);
+  if (!seen.readable) return alarm(`git could not read ${row.path} (${seen.error ?? "no reason given"}), and an unread clone is not a clean one`);
+
+  const graceMs = Number.isFinite(Number(row.dirty_grace_minutes)) ? Number(row.dirty_grace_minutes) * MINUTE : DIRTY_GRACE_MS;
+  const dirt = judgeDirt(seen, { nowMs: now, graceMs });
+  if (dirt.dirty && !dirt.in_grace) {
+    const age = dirt.age_ms == null ? "at an unknown time (deletions only, no mtime)" : humanAge(dirt.age_ms);
+    return alarm(`${dirt.files.length} tracked file(s) uncommitted, the oldest changed ${age}: ${nameFiles(seen)}${row.repair ? `. Repair: ${row.repair}` : ""}`);
+  }
+  if (seen.upstream == null) return alarm(`${row.path} has no upstream branch (detached HEAD?), so whether its writes land cannot be read`);
+  if (seen.local_ahead > 0 || seen.local_behind > 0) {
+    const side = seen.local_ahead && seen.local_behind ? `diverged from ${seen.upstream} (${seen.local_ahead} local-only, ${seen.local_behind} not pulled)`
+      : seen.local_ahead ? `${seen.local_ahead} commit(s) ahead of ${seen.upstream} — signed rows the pen never landed`
+        : `${seen.local_behind} commit(s) behind ${seen.upstream} — a pull fetched and could not land`;
+    return alarm(side);
+  }
+  return {
+    unit,
+    label,
+    verdict: OK,
+    reason: `${label} — no uncommitted tracked files, and level with ${seen.upstream}${dirt.dirty ? ` (a change under ${Math.round(graceMs / MINUTE)} min old: a write in flight)` : ""}`,
+  };
+}
+
 // ── §5d judging THE TREE A UNIT WILL RUN ────────────────────────────────────
 //
 // Pure, like every other judgment here, and derived from `tree_sources` rather
@@ -1483,6 +1539,7 @@ export function unrowedTrees(manifest, snapshot) {
 export function rollcall(manifest, snapshot, now = Date.now()) {
   const rows = manifest.units.map((row) => classifyRow(row, snapshot, now));
   for (const row of manifest.custody ?? []) rows.push(classifyCustody(row, snapshot));
+  for (const row of manifest.clones ?? []) rows.push(classifyDirtyClone(row, snapshot, now));
   for (const row of manifest.trees?.rows ?? []) rows.push(classifyTree(row, manifest, snapshot));
   rows.push(...unrowedTrees(manifest, snapshot));
 
