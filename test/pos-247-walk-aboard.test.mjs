@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { foldFrames } from "../src/world-frames.mjs";
-import { carriersFrom, carrierReader, movementStandpoint, vesselPositionAt, vesselServiceFrom } from "../src/world-movement.mjs";
+import { movementStandpoint, vesselPositionAt } from "../src/world-movement.mjs";
 import { withFrames } from "../src/positions.mjs";
 import { withVehicleRiders } from "../src/dynamic-presence.mjs";
 import { atCrossing, departure, fixtureMarks, makeWorldClone, QUAY } from "./movement-fixture.mjs";
@@ -53,14 +53,6 @@ const DOM = [
   departure({ handle: "dom-pidgey", from: SNUG, toward: HULL_DECK, at: 10.2 }),
 ];
 
-async function foldOf(records, atMs) {
-  const { service, mod, walk } = await vesselServiceFrom(MARKS, REPO);
-  const carrierAt = carrierReader(MARKS, { repo: clone.dir, service, mod });
-  return foldFrames(records, { carriers: carriersFrom(MARKS), carrierAt, walk, atMs });
-}
-
-// The frame map the doors build: one entry per resident the fold puts in a frame.
-const frameMap = (entries) => new Map(entries.filter(([, f]) => f.frame));
 
 const rowAt = (handle, p) => ({ handle, x: p.x, y: p.y, source: "walk", moving: false, remaining_m: 0, eta_crossings: 0 });
 
@@ -73,24 +65,20 @@ test("the fixture is the instance: his walk ends on her deck, and she then sails
 });
 
 test("dom-pidgey's sequence folds ASHORE: the walk ends on the quay beside her, never aboard", async () => {
-  const fold = await foldOf(DOM, MID_CROSSING);
+  const fold = foldFrames(DOM);
   assert.equal(fold.frame, null, "a walk toward her hull does not board");
   assert.deepEqual(fold.transitions, [], "no frame edge is born");
   assert.deepEqual(fold.world, HULL_DECK, "he stands where the walk ended; she sailed without him");
   assert.notEqual(fold.provenance, "carried");
 });
 
-test("the walkers door reads him ashore — the fold's frame map is empty and the row stands", async () => {
-  const fold = await foldOf(DOM, MID_CROSSING);
-  const rows = withFrames([rowAt("dom-pidgey", HULL_DECK)], frameMap([["dom-pidgey", fold]]));
-  assert.equal(rows[0].aboard, undefined, "no aboard flag");
-  assert.deepEqual({ x: rows[0].x, y: rows[0].y }, HULL_DECK, "not relocated to her mid-crossing position");
-});
+// The walkers door applies the same riders map present does (POS-261), so the
+// present test below covers both reads; test/pos-261-riders-on-both-reads
+// drives the two doors themselves.
 
 test("present reads him ashore — the riders overlay has no occupancy for him, so nothing puts him aboard", async () => {
-  const fold = await foldOf(DOM, MID_CROSSING);
   // He exited through the ledger: occupancy holds no stack for him.
-  const frames = await withVehicleRiders(frameMap([["dom-pidgey", fold]]), { world: MARKS, ...REPO, atMs: MID_CROSSING, occupancy: new Map() });
+  const frames = await withVehicleRiders(null, { world: MARKS, ...REPO, atMs: MID_CROSSING, occupancy: new Map() });
   assert.equal(frames?.get("dom-pidgey"), undefined);
   const rows = withFrames([rowAt("dom-pidgey", HULL_DECK)], frames);
   assert.equal(rows[0].aboard, undefined);

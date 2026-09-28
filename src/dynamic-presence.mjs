@@ -198,43 +198,6 @@ export function positionsAt(db, atMs, walk, vessel = null, { world = null, where
 }
 
 /**
- * Every resident's frame at an instant, for the overlay above.
- *
- * Imported lazily so that an office with `WORLD_MOVEMENT_V2` off never loads
- * the movement modules at all — the same shape `world.mjs` uses for the frames
- * map, and the reason the flag-off path is byte-identical rather than merely
- * equal.
- */
-async function framesForPresence({ db, world, repo, atMs, walk, stored = null }) {
-  const [{ carrierReader, recordsAcrossEras, vesselServiceFrom }, { foldFrames }] =
-    await Promise.all([import("./world-movement.mjs"), import("./world-frames.mjs")]);
-  const { service, mod, carriers } = await vesselServiceFrom(world, { repo });
-  if (!service || !mod || !carriers.length) return null;
-  const carrierAt = carrierReader(world, { repo, service, mod });
-
-  const out = new Map();
-  for (const [handle, dep] of governingDepartures(db)) {
-    if (handle === service.vessel.handle) continue;
-    // The fold needs BOTH eras or it re-derives people onto a boat they stepped
-    // off: the entities table holds their era-1 arrival, the store holds the
-    // ashore record that ended it. `stored` is read once by the caller and
-    // sliced here rather than re-opened per resident.
-    const ledgerRecords = [{ handle, iso: dep.iso, ...toWalkRecord(dep) }];
-    // `stored` IS NULL ONLY WHEN THE ONE READ ALREADY REFUSED, and the old
-    // fallback re-opened sqlite per resident to ask again. Against the record
-    // that is one round trip per head to re-ask a question that just answered
-    // "I cannot be reached" — so it is `[]`, and `storeAbsent` carries the
-    // reason to the disclosure. An EMPTY list is truthy and still takes the
-    // slice path, so a town that simply has not walked is unaffected.
-    const mine = stored ? stored.filter((r) => r.handle === handle) : [];
-    const records = recordsAcrossEras(ledgerRecords, mine);
-    const fold = await foldFrames(records, { carriers, carrierAt, walk, atMs });
-    if (fold.frame) out.set(handle, fold);
-  }
-  return out;
-}
-
-/**
  * THE RIDERS, ADDED TO THE SAME FRAME MAP (#2986, Keemin-ruled 2026-09-19).
  *
  * A rider's frame cannot be folded out of their departures — they entered
@@ -242,10 +205,13 @@ async function framesForPresence({ db, world, repo, atMs, walk, stored = null })
  * off the enter-exit ledger, ONCE for the whole town rather than per resident,
  * and merged into the map `withFrames` already applies.
  *
- * It lands HERE, beside `framesForPresence`, for the reason positions.mjs gives
+ * It lands HERE, beside presence's own read, for the reason positions.mjs gives
  * about itself: if the walkers door placed a rider at the hull and presence
  * placed them back on the quay they entered from, somebody would write them a
- * letter opening "you aren't home" all over again. One map, both doors.
+ * letter opening "you aren't home" all over again. One map, both doors: the
+ * walkers door applies it too (`world.mjs § walkersInFrames`, POS-261). Until
+ * then that door folded walks for a frame instead, which a walk never yields,
+ * so its riders stood on the quay.
  *
  * ⚑ RIDERS OVERWRITE, and they must. Occupancy is the record the law now
  * reads, so where the walk fold and the ledger disagree about a rider, the
@@ -313,8 +279,8 @@ async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now
     // her sailing line rides in meta, saved beside the rows it governs.
     let vessel = null;
     try { vessel = JSON.parse(getMeta(db, "vessel_departure") ?? "null"); } catch { vessel = null; }
-    // Stage D: derive every frame once, here, and hand the map down. Flag-off
-    // this is null and `withFrames` returns its input untouched.
+    // Stage D: the frame map is the riders' (below), handed down once. Flag-off
+    // or with no vehicle it is null and `withFrames` returns its input untouched.
     let frames = null, stored = null, storeAbsent = null;
     // A projection already holds era two; reading the store again for the same
     // answer is the cost POS-264 exists to remove.
@@ -328,10 +294,6 @@ async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now
         stored = read.records;
         storeAbsent = read.absent;
       } catch (e) { stored = null; storeAbsent = String(e?.message ?? e).slice(0, 160); }
-    }
-    if (movementV2Enabled() && world) {
-      try { frames = await framesForPresence({ db, world, repo, atMs, walk: w, stored }); }
-      catch { frames = null; }  // a frame read must never cost anyone their presence
     }
     // Gated on the fold: a world with no vehicle-class mark pays nothing and
     // reads exactly as it did. Never throws, for the same reason the fold above
