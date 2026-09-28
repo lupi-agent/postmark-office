@@ -44,7 +44,7 @@ import { ACTION_AMEND, ACTION_LEAVE, ACTION_WITHDRAW, CLASS_MARK, CLASS_MOVE, CL
 // sentence, minted once and shared with the crossing's write-down.
 import { declaredParentIdOf, declaredParentRefusal, idOfMarkFileFrom, outsideParentBounce } from "./mark-declared-parent.mjs";
 import { guardedDraftsForKey, guardedLiveChildrenOf, guardedLiveMarks } from "./world2-guards.mjs"; // B1: the door guards' own reads, behind W2_GUARDS (runbook §4 B1)
-import { WORLD_STAKE_TOOLS, actingAs, callWorldStakeTool, worldPortfolioStakeSlice, markStakeBlock } from "./world-stake.mjs"; // P3 draft, append-shaped
+import { WORLD_STAKE_TOOLS, actingAs, callWorldStakeTool, emptyPurseRefusalFor, heldAtOffice, worldPortfolioStakeSlice, markStakeBlock } from "./world-stake.mjs"; // P3 draft, append-shaped
 import { toConfirm } from "./stamps-preview.mjs"; // POS-83: the inline stake's half of the confirmation step
 import { classNames, classRoster, classDials, departurePace, freeCellIn, RESIDENT_INSTANTIABLE, residentMayInstantiate, STRIDE_MARK_ID } from "./world-classes.mjs"; // which classes exist — read from the record, never held
 import { HOLD_TOOLS, callHoldTool } from "./world-hold.mjs"; // the object primitive: who holds what
@@ -3723,7 +3723,15 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
   // a stake that bounced. A stake that cannot run is ruled as the ✦0 it will
   // land: a parcel (minimum 0) still goes forward, a commons mark stays the
   // author's draft, and the bounce is named on the answer.
-  const stakeBounce = stakeN >= 1 ? actingAs(by, key).bounce ?? null : null;
+  let stakeBounce = stakeN >= 1 ? actingAs(by, key).bounce ?? null : null;
+  // THE EMPTY PURSE, the commons half of #226 (`world-stake.mjs §
+  // emptyPurseRefusalFor`): holding 0, the declaration is made at ✦0. A preview
+  // moves nothing and keeps its own block; an unreadable ledger changes nothing.
+  if (!stakeBounce && stakeN >= 1 && payload.preview !== true) {
+    let held = null;
+    try { held = await heldAtOffice(by); } catch { held = null; }
+    stakeBounce = emptyPurseRefusalFor({ n: stakeN, held });
+  }
   const stakeLands = stakeBounce ? 0 : stakeN;
   // The class's OWN fields ride the record; another class's do not. This used to
   // read `klass === undefined ? {} : {class, ask, reward, status}` — correct while
