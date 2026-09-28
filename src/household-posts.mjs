@@ -142,6 +142,8 @@ async function eventRows(members, now, { env }) {
           role: house.has(p.author) ? "author" : "participant",
           stake: 0,
           ours: 0,
+          // the span's start, for the order only; never on the answer (§ ORDER)
+          [STARTS]: new Date(p.starts).toISOString(),
         })),
       };
     }, { env });
@@ -226,7 +228,25 @@ async function ideaRows(members, whose, { worldDb, townClone }) {
   return { rows };
 }
 
-const newestFirst = (a, b) => String(b.latest?.at ?? "").localeCompare(String(a.latest?.at ?? "")) || a.id.localeCompare(b.id);
+// ── ORDER (Wright's review, 2026-09-28) ─────────────────────────────────────
+//
+// What is still open comes first, what is over comes last. Among the open, a
+// post with a span (a start the town is counting down to) sorts by the soonest
+// start, and a post with none by its newest act; spans lead, because a start
+// is a date on the reader's calendar. The terminal ones (ended, cancelled)
+// follow, newest act first. It is decided HERE, before the cut at POSTS_CAP,
+// so the cut keeps what is live rather than whatever acted last. The keys are
+// general: a state, a span, an act. No class is asked.
+const STARTS = Symbol("starts");
+export const TERMINAL_STATES = Object.freeze(["ended", STATE_CANCELLED]);
+const terminal = (r) => TERMINAL_STATES.includes(r.state);
+const newest = (a, b) => String(b.latest?.at ?? "").localeCompare(String(a.latest?.at ?? ""));
+export function postOrder(a, b) {
+  return (terminal(a) - terminal(b))
+    || (terminal(a) ? newest(a, b)
+      : (!a[STARTS] - !b[STARTS]) || (a[STARTS] ? a[STARTS].localeCompare(b[STARTS]) : newest(a, b)))
+    || a.id.localeCompare(b.id);
+}
 
 /**
  * `household { read: "posts", handle }`.
@@ -243,10 +263,11 @@ export async function householdPosts(handle, { now = Date.now(), env = process.e
     eventRows(mine.members, now, { env }),
     ideaRows(mine.members, whose, { worldDb, townClone }),
   ]);
-  const rows = [...(events.rows ?? []), ...(ideas.rows ?? [])].sort(newestFirst);
+  const rows = [...(events.rows ?? []), ...(ideas.rows ?? [])].sort(postOrder);
   const list = (role) => {
     const all = rows.filter((r) => r.role === role);
-    return { total: all.length, shown: Math.min(all.length, POSTS_CAP), rows: all.slice(0, POSTS_CAP) };
+    const plain = ({ [STARTS]: _starts, ...r }) => r;
+    return { total: all.length, shown: Math.min(all.length, POSTS_CAP), rows: all.slice(0, POSTS_CAP).map(plain) };
   };
   const unavailable = [house.unread, events.unavailable, ideas.unavailable].filter(Boolean);
   return {

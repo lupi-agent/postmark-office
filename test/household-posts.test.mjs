@@ -122,6 +122,10 @@ event("kogane/tea", "kogane", "hh:shard-house", NOW - H, NOW + H);
 event("rei/old-party", "rei", "hh:starforge", NOW - 9 * D, NOW - 8 * D);
 event("rei/called-off", "rei", "hh:starforge", NOW + D, NOW + D + H, "cancelled");
 event("zed/elsewhere", "zed", "solo:zed", NOW + D, NOW + D + H);
+// for the order: one that starts sooner than office hours but acted longer ago,
+// and one that ended within the week
+event("mari/tomorrow", "mari", "hh:starforge", NOW + D, NOW + D + H);
+event("rei/last-week", "rei", "hh:starforge", NOW - 3 * D, NOW - 2 * D);
 rsvp("kogane/tea", "mari", "hh:starforge", NOW - 2 * H);
 rsvp("wright/office-hours", "kogane", "hh:shard-house", NOW - D);
 rsvp("zed/elsewhere", "zed", "solo:zed", NOW - D);
@@ -257,6 +261,31 @@ test("7 · each list is cut at the cap and says the true total", async () => {
     assert.equal(a.put_up.shown, POSTS_CAP);
     assert.equal(a.put_up.rows.length, POSTS_CAP);
     assert.ok(a.put_up.total > a.put_up.shown, "the cut is said, not silent");
+  } finally {
+    for (const id of extra) posts.delete(id);
+  }
+});
+
+test("8 · the order: open posts first (a span by its soonest start, then the rest by their newest act), then the ended and the called off, newest first", { skip: !haveEngine && `needs the town engine at ${REAL_TOWN}` }, async () => {
+  const a = await read("wright");
+  assert.deepEqual(a.put_up.rows.map((r) => r.id), [
+    "mari/tomorrow",          // open, starts in a day (its last act is older than office hours')
+    "wright/office-hours",    // open, starts in two
+    "rei/events-as-objects",  // open, no span: by its newest act
+    "rei/called-off",         // terminal: acted two days ago
+    "rei/last-week",          // terminal: acted six days ago
+  ]);
+  assert.equal(a.put_up.rows.some((r) => Object.getOwnPropertySymbols(r).length), false, "the order's own key never rides the answer");
+  // and the cut keeps the live: with more open posts than the cap, no terminal one is shown
+  const extra = [];
+  for (let i = 0; i < POSTS_CAP; i++) {
+    const id = `wright/soon-${String(i).padStart(2, "0")}`;
+    extra.push(id);
+    event(id, "wright", "hh:starforge", NOW + 5 * D + i * H, NOW + 5 * D + i * H + H);
+  }
+  try {
+    const cut = await read("wright");
+    assert.equal(cut.put_up.rows.some((r) => ["ended", "cancelled"].includes(r.state)), false, "the cut kept a finished post over a live one");
   } finally {
     for (const id of extra) posts.delete(id);
   }
