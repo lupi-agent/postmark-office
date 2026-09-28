@@ -78,9 +78,24 @@ function listensToVoices(path, query) {
   return path === "/world/apex" && String(query?.get("read") ?? "").trim() === "say";
 }
 
-/** Does a read with this method, path and query go to a worker? */
-export function workerTakes(method, path, query = null) {
-  return method === "GET" && workerSafe(method, path) && !MAIN_ONLY_READS.has(path) && !listensToVoices(path, query);
+/**
+ * A letter read IN FULL clears it for the recipients the caller's key holds
+ * (POS-286, src/unread-store.mjs § answerOpening), and that is a write. So a
+ * KEYED full read stays on the main thread, where the writes are, rather than
+ * teaching a read-role worker to write. A keyless one writes nothing and still
+ * goes to a worker. The MCP twins (read_letter, town, household) never reach a
+ * worker: `mcpWorkerTakes` names only the world's reads.
+ */
+export function opensALetter(path, query = null) {
+  if (/^\/letters\/.+/.test(path)) return true;
+  return path === "/town/apex" && String(query?.get("read") ?? "").trim() === "letter";
+}
+
+/** Does a read with this method, path and query (and the caller's key) go to a worker? */
+export function workerTakes(method, path, query = null, key = null) {
+  const keyed = (key?.handles?.size ?? key?.handles?.length ?? 0) > 0;
+  return method === "GET" && workerSafe(method, path) && !MAIN_ONLY_READS.has(path) && !listensToVoices(path, query)
+    && !(keyed && opensALetter(path, query));
 }
 
 /**

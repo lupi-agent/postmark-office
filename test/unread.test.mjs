@@ -252,3 +252,44 @@ test("6 · new_inbound still answers, with its pointer to where the count moved"
   assert.equal(d.awaiting.new_inbound_moved, NEW_INBOUND_NOTE);
   assert.equal(UNREAD_LISTED, 20);
 });
+
+// ── RULING (a), 2026-09-28: every door that answers a letter in full clears it ──
+//
+// "Any full fetch by a key that holds a recipient clears, at all three doors."
+// The flat read_letter, town { read: "letter" } (MCP and GET /town/apex both
+// land in mcp.mjs § read_letter) and GET /letters/{id} share
+// unread-store.mjs § answerOpening with the household door.
+
+test("7 · the flat read_letter and town { read: \"letter\" } clear it for a recipient, and answer the town's bytes", async () => {
+  const { callTool } = await import("../src/mcp.mjs");
+  const tctx = { db, key: A, meta: {}, asOf: AS_OF };
+  const flat = await callTool("read_letter", { id: TO_ANN[0].id }, tctx);
+  assert.deepEqual(flat, letterAnswer(db, TO_ANN[0].id), "the flat read's answer moved");
+  assert.equal(await countOf("ann"), 2);
+  assert.equal(opens.rows.get(`ann\n${TO_ANN[0].id}`).how, "read");
+  const town = await callTool("town", { read: "letter", args: { id: TO_ANN[1].id } }, tctx);
+  assert.equal(town.id ?? town.result?.id, TO_ANN[1].id, JSON.stringify(town).slice(0, 200));
+  assert.equal(await countOf("ann"), 1, "town { read: \"letter\" } did not clear it");
+});
+
+test("7b · a non-recipient's or a keyless full read writes nothing", async () => {
+  const { callTool } = await import("../src/mcp.mjs");
+  await callTool("read_letter", { id: TO_ANN[0].id }, { db, key: B, meta: {}, asOf: AS_OF });
+  await callTool("read_letter", { id: TO_ANN[0].id }, { db, key: null, meta: {}, asOf: AS_OF });
+  await callTool("town", { read: "letter", args: { id: TO_ANN[0].id } }, { db, key: B, meta: {}, asOf: AS_OF });
+  assert.equal(opens.rows.size, 0);
+  assert.equal(await countOf("ann"), 3);
+});
+
+test("7c · a KEYED full read stays on the main thread, where the writes are; a keyless one still goes to a worker", async () => {
+  const { workerTakes, opensALetter } = await import("../src/read-workers.mjs");
+  const q = (s = "") => new URLSearchParams(s);
+  const id = encodeURIComponent(TO_ANN[0].id);
+  assert.equal(workerTakes("GET", `/letters/${id}`, q(), A), false);
+  assert.equal(workerTakes("GET", "/town/apex", q("read=letter&args={}"), A), false);
+  assert.equal(workerTakes("GET", `/letters/${id}`, q(), null), true, "a keyless letter read writes nothing and should stay on a worker");
+  assert.equal(workerTakes("GET", "/town/apex", q("read=letter"), null), true);
+  assert.equal(workerTakes("GET", "/letters", q(), A), true, "the letter LIST opens nothing");
+  assert.equal(workerTakes("GET", "/town/apex", q("read=letters"), A), true, "the town's letter list opens nothing");
+  assert.equal(opensALetter("/letters"), false);
+});

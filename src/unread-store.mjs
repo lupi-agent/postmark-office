@@ -134,6 +134,30 @@ export async function openLetter(l, key, { env = process.env, now = Date.now() }
 }
 
 /**
+ * EVERY DOOR THAT ANSWERS A LETTER IN FULL clears it for the recipients the
+ * caller's key holds (Wright's ruling (a), 2026-09-28: "opening a letter clears
+ * it, the way email does", at all three doors: household { read: "letter" },
+ * the flat read_letter and town { read: "letter" }, and their REST faces).
+ * Returns the answer to send: `l` itself, byte for byte, or `l` with
+ * `unread_note` when the clear could not be written. A keyless read, or a key
+ * holding no recipient, writes nothing. An office pointed at no record keeps
+ * no unread, so there is nothing to say. A failed clear never fails the read.
+ *
+ * These reads write, so a keyed one stays on the main thread: read-workers.mjs
+ * § opensALetter.
+ */
+export async function answerOpening(l, key, opts = {}) {
+  if (!l || !key?.handles) return l;
+  try {
+    await openLetter(l, key, opts);
+    return l;
+  } catch (e) {
+    if (e?.name === "NoRecordError") return l;
+    return { ...l, unread_note: "this letter could not be marked read (the office's record did not answer); it stays unread until a later opening or mark-all-read" };
+  }
+}
+
+/**
  * household { do: "mark-all-read", args: { handle? } }. Bare, every resident
  * the key holds; `handle:` narrows to one. Not an act in `acts`: what a
  * household has read never enters the public record.

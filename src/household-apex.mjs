@@ -1181,19 +1181,10 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
       if (!letterParties(l).some((h) => mine.has(h)))
         return bounce(403, "not a letter your household sent or received",
           `this read is your own correspondence — the town's public record reads any letter by id: town { read: "letter", args: { id: "${id}" } }`);
-      // OPENING CLEARS IT (POS-286): a full fetch opens the letter for every
-      // recipient this key holds (src/unread-store.mjs § openLetter). The
-      // answer stays the town's bytes. An office pointed at no record keeps
-      // no unread to clear; any other failure is said beside the letter,
-      // because the letter is still unread and the reader should know why.
-      try {
-        const { openLetter } = await import("./unread-store.mjs");
-        await openLetter(l, key);
-      } catch (e) {
-        if (e?.name !== "NoRecordError")
-          return { ...l, unread_note: "this letter could not be marked read (the office's record did not answer); it stays unread until a later opening or mark-all-read" };
-      }
-      return l;
+      // OPENING CLEARS IT (POS-286), at this door as at the town's: one
+      // function (src/unread-store.mjs § answerOpening), the town's bytes.
+      const { answerOpening } = await import("./unread-store.mjs");
+      return answerOpening(l, key);
     }
     // ── the stamps tenancy's reads ──────────────────────────────────────────
     // read_stamps stays the PUBLIC roster; these are your household's own books
