@@ -129,6 +129,9 @@ const ROSTER = {
   "tools/box-rollcall.mjs": { args: ["--manifest", NOWHERE], code: 2, needle: "the roll-call itself could not run" },
   // POS-216: refuses on a missing town clone before reading or writing anything
   "tools/ops-activity.mjs": { args: ["--town", NOWHERE], env: NO_PG, code: 2, needle: "no town clone at" },
+  // POS-282: refuses a by-hand file that is not JSON before any channel is read
+  // or anything written; offline and pointed at scratch in case it ever does not
+  "tools/ops-awareness.mjs": { args: ["--by-hand", join(ROOT, "tools", "ops-awareness.mjs")], env: { AWARENESS_OFFLINE: "1", OPS_ROOT: NOWHERE }, code: 2, needle: "is not JSON" },
   "tools/capture-doorstep-golden.mjs": { args: [], code: 0, needle: "{" },
   "tools/capture-household-golden.mjs": { args: [], code: 0, needle: "{" },
   "tools/crossing-replay-check.mjs": { args: ["--db", NOWHERE_DB, "--world", NOWHERE], code: 2, needle: "GATE REFUSED" },
