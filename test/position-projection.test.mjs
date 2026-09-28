@@ -40,10 +40,12 @@
 // POS-247 fact it pins rather than a gap: no walk record can frame a voice, so
 // which record the fold is handed cannot move one.
 //
-// POS-284's flip: in `createPlacement § rows`, return the kept rows without
+// POS-284's flips. (1) In `createPlacement § rows`, return the kept rows without
 // re-placing the drifting (`if (!k.drifting.size) return out;` →
-// `return out;`). KEPT and the DOOR's second instant go red: a walker is
-// answered where they stood when the town was first placed.
+// `return out;`): PRESENCE, KEPT and DOOR go red, a walker answered where they
+// stood when the town was first placed. (2) In `world.mjs § placedAt`, drop
+// `${epoch}|` from the key: DOOR goes red at the recorded walk, a resident who
+// set off answered from their ground.
 //
 // Run: WORLD_CLONE=<world clone> node --test test/position-projection.test.mjs
 
@@ -346,10 +348,11 @@ test("DOOR: /world/walkers answers the same with the projection on as off", asyn
   if (needsClone(t)) return;
   install();
   const world = await import("../src/world.mjs");
-  if (!STORE.length) {
-    const walk = await worldToolModule("walk.mjs", { repo: WORLD_CLONE });
-    for (let i = 0; i < 24; i++) await fileWalk(movementAt(i, walk));
-  }
+  // The replay's own store, always: HEARING leaves one act of its own behind,
+  // and a DOOR read over that one act compared a town with nobody on the road.
+  STORE.length = 0;
+  const walk = await worldToolModule("walk.mjs", { repo: WORLD_CLONE });
+  for (let i = 0; i < 24; i++) await fileWalk(movementAt(i, walk));
   mock.timers.enable({ apis: ["Date"], now: B + 45 * 60_000 });
   try {
     delete process.env.WORLD_POSITIONS;
@@ -358,17 +361,38 @@ test("DOOR: /world/walkers answers the same with the projection on as off", asyn
     world.positionProjection.invalidate();
     const on = await world.worldWalkers(WORLD_CLONE, null, { roll: ROLL });
     assert.ok(off.walkers.length > 20, "the door answered almost nobody — the comparison is vacuous");
-    assert.ok(off.walkers.some((w) => w.moving), "nobody is on the road — the kept placement's re-placing is not exercised");
+    assert.ok(off.walkers.some((w) => w.moving && w.source === "walk"), "nobody is on the road — the kept placement's re-placing is not exercised");
     assert.deepEqual(on, off);
 
     // THE SECOND INSTANT, same epoch (POS-284): the kept placement must move
-    // the walkers it kept, and hold the ones who have arrived.
-    mock.timers.setTime(B + 50 * 60_000);
+    // the walkers it kept, and hold the ones who have arrived. Inside
+    // PROJECTION_MAX_AGE_MS, or the projection rebuilds, the epoch moves and
+    // the placement is made afresh rather than kept.
+    const epoch = world.positionProjection.epoch;
+    mock.timers.setTime(B + 45 * 60_000 + 50_000);
     const later = await world.worldWalkers(WORLD_CLONE, null, { roll: ROLL });
+    assert.equal(world.positionProjection.epoch, epoch, "the projection rebuilt — the second instant did not read the kept placement");
     delete process.env.WORLD_POSITIONS;
     const laterOff = await world.worldWalkers(WORLD_CLONE, null, { roll: ROLL });
-    assert.notDeepEqual(laterOff.walkers, off.walkers, "nobody moved in five minutes — the second instant proves nothing");
+    assert.notDeepEqual(laterOff.walkers, off.walkers, "nobody moved in fifty seconds — the second instant proves nothing");
     assert.deepEqual(later, laterOff);
+
+    // A WALK RECORDED, same instant: the resident kept at rest on their ground
+    // sets off. The walk door's in-step record moves the epoch, and the kept
+    // placement must not answer them from their ground.
+    const setOff = B + 45 * 60_000 + 55_000;
+    mock.timers.setTime(setOff);
+    const m = { actor: "still-one", from: { x: 640, y: -220 }, toward: { x: 900, y: -220 }, crossing: walk.fractionalCrossing(setOff),
+      at: new Date(setOff).toISOString(), within: null, toMark: null, declaredBy: "still-one", pace: null };
+    await fileWalk(m);
+    process.env.WORLD_POSITIONS = "1";
+    world.positionProjection.record(recordOfMovement(m));
+    mock.timers.setTime(setOff + 5_000);
+    const moved = await world.worldWalkers(WORLD_CLONE, null, { roll: ROLL });
+    delete process.env.WORLD_POSITIONS;
+    const movedOff = await world.worldWalkers(WORLD_CLONE, null, { roll: ROLL });
+    assert.ok(movedOff.walkers.find((w) => w.handle === "still-one")?.moving, "still-one did not set off — the record proves nothing");
+    assert.deepEqual(moved, movedOff);
   } finally {
     mock.timers.reset();
     delete process.env.WORLD_POSITIONS;
