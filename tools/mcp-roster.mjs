@@ -110,6 +110,17 @@ lines.push("|---|---|---|");
 for (const [a, props] of Object.entries(WORLD_READ_FIELDS))
   for (const [k, p] of Object.entries(props ?? {})) lines.push(`| \`${a}\` | \`${k}\` | ${fence(p.description)} |`);
 lines.push("");
+// The bare read's FOCUSES (POS-280): `mark:` and `find:` narrow the bare read
+// rather than an act, and neither had a line on this page. Their words are the
+// door's own schema descriptions, so the page cannot tell them differently.
+const { APEX_TOOL } = await import("../src/world-apex.mjs");
+lines.push("The bare read's focuses (`world { mark: … }`, `world { find: … }`; each answers the bare read plus its own key — `focus`, `found` — and never rides with do: or read:):");
+lines.push("");
+lines.push("| field | what it does |");
+lines.push("|---|---|");
+for (const k of ["mark", "with_image", "find", "find_offset", "find_limit"])
+  lines.push(`| \`${k}\` | ${fence(APEX_TOOL.inputSchema.properties[k].description)} |`);
+lines.push("");
 
 // ── the flat roster ─────────────────────────────────────────────────────────
 lines.push("## The flat tools, whole");

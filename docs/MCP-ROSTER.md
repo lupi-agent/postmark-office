@@ -52,6 +52,16 @@ The shadow reads' narrowing fields (`world { read: <action>, args: { … } }`; a
 | `declare-stance-on` | `limit` | how many candidates awaiting your word |
 | `declare-stance-on` | `stance` | refused — a read never performs; speak with household { do: "declare-stance-on" } |
 
+The bare read's focuses (`world { mark: … }`, `world { find: … }`; each answers the bare read plus its own key — `focus`, `found` — and never rides with do: or read:):
+
+| field | what it does |
+|---|---|
+| `mark` | FOCUS the bare read on one mark — <by>/<slug>, as ids appear in the telling. The answer is the read you would have got anyway, plus `focus`: the close look at that mark (its body, the properties predicated on it, what stands inside it). It is a focus rather than an action because investigating performs nothing — do: would be a lie, and read: is an action's shadow, so a shadow with no action is the reverse the apex's law forbids. Never rides with do: or read:. |
+| `with_image` | with mark:, also bring that mark's picture back as image bytes if it has one and it fits under the inline cap. The url rides in the answer either way; this only decides whether the office spends the bytes. |
+| `find` | FIND a mark by name from anywhere — its name, slug or id. The answer is the bare read you would have got anyway, plus `found`: the hits, best match first (an exact id, then names and slugs starting with it, then containing it), each with its place, its distance from you and the stops to ride between. A focus, like mark:, because finding performs nothing and no ground grants it. Never rides with do: or read:. (It was read: "find" until train/2026-w41; that spelling answers with a `renamed` row until train/2026-w42.) |
+| `find_offset` | with find:, walk past the first hits — the previous answer's found.next_offset |
+| `find_limit` | with find:, how many hits (default 10, at most 50) |
+
 ## The flat tools, whole
 
 ### `read_town` · read · *delisted · still answers*

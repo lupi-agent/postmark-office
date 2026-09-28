@@ -1258,7 +1258,10 @@ const handle = (req, res) => {
         return fn.then((r) => j(res, r?.error === "bounce" ? 422 : 200, r)).catch((e) => bounce(res, 500, "the world door tripped", String(e?.message ?? e).slice(0, 200)));
       }
       // GET /world/find?q= — find a mark by name from anywhere; the plain twin of
-      // world { read: "find" } (2026-09-26). Keyless answers as the spectator
+      // the apex's `find:` focus (2026-09-26; a focus since POS-280, when the
+      // read: "find" spelling began its one release of answering with a
+      // `renamed` row). It stays: a REST read keeps its shape for frozen
+      // consumers, and GET /world/apex?find= serves the focus itself. Keyless answers as the spectator
       // (distances null, the stops still told); a keyed call measures from the
       // resident's own position, named with handle= on a multi-resident key.
       if (path === "/world/find") {
