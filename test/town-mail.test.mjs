@@ -743,7 +743,10 @@ test("send_letter FOLDS UNDER household — your pen lives where your standing d
   // 52 → 53: read_earpiece (the earpiece, 2026-09-25, POS-209) — household
   // { read: "earpiece" }, born delisted behind the household apex. The three
   // counts moved in the same commit.
-  assert.equal(names.length, 53, "no tool was added or removed beyond the paid ledger; the flag-off listing is untouched");
+  // 53 → 56: town_amend + town_close + town_advance (the post machine,
+  // 2026-09-28, POS-288) — town { do: "amend" | "close" | "advance" }, born
+  // delisted behind the town apex. The counts moved in the same commit.
+  assert.equal(names.length, 56, "no tool was added or removed beyond the paid ledger; the flag-off listing is untouched");
 
   assert.ok(HOUSEHOLD_DISPATCHABLE.includes("send"), "household do: \"send\" is the letter's apex verb");
   assert.equal(householdDispatchToolFor("send"), "send_letter",
