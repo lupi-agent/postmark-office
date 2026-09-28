@@ -398,7 +398,7 @@ cat /srv/postmark-sentinel/status.json | head -40
 
 ## The operator dashboards (`/ops/`, hub generated since 2026-08-11)
 
-Six static surfaces under `/ops/`, all written to `/var/www/postmark-ops/`
+Seven static surfaces under `/ops/`, all written to `/var/www/postmark-ops/`
 (outside the site webroot, so a site rsync never clobbers them) and served by
 the aliases in `nginx-postmark-town.conf`:
 
@@ -410,6 +410,7 @@ the aliases in `nginx-postmark-town.conf`:
 | `/ops/economy/` | `tools/economy-report.mjs` | `/etc/cron.hourly/postmark-economy-report` |
 | `/ops/world/` | `tools/world-report.mjs` | `/etc/cron.hourly/postmark-world-report` |
 | `/ops/activity/` | `tools/ops-activity.mjs` | `/etc/cron.hourly/postmark-activity-report` |
+| `/ops/awareness/` | `tools/ops-awareness.mjs` | `/etc/cron.hourly/postmark-awareness-report` |
 
 `/ops/desk/` is the exception: it is site-built (astro) and keeps its own more
 specific nginx location.
@@ -441,13 +442,32 @@ cloned data before anything ships: `TRAFFIC_ARCHIVE`, `TRAFFIC_GITHUB`,
 `GIT_REPORT_OUT`, `GIT_REPORT_NO_FETCH=1` (render from the PR cache, no GitHub
 token); `WORLD_CLONE`, `WORLD_REF`, `ECONOMY_REPORT_OUT`, `OUT_DIR`; `OPS_ROOT`;
 `ACTIVITY_OUT`, `ACTIVITY_ACTS_FILE`, `ACTIVITY_NOW` (or `--town`, `--telemetry`,
-`--acts`, `--out`, `--now`).
+`--acts`, `--out`, `--now`); `AWARENESS_OUT`, `AWARENESS_BY_HAND`,
+`AWARENESS_ACTIVITY`, `AWARENESS_NOW`, `AWARENESS_OFFLINE=1` (or `--out`,
+`--by-hand`, `--activity`, `--now`, `--offline`).
 
 **Installing `/ops/activity/`** (POS-216): `install -m 755
 deploy/cron-postmark-activity-report.sh /etc/cron.hourly/postmark-activity-report`,
 then run it once by hand. It reads the store's `acts` with the office's own two
 keys from `/etc/postmark-office.env`; without them the page says the world acts
 were not read and counts the ledgers alone.
+
+**Installing `/ops/awareness/`** (POS-282), all three together:
+
+1. `install -m 755 deploy/cron-postmark-awareness-report.sh /etc/cron.hourly/postmark-awareness-report`
+   (it sorts after `postmark-activity-report`, whose twin it reads for new
+   households, and before `zz-postmark-ops-index`).
+2. Add the `location /ops/awareness/` block from `nginx-postmark-town.conf` to
+   the live config (read the live copy first, as above), then
+   `nginx -t && systemctl reload nginx`.
+3. Run it once by hand so the page is not a 404 until the top of the hour.
+
+It reads no key. Bluesky's followers, YouTube's subscribers and channel views,
+and the Discord invite's member count come from public pages; Reddit and X come
+from `deploy/awareness-by-hand.json`, one entry per ISO week, which the page
+labels "entered by hand, <date>". Its history is `history.jsonl` in the page's
+own directory, one line per week: the current week's line is rewritten each
+hour, so a week keeps its last reading. Deleting that file loses the history.
 
 ## Branch previews (`/preview/<slug>/`, 2026-07-20)
 

@@ -1,0 +1,11 @@
+{
+ "_what": "The Awareness numbers no public page gives without a key (POS-282), read by tools/ops-awareness.mjs. One entry per ISO week (Monday to Sunday, UTC), keyed like 2026-W40. Enter each channel's running total as it stood at the week's end, set `entered` to the day you entered them, and leave a number null until it is read. Reddit: subscribers, and views from the moderators' insights. X: followers, and views (impressions) from the account's analytics. discord.new_humans is optional: it overrides the invite's member change when a human count is kept by hand. Numbers only; no key or token ever goes in this file.",
+ "weeks": {
+  "2026-W40": {
+   "entered": null,
+   "reddit": { "followers": null, "views": null },
+   "x": { "followers": null, "views": null },
+   "discord": { "new_humans": null }
+  }
+ }
+}
