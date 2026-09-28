@@ -87,7 +87,13 @@ export function routeTo(markAt, readerAt, stops, distanceM) {
  * @param at        the reader's own position, or null for a spectator
  * @param service   the vessel service (its stops), or null in a world with none
  */
-export function findMarks(marks = [], q, { at = null, service = null, offset = 0, limit = FIND_CAP } = {}) {
+/**
+ * `words` names the door's own spelling of the two paging fields, so the
+ * more_note tells the caller what to send at the door they called: the focus
+ * on the bare read pages with find_offset / find_limit (POS-280), the plain
+ * GET twin with offset / limit.
+ */
+export function findMarks(marks = [], q, { at = null, service = null, offset = 0, limit = FIND_CAP, words = { offset: "offset", limit: "limit" } } = {}) {
   const n = Math.min(Math.max(Math.floor(Number(limit)) || FIND_CAP, 1), FIND_MAX);
   const start = Math.max(Math.floor(Number(offset)) || 0, 0);
   const names = new Map();
@@ -127,7 +133,7 @@ export function findMarks(marks = [], q, { at = null, service = null, offset = 0
     shown: hits.length,
     limit: n, offset: start, complete,
     ...(complete ? {} : { next_offset: next,
-      more_note: `${total - next} further mark${total - next === 1 ? "" : "s"} match "${q}" — call again with offset: ${next} (limit up to ${FIND_MAX})` }),
+      more_note: `${total - next} further mark${total - next === 1 ? "" : "s"} match "${q}" — call again with ${words.offset}: ${next} (${words.limit} up to ${FIND_MAX})` }),
     stops: stops.map((s) => s.markId),
     hits,
   };
