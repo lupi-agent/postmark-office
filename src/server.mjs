@@ -110,12 +110,26 @@ const TOWN_CLONE = process.env.TOWN_CLONE ?? resolve(ROOT, "town-clone");
 // traffic and a share of signed-in readers are told they are not signed in.
 // A worker that will not start is a worker an operator can see. The writer owns
 // this file's existence; a worker only borrows its contents.
+//
+// ⚑ IN A READ WORKER THE REFUSAL IS A THROW, NEVER `process.exit` (office #236).
+// `process.exit` called while this module graph is still evaluating in a worker
+// thread aborts V8 for the WHOLE process (Node 22.22.1: `Check failed:
+// (location_) != nullptr`; Node 25: `Check failed: !is_null()`), so a worker
+// that could not start took the office down with it. A throw ends the worker
+// alone: the pool hears it as the worker's `error`, logs the cause once, and the
+// main thread answers the reads that worker would have taken. A read-role
+// PROCESS (DEC-4's kit) still exits 78, which systemd and an operator can see.
+function refuseBoot(why, ...detail) {
+  if (IN_READ_WORKER) throw new Error(why);
+  console.error(`FATAL: ${why}`);
+  for (const line of detail) console.error(`       ${line}`);
+  process.exit(78); // EX_CONFIG
+}
 const OAUTH_DB_PATH = resolve(ROOT, arg("--oauth-db", "oauth.db"));
 if (READ_ONLY_ROLE && !existsSync(OAUTH_DB_PATH)) {
-  console.error(`FATAL: --role read needs an existing key store at ${OAUTH_DB_PATH}, and a read worker will not create one.`);
-  console.error("       Start the writer first (it creates and owns the schema), or point --oauth-db at the writer's file.");
-  console.error("       Booting anyway would leave this worker answering 401 to every signed-in reader while nginx kept sending it traffic.");
-  process.exit(78); // EX_CONFIG
+  refuseBoot(`--role read needs an existing key store at ${OAUTH_DB_PATH}, and a read worker will not create one.`,
+    "Start the writer first (it creates and owns the schema), or point --oauth-db at the writer's file.",
+    "Booting anyway would leave this worker answering 401 to every signed-in reader while nginx kept sending it traffic.");
 }
 const odb = openOauthDb(OAUTH_DB_PATH, { readOnly: READ_ONLY_ROLE });
 
@@ -160,10 +174,9 @@ const odb = openOauthDb(OAUTH_DB_PATH, { readOnly: READ_ONLY_ROLE });
 // question in the words of the thing it guards.
 const DYNAMIC_DB_PATH = dynamicDbPath();
 if (READ_ONLY_ROLE && !existsSync(DYNAMIC_DB_PATH)) {
-  console.error(`FATAL: --role read needs an existing dynamic store at ${DYNAMIC_DB_PATH}, and a read worker will not create one.`);
-  console.error("       Start the writer first, or point WORLD_DYNAMIC_DB at the writer's file (npm run dynamic:rebuild creates it).");
-  console.error("       Booting anyway would serve 200s with the hold-effects and held-things readings silently missing, which nginx cannot tell from a good answer.");
-  process.exit(78); // EX_CONFIG
+  refuseBoot(`--role read needs an existing dynamic store at ${DYNAMIC_DB_PATH}, and a read worker will not create one.`,
+    "Start the writer first, or point WORLD_DYNAMIC_DB at the writer's file (npm run dynamic:rebuild creates it).",
+    "Booting anyway would serve 200s with the hold-effects and held-things readings silently missing, which nginx cannot tell from a good answer.");
 }
 
 // roles.db — the subscription lane's registry (hand-kept; tools/roles.mjs is the

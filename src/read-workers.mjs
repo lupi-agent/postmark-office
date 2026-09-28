@@ -225,16 +225,20 @@ export function serveReadsInWorker(handle) {
 /**
  * Start `size` workers running `entry` (the server module) as read-role
  * offices. A worker that exits is respawned; a worker that exits BEFORE it was
- * ever ready is a boot refusal (read role's EX_CONFIG guards: no oauth.db, no
- * dynamic.db), and after three of those in a row the pool stops trying and the
- * main thread keeps every read, loudly. The reads a dead worker was holding are
- * handed to another worker once (a GET is safe to ask again), else answered 503.
+ * ever ready is a boot refusal (read role's guards: no oauth.db, no dynamic.db,
+ * thrown in a worker, server.mjs § refuseBoot), and after three of those in a
+ * row IN ONE SLOT that slot stays empty, and the main thread answers the reads
+ * it would have taken (office #236: a worker that cannot start costs the office
+ * a core, never its life). Every exit is one log line naming the worker and why.
+ * The reads a dead worker was holding are handed to another worker once (a GET
+ * is safe to ask again), else answered 503.
  */
 export function startReadPool({ size, entry, argv = [], env = process.env, respawnMs = 250, log = console } = {}) {
   const workers = []; // { w, ready, inflight: Map<id, pending>, n }
   const pending = new Map(); // id -> { res, head, tries, slot }
   let nextId = 1;
-  let bootFailures = 0;
+  const bootFailures = new Array(size).fill(0); // per slot: exits before ready, in a row
+  const down = new Array(size).fill(null);      // per slot: why it was given up, once it was
   let stopped = false;
 
   const argvFor = () => {
@@ -252,10 +256,10 @@ export function startReadPool({ size, entry, argv = [], env = process.env, respa
       env: { ...env, OFFICE_ROLE: "read" },
       workerData: { readWorker: true, slot },
     });
-    const rec = { w, ready: false, inflight: new Set(), slot, served: 0 };
+    const rec = { w, ready: false, inflight: new Set(), slot, served: 0, cause: null };
     workers[slot] = rec;
     w.on("message", (msg) => {
-      if (msg?.type === "ready") { rec.ready = true; bootFailures = 0; return; }
+      if (msg?.type === "ready") { rec.ready = true; bootFailures[slot] = 0; return; }
       if (msg?.type !== "answer") return;
       const p = pending.get(msg.id);
       rec.inflight.delete(msg.id);
@@ -264,7 +268,8 @@ export function startReadPool({ size, entry, argv = [], env = process.env, respa
       rec.served++;
       write(p.res, msg, slot);
     });
-    w.on("error", (e) => log.error(`[read-workers] worker ${slot} threw: ${String(e?.message ?? e).slice(0, 200)}`));
+    // Kept for the exit's one line: an `error` is always followed by an `exit`.
+    w.on("error", (e) => { rec.cause = String(e?.message ?? e).slice(0, 200); });
     w.on("exit", (code) => {
       const wasReady = rec.ready;
       rec.ready = false;
@@ -279,14 +284,17 @@ export function startReadPool({ size, entry, argv = [], env = process.env, respa
       }
       rec.inflight.clear();
       if (stopped) return;
-      if (!wasReady) bootFailures++;
-      if (bootFailures >= 3) {
-        log.error(`[read-workers] worker ${slot} exited (${code}) before it was ready, three times running — the pool is stopped and the main thread answers every read`);
-        stopped = true;
-        broadcast = null;
+      const why = rec.cause ?? `exit code ${code}`;
+      if (!wasReady) bootFailures[slot]++;
+      if (bootFailures[slot] >= 3) {
+        down[slot] = why;
+        const left = down.filter((d) => d == null).length;
+        log.error(`[read-workers] worker ${slot} could not start, three times running (${why}) — it is given up and the main thread answers its reads`
+          + (left ? `; ${left} other slot${left === 1 ? " is" : "s are"} still in the pool` : "; no worker is left, the main thread answers every read"));
+        if (!left) { stopped = true; broadcast = null; }
         return;
       }
-      log.error(`[read-workers] worker ${slot} exited (${code}); respawning`);
+      log.error(`[read-workers] worker ${slot} ${wasReady ? "stopped" : "could not start"} (${why}); respawning`);
       setTimeout(() => { if (!stopped) spawn(slot); }, respawnMs).unref();
     });
   }
@@ -359,6 +367,8 @@ export function startReadPool({ size, entry, argv = [], env = process.env, respa
         ready: workers.filter((r) => r?.ready).length,
         served: workers.map((r) => r?.served ?? 0),
         in_flight: workers.map((r) => r?.inflight.size ?? 0),
+        // Per slot: null while it serves or is respawning, else why it was given up.
+        down: [...down],
       };
     },
     /** The workers' thread ids, for the kill falsifier. */
