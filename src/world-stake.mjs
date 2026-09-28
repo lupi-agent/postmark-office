@@ -603,7 +603,7 @@ export async function worldStakeViaOffice(args = {}, key = null, deps = {}) {
       const { markStandsOnOwnGround } = await import("./world.mjs");
       const rec = ex?.record ?? null;
       if (rec) ownGround = await markStandsOnOwnGround({
-        by, at: rec.at, extent: rec.extent, points: rec.points, parent_id: rec.parent_id ?? rec.parent ?? null });
+        by, kind: rec.kind, at: rec.at, extent: rec.extent, points: rec.points, parent_id: rec.parent_id ?? rec.parent ?? null });
     } catch (e) {
       console.error(`[world-stake] the ground under "${args.mark}" could not be read: ${String(e?.message ?? e)}`);
     }
