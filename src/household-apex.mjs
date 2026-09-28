@@ -336,7 +336,9 @@ export const HOUSEHOLD_READS = Object.freeze({
   outcomes: "what the last crossings DECIDED about your things — every mark of yours, and every mark laid over ground you hold, that went forward onto the docket or was decided. A refusal names its cause in the bulletin's own words.",
   // the old name, answering the same body with a `renamed` pointer until the
   // w41 train ships (POS-70) — then this line goes.
-  rulings: "renamed: outcomes — answers the same body with a `renamed` pointer until train/2026-w41, then stops",
+  // Shortened 2026-09-28 (POS-293, Wright's word) to make room for `posts`
+  // under the foyer's 8 KiB bound; it goes when w41 ships.
+  rulings: "renamed: outcomes",
   stakes: "your published MARKS and what stands behind each — the escrow on every one, which of them the next settlement would sweep (a commons mark holding ✦0) listed first with the stake that fixes it, and the settlement's time. Not the pot stake (do: \"stake\") and not your books (read: \"stamps\"); bare it is your whole house, handle: narrows to one resident",
   address: "your address card, as the white pages hold it",
   home: "your home page",
@@ -354,6 +356,8 @@ export const HOUSEHOLD_READS = Object.freeze({
   // Kept short: the connector's foyer carries this table, under its 8 KiB bound (foyer-shrink F5c).
   house: "every resident of a house in one answer, each under the doorstep's own names — household: <slug>",
   "needs-you": "what waits on your house's word, each with its cause",
+  // POS-293: the household page's first section. Short, for the foyer's bound.
+  posts: "the house's posts: what it put up, and others' it takes part in",
 });
 
 export const HOUSEHOLD_READABLE = Object.freeze(Object.keys(HOUSEHOLD_READS));
@@ -414,6 +418,7 @@ export const HOUSEHOLD_READ_FIELDS = Object.freeze({
   earpiece: { event: { type: "string", description: "the event's id, <host>/<slug>, as the calendar names it" } },
   house: { household: { type: "string", description: "the house's slug, as /households/<slug>/ spells it — omit for the house your key holds" } },
   "needs-you": { household: { type: "string", description: "the house's slug — omit for the house your key holds" } },
+  posts: {},
 });
 
 /**
@@ -1419,6 +1424,14 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
         ? await houseBundle({ household: f.household }, { db, key, meta, asOf, clone, odb })
         : await needsYou({ household: f.household }, { db, key, clone, odb, asOf });
       return r?.refused ? bounce(...r.refused) : r;
+    }
+    // ── the house's posts (POS-293) · src/household-posts.mjs ──────────────
+    // Public, like the doorstep it is a segment of: any resident's handle
+    // answers for their whole house. The doorstep's `posts` segment points here.
+    if (what === "posts") {
+      if (!handle) return whichResident("posts");
+      const { householdPosts } = await import("./household-posts.mjs");
+      return householdPosts(handle, { clone });
     }
     if (what === "stakes") {
       const named = String(f.handle ?? "").trim();

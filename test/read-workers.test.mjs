@@ -193,6 +193,8 @@ test("the dispatch rule: GETs go to workers except the main thread's RAM reads; 
   assert.equal(workerTakes("GET", "/world/conversations"), false);
   assert.equal(workerTakes("GET", "/world/dynamic"), false);
   assert.equal(workerTakes("GET", "/household"), false);
+  // the house's posts (POS-293) ride the household door's path, so they stay home with it
+  assert.equal(workerTakes("GET", "/household", new URLSearchParams("read=posts&handle=wright")), false);
   // the say stream waits on voices, which land on the main thread (merge seam, POS-265 × POS-266)
   assert.equal(workerTakes("GET", "/world/say/stream"), false);
   assert.equal(workerTakes("POST", "/world/walks"), false);
@@ -287,6 +289,13 @@ test("§ 4 a real office hands the agents' reads to its worker and keeps the act
     const listen = await post("world", { read: "say" });
     await listen.text();
     assert.equal(listen.headers.get("x-pm-reader"), null, "a listen was handed to a worker");
+    // THE HOUSE'S POSTS (POS-293) are answered where /household is: the main
+    // thread, beside the same office's worker that just answered world_orient.
+    const posts = await fetch(`${base}/household?read=posts&handle=wright`);
+    const postsBody = await posts.text();
+    assert.equal(posts.status, 200, postsBody.slice(0, 200));
+    assert.ok(JSON.parse(postsBody).put_up, `GET /household?read=posts answered another read: ${postsBody.slice(0, 200)}`);
+    assert.equal(posts.headers.get("x-pm-reader"), null, "the house's posts were handed to a worker");
   } finally {
     proc.kill();
     await gone;

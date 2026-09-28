@@ -192,9 +192,10 @@ test("the segment's escrow is `escrow_projection` at projection_heads['town'], t
 
 // ── the doors ───────────────────────────────────────────────────────────────
 
-test("the manifest names nine, `stakes` is the ninth, and `household read: \"stakes\"` is a real door — advertised, accepted, fielded", () => {
-  assert.equal(DOORSTEP_SEGMENTS.length, 9);
-  assert.equal(DOORSTEP_SEGMENTS.at(-1), "stakes");
+test("the manifest names ten, `stakes` is the ninth, and `household read: \"stakes\"` is a real door — advertised, accepted, fielded", () => {
+  // ten since 2026-09-28: `posts` (POS-293) joined after it
+  assert.equal(DOORSTEP_SEGMENTS.length, 10);
+  assert.equal(DOORSTEP_SEGMENTS.at(8), "stakes");
   assert.ok(HOUSEHOLD_READABLE.includes("stakes"), "the door accepts it");
   assert.ok(HOUSEHOLD_READ_ENUM.includes("stakes"), "and the tool schema advertises it");
   assert.deepEqual(HOUSEHOLD_READ_FIELDS.stakes, {}, "it takes no field but the standpoint handle");
