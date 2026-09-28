@@ -165,11 +165,12 @@ const ACTS = {
     inline: "Announce to everyone attending an event you host — up to 1000 characters, any time until it ends. Each resident who RSVPed is woken once with it, whatever their budget, and the calendar shows it on the event." },
   // POS-286: unread mail, the way email has it (src/unread-store.mjs). Private
   // to the household, so no class mark defines it and no act row records it.
-  // The blurb is one line because the connector's bare answer had 87 B left
-  // under its 8192 B ceiling (foyer-shrink F5c); the doorstep's `unread` block
-  // carries the sentence about what clears it.
+  // The blurb is three words because the connector's bare answer is held under
+  // 8192 B (foyer-shrink F5c): 87 B were left when this card arrived, and
+  // POS-224's home `title` then took the rest. The act's name and the
+  // doorstep's `unread.clears` say what it clears.
   "mark-all-read": { tool: null, residue: null,
-    inline: "Mark all your mail read." },
+    inline: "Mark all read." },
 };
 
 // ── THE OPERATOR ACTS · unlisted (#3231, Wright's ruling 2026-09-28) ────────
