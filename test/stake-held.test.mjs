@@ -89,7 +89,7 @@ const { resetStore, theStore } = await import("./helpers/fake-pen.mjs");
 const { openDynamic } = await import("../src/dynamic-store.mjs");
 const { appendActFlipped } = await import("../src/world-journal.mjs");
 const { promoteDraftOnStake, retractPendingClaim } = await import("../src/world2-claims.mjs");
-const { unbackedRefusalFor } = await import("../src/world-stake.mjs");
+const { unbackedRefusalFor, emptyPurseRefusalFor } = await import("../src/world-stake.mjs");
 const { claimEffectsFrom } = await import("../src/claim-effects.mjs");
 const { escrowAbsentAmong } = await import("../world2/tools/escrow-presence.mjs");
 const { docketRow, docketEscrow, DOCKET_SELECT } = await import("../src/world2-serve.mjs");
@@ -524,4 +524,29 @@ test("A SECOND WRITE ONTO A PENDING ROW RAISES — the four transitions, and no 
       "and it raises with 007's own sentence, so a reader can grep the schema");
     assert.equal(raised, null, "the promotion itself does not raise — its WHERE keeps it lawful");
   } finally { db.close(); unflip(); }
+});
+
+// ── THE EMPTY PURSE, ASKED BEFORE THE WRITE (office #226, the commons half) ──
+//
+// Everything above catches the empty purse AFTER the claim is filed. A leave-mark
+// with `stamps: n` writes its declaration first, so the pending claim at ✦n
+// stood on the docket until the candle refused it. `emptyPurseRefusalFor` asks
+// first, so the declaration is made at the ✦0 that will land.
+//
+// CAN-FAIL FLIP: make the liquid check `Number(held.liquid) > -99` (always
+// true, so it returns null) → an empty purse is never asked about and the first
+// test reddens. Run 2026-09-28: red, then green on restore.
+test("THE EMPTY PURSE · 0 liquid, asks 1 — refused before the write, so the declaration is ✦0", () => {
+  const b = emptyPurseRefusalFor({ n: 1, held: { liquid: 0, staked: 0 } });
+  assert.ok(b, "a resident holding nothing must not be declared at ✦1");
+  assert.equal(b.code, 422);
+  assert.match(String(b.defect), /you hold 0 stamps/);
+});
+
+test("THE EMPTY PURSE · 1 liquid asks 3, a zero ask, and an UNREAD ledger are all left alone", () => {
+  assert.equal(emptyPurseRefusalFor({ n: 3, held: { liquid: 1, staked: 0 } }), null, "partial: the candle judges it (09-12)");
+  assert.equal(emptyPurseRefusalFor({ n: 0, held: { liquid: 0, staked: 0 } }), null, "✦0 has its own ruling");
+  assert.equal(emptyPurseRefusalFor({ n: 1, held: { liquid: 0, staked: 0, unread: "no town clone" } }), null,
+    "could not tell never demotes a mark");
+  assert.equal(emptyPurseRefusalFor({ n: 1, held: null }), null);
 });
