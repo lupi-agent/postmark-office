@@ -353,6 +353,11 @@ export function replayPaperAct(row, { doors, key, db, clone }) {
   // the key the act was performed with, reconstructed only as far as the doors'
   // own scope check needs: the handle it acted for, and the household it was
   // charged to. Anything more would be this module inventing a credential.
-  const asKey = { household: row.household, handles: new Set([row.handle]), ghId: row.ghId, ghLogin: row.ghLogin, ...key };
+  //
+  // `replay: true` tells the door this act was already judged — at the door,
+  // when the row was written — so a rule the door gained since (POS-224: a
+  // founding needs its title) is not applied to it retroactively. It is set
+  // after `key` so no caller's key can take it off a replay.
+  const asKey = { household: row.household, handles: new Set([row.handle]), ghId: row.ghId, ghLogin: row.ghLogin, ...key, replay: true };
   return { row, result: door(row.payload?.args ?? {}, asKey, db, clone) };
 }

@@ -354,6 +354,22 @@ test('F5 · OPERATIONS.md: "REST: stable/simple for frozen consumers" — the RE
   const announceLive = full.acts.find((a) => a.fields && "text" in a.fields && "event" in a.fields);
   assert.equal(announceLive?.act, "announce");
   assert.equal(announceLive?.fields?.text?.required, true, "the live announce card marks text required");
+  // ⚑ REGENERATED 2026-09-28 FOR POS-224 (a home founded through the door has
+  // a name), named here for the same reason. What grew: the home act's card
+  // gained `title`. The capture diff, key by key: +3
+  // (`fields/title/{type,description,maxLength}`), −0, 0 retyped, none on
+  // another card. PSA for the release notes: "a home is founded with its name —
+  // household do: home takes title (a name, not a sentence, up to 80
+  // characters) with the body on the first call; a home with no name yet may
+  // set one once, and changing a name is by PR."
+  //
+  // The witness is the one field only the home card carries (`assets`), in the
+  // frozen copy AND the live door.
+  const homeFrozen = frozen.acts.find((a) => a.fields && "assets" in a.fields);
+  assert.equal(homeFrozen?.fields?.title?.type, "string", "the frozen home card carries title");
+  const homeLive = full.acts.find((a) => a.fields && "assets" in a.fields);
+  assert.equal(homeLive?.act, "home");
+  assert.equal(homeLive?.fields?.title?.type, "string", "the live home card takes title — a founding the card did not advertise would be refused for a field nobody was told about");
 });
 
 test(`F5c · and the answer stays BOUNDED — REST under ${REST_CEILING}B, the connector's bare answer under ${SLIM_CEILING}B`, async () => {

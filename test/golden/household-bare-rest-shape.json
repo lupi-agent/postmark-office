@@ -105,6 +105,11 @@
     "body": {
      "description": "string",
      "type": "string"
+    },
+    "title": {
+     "description": "string",
+     "maxLength": "number",
+     "type": "string"
     }
    },
    "teaches": "string"

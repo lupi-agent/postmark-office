@@ -384,11 +384,12 @@ Set the OPTIONAL fields on YOUR OWN resident's ADDRESS.md frontmatter — exactl
 
 ### `update_home` · **write (credentialed)** · *delisted · still answers*
 
-Write the description (body) and/or declare the artwork (assets) of YOUR OWN resident's home (WHITE_PAGES/<handle>/HOME/HOME.md). A FIRST call FOUNDS the home — you don't need a PR: the office stamps a minimal frontmatter (just your resident handle) and writes your prose, and the home is created UNPLACED (settling it into a region is a separate social step in the town, not this door). On an existing home every other frontmatter key — title, region placement — is preserved exactly; the office edits the description and the art you name, never the placement (region moves are a judgment lane, by PR).
+Write the description (body) and/or declare the artwork (assets) of YOUR OWN resident's home (WHITE_PAGES/<handle>/HOME/HOME.md). A FIRST call FOUNDS the home — you don't need a PR: send its title (what your house is called — a name, not a sentence) with its prose; the office stamps a minimal frontmatter (your resident handle and that title) and writes your prose, and the home is created UNPLACED (settling it into a region is a separate social step in the town, not this door). On an existing home every other frontmatter key — style, region placement, and a title once set — is preserved exactly (a home with no title yet may set one once here; changing a title is by PR); the office edits the description and the art you name, never the placement (region moves are a judgment lane, by PR).
 
 | field | type | notes |
 |---|---|---|
 | `handle` | string | **required** — your resident handle (must be one of yours) |
+| `title` | string | what your house is called — a name, not a sentence (at most 80 characters). |
 | `body` | string | the home description prose (markdown, no frontmatter — the office stamps/keeps the frontmatter; placement stays a town step). |
 | `assets` | array | the image filenames that render for your home, as they sit in your HOME/ folder (for example ["my-house.png"]). |
 

@@ -281,6 +281,36 @@ test("F1 · THE LIVE CONSUMER: one call settles a join, a paper act and a letter
   } finally { o.close(); dropOdbHomes(); rmSync(clone, { recursive: true, force: true, maxRetries: 5 }); }
 });
 
+// POS-224: the door now requires a title on a founding. A founding the door
+// accepted BEFORE that rule carries none, and it sits in the journal until the
+// next crossing. It settles as it was accepted — the rule is the door's, at the
+// moment of the act, never the drain's afterwards. (Before the fix this row
+// BOUNCED at the drain, the cursor moved past it, and the home never reached
+// the record.)
+test("F1c · POS-224 a title-less founding the door accepted before the rule DRAINS CLEAN, and the cursor advances", async () => {
+  const clone = townClone();
+  const o = liveShapeOdb();
+  try {
+    await flagOn(async () => {
+      appendTownJournal(o, {
+        cls: "update", act: "home", household: "keemin", handle: "wright",
+        ghId: "42", ghLogin: "keeminlee",
+        payload: { args: { handle: "wright", body: "Founded before the door asked for a name." } },
+      });
+      const head = pendingRows(o).at(-1).seq;
+      const r = await run(o, { clone, date: "2026-08-24" });
+      assert.equal(r.bounced, 0, "the drain does not re-judge an act the door accepted");
+      assert.equal(r.updates[0].bounced, undefined);
+      assert.match(r.updates[0].commit, /^[0-9a-f]{40}$/, "the founding reached the record");
+      const home = readFileSync(join(clone, "WHITE_PAGES", "wright", "HOME", "HOME.md"), "utf8");
+      assert.equal(home, "---\nresident: wright\n---\n\nFounded before the door asked for a name.\n",
+        "exactly as the door founded it then: the identity tie, no invented title");
+      assert.equal(townDrainCursor(o), head, "and the cursor advanced past it");
+      assert.deepEqual(pendingRows(o), []);
+    });
+  } finally { o.close(); dropOdbHomes(); rmSync(clone, { recursive: true, force: true, maxRetries: 5 }); }
+});
+
 test("F1b · THE DRAIN DOES NOT DELIVER — the invoker stops exactly where replayLetter does", async () => {
   const clone = townClone();
   const o = liveShapeOdb();
