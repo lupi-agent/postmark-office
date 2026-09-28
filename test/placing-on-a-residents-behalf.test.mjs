@@ -19,6 +19,7 @@
 //   · household back to `key.household`     → LEG 1 and LEG 6 red
 //   · drop the consent check                 → LEG 2 red
 //   · drop `refuseHeldParcel`                → LEG 3 red
+//   · without the publish-free PR            → LEG 7 red (a ✦0 parcel read as commons)
 //
 //   node --test test/placing-on-a-residents-behalf.test.mjs
 
@@ -109,6 +110,7 @@ put(town, "tools/github-ids.json", JSON.stringify({
   wright: { login: "keeminlee", id: 1 },
   stranger: { login: "strangerhouse", id: 77 },
   bird: { login: "bird-login", id: 55 },
+  wren: { login: "wren-login", id: 56 },
 }));
 
 process.env.WORLD_CLONE = repo;
@@ -269,13 +271,35 @@ test("a resident the pins do not name is refused, never filed under a guessed ho
   assert.match(out.defect, /which household "quill" belongs to/);
 });
 
+// ── LEG 7 · a placed parcel publishes free ──────────────────────────────────
+//
+// PARCELS PUBLISH FREE (Keemin 2026-09-27, POS-233): a parcel's lawful minimum
+// stake is 0, for everyone. So a placer who passes stamps: 0 puts the resident's
+// parcel forward: no ledger is asked, so the placer's key spends nothing and
+// the stake door's `actingAs` never runs. Omitting stamps is still a private
+// draft (LEG 1), exactly as for a resident's own parcel.
+//
+// DEPENDS ON the publish-free PR (groundMinimumStake's parcel case). On this
+// branch alone the ✦0 placement is refused as commons and this leg is red.
+test("a placer's stamps: 0 puts the resident's parcel forward free — on the docket, no stake asked", async () => {
+  const out = await leave(porch({ by: "wren", slug: "wrens-porch", at: { x: 2400, y: 2400 }, stamps: 0 }), IRIS);
+  const claim = pen.state.claims.find((c) => c.slug === "wren/wrens-porch");
+  console.log(`    RECEIPT · placed ✦0 → ok=${out.ok} put_forward=${out.put_forward} refused_the_stake=${out.refused_the_stake ?? false} stake_bounce=${JSON.stringify(out.stake_bounce ?? null)} claim.status=${claim?.status} claim.household=${claim?.household}`);
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.put_forward, true, "a parcel's lawful minimum is 0, so a placed ✦0 parcel is put forward");
+  assert.equal(out.refused_the_stake, undefined, "the ground refused nothing");
+  assert.equal(out.stake_bounce, undefined, "no ledger was asked, so the placer's key is never asked to act as the resident");
+  assert.equal(claim?.status, "pending", "on the docket, where the crossing publishes it");
+  assert.equal(claim?.household, "solo:wren-login", "still the resident's own claim");
+});
+
 // ── RECEIPT, not law · a placer cannot spend the resident's stamps ──────────
 //
 // The inline stake runs on the CALLER's key with `handle: by`, and the stake
 // door's `actingAs` refuses a handle the key does not hold — so a placement
-// with stamps: lands the parcel and answers `stake_bounce`. Asserted so the
-// behaviour is on the record for the ruling on how a placed parcel publishes;
-// nothing in this lane changes it.
+// with stamps: 1 lands the parcel and answers `stake_bounce`. A placer has no
+// reason to pass stamps now that a parcel publishes free (LEG 7); this holds
+// that if one does, the resident's stamps still do not move.
 test("RECEIPT: stamps on a placement do not move the resident's stamps — the stake bounces on the placer's key", async () => {
   const out = await leave(porch({ by: "bird", slug: "birds-porch", at: { x: 2000, y: 2000 }, stamps: 1 }), IRIS);
   const claim = pen.state.claims.find((c) => c.slug === "bird/birds-porch");
