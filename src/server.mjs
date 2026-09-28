@@ -1119,7 +1119,7 @@ const handle = (req, res) => {
   // the pool takes (read-workers.mjs § workerTakes) is answered by a worker and
   // written back on this socket; when no worker is ready this thread answers it,
   // exactly as before.
-  if (readPool && workerTakes(req.method, path) && readPool.forward(req, res)) return;
+  if (readPool && workerTakes(req.method, path, url.searchParams) && readPool.forward(req, res)) return;
 
   // MCP skin — same verbs, JSON-RPC dress (P3). The MCP door REQUIRES a
   // credential even for reads — deliberately unlike REST's public read tier:

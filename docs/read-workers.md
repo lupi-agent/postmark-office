@@ -34,6 +34,7 @@ worker rebuild after `PROJECTION_MAX_AGE_MS` (60 s).
 | Read | RAM |
 |---|---|
 | `GET /world/conversations` | `voices.mjs`: the voices window. A worker's copy hydrates the log once and never re-reads it. Teaching the window to take a message is a change to voices.mjs, which belongs to O1. |
+| `GET /world/apex?read=say` | the voices window again: the listen is kept home by its query (`read-workers.mjs § listensToVoices`), as the MCP `world { read: "say" }` is by `mcpWorkerTakes`. The apex's other reads go to workers. |
 | `GET /world/dynamic` | `channel.mjs`: `acts_by_channel`, counted per act |
 | `GET /household` | the standing read's `world_writes`, the bouncer's live budget |
 | admission (every request) | `bouncer.mjs` buckets, `berthHits`, `claimHits`, `oauth.mjs regHits`. The main thread admits a read before a worker sees it, and a worker's handler skips the bucket checks. |

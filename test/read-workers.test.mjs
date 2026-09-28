@@ -19,6 +19,10 @@
 //   § 4  THE MAIN THREAD HANDS THOSE READS OVER, AND ONLY THOSE: a real office
 //        with one worker answers world_orient from the worker and a say from
 //        its own thread.
+//   § 5  THE REST LISTEN STAYS HOME TOO (POS-284's hotfix): GET
+//        /world/apex?read=say, after a say on the main thread, is answered by
+//        the main thread and hears it; the bare GET /world/apex still goes to
+//        the worker.
 //
 // THE FLIPS: delete `onAnnounce("position", …)` in world.mjs and § 1 goes red;
 // delete the in-flight hand-over in `startReadPool`'s exit handler and § 2's
@@ -27,10 +31,13 @@
 // from server.mjs's role gate and § 3's reads answer the role's 405; delete the
 // `onlyReads` refusal in mcp.mjs and § 3's say is answered by the worker; make
 // `mcpWorkerTakes` answer true for every call and § 4's say names a worker.
+// For the hotfix: drop `&& !listensToVoices(path, query)` from `workerTakes`, or
+// the `url.searchParams` server.mjs passes it, and § 5's listen names worker-0
+// and misses the say.
 
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -181,6 +188,15 @@ test("the dispatch rule: GETs go to workers except the main thread's RAM reads; 
   assert.equal(workerTakes("POST", "/world/walks"), false);
   assert.equal(workerTakes("GET", "/mcp"), false);
   assert.equal(workerTakes("GET", "/oauth/authorize"), false);
+  // the REST listen is the voices window by its query (POS-284's hotfix); the apex's other reads are not
+  const q = (qs) => new URLSearchParams(qs);
+  assert.equal(workerTakes("GET", "/world/apex", q("read=say")), false, "the REST listen");
+  assert.equal(workerTakes("GET", "/world/apex", q("read=%20say%20")), false, "trimmed as the apex trims it");
+  assert.equal(workerTakes("GET", "/world/apex", q("read=say&since=1")), false);
+  assert.equal(workerTakes("GET", "/world/apex", q("")), true, "the bare look");
+  assert.equal(workerTakes("GET", "/world/apex", q("read=walk")), true, "a shadow");
+  assert.equal(workerTakes("GET", "/world/apex"), true, "no query at all");
+  assert.equal(workerTakes("GET", "/world/walkers", q("read=say")), true, "the query names the listen only on the apex");
 });
 
 test("the MCP dispatch rule: orient, open-your-eyes and the apex's reads go to workers; acts and the listen never do (POS-284)", () => {
@@ -261,6 +277,59 @@ test("§ 4 a real office hands the agents' reads to its worker and keeps the act
     const listen = await post("world", { read: "say" });
     await listen.text();
     assert.equal(listen.headers.get("x-pm-reader"), null, "a listen was handed to a worker");
+  } finally {
+    proc.kill();
+    await gone;
+  }
+});
+
+test("§ 5 the REST listen is answered by the main thread and hears the say before it; the bare apex read still goes to the worker (POS-284's hotfix)", { skip: !haveClone && `needs the world clone at ${WORLD_CLONE}` }, async () => {
+  // The listen's card is the class layer's answer, so this office has a world store.
+  const worldDb = join(tmp, "world.db");
+  execFileSync(process.execPath, [join(ROOT, "src", "world-hydrate.mjs"), "--world", WORLD_CLONE, "--db", worldDb, "--no-gexf", "--no-lints"], { stdio: "ignore" });
+  const port = 48500 + ((process.pid * 13) % 1000);
+  const proc = spawn(process.execPath, [
+    join(ROOT, "src", "server.mjs"), "--port", String(port),
+    "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
+  ], {
+    env: { ...process.env, OFFICE_READ_WORKERS: "1", WORLD_APEX: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
+      WORLD_STORE_DB: worldDb, VOICES_LOG: join(tmp, "voices-5.jsonl"),
+      WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const gone = new Promise((ok) => proc.on("exit", ok));
+  try {
+    let out = "";
+    await new Promise((ok, no) => {
+      const t = setTimeout(() => no(new Error(`the office never listened: ${out}`)), 30_000);
+      proc.stdout.on("data", (d) => { out += String(d); if (out.includes("listening")) { clearTimeout(t); ok(); } });
+    });
+    const base = `http://127.0.0.1:${port}`;
+    let ready = 0;
+    for (let i = 0; i < 300 && ready !== 1; i++) {
+      ready = (await (await fetch(`${base}/release`)).json()).read_workers?.ready ?? 0;
+      if (ready !== 1) await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(ready, 1, "the office's worker never came up");
+    const auth = { authorization: `Bearer ${KEY}` };
+    const get = (qs) => fetch(`${base}/world/apex${qs}`, { headers: auth });
+    // A listen first, so a worker that answered it would hold a window hydrated before the say.
+    await (await get("?read=say")).text();
+    const words = `the listen hears this, said at ${Date.now()}`;
+    const say = await fetch(`${base}/mcp`, { method: "POST",
+      headers: { ...auth, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "world", arguments: { do: "say", args: { text: words } } } }) });
+    const sayBody = await say.text();
+    assert.equal(say.status, 200, sayBody.slice(0, 200));
+    assert.ok(sayBody.includes('\\"did\\": \\"say\\"'), `the say did not land: ${sayBody.slice(0, 300)}`);
+    const listen = await get("?read=say");
+    const heard = await listen.text();
+    assert.equal(listen.status, 200, heard.slice(0, 200));
+    assert.equal(listen.headers.get("x-pm-reader"), null, "the REST listen was handed to a worker");
+    assert.ok(heard.includes(words), "the REST listen did not hear the say before it");
+    const look = await get("");
+    await look.text();
+    assert.equal(look.headers.get("x-pm-reader"), "worker-0", "the bare apex read stopped going to the worker");
   } finally {
     proc.kill();
     await gone;
