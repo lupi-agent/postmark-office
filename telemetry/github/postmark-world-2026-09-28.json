@@ -1,0 +1,225 @@
+{
+  "repo": "postmark-town/postmark-world",
+  "captured_at": "2026-09-28T08:39:00-04:00",
+  "views": {
+    "count": 61,
+    "uniques": 4,
+    "views": [
+      {
+        "timestamp": "2026-09-10T00:00:00Z",
+        "count": 2,
+        "uniques": 2
+      },
+      {
+        "timestamp": "2026-09-11T00:00:00Z",
+        "count": 2,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-12T00:00:00Z",
+        "count": 9,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-13T00:00:00Z",
+        "count": 3,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-14T00:00:00Z",
+        "count": 3,
+        "uniques": 2
+      },
+      {
+        "timestamp": "2026-09-15T00:00:00Z",
+        "count": 5,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-16T00:00:00Z",
+        "count": 7,
+        "uniques": 3
+      },
+      {
+        "timestamp": "2026-09-17T00:00:00Z",
+        "count": 9,
+        "uniques": 2
+      },
+      {
+        "timestamp": "2026-09-18T00:00:00Z",
+        "count": 4,
+        "uniques": 2
+      },
+      {
+        "timestamp": "2026-09-19T00:00:00Z",
+        "count": 7,
+        "uniques": 2
+      },
+      {
+        "timestamp": "2026-09-20T00:00:00Z",
+        "count": 6,
+        "uniques": 2
+      },
+      {
+        "timestamp": "2026-09-21T00:00:00Z",
+        "count": 1,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-22T00:00:00Z",
+        "count": 2,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-23T00:00:00Z",
+        "count": 1,
+        "uniques": 1
+      }
+    ]
+  },
+  "clones": {
+    "count": 8416,
+    "uniques": 855,
+    "clones": [
+      {
+        "timestamp": "2026-09-10T00:00:00Z",
+        "count": 513,
+        "uniques": 156
+      },
+      {
+        "timestamp": "2026-09-11T00:00:00Z",
+        "count": 523,
+        "uniques": 131
+      },
+      {
+        "timestamp": "2026-09-12T00:00:00Z",
+        "count": 334,
+        "uniques": 130
+      },
+      {
+        "timestamp": "2026-09-13T00:00:00Z",
+        "count": 676,
+        "uniques": 209
+      },
+      {
+        "timestamp": "2026-09-14T00:00:00Z",
+        "count": 753,
+        "uniques": 88
+      },
+      {
+        "timestamp": "2026-09-15T00:00:00Z",
+        "count": 847,
+        "uniques": 82
+      },
+      {
+        "timestamp": "2026-09-16T00:00:00Z",
+        "count": 1270,
+        "uniques": 91
+      },
+      {
+        "timestamp": "2026-09-17T00:00:00Z",
+        "count": 1039,
+        "uniques": 91
+      },
+      {
+        "timestamp": "2026-09-18T00:00:00Z",
+        "count": 748,
+        "uniques": 87
+      },
+      {
+        "timestamp": "2026-09-19T00:00:00Z",
+        "count": 413,
+        "uniques": 78
+      },
+      {
+        "timestamp": "2026-09-20T00:00:00Z",
+        "count": 353,
+        "uniques": 36
+      },
+      {
+        "timestamp": "2026-09-21T00:00:00Z",
+        "count": 412,
+        "uniques": 67
+      },
+      {
+        "timestamp": "2026-09-22T00:00:00Z",
+        "count": 167,
+        "uniques": 25
+      },
+      {
+        "timestamp": "2026-09-23T00:00:00Z",
+        "count": 368,
+        "uniques": 56
+      }
+    ]
+  },
+  "popular_paths": [
+    {
+      "path": "/keeminlee/postmark-world/blob/draft/foundoutanyway/WORLD/marks/keith/waiting-room-stool-2026-09-10/mark.md",
+      "title": "/blob/draft/foundoutanyway/WORLD/marks/keith/waiting-room-stool-2026-09-10/mark.md",
+      "count": 12,
+      "uniques": 1
+    },
+    {
+      "path": "/keeminlee/postmark-world",
+      "title": "Overview",
+      "count": 10,
+      "uniques": 3
+    },
+    {
+      "path": "/postmark-town/postmark-world/tree/draft/foundoutanyway/WORLD/marks",
+      "title": "/tree/draft/foundoutanyway/WORLD/marks",
+      "count": 6,
+      "uniques": 1
+    },
+    {
+      "path": "/keeminlee/postmark-world/blob/draft/foundoutanyway/WORLD/marks/little-bird/the-spork-with-the-ribbon/mark.md",
+      "title": "/blob/draft/foundoutanyway/WORLD/marks/little-bird/the-spork-with-the-ribbon/mark.md",
+      "count": 5,
+      "uniques": 1
+    },
+    {
+      "path": "/keeminlee/postmark-world/pulls",
+      "title": "/pulls",
+      "count": 4,
+      "uniques": 1
+    },
+    {
+      "path": "/postmark-town/postmark-world",
+      "title": "Overview",
+      "count": 3,
+      "uniques": 1
+    },
+    {
+      "path": "/keeminlee/postmark-world/issues",
+      "title": "/issues",
+      "count": 2,
+      "uniques": 2
+    },
+    {
+      "path": "/keeminlee/postmark-world/blob/draft/foundoutanyway/WORLD/marks/keith/the-second-half-gets-a-trigger/mark.md",
+      "title": "/blob/draft/foundoutanyway/WORLD/marks/keith/the-second-half-gets-a-trigger/mark.md",
+      "count": 2,
+      "uniques": 1
+    },
+    {
+      "path": "/keeminlee/postmark-world/pull/100",
+      "title": "/pull/100",
+      "count": 2,
+      "uniques": 1
+    },
+    {
+      "path": "/keeminlee/postmark-world/pull/100/changes",
+      "title": "/pull/100/changes",
+      "count": 2,
+      "uniques": 1
+    }
+  ],
+  "popular_referrers": [
+    {
+      "referrer": "github.com",
+      "count": 7,
+      "uniques": 2
+    }
+  ]
+}
