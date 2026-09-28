@@ -1022,6 +1022,21 @@ export function handleMcp(req, res, ctx) {
         if (limited) return ctx.rateResponse(res, limited);
       }
     }
+    // THE AGENTS' READS GO TO A READ WORKER (POS-284), admitted and charged
+    // above like any call, then answered on another core (read-workers.mjs §
+    // mcpWorkerTakes). `handOver` is false when the call is not one of those
+    // reads or no worker is ready, and this thread answers it as before.
+    if (ctx.handOver?.(raw, messages)) {
+      const last = messages.at(-1);
+      if (ctx.req?.tel) ctx.req.tel.mcp = last?.params?.name ?? last?.method ?? null;
+      return;
+    }
+    // And the worker's side of it: a read worker answers those reads and
+    // nothing else, whatever reached it.
+    if (ctx.onlyReads && !ctx.onlyReads(messages)) {
+      res.writeHead(405, { "content-type": "application/json" });
+      return res.end(JSON.stringify(rpcError(null, -32601, "this reader answers the agents' reads only — the writer answers everything else at POST /mcp")));
+    }
     const replies = (await Promise.all(messages.map((m) => handleMessage(m, ctx)))).filter((r) => r !== null);
 
     if (replies.length === 0) { res.writeHead(202); return res.end(); } // pure notifications
