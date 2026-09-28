@@ -63,6 +63,7 @@ export const LANDED = {
   "026_events.sql":                { probe: `${rel("events")} AND ${rel("event_rsvps")} AND ${rel("household_harnesses")} AND ${rel("earpiece_wakes")}` },
   "027_act_nonce.sql":             { probe: `${col("acts", "nonce")} AND ${rel("acts_actor_nonce_idx")}` },
   "028_posts.sql":                 { probe: `${rel("posts")} AND ${rel("responses")} AND ${col("posts", "class")} AND ${col("responses", "kind")}` },
+  "029_letter_opens.sql":          { probe: `${rel("letter_opens")} AND ${col("letter_opens", "how")}` },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */
