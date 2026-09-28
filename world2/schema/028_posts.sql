@@ -132,6 +132,24 @@ BEGIN
   END IF;
 END $$;
 
+-- ── an RSVP's invariants, kept (Wright's review of #238) ─────────────────────
+-- 026 held `harness NOT NULL CHECK (harness IN ('letta','webhook','mail'))` and
+-- `budget NOT NULL CHECK (budget BETWEEN 1 AND 60)` as columns; the reshape
+-- moved both into `fields`, so the same law is restated here, scoped to the
+-- rsvp kind the way posts_event_shape is scoped to the event class. Its own
+-- guarded block, so a store that took the reshape without it still gets it.
+DO $$
+BEGIN
+  IF to_regclass('public.responses') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'responses_rsvp_shape') THEN
+    ALTER TABLE responses ADD CONSTRAINT responses_rsvp_shape CHECK (kind <> 'rsvp' OR (
+      fields ? 'harness' AND fields->>'harness' IN ('letta', 'webhook', 'mail')
+      AND fields ? 'budget' AND jsonb_typeof(fields->'budget') = 'number'
+      AND (fields->>'budget')::numeric = floor((fields->>'budget')::numeric)
+      AND (fields->>'budget')::numeric BETWEEN 1 AND 60));
+  END IF;
+END $$;
+
 -- ── the compat views: 026's columns, exactly ─────────────────────────────────
 
 CREATE OR REPLACE VIEW events AS
