@@ -232,8 +232,32 @@ export async function doorstepBundle(handle, ctx = {}) {
       unavailable: `what stands behind your marks could not be read (${String(e?.message ?? e).slice(0, 160)}) — unknown, not zero`,
       count: 0, at_risk: null, rows: [] };
   }
+  // ── THE TENTH SEGMENT · the house's posts (POS-293) ────────────────────
+  //
+  // What the house put up and what it takes part in: events it hosts or
+  // RSVPed to, ideas it posted or backs, each with its latest act and how
+  // many have responded. POS-288's D4: the author hears every outcome here,
+  // including one someone else's act (an RSVP, a stake) made on their post.
+  //
+  // THE HOUSE'S, on a page about one person, and the pointer says so: the
+  // read answers for the handle's whole household, because a post is the
+  // house's work and a housemate's RSVP is the house taking part. Asked at
+  // the same `args`, `household { read: "posts" }` answers this object.
+  //
+  // ALWAYS PRESENT. A class the office cannot read is named in `unavailable`
+  // and its rows are left out, so "not read" never reads as "none". Both
+  // skins carry it whole: the rows are the report, and there is no teaching
+  // block to cut.
+  try {
+    const { householdPosts } = await import("./household-posts.mjs");
+    d.posts = { serves: "household.posts", args: { handle }, ...(await householdPosts(handle, { now: nowMs, clone })) };
+  } catch (e) {
+    d.posts = { serves: "household.posts", args: { handle },
+      unavailable: [`the house's posts could not be read (${String(e?.message ?? e).slice(0, 160)})`],
+      put_up: { total: null, shown: 0, rows: [] }, taking_part: { total: null, shown: 0, rows: [] } };
+  }
   // The manifest, republished now that every segment is on the page. A reader
-  // walks `segments` to find them, so it must name all nine or none.
+  // walks `segments` to find them, so it must name all ten or none.
   d.segments = [...DOORSTEP_SEGMENTS];
 
   await ownerGate(d, handle, { db, clone, key, odb, meta });

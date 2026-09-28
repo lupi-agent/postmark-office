@@ -1335,7 +1335,11 @@ export const INDEX_SEGMENTS = Object.freeze(["mail", "awaiting", "stamps", "bull
 /** ⚑ AND THE EIGHTH IS `outcomes` SINCE POS-70 (Keemin, 2026-09-17): the same
  *  segment, renamed — "rulings" is what the founder decides for Postmark. The
  *  old key answers one cycle as a pointer on the page (doorstep-bundle.mjs). */
-export const DOORSTEP_SEGMENTS = Object.freeze([...INDEX_SEGMENTS, "stances", "outcomes", "stakes"]);
+/** ⚑ `posts` is the TENTH, added 2026-09-28 (POS-293): the house's posts, put
+ *  up and taken part in (household-posts.mjs). Store-backed like the three
+ *  before it, and ALWAYS PRESENT: a class the office cannot read is named in
+ *  its `unavailable`, never dropped into an empty list. */
+export const DOORSTEP_SEGMENTS = Object.freeze([...INDEX_SEGMENTS, "stances", "outcomes", "stakes", "posts"]);
 
 /** How many awaiting candidates the morning page shows. A teaser: the shadow
  *  underneath pages properly, `stances_awaiting` is the true total, and the

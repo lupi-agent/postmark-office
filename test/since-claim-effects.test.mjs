@@ -244,9 +244,9 @@ test("the fixture's crossing arithmetic is the town's, not this file's", () => {
 // founder decides, what a crossing decides about your things is an outcome).
 // Still nine, and the segment that carries a refusal is still named — under
 // its new name, with the old one a pointer on the page for one cycle.
-test("the manifest names nine, and `outcomes` (which was `rulings`) is one of them", async () => {
+test("the manifest names ten, and `outcomes` (which was `rulings`) is one of them", async () => {
   const { DOORSTEP_SEGMENTS } = await import("../src/queries.mjs");
-  assert.equal(DOORSTEP_SEGMENTS.length, 9, "nine since 2026-09-18 — `stakes` joined (postmark#2919)");
+  assert.equal(DOORSTEP_SEGMENTS.length, 10, "ten since 2026-09-28 — `posts` joined (POS-293); nine since 2026-09-18 — `stakes` (postmark#2919)");
   assert.ok(DOORSTEP_SEGMENTS.includes("outcomes"),
     "a manifest that did not name it would hide the segment that carries a refusal");
   assert.ok(!DOORSTEP_SEGMENTS.includes("rulings"), "renamed, not doubled — the old key is a pointer, not a segment");

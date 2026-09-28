@@ -57,6 +57,7 @@ worker rebuild after `PROJECTION_MAX_AGE_MS` (60 s).
 | `world.mjs` | `_grid` | the projection's epoch (so it follows the MESSAGE row) |
 | `world.mjs` | `_grounds`, `_byIds`; `world-movement.mjs` `_services`, `_hasVehicle` | WeakMaps on a world object |
 | `world-stance.mjs` | `TEACH_CACHE`, `PHOTO_CACHE` | path, then the file's size and mtime |
+| `household-posts.mjs` | `backingCache` (the ideas' backing, POS-293) | the town clone's path, then the stamp ledger's mtime and size |
 | `dynamic-entities.mjs` | `_toolModules` | repo + file, re-checked against `freshestMainRef` after a TTL |
 | `world2-claims.mjs` | `householdKeys` | positive answers only, learned by each thread from the store |
 

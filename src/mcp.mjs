@@ -25,6 +25,7 @@ const SEGMENT_GLOSS = Object.freeze({
   stances: "what awaits YOUR word — marks laid over ground you hold, and your things another household has set down",
   outcomes: "what the last crossings DECIDED about your things: what went forward onto the docket, what was locked, what was refused and why (this segment was called rulings until POS-70)",
   stakes: "your published marks and the escrow behind each — which the next settlement would sweep, first, with the stake that fixes it, and when that settlement is",
+  posts: "your house's posts: the events and ideas it put up, and others' it takes part in, each with its latest act",
 });
 import { votesAvailable, voteList, voteView, stakeViaOffice } from "./votes.mjs";
 import { requestResidency } from "./residency.mjs";

@@ -76,7 +76,7 @@ export function isoEvents(events = []) {
  * town clone's own `tools/households.json` (the file households.mjs reads).
  * `from` says which, because the two can disagree for a crossing.
  */
-async function registryFor(clone, readers = {}) {
+export async function registryFor(clone, readers = {}) {
   if (readers.registry) return { ...readers.registry, from: readers.registry.from ?? "injected" };
   try {
     const rows = await houseRows();

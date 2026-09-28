@@ -773,6 +773,23 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //   full  19249 -> 19397 (+148, +0.77%) = new_inbound_moved +148
   //   slim  16876 -> 17024 (+148, +0.88%) = new_inbound_moved +148
   //
+  // ⚠ AND REGENERATED AN EIGHTH TIME, 2026-09-28 (POS-293), for the tenth
+  // segment, `posts`: the house's posts, put up and taken part in (Keemin's
+  // household page in three, Posts → Marks → Mail). The diff was run leaf by
+  // leaf BEFORE the capture: 930 paths before, 958 after, NONE removed; the 28
+  // added are `posts.*` and `segments[9]` on each skin, and the two changed are
+  // `the_bundle` on each skin, whose sentence lists the segments by name. The
+  // fixture office is pointed at none of the segment's three sources (the
+  // registry, the event record, the world store), so it names all three in
+  // `unavailable` rather than showing empty lists as an answer; an office
+  // pointed at them carries rows in their place.
+  //
+  //   full  19397 -> 19824 (+427, +2.20%) = posts +412, segments[] +8, law +7
+  //   slim  17024 -> 17451 (+427, +2.51%) = posts +412, segments[] +8, law +7
+  //
+  // Both skins move identically: `posts` has no teaching block to cut, so it
+  // rides the connector whole, the way `stakes`' rows do.
+  //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:
   assert.equal(JSON.stringify(now).includes('"card"'), false,
