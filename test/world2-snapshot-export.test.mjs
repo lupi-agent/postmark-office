@@ -33,7 +33,7 @@ import {
   contentDigest, certification, certificationSubstance, canonical,
   checkArchives, writeMarks, assertUsableTarget, sampleIndexes, Cannot,
   crossingSailsAt, completingFerryFor, ferryPartition, heldWindowLine,
-  parseRefreeze, refreezeCommitMessage, derive,
+  parseRefreeze, refreezeCommitMessage, refreezeManyCommitMessage, derive,
 } from "../world2/tools/snapshot-export.mjs";
 
 // ── fixtures, in the driver's own shapes ─────────────────────────────────────
@@ -741,4 +741,41 @@ test("the door's refusal is reached BEFORE the database is — exit 2, naming --
     assert.ok(!/WORLD2_PG_URL/.test(err),
       "the argument check runs first — this refusal is about the door, not the environment");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── THE DOOR TAKES A LIST (2026-09-28, the w40 ship: 26 archives differed at once) ──
+test("--refreeze takes a list or a range, and still needs a reason", () => {
+  assert.deepEqual(parseRefreeze(["--refreeze", "154-156,201", "--reason", "w40"]), { refreeze: [154, 155, 156, 201], reason: "w40" });
+  assert.deepEqual(parseRefreeze(["--refreeze", "202", "--reason", "x"]), { refreeze: 202, reason: "x" }, "a single window is unchanged");
+  assert.throws(() => parseRefreeze(["--refreeze", "156-154", "--reason", "x"]), Cannot);
+  assert.throws(() => parseRefreeze(["--refreeze", "154,abc", "--reason", "x"]), Cannot);
+  assert.throws(() => parseRefreeze(["--refreeze", "154,155"]), Cannot);
+});
+
+test("a LIST refreezes exactly the named windows; a differing archive it does not name still refuses", () => {
+  const dir = repo();
+  try {
+    mkdirSync(join(dir, "archives", "acts"), { recursive: true });
+    writeFileSync(join(dir, "archives/acts/154.jsonl"), `{"id":0}
+`);
+    writeFileSync(join(dir, "archives/acts/155.jsonl"), `{"id":0}
+`);
+    const archives = [...differing(154, `{"id":1}
+`), ...differing(155, `{"id":2}
+`)];
+    const named = checkArchives(dir, archives, { refreeze: [154, 155] });
+    assert.equal(named.findings.length, 0);
+    assert.deepEqual(named.plan.map((p) => p.action), ["refreeze", "refreeze"]);
+    const partial = checkArchives(dir, archives, { refreeze: [154] });
+    assert.equal(partial.findings.length, 1, "155 is not named, so it refuses exactly as before");
+    assert.equal(readFileSync(join(dir, "archives/acts/155.jsonl"), "utf8"), `{"id":0}
+`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the many-window receipt carries every window's two sha256s and the reason", () => {
+  const a = (w) => ({ window: w, oldSha: `old${w}`, newSha: `new${w}`, was: "x\n", lines: 2 });
+  const msg = refreezeManyCommitMessage([a(154), a(155)], "the w40 ship", { windowCursor: 216, cursors: { acts_cursor: 1 } });
+  assert.match(msg.split("\n")[0], /refreeze 2 archives \(154, 155\) — the w40 ship/);
+  for (const w of [154, 155]) assert.match(msg, new RegExp(`${w}\\.jsonl · old sha256 old${w} .* new sha256 new${w}`));
 });
