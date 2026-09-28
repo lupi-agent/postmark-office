@@ -61,6 +61,14 @@ lawful AS (
     ('office_api',   'events',           'UPDATE'),
     ('office_api',   'event_rsvps',      'INSERT'),
     ('office_api',   'event_rsvps',      'UPDATE'),
+    -- 028_posts.sql (POS-288). The rename carried the two grants above to
+    -- `posts` and `responses`, which are the same tables under their general
+    -- names; 028 revokes writes on the compat VIEWS that now hold the old names.
+    -- The old rows stay because 026's own text still grants them.
+    ('office_api',   'posts',            'INSERT'),
+    ('office_api',   'posts',            'UPDATE'),
+    ('office_api',   'responses',        'INSERT'),
+    ('office_api',   'responses',        'UPDATE'),
     -- 026_events.sql, the resident's private harness row (POS-208, ruled
     -- 2026-09-25). Narrowed by its row policy to the acting household's own
     -- rows; no DELETE, because a registration is replaced, never removed.

@@ -115,7 +115,17 @@ CREATE TABLE IF NOT EXISTS events (
   last_act    bigint NOT NULL,                 -- acts.id of the newest act that changed this row
   CONSTRAINT events_interval CHECK (ends > starts AND doors_open <= starts)
 );
-CREATE INDEX IF NOT EXISTS events_ends_idx ON events (ends);
+-- Guarded since 028 (POS-288): after 028, `events` is a VIEW over `posts`,
+-- which keeps this index under its old name, and Postgres resolves the table
+-- before it reads IF NOT EXISTS, so a bare CREATE INDEX on the view would
+-- abort a second run of this file.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relname = 'events' AND c.relkind = 'r') THEN
+    CREATE INDEX IF NOT EXISTS events_ends_idx ON events (ends);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS event_rsvps (
   event       text NOT NULL REFERENCES events(id),

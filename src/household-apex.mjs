@@ -234,7 +234,7 @@ export const APEX_ONLY_FIELDS = {
       place: { type: "object", description: "where: { mark: \"<owner>/<slug>\" } — a standing mark with an extent — or { at: { x, y } } in absolute world coordinates" },
       starts: { type: "string", description: "an ISO instant with its zone, e.g. 2026-09-26T22:00:00Z — the record is UTC" },
       ends: { type: "string", description: "an ISO instant after starts, at most 7 days later; required — an event with no end is refused" },
-      doors_open: { type: "string", description: "optional ISO instant at or before starts; defaults to starts" },
+      doors_open: { type: "string", description: "optional ISO instant at or before starts; defaults to starts. An amendment that moves starts keeps doors_open where it stands — send it too if it would fall after the new start" },
     },
     required: ["title", "place", "starts", "ends"],
   },
