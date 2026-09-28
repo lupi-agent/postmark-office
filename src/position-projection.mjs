@@ -259,3 +259,63 @@ export function createPositionGrid({ rowsFor, cellM = GRID_CELL_M, frames = null
     },
   };
 }
+
+// ── THE PLACEMENT, ONCE PER CHANGE (POS-284) ─────────────────────────────────
+//
+// The grid above answers `near`; the doors that ask "where is EVERYONE" still
+// placed the whole town per request. On dev at 80 agents (2026-09-27, and again
+// 2026-09-28 on train/2026-w41 @ ac2fdb9) `everyonePlaced` held about a quarter
+// of the office's thread: a say asks orient and open-your-eyes before it acts
+// and the witness after, each of them placed every resident, and each viewer's
+// walkers poll placed them again, all at the same instant of the same town.
+//
+// So the answer is KEPT, per what it was placed from, and re-placed only for the
+// residents who are walking. The premise is the grid's: a row that is not
+// moving cannot move until something is recorded, and a recorded walk moves the
+// projection's epoch, which is part of the key. A walker who has arrived by the
+// time of a question is kept from then on.
+//
+// `key` names everything the rows were placed from (the projection's epoch, the
+// fold, the roll, and which departures). A caller whose inputs have no stable
+// name, the office with WORLD_POSITIONS off, never comes here: it calls
+// `everyonePlaced` itself, exactly as before.
+
+/** How many placements are kept at once: orient's, the witness's and the walkers' answers differ by roster, not by instant. */
+export const PLACEMENTS_KEPT = 8;
+
+/**
+ * `rows({ key, at, place })` answers `place(null, at)` — `everyonePlaced`'s rows
+ * for everyone — from what it kept under `key`, calling `place(only, at)` for
+ * the walking handles alone. Synchronous, because `everyonePlaced` is and so is
+ * its caller in the presence layer.
+ */
+export function createPlacement({ kept: max = PLACEMENTS_KEPT } = {}) {
+  const kept = new Map();   // key -> { rows, index: Map handle -> i, drifting: Set }
+
+  return {
+    rows({ key, at, place }) {
+      let k = kept.get(key);
+      if (!k) {
+        const rows = place(null, at);
+        k = { rows, index: new Map(rows.map((r, i) => [r.handle, i])), drifting: new Set(rows.filter((r) => r.moving).map((r) => r.handle)) };
+        kept.set(key, k);
+        while (kept.size > max) kept.delete(kept.keys().next().value);
+        return rows.slice();
+      }
+      const out = k.rows.slice();
+      if (!k.drifting.size) return out;
+      for (const row of place(k.drifting, at)) {
+        const i = k.index.get(row.handle);
+        if (i == null) continue;
+        out[i] = row;
+        if (!row.moving) { k.rows[i] = row; k.drifting.delete(row.handle); }
+      }
+      return out;
+    },
+
+    /** For the falsifier and the operator: what is kept. */
+    census() {
+      return [...kept.values()].map((k) => ({ rows: k.rows.length, drifting: k.drifting.size }));
+    },
+  };
+}
