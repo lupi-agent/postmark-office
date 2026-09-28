@@ -255,25 +255,18 @@ test("FLAG OFF: era two is not read, and the answer is era one's alone", async (
   }
 });
 
-// ── the acceptance case, end to end, against a REAL carrier ──────────────────
+// ── the acceptance case, at the movement fixture's harbour ───────────────────
 //
-// "Vanished aboard" was the live symptom, so a fixture that never builds a
-// carrier cannot reproduce it. This one uses the timetabled vessel from
-// `movement-fixture.mjs`: an era-1 arrival on her footprint, and a NEWER era-2
-// ashore record. The frame fold must see BOTH — reading era one alone used to
-// re-derive the resident onto a boat that has since sailed, which is not a wrong
-// position, it is a disappearance. Since POS-247 (2026-09-26) a walk never
-// boards, so era one alone leaves him on the quay.
+// "Vanished aboard" was the live symptom: an era-1 arrival on her footprint, and
+// a NEWER era-2 ashore record. The fold must see BOTH — reading era one alone
+// used to re-derive the resident onto a boat that has since sailed, which is not
+// a wrong position, it is a disappearance. Since POS-247 (2026-09-26) a walk
+// never boards, so era one alone leaves him on the quay, and the fold needs no
+// carrier to say so (POS-261).
 
-import { carriersFrom, carrierReader, recordsAcrossEras as acrossEras, vesselServiceFrom } from "../src/world-movement.mjs";
+import { recordsAcrossEras as acrossEras } from "../src/world-movement.mjs";
 import { foldFrames } from "../src/world-frames.mjs";
-import { withFrames } from "../src/positions.mjs";
-import { atCrossing, fixtureMarks, makeWorldClone } from "./movement-fixture.mjs";
-
-const carrierClone = makeWorldClone();
-after(() => carrierClone.cleanup());
-const CARRIER_MARKS = { marks: fixtureMarks() };
-const CARRIER_REPO = { repo: carrierClone.dir };
+import { atCrossing } from "./movement-fixture.mjs";
 
 // She is berthed at the quay from fc 9.6 to 10.5, sails 10.5, lands 10.6.
 const ABOARD_ISO = new Date(atCrossing(10.0)).toISOString();
@@ -290,43 +283,24 @@ const era2Ashore = (handle) => ({
   at: 10.2, targetExtent: null, targetMarkId: null, pace: null, source: "store",
 });
 
-async function foldFor(records, atMs) {
-  const { service, mod, walk } = await vesselServiceFrom(CARRIER_MARKS, CARRIER_REPO);
-  const carrierAt = carrierReader(CARRIER_MARKS, { repo: carrierClone.dir, service, mod });
-  return foldFrames(records, { carriers: carriersFrom(CARRIER_MARKS), carrierAt, walk, atMs });
-}
-
 test("ERA ONE ALONE no longer sails anyone away — a walk onto her deck never boarded (POS-247)", async () => {
-  const mid = atCrossing(10.55);          // she is under way
-  const fold = await foldFor(acrossEras([era1Aboard("hal")], []), mid);
+  const fold = foldFrames(acrossEras([era1Aboard("hal")], []));
   assert.equal(fold.frame, null, "the walk ended on her deck and hal stayed on the quay");
   assert.deepEqual(fold.world, DECK_POINT, "he is where the walk ended, not out at sea with her");
 });
 
 test("BOTH ERAS: the same resident is ashore, and stays there while she sails", async () => {
-  const mid = atCrossing(10.55);
   const records = acrossEras([era1Aboard("hal"), era2Ashore("hal")], []);
-  const fold = await foldFor(records, mid);
+  const fold = foldFrames(records);
   assert.equal(fold.frame, null, "he stepped off, so his frame is the world again");
   assert.deepEqual(fold.world, SHORE_POINT, "and he is where he walked to, not where she went");
-});
-
-test("the walkers overlay puts him ashore, not aboard", async () => {
-  const mid = atCrossing(10.55);
-  const fold = await foldFor(acrossEras([era1Aboard("hal"), era2Ashore("hal")], []), mid);
-  const rows = withFrames(
-    [{ handle: "hal", x: DECK_POINT.x, y: DECK_POINT.y, source: "walk", moving: false, remaining_m: 0, eta_crossings: 0 }],
-    fold.frame ? new Map([["hal", fold]]) : new Map(),
-  );
-  assert.equal(rows[0].aboard, undefined, "no frame means no aboard flag and no relocation");
-  assert.deepEqual({ x: rows[0].x, y: rows[0].y }, DECK_POINT);
 });
 
 test("a resident whose ONLY record is era two is still folded", async () => {
   // Someone who first moved after the freeze has no ledger line at all. Grouping
   // the roster by era-one departures would never reach them.
   const walked = { ...era2Ashore("newcomer"), toward: DECK_POINT, from: SHORE_POINT, iso: ABOARD_ISO, at: 10.0 };
-  const fold = await foldFor(acrossEras([], [walked]), atCrossing(10.3));
+  const fold = foldFrames(acrossEras([], [walked]));
   assert.notEqual(fold.provenance, "never-moved", "the era-two record was read");
   assert.equal(fold.frame, null, "and a walk onto her deck boards nobody (POS-247)");
   assert.deepEqual(fold.world, DECK_POINT);

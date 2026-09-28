@@ -58,15 +58,16 @@ import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabl
 // how fine is its floor. arena.mjs imports world-hold.mjs and world-journal.mjs
 // and never world.mjs, so this edge closes no cycle.
 import { arenaGroundAt, adversaryIn, arrivalOnGround, groundAtPoint } from "./arena.mjs";
-// `openDynamicReadOnly` IS GONE FROM THIS IMPORT (POS-154): `framesByHandle` was
-// its last caller here, and it opened the store for the departure read alone.
+// `openDynamicReadOnly` IS GONE FROM THIS IMPORT (POS-154): the walkers door's
+// frame map was its last caller here, and it opened the store for the departure
+// read alone.
 // `openDynamic` left with the doors' handles (POS-269): every act this file
 // writes goes to the record, and none of them opened the store for anything.
 import { emissionsEnabled } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's flag
 import { emissionFromVoice } from "./dynamic-emissions.mjs"; // stage 2: speech also becomes an emission instance
 import { world2Enabled } from "./world2-acts.mjs"; // the write-path closure: is the shadow mirror on at all
 import { VESSEL_HANDLE, ridesTheVessel } from "./dynamic-entities.mjs"; // the aboard test, one home for two readers
-import { carriersFrom, carriersWithDisclosure, carrierReader, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, movementV2Enabled, recordsAcrossEras, roadTerms, storedDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
+import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, movementV2Enabled, roadTerms, storedDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
 import { arrivedNotice, doorstepTransport, isVehicleStop, rideStateFrom, stopAnnotationFor, stopUnderfoot, transportAt } from "./world-ride.mjs"; // #2986 § 11: the derived visibility of a vehicle, off the same timetable; POS-165: the walk verb asks the same predicate the ride verb does
 import { findMarks } from "./world-find.mjs"; // find a mark by name from anywhere (2026-09-26)
 import { byBand, presenceEnabled, presentNear, near as presenceNear, everyone as presenceEveryone, PRESENCE_DIALS } from "./dynamic-presence.mjs"; // stage 2: residents revealed to each other
@@ -488,30 +489,15 @@ async function walkClock() {
 }
 
 /**
- * THE HEARING HOOK, OVER THE PROJECTION. `world-movement.mjs § heardFromV2`
- * with the speaker's records taken from the projection instead of from both
- * eras re-read per voice. Flag off, it is the hook `voices` is built with
- * below, call for call.
+ * THE HEARING HOOK. `world-movement.mjs § heardFromV2` over this office's world.
  *
- * WHY THE GOVERNING RECORD IS ENOUGH: the records matter to `heardFromV2` only
- * through `foldFrames`, and since POS-247 that fold cannot produce a frame from
- * a walk (it starts at `frame = null` and only ever reassigns null). So one
- * record or the whole history folds to the same null, and the answer is the
- * position floor either way. The falsifier holds that; the day a walk can
- * frame again, it goes red here first.
+ * It reads no walk records (POS-261): a speaker's walks never put them in a
+ * carrier's frame (POS-247), so the answer is the position floor for everyone,
+ * and the records it used to read per voice changed nothing.
  */
 export async function projectedHeardFrom(voice, t) {
   try {
-    const governing = positionsProjected() ? await positionProjection.departures() : null;
-    return await heardFromV2(voice, await world(), {
-      repo: WORLD_CLONE, atMs: t,
-      recordsOf: async (h) => {
-        if (governing) return governing.filter((d) => d.handle === h);
-        try { return (await departuresNow(WORLD_CLONE)).filter((d) => d.handle === h); }
-        catch { return []; }
-      },
-      ...(governing ? { storeRecordsOf: async () => [] } : {}),
-    });
+    return await heardFromV2(voice, await world(), { repo: WORLD_CLONE, atMs: t });
   } catch { return null; }
 }
 
@@ -1258,9 +1244,7 @@ const voices = createVoices({
   // declaration, and it comes from the same standpoint every other door uses —
   // so a voice cannot be relocated onto a deck its speaker was never standing on.
   structuralHearing: () => movementV2Enabled(),
-  // POS-264: the governing record per resident from the kept projection (behind
-  // WORLD_POSITIONS), in place of a whole-history departures read per listener.
-  // With the flag off projectedHeardFrom is this hook as it was.
+  // No walk record is read per voice (POS-261): the answer is the position floor.
   heardFrom: projectedHeardFrom,
   // POS-265: the retry key's durable half — the act carries its nonce
   // (migration 027), and a retry this process does not remember asks the record.
@@ -4939,80 +4923,31 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
   };
 }
 
-// STAGE D's half of the walkers door (WORLD_MOVEMENT_V2) — the FRAME MAP.
-//
-// `everyonePlaced` owns who and where (issue #7's one derivation) and
-// `withFrames` owns the composition; all this does is derive the folds those
-// two need, which is the part that requires the engine and the clock.
-//
-// ONE PASS, ONE STORE HANDLE, ONE CARRIER READER. This door is keyless, public,
-// and answers for the whole town at once — seventy residents the morning this
-// was written. An earlier draft asked `residentStandpoint` per walker, which
-// opened the dynamic store twice apiece: a hundred and forty file opens for one
-// public GET. The reader is memoized on (carrier, instant), so the boat's
-// position is evaluated a handful of times for the whole town.
-async function framesByHandle(w, departures, atMs) {
-  const { service, mod, carriers } = await vesselServiceFrom(w, { repo: WORLD_CLONE });
-  if (!service || !mod || !carriers.length) return null;
-  const carrierAt = carrierReader(w, { repo: WORLD_CLONE, service, mod });
-  const walk = (await vesselServiceFrom(w, { repo: WORLD_CLONE })).walk;
-  const { foldFrames } = await import("./world-frames.mjs");
-
-  const byHandle = new Map();
-  for (const d of departures) {
-    if (d.handle === service.vessel.handle) continue;
-    if (!byHandle.has(d.handle)) byHandle.set(d.handle, []);
-    byHandle.get(d.handle).push(d);
-  }
-  const out = new Map();
-  // NO SQLITE HANDLE HERE ANY MORE (POS-154). This opened `dynamic.db` read-only
-  // for one reason — to hand `storedDepartures` a handle — and that read is the
-  // record's now, so the open, the `try`/`finally` and the close all go with it.
-  //
-  // It also takes a latent throw with it: `openDynamicReadOnly` answers NULL when
-  // the file is missing, the `store ?` guard covered only the read, and the
-  // `finally { store.close() }` did not — a TypeError on an office with no store,
-  // unfired only because this function returns early when the vessel carriers are
-  // absent.
-  //
-  // THE RECORD IS READ ONCE, NOT ONCE PER RESIDENT — the old rule, unchanged in
-  // force and now about a round trip rather than a table scan. `storedRecordsFor`
-  // inside this loop would be seventy reads to answer one public GET.
-  //
-  // `departures` already spans both eras (the doors merge before they call), so
-  // the store half arrives twice — once inside `ledgerRecords`, once here.
-  // `recordsAcrossEras` de-dupes deliberately rather than leaving that to the
-  // accident of `foldFrames` being idempotent over repeated arrivals;
-  // `transitions` is a COUNT and the `happened` shelf reads it. Both copies come
-  // from this same function, so they still agree field for field and the dedupe
-  // still bites.
-  const all = (await storedDepartures({ atMs })).records;
-  const storeByHandle = new Map();
-  for (const r of all) {
-    if (!storeByHandle.has(r.handle)) storeByHandle.set(r.handle, []);
-    storeByHandle.get(r.handle).push(r);
-  }
-  // A resident whose ONLY record is era two — someone who first moved after
-  // the freeze — has no ledger line to be grouped by, so the roster above
-  // would never reach them. They are added here.
-  for (const h of storeByHandle.keys()) {
-    if (h !== service.vessel.handle && !byHandle.has(h)) byHandle.set(h, []);
-  }
-  for (const [h, ledgerRecords] of byHandle) {
-    const records = recordsAcrossEras(ledgerRecords, storeByHandle.get(h) ?? []);
-    const fold = await foldFrames(records, { carriers, carrierAt, walk, atMs });
-    if (fold.frame) out.set(h, fold);
-  }
-  return out;
-}
-
-/** The walkers list with carriers running: the vessel from her timetable, riders in her frame. */
-async function walkersInFrames(walkers, w, departures, atMs = Date.now()) {
+/**
+ * The walkers list with carriers running: the vessel from her timetable, riders
+ * at her hull.
+ *
+ * THE RIDERS ARE PRESENCE'S RIDERS (POS-261). A rider's frame is occupancy, read
+ * off the enter-exit ledger by `withVehicleRiders`, the one map `/world/present`
+ * applies too, so the two reads place every rider at the same point. This door
+ * used to fold each resident's walks for a frame instead, and a walk never
+ * boards (POS-247): the fold answered the world frame for everyone, so a ledger
+ * rider stood at the hull on the presence read and on the quay they entered
+ * from on this one. A walk that ended on her deck reads ashore on both, because
+ * the ledger never put that walker aboard.
+ */
+async function walkersInFrames(walkers, w, atMs = Date.now()) {
   const v = await vesselFromTimetable(w, atMs, { repo: WORLD_CLONE });
   if (!v) return walkers;
   const handle = v.service.vessel.handle;
-  const framed = await framesByHandle(w, departures, atMs);
-  const rows = withFrames(walkers, framed);
+  let riders = null;
+  // Never throws, for presence's reason: a ledger this office cannot read reads
+  // the riders as ashore for this call, and nobody loses the walkers answer.
+  try {
+    const { withVehicleRiders } = await import("./dynamic-presence.mjs");
+    riders = await withVehicleRiders(null, { world: w, repo: WORLD_CLONE, atMs });
+  } catch { riders = null; }
+  const rows = withFrames(walkers, riders);
 
   // THE CARRIER HERSELF is not a walker and never was — her position is
   // f(timetable, clock). She is added when no record names her at all, which is
@@ -5173,7 +5108,7 @@ export async function worldWalkers(worldClone, key = null, { roll = null } = {})
       : "no town roll supplied to this door — the answer covers residents with a walk record or ground, and cannot include a resident who has neither";
     return {
       at,
-      walkers: movementV2Enabled() ? await walkersInFrames(walkers, w, departures) : walkers,
+      walkers: movementV2Enabled() ? await walkersInFrames(walkers, w) : walkers,
       // The disclosure the reader assembled, carried rather than dropped. A door
       // that reads half the record and says nothing is the failure this whole
       // change is about.

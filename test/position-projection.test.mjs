@@ -19,8 +19,8 @@
 //               over the whole record, at instants mid-walk and after arrival.
 //   PRESENCE    `positionsAt` reading the projection equals `positionsAt`
 //               reading the entities table + the store.
-//   HEARING     `heardFromV2` over the governing record with no store read
-//               equals `heardFromV2` over both eras, per voice.
+//   HEARING     `heardFromV2` reads no walk record at all (POS-261): a voice
+//               is heard from the position floor, the store never asked.
 //   NEAR        the grid's `near` equals a scan of every row, at instants that
 //               carry a walker across cells and into arrival.
 //   DOOR        `/world/walkers` answers the same with the flag on as off,
@@ -62,11 +62,11 @@ import { worldToolModule } from "../src/dynamic-entities.mjs";
 import { openDynamic } from "../src/dynamic-store.mjs";
 import { positionsAt } from "../src/dynamic-presence.mjs";
 import { everyonePlaced } from "../src/positions.mjs";
-import { heardFromV2 } from "../src/world-movement.mjs";
+import { heardFromV2, vesselPositionAt } from "../src/world-movement.mjs";
 import {
   createPlacement, createPositionGrid, createPositionProjection, governingOf, recordOfMovement,
 } from "../src/position-projection.mjs";
-import { atCrossing, departure, fixtureMarks, makeWorldClone } from "./movement-fixture.mjs";
+import { atCrossing, fixtureMarks, makeWorldClone } from "./movement-fixture.mjs";
 
 const FLAGS = ["WORLD_MOVEMENT_V2", "WORLD2_PG", "WORLD2_PG_URL", "WORLD_POSITIONS"];
 const was = Object.fromEntries(FLAGS.map((k) => [k, process.env[k]]));
@@ -271,39 +271,26 @@ test("KEPT: the placement answers what everyonePlaced answers at every instant, 
   assert.equal(asked.filter((a) => a === null).length, 2);
 });
 
-test("HEARING: heardFromV2 over the governing record, no store read, equals heardFromV2 over both eras", async () => {
+// POS-261: a walk never puts its walker in a carrier's frame (POS-247), so the
+// speaker's records cannot move a voice and `heardFromV2` no longer reads them.
+// The answer is the position floor alone, and the record is never asked.
+test("HEARING: heardFromV2 asks the record for nothing — a voice is heard from where it was spoken", async () => {
   const clone = makeWorldClone();
+  let asked = 0;
+  const counting = useGuardReader(async (fn) => fn({
+    query: async (sql) => { if (/FROM acts/i.test(String(sql))) asked += 1; return { rows: [] }; },
+  }));
   try {
     const W = { marks: fixtureMarks() };
     const REPO = { repo: clone.dir };
-    STORE.length = 0;
-    install();
-    // The speaker's history: walked to the quay, then onto the far shore after
-    // speaking. The store carries the later leg; the ledger half the earlier.
-    const early = departure({ handle: "speaker", from: { x: 60, y: 0 }, toward: { x: 2, y: 3 }, at: 10.0 });
-    const late = departure({ handle: "speaker", from: { x: 2, y: 3 }, toward: { x: 3900, y: 0 }, at: 10.6 });
-    await fileWalk({ actor: "speaker", from: late.from, toward: late.toward, crossing: late.at, at: late.iso, within: null, toMark: null, pace: null });
-    const full = [early, { ...late, source: "store" }];
-    const governing = [...governingOf(full).values()];
-    const voices = [
-      { handle: "speaker", at: atCrossing(10.52), x: 800, y: 0, text: "on her deck, under way" },
-      { handle: "speaker", at: atCrossing(10.52), x: 2500, y: 400, text: "ashore" },
-      { handle: "speaker", at: atCrossing(10.7), x: 2100, y: 0, text: "after the second leg" },
-      { handle: "nobody-walked", at: atCrossing(10.53), x: 810, y: 1, text: "a stranger on deck" },
-    ];
-    let differing = 0;
-    for (const v of voices) {
-      for (const atMs of [atCrossing(10.55), atCrossing(10.8)]) {
-        const derived = await heardFromV2(v, W, { ...REPO, atMs,
-          recordsOf: async (h) => full.filter((d) => d.handle === h) });
-        const projected = await heardFromV2(v, W, { ...REPO, atMs,
-          recordsOf: async (h) => governing.filter((d) => d.handle === h), storeRecordsOf: async () => [] });
-        assert.deepEqual(projected, derived, `"${v.text}" heard at ${atMs}: the projection moved the voice`);
-        if (derived) differing += 1;
-      }
-    }
-    assert.ok(differing > 0, "no voice was relocated at all — the fixture proves nothing about the deck");
-  } finally { clone.cleanup(); }
+    const boat = await vesselPositionAt(W, atCrossing(10.55), REPO);
+    const deck = await heardFromV2({ handle: "speaker", at: atCrossing(10.52), x: 800, y: 0, text: "on her deck, under way" }, W, { ...REPO, atMs: atCrossing(10.55) });
+    const ashore = await heardFromV2({ handle: "speaker", at: atCrossing(10.52), x: 2500, y: 400, text: "ashore" }, W, { ...REPO, atMs: atCrossing(10.55) });
+    assert.equal(deck?.frame, "the-town/the-post-office", "a voice spoken on her deck under way rides her");
+    assert.ok(Math.abs(deck.x - boat.x) < 10, "and is heard from where she is now");
+    assert.equal(ashore, null, "a voice spoken ashore is heard where it was spoken");
+    assert.equal(asked, 0, "no walk record was read to answer either voice");
+  } finally { counting(); clone.cleanup(); }
 });
 
 test("NEAR: the grid answers what a scan of every row answers, as walkers cross cells and arrive", async () => {

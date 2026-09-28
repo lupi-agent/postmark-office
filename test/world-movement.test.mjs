@@ -65,7 +65,6 @@ const reader = async () => {
   const { service, mod } = await vesselServiceFrom(MARKS, REPO);
   return { service, mod, carrierAt: carrierReader(MARKS, { repo: clone.dir, service, mod }) };
 };
-const walkMod = async () => (await vesselServiceFrom(MARKS, REPO)).walk;
 
 // ── 1. the flag is the whole switch ──────────────────────────────────────────
 
@@ -151,65 +150,50 @@ test("the carrier's standpoint comes from the timetable and never from a ledger 
 // anymore." You board through a stop's door (#2986); a walk that ends on her
 // deck leaves you on the quay beside her.
 
-test("walking onto her deck boards nobody — no edge is born, and she sails without you", async () => {
-  const { carrierAt } = await reader();
-  const walk = await walkMod();
+test("walking onto her deck boards nobody — no edge is born, and the walker stands where the walk ended", () => {
   const records = [departure({ handle: "walker", from: { x: 60, y: 0 }, toward: { x: 2, y: 3 }, at: 10.0 })];
-  const carriers = carriersFrom(MARKS);
-  const berthed = await foldFrames(records, { carriers, carrierAt, walk, atMs: BEFORE_SAILING });
-  assert.equal(berthed.frame, null, "the endpoint is on her deck, and the walker is still ashore");
-  assert.deepEqual(berthed.transitions, [], "no edge is born by a walk");
-  const sailed = await foldFrames(records, { carriers, carrierAt, walk, atMs: AFTER_LANDING });
-  assert.equal(sailed.frame, null);
-  assert.deepEqual(sailed.world, { x: 2, y: 3 }, "she sailed; the walker is where the walk ended");
+  const fold = foldFrames(records);
+  assert.equal(fold.frame, null, "the endpoint is on her deck, and the walker is still ashore");
+  assert.deepEqual(fold.transitions, [], "no edge is born by a walk");
+  assert.deepEqual(fold.world, { x: 2, y: 3 }, "she sails; the walker is where the walk ended");
 });
 
-test("ON AND OFF HER DECK BEFORE SHE MOVED: no edge either way, no carry", async () => {
-  const { carrierAt } = await reader();
-  const walk = await walkMod();
+test("ON AND OFF HER DECK: no edge either way, no carry", () => {
   const records = [
     departure({ handle: "browser", from: { x: 60, y: 0 }, toward: { x: 2, y: 3 }, at: 10.1 }),   // onto the deck
     departure({ handle: "browser", from: { x: 2, y: 3 }, toward: { x: 60, y: 0 }, at: 10.2 }),   // and back off
   ];
-  const fold = await foldFrames(records, { carriers: carriersFrom(MARKS), carrierAt, walk, atMs: AFTER_LANDING });
+  const fold = foldFrames(records);
   assert.equal(fold.frame, null);
   assert.deepEqual(fold.transitions, [], "nothing was boarded, so nothing was left");
-  assert.deepEqual(fold.world, { x: 60, y: 0 }, "she sailed without them, and they are where they walked to");
+  assert.deepEqual(fold.world, { x: 60, y: 0 }, "they are where they walked to");
 });
 
-test("a walk that ENDS elsewhere never boards, however its line runs", async () => {
-  const { carrierAt } = await reader();
-  const walk = await walkMod();
+test("a walk across her deck that ENDS elsewhere never boards", () => {
   // A leg from one side of her to the other: the straight line sweeps the deck.
   const records = [departure({ handle: "passer", from: { x: -40, y: 0 }, toward: { x: 60, y: 0 }, at: 10.1 })];
-  const fold = await foldFrames(records, { carriers: carriersFrom(MARKS), carrierAt, walk, atMs: BEFORE_SAILING });
-  assert.equal(fold.frame, null, "the frame is decided at arrival — a stride across her deck is not boarding");
+  assert.equal(foldFrames(records).frame, null, "a stride across her deck is not boarding");
 });
 
-test("nobody writes your movement but you: the edge is born by YOUR record", async () => {
-  const { carrierAt } = await reader();
-  const walk = await walkMod();
-  // No record at all -> no frame, no position, nothing anyone else can forge.
-  const fold = await foldFrames([], { carriers: carriersFrom(MARKS), carrierAt, walk, atMs: MID_CROSSING });
+test("no record at all: no frame, no position, nothing anyone else can forge", () => {
+  const fold = foldFrames([]);
   assert.equal(fold.frame, null);
+  assert.equal(fold.world, null);
   assert.equal(fold.provenance, "never-moved");
 });
 
 // ── 5. carriage is nothing happening ─────────────────────────────────────────
 //
 // Its tests reached a frame only through a walk onto her deck, and since POS-247
-// (2026-09-26) no walk creates one. The branches they covered stay until w41,
-// when the fold's frame machinery is removed.
+// (2026-09-26) no walk creates one. The branches they covered went with POS-261
+// (w41); a rider's carriage is occupancy's (`withVehicleRiders`).
 
 // ── 6. hearing composes through the frame ────────────────────────────────────
 
 test("a voice spoken aboard is heard at HER position now, and names the frame it rode", async () => {
   const spokeAt = atCrossing(10.52);
   const voice = { handle: "speaker", at: spokeAt, x: 800, y: 0, text: "the water is flat today" };
-  const from = await heardFromV2(voice, MARKS, {
-    ...REPO, atMs: MID_CROSSING, dbPath: DB,
-    recordsOf: () => [departure({ handle: "speaker", from: { x: 60, y: 0 }, toward: { x: 2, y: 3 }, at: 10.0 })],
-  });
+  const from = await heardFromV2(voice, MARKS, { ...REPO, atMs: MID_CROSSING });
   const boat = await vesselPositionAt(MARKS, MID_CROSSING, REPO);
   assert.ok(from, "a voice from a carrier's frame is relocated");
   assert.equal(from.frame, "the-town/the-post-office", "the relocation NAMES what it rode — a cart would work the same");
@@ -218,10 +202,7 @@ test("a voice spoken aboard is heard at HER position now, and names the frame it
 
 test("a voice spoken ashore is heard where it was spoken", async () => {
   const voice = { handle: "landlubber", at: atCrossing(10.52), x: 2500, y: 400, text: "nice day" };
-  const from = await heardFromV2(voice, MARKS, {
-    ...REPO, atMs: MID_CROSSING, dbPath: DB,
-    recordsOf: () => [departure({ handle: "landlubber", from: { x: 2500, y: 400 }, toward: { x: 2500, y: 400 }, at: 10 })],
-  });
+  const from = await heardFromV2(voice, MARKS, { ...REPO, atMs: MID_CROSSING });
   assert.equal(from, null, "null means heard where it happened — the ordinary case for everyone ashore");
 });
 

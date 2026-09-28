@@ -518,15 +518,12 @@ export function recordsAcrossEras(ledgerRecords = [], storeRecords = []) {
 /**
  * THE SAME EVENT, ARRIVING TWICE, IS ONE EVENT.
  *
- * Both callers of `recordsAcrossEras` take an injected `recordsOf` and then add
- * the store's records themselves — and since the doors began passing
- * ERA-SPANNING records in (`world.mjs § departuresAcrossEras`, the fix for reads
- * that could not see era two), the store half now arrives twice. Today that is
- * harmless by accident: `foldFrames` re-decides the frame at each record's
- * arrival, and applying the same arrival twice lands on the same frame. It is
- * harmless the way a duplicated line in a ledger is harmless right up until
- * something counts the lines — and `transitions` IS a count, feeding the
- * `happened` shelf's "frame edges born/died".
+ * The caller of `recordsAcrossEras` takes an injected `recordsOf` and then adds
+ * the store's records itself — and since the doors began passing ERA-SPANNING
+ * records in (`world.mjs § departuresAcrossEras`, the fix for reads that could
+ * not see era two), the store half can arrive twice. The fold reads only the
+ * last record, so that is harmless today, the way a duplicated line in a ledger
+ * is harmless right up until something counts the lines.
  *
  * So the duplicate dies here rather than being reasoned about at each call site.
  * The key is the whole record, not just the instant: the ceremony lines all
@@ -553,26 +550,25 @@ export function dedupeRecords(records) {
  * Where an entity stands, with carriers running and frames composing.
  *
  *   1. A CARRIER answers from its own mechanic — the timetable, never a ledger.
- *   2. EVERYONE ELSE is the frame fold over their own movement records: the
- *      frame they are in, their offset in it, and the composed world position.
+ *   2. EVERYONE ELSE is the fold over their own movement records, which since
+ *      POS-247 is always the world frame: the road's end, or the road mid-leg.
+ *      A rider's hull position is occupancy's, asked before this is.
  *
  * There is no third case and no floor beneath it, which is the shape of the
  * change: the ceremony needed a fallback because a declaration could be absent,
  * and a frame cannot be — the world is the default.
  *
  * `recordsOf(handle)` is injected. `storeRecordsOf(handle, atMs)` replaces the
- * store read the way it does in `heardFromV2` below: `residentStandpoint` over
- * the positions projection (POS-272) already holds era two and passes
- * `async () => []`. Returns null when the flag's machinery cannot
+ * store read: `residentStandpoint` over the positions projection (POS-272)
+ * already holds era two and passes `async () => []`. Returns null when the flag's machinery cannot
  * answer (no carrier in this world, no engine), which is the caller's signal to
  * use the derivation it has always used.
  */
 export async function movementStandpoint(handle, worldState, {
   repo = WORLD_CLONE, atMs = Date.now(), recordsOf = null, storeRecordsOf = null,
 } = {}) {
-  const { service, mod, carriers } = await vesselServiceFrom(worldState, { repo });
+  const { service, mod } = await vesselServiceFrom(worldState, { repo });
   if (!service || !mod) return null;
-  const carrierAt = carrierReader(worldState, { repo, service, mod });
 
   if (handle === service.vessel.handle) {
     const v = mod.vesselPositionAt(service, mod.fractionalCrossing(atMs));
@@ -594,8 +590,7 @@ export async function movementStandpoint(handle, worldState, {
   if (!records.length) return null;
 
   const walk = (await vesselServiceFrom(worldState, { repo })).walk;
-  const fold = await foldFrames(records, { carriers, carrierAt, walk, atMs });
-  if (!fold.world) return null;
+  const fold = foldFrames(records);
 
   // A leg still under way is still under way — the frame law governs WHERE you
   // are, not whether you have got there. The world's own `positionAt` owns that,
@@ -604,48 +599,41 @@ export async function movementStandpoint(handle, worldState, {
   const own = walk.positionAt(last, walk.fractionalCrossing(atMs));
   const moving = own?.arrived === false;
 
-  const inFrame = Boolean(fold.frame);
   // ── AN ARRIVED WALKER STANDS WHERE THE ROAD ENDED ─────────────────────────
   //
   // Founder-ruled 2026-09-11, beside "ring wins everywhere". This line used to
   // read `moving ? own : fold.world` — mid-leg the road owns the position,
   // arrived, the frame does — and for anyone ASHORE that handed the answer to
-  // `foldFrames`, whose world-frame branch sets `local = endWorld`, which is the
-  // record's `toward`: for a rim walk, the MARK'S ANCHOR. So two functions
-  // answered "where is wright" with two different points. `positionAt` put him
-  // at his rim arrival, (1022.3, -1669); the standpoint put him at the terrace's
-  // anchor, (967, -2450.5), 783 m away — and the enter door, which measures from
-  // the standpoint, let him through a door he was nowhere near, because
-  // `enterExitPlan` saw him already inside and never set `walk`, so the doorstep
-  // check had nothing to run on.
+  // `foldFrames`, whose answer is the record's `toward`: for a rim walk, the
+  // MARK'S ANCHOR. So two functions answered "where is wright" with two
+  // different points. `positionAt` put him at his rim arrival, (1022.3, -1669);
+  // the standpoint put him at the terrace's anchor, (967, -2450.5), 783 m away —
+  // and the enter door, which measures from the standpoint, let him through a
+  // door he was nowhere near, because `enterExitPlan` saw him already inside and
+  // never set `walk`, so the doorstep check had nothing to run on.
   //
-  // THE FRAME KEEPS OWNING WHICH THING YOU ARE ATTACHED TO. IT STOPS OWNING
-  // WHERE YOU STAND. Ashore there is no frame to compose through and the road's
-  // end is simply the better of two answers to the same question. Aboard a
-  // CARRIER the composition is the whole point and is untouched: your offset in
-  // her frame plus where she is now, because the road's end is a quay she left
-  // hours ago. That is the entire distinction — `inFrame`, nothing else.
+  // So the road's end is the answer. A walk never boards (POS-247), so there is
+  // no carrier frame to compose through here; a rider's hull position comes from
+  // occupancy, which `residentStandpoint` asks before it reaches this function.
   // `own` is null only when the clone's `positionAt` could not read the last
   // record at all, and a standpoint that threw over that would be worse than a
   // coarse one — the fold still has an answer, so it is still given.
-  const stand = (inFrame && !moving) || !own ? fold.world : own;
+  const stand = own ?? fold.world;
 
   return {
     handle,
     x: stand.x,
     y: stand.y,
     placed: true,
-    source: inFrame ? "frame" : "walk",
+    source: "walk",
     moving,
     remaining_m: moving ? own.remainingM : 0,
-    aboard: inFrame,
-    frame: fold.frame,
-    frame_offset: inFrame ? fold.local : null,
-    provenance: moving ? "walked" : fold.provenance,
-    transitions: fold.transitions,
-    narration: inFrame
-      ? `in ${fold.frame}'s frame${fold.provenance === "carried" ? ", carried" : ""}`
-      : (moving ? "the road — your walk in progress" : null),
+    aboard: false,
+    frame: null,
+    frame_offset: null,
+    provenance: "walked",
+    transitions: [],
+    narration: moving ? "the road — your walk in progress" : null,
     mark_id: last.targetMarkId ?? null,
   };
 }
@@ -657,59 +645,42 @@ export async function movementStandpoint(handle, worldState, {
  *
  * An emission's frame is its source; frames compose (voice → speaker → carrier).
  * The interim rule in `voices.mjs` reads a boolean the speaker's standpoint set
- * (`v.aboard`) and relocates that voice to the vessel; this reads the SPEAKER'S
- * FRAME at the instant they spoke and relocates through it.
+ * (`v.aboard`) and relocates that voice to the vessel; this finds the carrier
+ * the voice was spoken ON (a moving carrier's footprint at the instant it was
+ * spoken) and relocates through her frame.
  *
  * The difference shows the day a second thing moves. `v.aboard` can only ever
  * mean "the Post Office"; a frame names its carrier, so a voice spoken on a cart
  * rides the cart with no code at all. That is why this supersedes rather than
- * wraps — and note that it needed no change when attachments became frames,
- * because it was already asking the right question.
+ * wraps.
  *
  * Returns `{ x, y, frame }` — the point to hear it from — or null, meaning
  * "heard where it was spoken", the ordinary case for everyone ashore.
  *
- * `storeRecordsOf(handle, spokenMs)` replaces the per-voice store read, which
- * is the default. A caller that already holds era two — the positions
- * projection (POS-264), whose governing records ride in through `recordsOf` —
- * passes `async () => []`, so the record is not read once per voice to answer a
- * question it has already answered.
+ * NO WALK RECORD IS READ (POS-261). This used to fold the speaker's records at
+ * the instant they spoke and relocate through the frame it found, but a walk
+ * never boards (POS-247): the fold answered the world frame for every speaker,
+ * so the position floor below was the whole answer, and the record reads per
+ * voice bought nothing.
  */
-export async function heardFromV2(voice, worldState, { repo = WORLD_CLONE, atMs = Date.now(), recordsOf = null, storeRecordsOf = null } = {}) {
+export async function heardFromV2(voice, worldState, { repo = WORLD_CLONE, atMs = Date.now() } = {}) {
   const { service, mod, carriers } = await vesselServiceFrom(worldState, { repo });
   if (!service || !mod || !carriers.length) return null;
   const spokenMs = Number(voice?.at);
   if (!Number.isFinite(spokenMs)) return null;
   const carrierAt = carrierReader(worldState, { repo, service, mod });
 
-  // WHICH FRAME THE SPEAKER WAS IN WHEN THEY SPOKE — not now. A voice records
-  // where it happened; the question is what it was riding at that instant.
-  const ledgerRecords = recordsOf ? (await recordsOf(voice.handle)) ?? [] : [];
-  const storeRecords = storeRecordsOf
-    ? (await storeRecordsOf(voice.handle, spokenMs)) ?? []
-    : await storedRecordsFor(voice.handle, { atMs: spokenMs });
-  const records = recordsAcrossEras(ledgerRecords, storeRecords).filter((r) => Date.parse(r.iso) <= spokenMs);
-
   let frame = null, local = null;
-  if (records.length) {
-    const walk = (await vesselServiceFrom(worldState, { repo })).walk;
-    const fold = await foldFrames(records, { carriers, carrierAt, walk, atMs: spokenMs });
-    // ⚑ The voice-via-frame path: unreachable since POS-247 (2026-09-26): no walk creates a frame; the ledger is the only way aboard. Removed with the fold's frame machinery in w41.
-    frame = fold.frameCarrier; local = fold.local;
-  }
-
   // THE POSITION FLOOR. A voice spoken from inside a carrier's footprint while
   // she was under way was spoken ON HER, whatever the records say — the
   // coordinates in the log are the fact, and a record the office cannot read
   // must not silently move a conversation off the deck it happened on.
-  if (!frame) {
-    for (const c of carriers) {
-      const st = await carrierAt(c, spokenMs);
-      if (st && st.moving && inRect({ x: voice.x, y: voice.y }, st.footprint)) {
-        frame = c;
-        local = { x: voice.x - st.at.x, y: voice.y - st.at.y };
-        break;
-      }
+  for (const c of carriers) {
+    const st = await carrierAt(c, spokenMs);
+    if (st && st.moving && inRect({ x: voice.x, y: voice.y }, st.footprint)) {
+      frame = c;
+      local = { x: voice.x - st.at.x, y: voice.y - st.at.y };
+      break;
     }
   }
   if (!frame) return null;

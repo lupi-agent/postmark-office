@@ -22,8 +22,7 @@
 //      shouldn't put you on the boat anymore." You board a carrier only
 //      through a stop's door (#2986, Keemin-ruled 2026-09-19: aboard is
 //      occupancy, read off the enter-exit ledger). A walk that ends on her
-//      deck leaves you on the quay beside her. What a walk still does is END
-//      a frame: a step that lands outside her footprint is stepping off.
+//      deck leaves you on the quay beside her.
 //
 //   3. CARRIAGE IS NOTHING HAPPENING. She sails, your offset holds, you moved.
 //      This is what relative coordinates were for — the keystone rides the
@@ -32,19 +31,12 @@
 //   4. ENTITIES ARE POINTS. A point is in exactly one frame, so the straddler
 //      question never arises and there is no straddle logic anywhere below.
 //
-// WHERE THE FRAME IS EVALUATED, and why it is the endpoint. A movement record
-// is declared in the frame the entity is standing in, and the frame is re-decided
-// AT ARRIVAL. Since 2026-09-26 the only frame change a walk can make is the
-// ending of one: an endpoint outside her footprint steps you off, and an endpoint
-// on her deck — from ashore — boards nobody (ruling 2 above). The arrival
-// instant keeps the derivation total and replayable —
-// no continuous crossing-solve, no sampling rate to argue about, same answer in
-// every clone.
-//
-// NO NEW STORAGE. Frame edges are DERIVED by the one fold below, from the
-// movement records that already exist. They are reported as events (the
-// `happened` shelf) by filtering the fold's own transitions — never by a second
-// table that could disagree with the records it was built from.
+// WHERE A FRAME COMES FROM. Not from the walk records: since 2026-09-26 a walk
+// neither begins a frame nor, starting from the world, can end one, so the fold
+// of anyone's walks is in the world frame (POS-247; its dead frame branches
+// went with POS-261). A rider's frame is OCCUPANCY, read off the enter-exit
+// ledger (`dynamic-presence.mjs § withVehicleRiders`), and every read that
+// places people applies that one map.
 
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, statSync } from "node:fs";
@@ -235,92 +227,37 @@ export async function carrierStateAt(carrier, worldState, atMs, { repo = WORLD_C
 }
 
 /**
- * THE FOLD. One entity's frame history, from its own movement records.
+ * THE FOLD. One entity's frame and position, from its own movement records.
  *
  * This is the single derivation the design invariant demands — "one question,
  * one derivation, every surface calls it" (learned twice: Hal's
  * one-town-three-answers, and issue #7's present-vs-walkers). Every surface that
- * wants a position, a frame, or a frame event calls THIS and reads a different
- * field of the same answer.
+ * wants a position or a frame from the walk records calls THIS and reads a
+ * different field of the same answer.
  *
  * `records` are the entity's departures in order, oldest first, each in
- * walk.mjs's shape. `carrierAt(carrier, ms)` yields the carrier's state at an
- * instant — injected so this stays pure over its inputs and a test can drive a
- * carrier along any path it likes.
+ * walk.mjs's shape.
  *
- * Returns `{ frame, local, world, transitions, provenance }`:
- *   frame        the carrier id you are in, or null for the world
- *   local        your offset IN that frame
- *   world        your composed world position
- *   transitions  every frame edge born or died, with the record that did it
- *   provenance   "walked" | "carried" | "never-moved"
+ * A WALK NEVER BOARDS (ruling 2), so a fold of walk records always ends in the
+ * world frame: `frame` is null and there are no frame edges. The only way
+ * aboard is occupancy, read off the enter-exit ledger
+ * (`dynamic-presence.mjs § withVehicleRiders`). The frame branches that
+ * composed a position through a carrier, stepped a walker off her, and
+ * reported "carried" went with POS-261 (w41): nothing could reach them once
+ * no walk created a frame (POS-247).
+ *
+ * Returns `{ frame, local, world, transitions, provenance, lastRecordMs }`:
+ *   frame        null: the world frame
+ *   local        your position (in the world frame, the record's `toward`)
+ *   world        the same point
+ *   transitions  [] (no walk creates or ends a frame)
+ *   provenance   "walked" | "never-moved"
  */
-export async function foldFrames(records, { carriers, carrierAt, walk, atMs }) {
-  let frame = null;                     // null = the world frame
-  let local = null;                     // offset in `frame` (or world position when frame is null)
-  const transitions = [];
-  let lastRecordMs = null;
-  let lastArrivedMs = null;
-
-  const composed = async (fr, off, ms) => {
-    if (!fr) return off;
-    const st = await carrierAt(fr, ms);
-    return st ? { x: st.at.x + off.x, y: st.at.y + off.y } : off;
-  };
-
-  for (const rec of records) {
-    const recMs = Date.parse(rec.iso);
-    lastRecordMs = recMs;
-
-    // A record is declared in the frame the entity is standing in, and its
-    // `from`/`toward` are world coordinates as the door wrote them. Inside a
-    // carrier the walk is movement WITHIN the frame, so the endpoint is taken
-    // into the frame before it is judged.
-    const endWorld = { x: rec.toward.x, y: rec.toward.y };
-    const arriveMs = arrivalMs(rec, walk);
-    lastArrivedMs = Math.min(arriveMs, atMs);
-
-    // Only the frame you are ALREADY in is asked about. Another carrier's
-    // footprint under your endpoint is the quay beside her, never her deck —
-    // a walk never boards (ruling 2, Keemin 2026-09-26; dom-pidgey walked to
-    // her hull at the Town Centre that morning and read aboard mid-crossing
-    // while every ride door, reading the ledger, said ashore).
-    // ⚑ The frame branches below (within the frame, stepped off) are unreachable since POS-247 (2026-09-26): no walk creates a frame; the ledger is the only way aboard. Removed with the fold's frame machinery in w41.
-    const st = frame ? await carrierAt(frame, arriveMs) : null;
-    if (st && inRect(endWorld, st.footprint)) {
-      // Still aboard — a walk within the frame. The offset moves.
-      local = { x: endWorld.x - st.at.x, y: endWorld.y - st.at.y };
-    } else {
-      // Ashore, or stepped off.
-      if (frame) transitions.push({ kind: "died", carrier: frame.id, at: new Date(arriveMs).toISOString(), by: rec.iso, reason: "crossed out over her gunwale" });
-      frame = null;
-      local = endWorld;
-    }
-  }
-
-  if (!records.length) return { frame: null, local: null, world: null, transitions, provenance: "never-moved" };
-
-  const world = await composed(frame, local, atMs);
-  // WHAT MOVED YOU LAST. Carried beats walked only when the carrier has actually
-  // moved since you last arrived — otherwise a berthed boat would report every
-  // passenger as "carried" while nothing had happened at all.
-  let provenance = "walked";
-  // ⚑ unreachable since POS-247 (2026-09-26): no walk creates a frame; the ledger is the only way aboard. Removed with the fold's frame machinery in w41.
-  if (frame) {
-    const then = await carrierAt(frame, lastArrivedMs ?? atMs);
-    const now = await carrierAt(frame, atMs);
-    if (then && now && (then.at.x !== now.at.x || then.at.y !== now.at.y)) provenance = "carried";
-  }
-  return { frame: frame?.id ?? null, frameCarrier: frame, local, world, transitions, provenance, lastRecordMs };
-}
-
-/** When a declared leg arrives — the world's own arithmetic, never restated here. */
-function arrivalMs(rec, walk) {
-  const p = walk.positionAt(rec, rec.at);           // at its own departure instant
-  const legM = p?.legM ?? 0;
-  const paceKm = rec.pace > 0 ? rec.pace : (walk.WALK_KM_PER_CROSSING ?? 15);
-  const crossings = legM / (paceKm * 1000);
-  return walk.CROSSING_EPOCH_UTC + (rec.at + crossings) * walk.CROSSING_MS;
+export function foldFrames(records) {
+  if (!records.length) return { frame: null, local: null, world: null, transitions: [], provenance: "never-moved" };
+  const last = records.at(-1);
+  const local = { x: last.toward.x, y: last.toward.y };
+  return { frame: null, local, world: local, transitions: [], provenance: "walked", lastRecordMs: Date.parse(last.iso) };
 }
 
 /** A point in a rect, boundary inclusive — arrival lands you ON the edge, and on the edge is inside. */
