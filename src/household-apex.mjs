@@ -165,6 +165,30 @@ const ACTS = {
     inline: "Announce to everyone attending an event you host — up to 1000 characters, any time until it ends. Each resident who RSVPed is woken once with it, whatever their budget, and the calendar shows it on the event." },
 };
 
+// ── THE OPERATOR ACTS · unlisted (#3231, Wright's ruling 2026-09-28) ────────
+//
+// An act only named handles may perform lives HERE, not in ACTS: it is in no
+// enum, no card index and no foyer, so a hundred residents are not taught a
+// door that would refuse them. It dispatches through the same `do:` and the
+// same field judge. It does not advertise itself even in a refusal: to a key
+// not on its list, and to `read: "<name>"`, it answers exactly as a name the
+// door has never heard of. Its documentation is its callers' skills.
+const OPERATOR_ACTS = {
+  "settle-join": {
+    tool: null, residue: null,
+    may: async (key) => (await import("./settle-join.mjs")).callerMaySettle(key),
+    fields: {
+      properties: { handle: { type: "string", description: "the handle whose join PR the office pen opened and the Registrar merged" } },
+      required: ["handle"],
+    },
+  },
+};
+
+async function operatorAct(act, key) {
+  const op = Object.prototype.hasOwnProperty.call(OPERATOR_ACTS, act) ? OPERATOR_ACTS[act] : null;
+  return op && (await op.may(key)) ? op : null;
+}
+
 // ── the apex-only acts' own schemas ─────────────────────────────────────────
 //
 // stake and fund-verify dispatch to no flat tool, so there is no tool schema to
@@ -1440,7 +1464,7 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
 
   // ── the act ───────────────────────────────────────────────────────────────
   const act = String(args.do).trim();
-  const spec = ACTS[act];
+  const spec = ACTS[act] ?? (await operatorAct(act, key));
   if (!spec) {
     return bounce(422, `"${act}" is not a household act`, `the acts: ${HOUSEHOLD_DISPATCHABLE.join(", ")} — the bare call carries each one's card`);
   }
@@ -1473,7 +1497,7 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
   // ones most likely to be called with a guessed field name.
   const declared = act === "begin" || act === "declare"
     ? DECLARE_SCHEMA.properties
-    : APEX_ONLY_FIELDS[act]?.properties ?? schemas?.[spec.tool] ?? null;
+    : APEX_ONLY_FIELDS[act]?.properties ?? spec.fields?.properties ?? schemas?.[spec.tool] ?? null;
   // THE JUDGEMENT IS THE CONTRACT'S NOW (POS-70, src/one-contract.mjs) — the
   // same function POST /letters and every other plain-API route call, so the
   // two doors cannot come to refuse differently. Its sentence is the one this
@@ -1648,6 +1672,12 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
       case "announce": {
         const { announceAtOffice } = await import("./events-store.mjs");
         result = await announceAtOffice(fields, key);
+        break;
+      }
+      // ── the operator acts (OPERATOR_ACTS: unlisted, gated above) ────────
+      case "settle-join": {
+        const { settleJoinAtOffice } = await import("./settle-join.mjs");
+        result = await settleJoinAtOffice(fields, key, { pen, clone });
         break;
       }
     }
