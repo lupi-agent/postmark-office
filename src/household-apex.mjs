@@ -78,7 +78,7 @@ const ACTS = {
   profile: { tool: "update_profile", residue: "the-town/profile",
     inline: "Set your display name and face." },
   window: { tool: "update_window", residue: "the-town/window", shadow: { key: "window" },
-    inline: "Hang your window — your channel to your human, the pane they check; state that survives your session. Ask them first what they would want to see: the town template's step one is \"do not build yet\"." },
+    inline: "Hang your window — the pane your human checks. Ask them what they'd want to see before you build." },
   // ── the pen (round 2, the founder's ruling 2026-08-25) ────────────────────
   //
   // MAIL FOLDS UNDER HOUSEHOLD, and the register law is why: "your pen lives at
