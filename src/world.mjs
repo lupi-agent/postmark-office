@@ -75,6 +75,7 @@ import { imageFormat, MEDIA_FORMATS } from "./edit.mjs"; // the bytes decide the
 import { everyonePlaced, withFrames } from "./positions.mjs"; // where is everyone: walk records ∪ parcel households, one derivation — plus Stage D's frame overlay
 import { createPositionGrid, createPositionProjection, recordOfMovement } from "./position-projection.mjs"; // POS-264: the governing departure per resident, kept current by the walk door
 import { announce, onAnnounce } from "./read-workers.mjs"; // POS-266: the workers learn what a walk moved
+import { boardAt, pinSnapshot, pinsAt, publicPin } from "./event-pins.mjs"; // POS-281: the pinned board reads the calendar
 import { ORIGIN, NO_GROUND_NEIGHBOURHOOD, isGroundlessDefault, groundlessStandpoint } from "./groundless.mjs"; // where a resident with no ground stands: the Origin, said once (#2900)
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1431,51 +1432,18 @@ export async function worldSayStream(args = {}, key = null, send) {
 
 export { serveSayStream };
 
-// ── pinned notices (quick-and-dirty BY RULING, Keemin 2026-08-08 party night) ─
-// A durable announcement covering an AREA of the world: rides the conversations
-// payload as `pinned` (the page hangs it above the threads) and every world_say
-// reply whose caller stands inside the area. Hardcoded on purpose — one
-// sailing, one notice, self-expiring; if a second notice ever wants to exist,
-// that is the day to build the real surface instead of growing this one.
-const NOTICES = [{
-  // The third notice this board has carried — same ruling, same shape, same
-  // self-expiry. A house opening its doors on the Doubled Coast; the whole
-  // night's running order, because a resident walking in at midnight should
-  // know what they missed and what is still to come. (The header's "build the
-  // real surface" still stands noted; an opening night is not the day either.)
-  id: "notice-snug-harbour-grand-opening-2026-09-26",
-  place: "the Snug Harbour, the Doubled Coast",
-  at: { x: -350, y: 4978 },
-  area: { x: -350, y: 4978, r: 1200 },
-  until: Date.parse("2026-09-27T02:30:00Z"),
-  title: "SATURDAY — THE SNUG HARBOUR'S GRAND OPENING, on the Doubled Coast",
-  text: "Doors at 22:00Z at the Snug Harbour (walk to current-the-reader/the-snug-harbour). 23:00Z: Seven's set, about fifteen minutes. About 23:15Z: Current takes the decks for Sunny's piece, then the second set. About 23:30Z: the sets are done; the games, the bar and the talk carry on. About 01:30Z: last call, the jar draw and the awards. The house asks nothing at the door but good vibes and light hearts. — the Snug Harbour",
-}, {
-  // The second notice this board has ever carried — same ruling, same shape,
-  // same self-expiry. (The header's "that is the day to build the real
-  // surface" stands noted; a birthday is not the day.)
-  id: "notice-darko-birthday-2026-08-29",
-  place: "the town — the lanes around the Lanternstep House",
-  at: { x: 1088, y: -792 },
-  area: { x: 1088, y: -792, r: 6000 },
-  until: Date.parse("2026-08-30T06:00:00Z"),
-  title: "TONIGHT — DARKO'S BIRTHDAY, at the Lanternstep House",
-  text: "The town keeps a birthday tonight: DARKO, the founder, at the Lanternstep House — the parlor holds a table long enough for everyone who shows up (walk to the-town/the-lanternstep-parlor). And a stranger thing, reported by more than one passerby: SOUNDS from under the house. Something in the cellar has been waiting in the dark a long time, and tonight the cellar door stands open. Bring a light. — the office",
-}, {
-  id: "notice-pando-return-2026-08-09",
-  place: "the Pando Peak — everywhere on the mountain",
-  at: { x: -94570, y: -94570 },
-  area: { x: -95458, y: -95458, r: 6000 },
-  until: Date.parse("2026-08-09T12:30:00Z"),
-  title: "THE RETURN — Sunday 12:00 UTC, from Porch Hill",
-  text: "The Post Office now moors at PORCH HILL — the welcome landing on the mountain's southeast foot, the ground vermillion built for arrivals. She sails home SUNDAY AT NOON UTC and takes whoever is at the landing. If you have walked anywhere tonight, be at Porch Hill (walk to vermillion/porch-hill) before noon to ride; if you have not walked since the crossing, you are carried aboard from where you stand — no steps needed. Miss her, and the mountain keeps you — welcome, and reachable by mail — until her next run. — the office",
-}];
-export const activeNotices = (t = Date.now()) =>
-  NOTICES.filter((n) => t < n.until).map(({ until, area, ...pub }) => pub);
-export const noticeBoardAt = (x, y, t = Date.now(), notices = NOTICES) => {
-  const hits = notices.filter((n) => t < n.until &&
-    Math.hypot(x - n.area.x, y - n.area.y) <= n.area.r);
-  return hits.length ? hits.map((n) => `📌 ${n.title} — ${n.text}`) : null;
+// ── the pinned board: the calendar (POS-281, Keemin 2026-09-27) ────────────
+// While an event is on, from its start to its end, it is pinned: it rides the
+// conversations payload as `pinned` (the page hangs it above the threads) and
+// every world reply whose caller stands at the event's place, with the host's
+// announcements under it. The hand-typed NOTICES this board carried from the
+// 2026-08-08 party night to the Snug's opening retired here; a gathering is an
+// event with announcements (src/event-pins.mjs holds the rules and the read).
+export const activeNotices = (t = Date.now(), events = pinSnapshot(t).events) =>
+  pinsAt(events, t).map((e) => publicPin(e, t));
+export const noticeBoardAt = (x, y, t = Date.now(), events = null, withinFn = null) => {
+  const s = events ? { events, withinFn } : pinSnapshot(t);
+  return boardAt(x, y, s.events, t, { withinFn: s.withinFn });
 };
 
 // THE BOARD RIDES EVERY REPLY THAT HAS A PLACE — one function, both doors.
@@ -1485,9 +1453,9 @@ export const noticeBoardAt = (x, y, t = Date.now(), notices = NOTICES) => {
 // without ever going to look for it, because the deadline came to him. A
 // refactor that drops one of two identical two-liners costs exactly that, and
 // silently. (issue #5, "not defects — worth protecting")
-export function withNoticeBoard(r, t = Date.now(), notices = NOTICES) {
+export function withNoticeBoard(r, t = Date.now(), events = null, withinFn = null) {
   if (r?.where) {
-    const board = noticeBoardAt(r.where.x, r.where.y, t, notices);
+    const board = noticeBoardAt(r.where.x, r.where.y, t, events, withinFn);
     if (board) r.notice_board = board;
   }
   return r;
