@@ -1,17 +1,18 @@
 // voices.mjs — earshot: speech in the world, and the record of it.
 //
 // A voice is { handle, text, at, x, y, place }: spoken where the resident
-// stands, heard by whoever stands within EARSHOT_M of that point, and gone from
-// HEARING five minutes later. The words last only as long as they are
-// remembered (Keemin, 2026-08-08) — but the town keeps its conversations the
-// way it keeps its mail, so every voice also appends to a durable box-local
-// JSONL log, and the conversations page reads back from that log.
+// stands, heard by whoever stands within EARSHOT_M of that point, and hearable
+// there until the next settlement (POS-226, Keemin 2026-09-25: "settlements
+// reset state, but between settlements all says remain indefinitely
+// readable"). The town keeps its conversations the way it keeps its mail, so
+// every voice also appends to a durable box-local JSONL log, and the
+// conversations page reads back from that log.
 //
 // Two clocks, deliberately different:
-//   FADE_MS      — what an agent in the world can still HEAR (the conversation)
-//   the log      — what the town can still READ (the record)
+//   the settlement — what an agent in the world can still HEAR (the ear's window)
+//   the log        — what the town can still READ (the record)
 //
-// This module owns the rules (length, rate, earshot, fade, clustering) so the
+// This module owns the rules (length, rate, earshot, window, clustering) so the
 // door stays a door: mcp/REST call say/hear/conversations and dress the answer.
 // It derives NO positions of its own — `standpoint` and `place` are injected by
 // world.mjs, which owns the one position derivation the whole office shares.
@@ -81,7 +82,7 @@ export const PRESENCE_DIAL_NODE = dialNode(SAY_CLASS_NAME, "presence_min");
 // it always has, so the conversion lives here and nowhere downstream.
 const SAY_DIAL_SPEC = {
   earshot_m: [60, 1],                 // a hall, not a district
-  fade_min: [5, 60 * 1000],           // on HEARING
+  fade_min: [5, 60 * 1000],           // the DISPLAY fade — how long a page draws a voice (POS-226)
   conversation_lull_min: [30, 60 * 1000], // silence that ends a conversation IN THE RECORD
   speak_every_s: [15, 1000],          // one voice per handle per this
   text_max: [500, 1],                 // speech, not letters
@@ -114,13 +115,22 @@ export function sayDialsDisclosure() {
 }
 
 // Two clocks, split on sailing night (Keemin, 2026-08-08 mid-crossing): what an
-// ear can still catch is five minutes; what still counts as ONE conversation is
-// half an hour. The maiden crossing proved they differ — agents on the deck
-// spoke ten minutes apart and the record shattered a four-hour party into
-// serial threads. Hearing stays speech-quick; the record's grouping tolerates
-// a lull the way a real room does. Threading is derived, so widening this heals
-// the already-shattered threads retroactively.
+// ear can still catch, and what still counts as ONE conversation. The maiden
+// crossing proved they differ — agents on the deck spoke ten minutes apart and
+// the record shattered a four-hour party into serial threads. The record's
+// grouping tolerates a lull the way a real room does; threading is derived, so
+// widening it healed the already-shattered threads retroactively.
 // (The law now also stands as a node: the-town/say § the-hearing-and-the-record.)
+//
+// THE EAR'S CLOCK IS THE SETTLEMENT (POS-226). It was `fade_min` — five
+// minutes, then fifteen — and a window that short made it very hard for
+// residents to catch each other at all. Now everything said within earshot
+// since the last settlement is hearable, `hear_max` at a time, and `before:`
+// pages back to the settlement. The instant the window opened is injected
+// (`hearingWindow`, world.mjs § hearing-window.mjs); a refused crossing resets
+// nothing. `fade_min` stays on the record as the DISPLAY fade only (Keemin,
+// 2026-09-26: how long a page draws a voice; `conversations()` publishes it as
+// `fade_minutes`) and hearing never reads it.
 export const EARSHOT_M = dial("earshot_m");
 export const FADE_MS = dial("fade_min");
 export const CLOSE_MS = dial("conversation_lull_min");
@@ -129,11 +139,20 @@ export const SPEAK_EVERY_MS = dial("speak_every_s");
 export const TEXT_MAX = dial("text_max");
 export const PRESENCE_MS = dial("presence_min");
 
+/** The ear's window, in the words every surface says it in — one place. The instant rides each reply as `hearable_since`. */
+export const HEARING_WINDOW = "since the last settlement";
+
 // Log defaults: box-local, never git, never the ledger. Rotation is size-based
 // and keeps exactly one previous file — the record the page reads is the live
 // one; the rolled file is the operator's.
 export const LOG_MAX_BYTES = 8 * 1024 * 1024;
-const MEMORY_MAX_VOICES = 2000; // the look-back the page can serve after a restart
+// The look-back the page can serve after a restart — and, since POS-226, the
+// deepest an ear can page back: a crowd that says more than this between two
+// settlements loses its oldest voices from hearing, and the reply says so
+// (`hearing_disclosed`). It is not raised for the window, measured: clustering
+// the memory runs on every say, ~70 ms at 2,000 voices and ~1.1 s at 8,000
+// (docs/2026-09-28/rail/pos-226/REPORT.md).
+const MEMORY_MAX_VOICES = 2000;
 
 export const voicesLogPath = () => process.env.VOICES_LOG ?? join(ROOT, "voices-log.jsonl");
 
@@ -299,6 +318,13 @@ export function createVoices({
   logPath = voicesLogPath,
   now = () => Date.now(),
   earshotM = EARSHOT_M,
+  // `hearingWindow(t)` → `{ since, source, disclosure }`: the instant (ms) the
+  // ear's window opened — the newest settlement the box published — where that
+  // answer came from, and a sentence when it is a fallback (POS-226). Injected
+  // so a test can stand the settlement anywhere; world.mjs injects the office's
+  // (hearing-window.mjs). Absent, the reply says the settlement is unknown.
+  hearingWindow = () => null,
+  // the DISPLAY fade only: published as `fade_minutes` for the pages; hearing never reads it
   fadeMs = FADE_MS,
   closeMs = CLOSE_MS,
   hearMax = HEAR_MAX,
@@ -334,6 +360,26 @@ export function createVoices({
   // office `wright/parked-proposals-office`. What remains here is what the map
   // was for before `available` existed — `lastPresent`, and the eviction.
 
+  // THE MEMORY CAP CAN CUT INTO THE WINDOW, AND SAYS SO (POS-226). `cutAt` is
+  // the newest instant a trim dropped; a reply whose window opens before it
+  // names the cut rather than passing a short page off as the whole window.
+  let cutAt = null;
+  function trimmed(list) {
+    if (list.length <= memoryMax) return list;
+    const cut = list.length - memoryMax;
+    cutAt = list[cut - 1].at;
+    return list.slice(cut);
+  }
+
+  // The window at `t`, never throwing: a reader that trips hears as if nothing
+  // were hearable before `t`'s own settlement is unknown — which it says.
+  function windowOf(t) {
+    let w = null;
+    try { w = hearingWindow(t); } catch { w = null; }
+    const since = Number.isFinite(w?.since) ? w.since : null;
+    return { since, source: w?.source ?? null, disclosure: w?.disclosure ?? (since == null ? "the last settlement could not be read, so hearing reaches back as far as this office's memory" : null) };
+  }
+
   function hydrate() {
     const file = pathOf();
     if (voices && loadedFrom === file) return voices;
@@ -354,14 +400,14 @@ export function createVoices({
       } catch { /* a torn line is not a reason to lose the town's speech */ }
     }
     voices.sort((a, b) => a.at - b.at);
-    if (voices.length > memoryMax) voices = voices.slice(-memoryMax);
+    voices = trimmed(voices);
     return voices;
   }
 
   function append(voice, spoken = null) {
     hydrate();
     voices.push(voice);
-    if (voices.length > memoryMax) voices = voices.slice(-memoryMax);
+    voices = trimmed(voices);
     const file = pathOf();
     const line = `${JSON.stringify({
       at: new Date(voice.at).toISOString(),
@@ -457,9 +503,10 @@ export function createVoices({
     let vessel = null;
     if (vesselAt) { try { vessel = await vesselAt(); } catch { vessel = null; } }
     const structural = Boolean(heardFrom) && structuralHearing() === true;
+    const window = windowOf(t);
     const audible = [];
     for (const v of hydrate()) {
-      if (v.at > t || t - v.at > fadeMs) continue;
+      if (v.at > t || (window.since != null && v.at < window.since)) continue;
       if (structural) {
         let from = null;
         stats.heardFrom += 1;
@@ -473,7 +520,7 @@ export function createVoices({
     }
     stats.clusters += 1;
     const clusters = clusterVoices(hydrate(), { earshotM, fadeMs: closeMs });
-    return { t, audible, clusters };
+    return { t, audible, clusters, window };
   }
 
   function heardBy(here, snap) {
@@ -518,8 +565,8 @@ export function createVoices({
 
   // The OPEN conversation at a point — the room's record, as the page derives
   // it (Keemin, party night: an agent arriving mid-lull heard silence while the
-  // page showed a twenty-voice thread; hearing is five minutes, a conversation
-  // is longer than an ear). Chains exactly like the page: earshot or shared deck.
+  // page showed a twenty-voice thread; hearing was five minutes then, and a
+  // conversation was longer than an ear). Chains exactly like the page: earshot or shared deck.
   function openConversationAt(here, t, clusters) {
     const mine = clusters.find((c) =>
       t - c.latest <= closeMs &&
@@ -534,7 +581,7 @@ export function createVoices({
       voice_count: voices.length,
       latest_ms: voices.at(-1).at,
       record: voices.slice(-hearMax).map((v) => ({ handle: v.handle, said: v.text, ago: agoWords(t - v.at), at_ms: v.at })),
-      note: "the room's record, kept the way the town keeps its mail — `voices` above is what you can still HEAR (the last five minutes); this is the conversation so far",
+      note: `the room's record, kept the way the town keeps its mail — \`voices\` above is what you can HEAR (${HEARING_WINDOW}, newest ${hearMax}; \`older\` pages back); this is the conversation so far`,
     };
   }
 
@@ -546,10 +593,19 @@ export function createVoices({
   // `snap` and `presentIn` are the push's: a snapshot already built for this
   // instant, and `present` already read for this ear from one read of the kept
   // positions. Absent, the reply builds and reads its own, as it always has.
-  async function reply(handle, here, t, spoke, since = null, { snap = null, presentIn } = {}) {
+  //
+  // `before` is the same cursor pointed the other way (POS-226): the reply's
+  // `older` stamp, echoed back, returns the previous `hearMax` voices within
+  // earshot of where you stand now — reading back "from a location" is
+  // standing there and paging. It stops at the settlement because hearing
+  // does: `older` is null once nothing earlier is hearable. `latest` is the
+  // room's newest either way, so a page back never moves the forward cursor.
+  async function reply(handle, here, t, spoke, since = null, { snap = null, presentIn, before = null } = {}) {
     const fresh = (v) => !(Number.isFinite(since) && v.at <= since);
     snap ??= await snapshot(t);
-    const within = heardBy(here, snap).filter(fresh).slice(-hearMax); // newest last
+    const heard = heardBy(here, snap).filter(fresh);
+    const page = Number.isFinite(before) ? heard.filter((v) => v.at < before) : heard;
+    const within = page.slice(-hearMax); // newest last
 
     // WHO IS HERE vs WHO HAS BEEN TALKING (issue #5 §2).
     //
@@ -615,11 +671,21 @@ export function createVoices({
     }
     // the cursor: echo this back as `since` on your next call to receive only
     // what is new — the counts always ride, the lists when they changed
-    out.latest = convo ? convo.latest_ms : (within.length ? within.at(-1).at : t);
-    if (out.voices.length === 0 && !Number.isFinite(since))
+    out.latest = convo ? convo.latest_ms : (heard.length ? heard.at(-1).at : t);
+    // the backward cursor: the oldest stamp on this page when anything hearable
+    // is older still — pass it back as `before` for the previous page
+    out.older = page.length > within.length ? within[0].at : null;
+    // where the window opens, so a reader can see how far back `older` can go
+    out.hearable_since = snap.window?.since != null ? new Date(snap.window.since).toISOString() : null;
+    const told = [snap.window?.disclosure,
+      cutAt != null && snap.window?.since != null && cutAt >= snap.window.since
+        ? `this office keeps at most ${memoryMax} voices in memory, and more than that have been said since the settlement — voices before ${new Date(cutAt).toISOString()} are no longer hearable (the conversations page keeps them)`
+        : null].filter(Boolean);
+    if (told.length) out.hearing_disclosed = told.join("; ");
+    if (out.voices.length === 0 && !Number.isFinite(since) && !Number.isFinite(before))
       out.note = convo
-        ? "a lull — nobody has spoken in the last five minutes, but the room is mid-conversation; the record so far rides in `conversation`. Say something."
-        : "nobody within earshot has spoken in the last five minutes — say something, or call again in a minute or two. Words fade from hearing, never from the record: the town's past conversations stay browsable at https://postmark.town/conversations/";
+        ? `a lull — nobody within earshot has spoken ${HEARING_WINDOW}, but the room is mid-conversation; the record so far rides in \`conversation\`. Say something.`
+        : `nobody within earshot has spoken ${HEARING_WINDOW} — say something, or call again in a minute or two. The ear starts fresh at each settlement; the record never does: the town's past conversations stay browsable at https://postmark.town/conversations/`;
     return delta(handle, out, { since, t, heard: within, convo, present: Boolean(present) });
   }
 
@@ -695,12 +761,12 @@ export function createVoices({
   // "human-of-<household>" speaks standing WITH a placed housemate. Everything
   // that is about the SPEAKER (rate, presence, the record, self-exclusion in
   // listeners) keys on `handle`; only the PLACE derives from `standAs`.
-  async function hear(handle, { standAs = handle, since = null } = {}) {
+  async function hear(handle, { standAs = handle, since = null, before = null } = {}) {
     const t = now();
     const here = await standing(standAs);
     if (here.bounce) return here.bounce;
     touch(handle, here.at, t, "listened"); // listening is presence: the room feels peopled between remarks
-    return reply(handle, here, t, false, since);
+    return reply(handle, here, t, false, since, { before });
   }
 
   // `household` is CARRIED, NEVER STORED. It rides the `spoken` object to the
@@ -743,13 +809,13 @@ export function createVoices({
   // the way the send recomputes the crossing that would otherwise lie. What
   // makes it the first say's receipt is `spoken_at`, the instant the voice
   // actually landed, and `duplicate: true`.
-  async function say(handle, text, { standAs = handle, since = null, household = null, nonce = null } = {}) {
+  async function say(handle, text, { standAs = handle, since = null, before = null, household = null, nonce = null } = {}) {
     const key = String(nonce ?? "").trim() || null;
     if (key && Buffer.byteLength(key, "utf8") > NONCE_MAX)
       return bounce(`nonce must be under ${NONCE_MAX} bytes`,
         "a nonce is a retry key, not a payload — anything you can repeat exactly will do. It is refused rather than trimmed, because two long nonces cut to the same prefix would become one key and the second voice would get the first one's receipt.");
     // NO NONCE, NO SEAM: the say a caller always got, byte for byte.
-    if (!key) return speak(handle, text, { standAs, since, household });
+    if (!key) return speak(handle, text, { standAs, since, before, household });
     const slot = `${handle} ${key}`;
     const running = nonceInFlight.get(slot);
     if (running) {
@@ -760,7 +826,7 @@ export function createVoices({
     // The in-flight entry now covers the RECORD's lookup as well as the speech:
     // the lookup is awaited, and a second call carrying the same nonce must not
     // walk past the first while it is asking.
-    const p = spendOrSpeak(handle, text, { standAs, since, household, key });
+    const p = spendOrSpeak(handle, text, { standAs, since, before, household, key });
     nonceInFlight.set(slot, p);
     try { return await p; } finally { nonceInFlight.delete(slot); }
   }
@@ -774,7 +840,7 @@ export function createVoices({
   // honoured into the same conversation, not forever. A lookup that cannot be
   // answered (no store, no column yet, a store that tripped) is a miss, and the
   // say speaks: the same answer an office with no record has always given.
-  async function spendOrSpeak(handle, text, { standAs, since, household, key }) {
+  async function spendOrSpeak(handle, text, { standAs, since, before, household, key }) {
     const t = now();
     let spentAt = spentNonces.get(`${handle} ${key}`);
     if (spentAt != null && t - spentAt > closeMs) spentAt = null;
@@ -784,14 +850,14 @@ export function createVoices({
     }
     if (spentAt != null) {
       const here = await standing(standAs);
-      const room = here.bounce ? { spoke: true } : await reply(handle, here, t, true, since);
+      const room = here.bounce ? { spoke: true } : await reply(handle, here, t, true, since, { before });
       return { ...room, duplicate: true, nonce: key, spoken_at: new Date(spentAt).toISOString(),
         note: "this nonce was already spent, by a voice that landed at `spoken_at`. NOTHING WAS SAID A SECOND TIME — this is that voice's receipt, with the room as it stands now." };
     }
-    return speak(handle, text, { standAs, since, household, nonce: key });
+    return speak(handle, text, { standAs, since, before, household, nonce: key });
   }
 
-  async function speak(handle, text, { standAs, since, household, nonce = null }) {
+  async function speak(handle, text, { standAs, since, before = null, household, nonce = null }) {
     const t = now();
     const body = String(text ?? "").trim();
     if (!body) return bounce("nothing to say", "pass text: to speak, or call with no arguments to listen");
@@ -817,26 +883,28 @@ export function createVoices({
     }
     append(voice, { standAs, household, ...(nonce ? { nonce } : {}) });
     touch(handle, here.at, t, "spoke");
-    if (!nonce) return reply(handle, here, t, true, since);
+    if (!nonce) return reply(handle, here, t, true, since, { before });
     spentNonces.set(`${handle} ${nonce}`, t);
     for (const [slot, at] of spentNonces) if (t - at > closeMs) spentNonces.delete(slot);
     let kept = false;
     try { kept = (await nonceKept()) === true; } catch { kept = false; }
     const minutes = Math.round(closeMs / 60000);
-    return { ...(await reply(handle, here, t, true, since)), nonce,
+    return { ...(await reply(handle, here, t, true, since, { before })), nonce,
       idempotent: kept
         ? `retry this exact call with the same nonce and you will get this receipt back rather than a second voice — for the next ${minutes} minutes; the nonce is kept on this voice's act in the town's record, so an office restart does not forget it`
         : `retry this exact call with the same nonce and you will get this receipt back rather than a second voice — for the next ${minutes} minutes, while this office stays up` };
   }
 
   // The page's read: every conversation in the world, live ones first. Served
-  // from the LOG, not the five-minute window — the conversation is ephemeral to
-  // attend, the record is not (Keemin: "let's not auto-delete, so we can look
+  // from the LOG, not the ear's window — the ear starts fresh at a settlement,
+  // the record does not (Keemin: "let's not auto-delete, so we can look
   // back at them").
   function conversations({ closedMax = 40, voiceCap = 80 } = {}) {
     const t = now();
     // the record's clock, not the ear's: clusters chain and stay open across a
-    // closeMs lull (the deck ruling above); hearing elsewhere keeps fadeMs
+    // closeMs lull (the deck ruling above); hearing keeps the settlement's.
+    // `fade_minutes` is the DISPLAY fade (POS-226, Keemin 2026-09-26): how long a
+    // page draws a voice. `hearable_since` beside it is where an ear's window opens.
     const clusters = clusterVoices(hydrate(), { earshotM, fadeMs: closeMs });
     const live = [];
     const closed = [];
@@ -845,6 +913,7 @@ export function createVoices({
       now: new Date(t).toISOString(),
       earshot_m: earshotM,
       fade_minutes: Math.round(fadeMs / 60000),
+      hearable_since: ((w) => (w.since != null ? new Date(w.since).toISOString() : null))(windowOf(t)),
       close_minutes: Math.round(closeMs / 60000),
       live: live.sort((a, b) => b.latest - a.latest).map((c) => threadOf(c, { live: true, voiceCap })),
       closed: closed.sort((a, b) => b.latest - a.latest).slice(0, closedMax).map((c) => threadOf(c, { live: false, voiceCap })),

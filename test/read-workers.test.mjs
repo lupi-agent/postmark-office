@@ -34,6 +34,14 @@
 // For the hotfix: drop `&& !listensToVoices(path, query)` from `workerTakes`, or
 // the `url.searchParams` server.mjs passes it, and § 5's listen names worker-0
 // and misses the say.
+//
+//   § 6  READING BACK STAYS HOME TOO (POS-226): a `before:` page of the REST
+//        listen is answered by the main thread, and at the door a voice from
+//        before the world clone's newest settlement is never heard while the
+//        voices since it page back twenty at a time. FLIPS: drop
+//        `&& !listensToVoices(path, query)` from `workerTakes` and the page names
+//        worker-0; drop the window filter in voices.mjs § snapshot and the older
+//        voice is heard.
 
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -45,6 +53,8 @@ import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
 import { mcpWorkerTakes, startReadPool, workerTakes } from "../src/read-workers.mjs";
 import { WORLD_CLONE } from "../src/world-store.mjs";
+import { publishedSettlementAt } from "../src/hearing-window.mjs";
+import { writeFileSync } from "node:fs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const haveClone = existsSync(join(WORLD_CLONE, "WORLD", "walk-ledger.md"));
@@ -330,6 +340,72 @@ test("§ 5 the REST listen is answered by the main thread and hears the say befo
     const look = await get("");
     await look.text();
     assert.equal(look.headers.get("x-pm-reader"), "worker-0", "the bare apex read stopped going to the worker");
+  } finally {
+    proc.kill();
+    await gone;
+  }
+});
+
+test("§ 6 a `before:` page is answered by the main thread; at the door a voice from before the settlement is never heard (POS-226)", { skip: !haveClone && `needs the world clone at ${WORLD_CLONE}` }, async () => {
+  const settledAt = await publishedSettlementAt(WORLD_CLONE);
+  assert.ok(Number.isFinite(settledAt), "the pinned world clone carries a published settlement");
+  const worldDb = join(tmp, "world-6.db");
+  execFileSync(process.execPath, [join(ROOT, "src", "world-hydrate.mjs"), "--world", WORLD_CLONE, "--db", worldDb, "--no-gexf", "--no-lints"], { stdio: "ignore" });
+  const voicesLog = join(tmp, "voices-6.jsonl");
+  const port = 49600 + ((process.pid * 7) % 300);
+  const proc = spawn(process.execPath, [
+    join(ROOT, "src", "server.mjs"), "--port", String(port),
+    "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
+  ], {
+    env: { ...process.env, OFFICE_READ_WORKERS: "1", WORLD_APEX: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
+      WORLD_STORE_DB: worldDb, VOICES_LOG: voicesLog,
+      WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const gone = new Promise((ok) => proc.on("exit", ok));
+  try {
+    let out = "";
+    await new Promise((ok, no) => {
+      const t = setTimeout(() => no(new Error(`the office never listened: ${out}`)), 30_000);
+      proc.stdout.on("data", (d) => { out += String(d); if (out.includes("listening")) { clearTimeout(t); ok(); } });
+    });
+    const base = `http://127.0.0.1:${port}`;
+    let ready = 0;
+    for (let i = 0; i < 300 && ready !== 1; i++) {
+      ready = (await (await fetch(`${base}/release`)).json()).read_workers?.ready ?? 0;
+      if (ready !== 1) await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(ready, 1, "the office's worker never came up");
+    const auth = { authorization: `Bearer ${KEY}` };
+    // Where wright stands, from the spectator-free orient — before any voice is
+    // asked for, so the office has not yet read the log this test is about to write.
+    const orient = await fetch(`${base}/mcp`, { method: "POST",
+      headers: { ...auth, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "world_orient", arguments: {} } }) });
+    const ob = await orient.text();
+    const sp = JSON.parse(JSON.parse(ob.slice(ob.indexOf("{"))).result.content[0].text).standpoint;
+    assert.ok(Number.isFinite(sp?.x) && Number.isFinite(sp?.y), `no standpoint in orient: ${ob.slice(0, 300)}`);
+    const line = (at, text) => JSON.stringify({ at: new Date(at).toISOString(), handle: "rei", text, x: sp.x, y: sp.y, place: null, aboard: false });
+    const lines = [line(settledAt - 60_000, "said before the settlement")];
+    for (let i = 1; i <= 25; i++) lines.push(line(settledAt + i * 16_000, `since ${String(i).padStart(2, "0")}`));
+    writeFileSync(voicesLog, `${lines.join("\n")}\n`);
+
+    const get = (qs) => fetch(`${base}/world/apex${qs}`, { headers: auth });
+    const body = async (res) => { const t = await res.text(); assert.equal(res.status, 200, t.slice(0, 300)); return JSON.parse(t); };
+    const first = await get("?read=say");
+    assert.equal(first.headers.get("x-pm-reader"), null, "the listen was handed to a worker");
+    const room = await body(first);
+    const heard = room.heard ?? room;
+    assert.equal(heard.voices.length, 20, "the default reply is the newest twenty");
+    assert.equal(heard.hearable_since, new Date(settledAt).toISOString(), "the window opens at the clone's newest publish");
+    assert.ok(Number.isFinite(heard.older), "the cursor back rides");
+
+    const back = await get(`?read=say&args=${encodeURIComponent(JSON.stringify({ before: heard.older }))}`);
+    assert.equal(back.headers.get("x-pm-reader"), null, "a `before:` page was handed to a worker");
+    const page = (await body(back)).heard;
+    assert.deepEqual(page.voices.map((v) => v.said), ["since 01", "since 02", "since 03", "since 04", "since 05"],
+      "the page back stops at the settlement: the older voice is not heard");
+    assert.equal(page.older, null);
   } finally {
     proc.kill();
     await gone;

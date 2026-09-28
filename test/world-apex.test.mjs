@@ -1316,8 +1316,8 @@ test("PARITY · an unknown envelope field on a shadow read bounces BY NAME, with
   assert.equal(r.defect, 'unknown argument "bogus" for world { read: "say" }');
   // `nonce` (POS-265) is declared the way `text` is: named here, then answered
   // by the shadow's own teaching refusal rather than the generic one.
-  assert.equal(r.hint, "this read takes: text, since, nonce, wait", "and the hint names what this shadow does answer to");
-  assert.deepEqual(r.accepted, ["text", "since", "nonce", "wait"]);
+  assert.equal(r.hint, "this read takes: text, since, before, nonce, wait", "and the hint names what this shadow does answer to");
+  assert.deepEqual(r.accepted, ["text", "since", "before", "nonce", "wait"]);
 });
 
 // ── #2559 · THE SHADOW CARRIES THE CURSOR IT WAS HANDED ─────────────────────
