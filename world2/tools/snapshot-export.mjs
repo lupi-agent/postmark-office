@@ -638,14 +638,14 @@ function excerpt(a, b, width = 120) {
 export function checkArchives(target, archives, { refreeze = null } = {}) {
   const findings = [];
   const plan = [];
-  const wanted = refreeze === null ? null : Number(refreeze);
+  const wanted = refreeze === null ? null : new Set((Array.isArray(refreeze) ? refreeze : [refreeze]).map(Number));
   for (const a of archives) {
     const full = path.join(target, a.path);
     if (!existsSync(full)) { plan.push({ ...a, action: "write" }); continue; }
     const have = readFileSync(full, "utf8");
     if (have === a.bytes) { plan.push({ ...a, action: "unchanged" }); continue; }
 
-    if (wanted !== null && Number(a.window) === wanted) {
+    if (wanted !== null && wanted.has(Number(a.window))) {
       plan.push({ ...a, action: "refreeze", was: have, oldSha: sha256(have), newSha: sha256(a.bytes) });
       continue;
     }
@@ -691,7 +691,29 @@ export function refreezeCommitMessage(a, reason, d) {
 }
 
 /**
- * `--refreeze <n> --reason "<text>"`, read off argv. Pure, so the refusal is
+ * The door's receipt for SEVERAL windows in one run (2026-09-28, the w40 ship's
+ * history change: migration 025 dropped journal_seq and a backfill added acts to
+ * closed windows, so 26 archives differed at once and the one-window door could
+ * never start — any other differing archive refuses the whole run). Same rule as
+ * the single receipt: the operator's reason on the first line, and every
+ * window's old and new sha256 in the body, one line each, so the commit is still
+ * the whole receipt.
+ */
+export function refreezeManyCommitMessage(list, reason, d) {
+  const ws = list.map((a) => a.window);
+  return `notary: refreeze ${list.length} archives (${ws.join(", ")}) — ${reason}\n\n` +
+    `An archive is frozen on write (gold § 2). This run replaced ${list.length} anyway, through the operator door\n` +
+    `\`--refreeze ${ws.join(",")} --reason "<text>"\`. Each line below is one window's whole receipt: anyone holding\n` +
+    `the previous commit can read exactly what stood there and exactly what replaced it.\n\n` +
+    list.map((a) => `archives/acts/${a.window}.jsonl · old sha256 ${a.oldSha} · ${lineCount(a.was)} line(s) → new sha256 ${a.newSha} · ${a.lines} line(s)`).join("\n") +
+    `\n\nreason: ${reason}\n\n` +
+    `No window outside this list was touched. Every other differing archive still refuses.\n` +
+    `window cursor ${d.windowCursor} · acts cursor ${d.cursors.acts_cursor}\n\nWritten by ${TOOL}.`;
+}
+
+/**
+ * `--refreeze <n> --reason "<text>"`, read off argv. `<n>` may also be a LIST —
+ * `154,155` or a range `154-172`, mixed — which returns an array of windows. Pure, so the refusal is
  * testable without a database — and validated BEFORE the pen connects, so
  * "--refreeze without --reason" exits 2 for the reason it names and not because
  * some environment variable happened to be missing first.
@@ -700,15 +722,24 @@ export function parseRefreeze(argv) {
   const i = argv.indexOf("--refreeze");
   if (i === -1) return { refreeze: null, reason: null };
   const raw = argv[i + 1];
-  const n = Number(raw);
-  if (raw === undefined || String(raw).startsWith("--") || !Number.isInteger(n) || n < 0) {
-    throw new Cannot(`--refreeze wants a window NUMBER: got ${JSON.stringify(raw ?? null)}. Usage: --refreeze <n> --reason "<text>".`);
-  }
+  const bad = () => new Cannot(`--refreeze wants a window NUMBER, or a list of them (154,155 or 154-172): got ${JSON.stringify(raw ?? null)}. Usage: --refreeze <n> --reason "<text>".`);
+  if (raw === undefined || String(raw).startsWith("--")) throw bad();
+  let n;
+  if (/^\d+$/.test(String(raw))) n = Number(raw);
+  else if (/^\d+(-\d+)?(,\d+(-\d+)?)+$|^\d+-\d+$/.test(String(raw))) {
+    const set = new Set();
+    for (const part of String(raw).split(",")) {
+      const [lo, hi] = part.split("-").map(Number);
+      if (hi !== undefined && hi < lo) throw bad();
+      for (let w = lo; w <= (hi ?? lo); w++) set.add(w);
+    }
+    n = [...set].sort((a, b) => a - b);
+  } else throw bad();
   const j = argv.indexOf("--reason");
   const reason = j === -1 ? "" : String(argv[j + 1] ?? "").trim();
   if (!reason || reason.startsWith("--")) {
     throw new Cannot(
-      `--refreeze ${n} needs --reason "<text>". Replacing a frozen archive is the one write this pen makes ` +
+      `--refreeze ${Array.isArray(n) ? n.join(",") : n} needs --reason "<text>". Replacing a frozen archive is the one write this pen makes ` +
       `that a human must own, and the reason goes on the commit's first line beside both sha256s. Refusing without one.`);
   }
   return { refreeze: n, reason };
@@ -756,6 +787,14 @@ async function runExport(client, { target, dryRun, allowDetached, now = Date.now
   // window, that window must actually be a differing archive — otherwise the
   // run would report a refreeze it never made.
   const refrozen = plan.filter((a) => a.action === "refreeze");
+  // A LIST (2026-09-28): every window it names must be replaced, or the run
+  // refuses — a door that quietly did half of what it was told is not a door.
+  if (Array.isArray(refreeze) && refrozen.length !== refreeze.length) {
+    const done = new Set(refrozen.map((a) => Number(a.window)));
+    const idle = refreeze.filter((w) => !done.has(Number(w)));
+    throw new Cannot(`--refreeze names ${idle.length} window(s) with nothing to replace: ${idle.join(", ")}. ` +
+      `Each named window must be a closed, differing archive; name only those, or refreeze them one by one to read why.`);
+  }
   if (refreeze !== null && !refrozen.length) {
     const held = d.held.find((h) => h.id === Number(refreeze));
     throw new Cannot(
@@ -825,7 +864,9 @@ async function runExport(client, { target, dryRun, allowDetached, now = Date.now
   // files the certification does not describe.
   git(target, ["add", "--", CERT_FILE, "archives", "WORLD2/marks"]);
   if (git(target, ["diff", "--cached", "--name-only"]).length) {
-    git(target, ["commit", "-m", refrozen.length
+    git(target, ["commit", "-m", refrozen.length > 1
+      ? refreezeManyCommitMessage(refrozen, reason, d)
+      : refrozen.length
       ? refreezeCommitMessage(refrozen[0], reason, d)
       : tagged
       ? `notary: restore the state ${tag} certifies\n\nThe tag stood; the checkout no longer held what it certifies. ` +
