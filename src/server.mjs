@@ -64,7 +64,7 @@ import { loopLag } from "./loop-lag.mjs"; // POS-267: how long the one thread ke
 import { readReleaseStamp } from "./release.mjs"; // POS-60: the deploy receipt the auto-deploy probes
 import { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs"; // the town clock, served at the door
 import { roleFrom, workerSafe, writerAddressFrom, readRoleBounce, penTokenFor, roleDisclosure } from "./role.mjs"; // DEC-4/G3: read-only workers behind nginx
-import { IN_READ_WORKER, announce, onAnnounce, readWorkerCount, serveReadsInWorker, startReadPool, workerTakes } from "./read-workers.mjs"; // POS-266: reads on the other cores
+import { IN_READ_WORKER, announce, mcpWorkerTakes, onAnnounce, readWorkerCount, serveReadsInWorker, startReadPool, workerTakes } from "./read-workers.mjs"; // POS-266: reads on the other cores
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -747,7 +747,12 @@ const handle = (req, res) => {
   // the town — the same request is answered at the writer, and the bounce says
   // where. A worker that refused without an address would turn a pool into a
   // guessing game.
-  if (READ_ONLY_ROLE && !workerSafe(req.method, path))
+  //
+  // The one call let past it (POS-284): an agent's MCP read the main thread
+  // has already admitted and handed to this worker (`handedMcpRead`, set only
+  // by read-workers.mjs § serveReadsInWorker). The MCP door below still
+  // refuses anything in it that is not one of those reads (`onlyReads`).
+  if (READ_ONLY_ROLE && !workerSafe(req.method, path) && !(IN_READ_WORKER && req.handedMcpRead && path === "/mcp"))
     return bounce(res, ROLE_BOUNCE.code, ROLE_BOUNCE.defect, ROLE_BOUNCE.hint);
 
   // GET / — the capability manifest llms.txt has advertised at /api/ (it
@@ -1114,7 +1119,7 @@ const handle = (req, res) => {
   // the pool takes (read-workers.mjs § workerTakes) is answered by a worker and
   // written back on this socket; when no worker is ready this thread answers it,
   // exactly as before.
-  if (readPool && workerTakes(req.method, path) && readPool.forward(req, res)) return;
+  if (readPool && workerTakes(req.method, path, url.searchParams) && readPool.forward(req, res)) return;
 
   // MCP skin — same verbs, JSON-RPC dress (P3). The MCP door REQUIRES a
   // credential even for reads — deliberately unlike REST's public read tier:
@@ -1137,11 +1142,16 @@ const handle = (req, res) => {
       odb, dbPath: DB_PATH,
       // the role registry, so the MCP lane gates the same reads the REST lane does
       rdb,
-      rateLimit: ({ verb, write }) => checkCredentialed({
+      // A read worker charges nothing: the main thread admitted and charged the
+      // call before it handed it over, as it does for a GET.
+      rateLimit: IN_READ_WORKER ? null : ({ verb, write }) => checkCredentialed({
         verb,
         write,
         worldVerb: write ? verb : null,
       }),
+      // POS-284: the agents' reads, on another core (read-workers.mjs § mcpWorkerTakes).
+      handOver: readPool ? (raw, messages) => mcpWorkerTakes(messages) && readPool.forward(req, res, { body: raw, mcp: true }) : null,
+      onlyReads: IN_READ_WORKER ? mcpWorkerTakes : null,
       // The household world-write budget as a READ (POS-139). Same bouncer
       // instance the `rateLimit` closure above enforces with, so the standing
       // read's `world_writes` and that layer's 429 state one number, not two.

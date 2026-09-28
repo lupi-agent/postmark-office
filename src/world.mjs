@@ -50,7 +50,7 @@ import { classNames, classRoster, classDials, departurePace, freeCellIn, RESIDEN
 import { HOLD_TOOLS, callHoldTool } from "./world-hold.mjs"; // the object primitive: who holds what
 import { createVoices, EARSHOT_M } from "./voices.mjs"; // earshot: speech at a position (the party line)
 import { createSayPush, waitMsOf, serveSayStream } from "./say-push.mjs"; // POS-265: the waiters — a listen that waits, and the page's stream
-import { householdOf, humanHandFor } from "./households.mjs"; // the human speaker's label wears the town's name, never the login
+import { householdOf, humanHandFor, pinnedLoginOf } from "./households.mjs"; // the human speaker's label wears the town's name, never the login
 import { householdLockPath, poolEnabled, pushDraftBranch, withDraftLease } from "./world-pool.mjs";
 import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabled, storeDbPath } from "./world-serve.mjs"; // stage 1: published-main reads from world.db, behind a flag
 // The arena's own readers, for the two things a walk into a wheel-keeping
@@ -73,7 +73,7 @@ import { byBand, presenceEnabled, presentNear, near as presenceNear, everyone as
 import { MEDIA_BASE, mediaUrlOk } from "./media.mjs"; // the mark door's image allowlist: only the town's own media hangs on marks
 import { imageFormat, MEDIA_FORMATS } from "./edit.mjs"; // the bytes decide the type, never the filename (with_image, below)
 import { everyonePlaced, withFrames } from "./positions.mjs"; // where is everyone: walk records ∪ parcel households, one derivation — plus Stage D's frame overlay
-import { createPositionGrid, createPositionProjection, recordOfMovement } from "./position-projection.mjs"; // POS-264: the governing departure per resident, kept current by the walk door
+import { createPlacement, createPositionGrid, createPositionProjection, recordOfMovement } from "./position-projection.mjs"; // POS-264: the governing departure per resident, kept current by the walk door
 import { announce, onAnnounce } from "./read-workers.mjs"; // POS-266: the workers learn what a walk moved
 import { ORIGIN, NO_GROUND_NEIGHBOURHOOD, isGroundlessDefault, groundlessStandpoint } from "./groundless.mjs"; // where a resident with no ground stands: the Origin, said once (#2900)
 
@@ -538,9 +538,11 @@ async function projectedPresenceRows(atMs) {
       frames = await withVehicleRiders(null, { world: w, repo: WORLD_CLONE, atMs });
     } catch { frames = null; }
   }
-  const departures = (await positionProjection.departures()).filter((d) => d.handle !== VESSEL_HANDLE);
+  const snap = await positionProjection.snapshot();
+  const departures = snap.departures.filter((d) => d.handle !== VESSEL_HANDLE);
+  const placed = placedAt("presence", snap.epoch);
   const rowsFor = async (handles, at) => {
-    const rows = withFrames(everyonePlaced({ world: w, departures, at: clock.fractionalCrossing(at), where }), frames);
+    const rows = withFrames(placed({ world: w, departures, at: clock.fractionalCrossing(at), where }), frames);
     if (!handles) return rows;
     const want = new Set(handles);
     return rows.filter((r) => want.has(r.handle));
@@ -575,6 +577,49 @@ export async function projectedNearby(at) {
     console.error(`[world] the projected presence read tripped (${String(e?.message ?? e).slice(0, 160)}) — the door answers without it`);
     return null;
   }
+}
+
+// ── WHERE EVERYONE STANDS, PLACED ONCE PER CHANGE (POS-284) ─────────────────
+//
+// `everyonePlaced` is kept per projection epoch, fold and roll
+// (position-projection.mjs § createPlacement), and only the residents who are
+// walking are placed again at each question. Every door that asks the plural
+// question over the projection comes through here: orient, open-your-eyes, the
+// witness, GET /world/present, the hearing grid and the walkers door. Each
+// thread keeps its own; a read worker places the town once per change too,
+// never once per request.
+const keptPlacement = createPlacement();
+const _objectIds = new WeakMap();
+let _objectIdNext = 0;
+const objectIdOf = (o) => {
+  if (!_objectIds.has(o)) _objectIds.set(o, ++_objectIdNext);
+  return _objectIds.get(o);
+};
+// A fold is named by its sha; one with none (a test's hand-built world) by the
+// object itself. The engine's where-is is named by the module object: presence
+// imports it at the main ref, the hearing grid at the blessed one, and a kept
+// answer must not cross from one to the other.
+const worldIdOf = (w) => (!w ? "no-fold" : w._raw?.sha ?? `fold-${objectIdOf(w)}`);
+
+/** An `everyonePlaced` whose answer is kept for this epoch. `tag` names which departures the caller passes. */
+function placedAt(tag, epoch) {
+  return (args) => keptPlacement.rows({
+    key: `${tag}|${epoch}|${worldIdOf(args.world)}|where-${args.where ? objectIdOf(args.where) : "none"}|${(args.roll ?? []).join(",")}`,
+    at: args.at,
+    place: (only, at) => everyonePlaced({ ...args, at, only }),
+  });
+}
+
+/**
+ * What a presence read is handed when this office keeps positions: the
+ * projection's snapshot (its departures, in place of the entities table and a
+ * store read per call) and the placement kept for it. Empty otherwise, and the
+ * read derives exactly as it did before POS-264.
+ */
+async function keptPresence() {
+  if (!positionsProjected() || !presenceEnabled()) return {};
+  const projected = await positionProjection.snapshot().catch(() => null);
+  return projected ? { projected, placed: placedAt("presence", projected.epoch) } : {};
 }
 
 // Where a bare call stands you: your BODY first — the walk ledger's derived
@@ -1609,6 +1654,7 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
     // leaves residents unasked about" (#1864). The caller passes it; a test
     // with no roll gets the two-term union it always had.
     roll,
+    ...(await keptPresence()), // POS-284: the kept positions, as GET /world/present reads them
   });
   const transport = await transportBlock(w, at);
   return { standpoint: { ...at, stance: choice.stance }, crossing: { n: crossing, derivation: CROSSING_DERIVATION }, note, primer, ...o, ...(present ? { present } : {}), ...(transport ? { transport } : {}) };
@@ -1846,6 +1892,7 @@ export async function worldEyes(args = {}, key = null, { roll = [] } = {}) {
     repo: WORLD_CLONE,
     world: w,
     roll, // DEC-11 — see worldOrient
+    ...(await keptPresence()), // POS-284 — see worldOrient
   });
   const section = presenceTelling(present);
   const telling = section ? `${engineTelling ?? ""}\n\n${section}` : engineTelling;
@@ -1934,10 +1981,11 @@ export async function worldPresent(args = {}, { roll = null } = {}) {
   // in place of the entities table plus a store read per request. Its rebuild
   // disclosure rides along; presence carries it into `disclosed`.
   const projected = positionsProjected() ? await positionProjection.snapshot().catch(() => null) : null;
-  if (!has) return presenceEveryone({ place, repo: WORLD_CLONE, world: w, roll: roll ?? [], projected });
+  const placed = projected ? placedAt("presence", projected.epoch) : null; // POS-284: placed once per change
+  if (!has) return presenceEveryone({ place, repo: WORLD_CLONE, world: w, roll: roll ?? [], projected, placed });
   const radiusM = Number.isFinite(Number(args.radius_m)) ? Math.max(1, Number(args.radius_m)) : undefined;
   const limit = Number.isFinite(Number(args.limit)) ? Math.max(1, Math.floor(Number(args.limit))) : undefined;
-  return presenceNear({ x, y, place, repo: WORLD_CLONE, world: w, roll: roll ?? [], projected, ...(radiusM ? { radiusM } : {}), ...(limit ? { limit } : {}) });
+  return presenceNear({ x, y, place, repo: WORLD_CLONE, world: w, roll: roll ?? [], projected, placed, ...(radiusM ? { radiusM } : {}), ...(limit ? { limit } : {}) });
 }
 
 // ── a mark's image, as bytes (world_investigate with_image, 2026-08-23) ──────
@@ -2864,7 +2912,7 @@ export async function witnessStampAt(handle, here, known = null) {
     // `presentNear` is null when the presence layer is switched off at this
     // office, and `{unavailable}` when it tripped. Both are "could not see",
     // and neither is "nobody was there".
-    const seen = await presentNear(here, { exclude: [handle], repo: WORLD_CLONE });
+    const seen = await presentNear(here, { exclude: [handle], repo: WORLD_CLONE, ...(await keptPresence()) });
     const witnesses = seen == null ? pinWitnesses({ unread: "presence-off" })
       : seen.unavailable ? pinWitnesses({ unread: seen.unavailable })
       : pinWitnesses({ residents: seen.residents ?? [], centreOf, chainAt });
@@ -2910,6 +2958,15 @@ async function foldConstants() {
  */
 async function groundMinimumStake(clean, canon) {
   const commons = { min: 1, ground: null };
+  // A PARCEL IS ITS OWN GROUND, AND PUBLISHES FREE (Keemin, 2026-09-27, POS-233):
+  // "a parcel's lawful minimum stake is 0, for EVERYONE (otherwise they just
+  // cost 1 nominal stamp (due to being sovereign, they'd never be contested
+  // anyway))". This door was the only holder of that nominal stamp — the
+  // settlement already agrees, because the standing walk answers `home` for a
+  // parcel at its first hop (world `tools/mark-standing.mjs § markStanding`,
+  // office `world2/tools/standing.mjs § markStanding`), so neither sweep's
+  // "commons needs escrow > 0" ever reaches one.
+  if (clean.kind === "parcel") return { min: 0, ground: clean.slug ? `${clean.by}/${clean.slug}` : null };
   if (!clean.at) {
     const parent = canon.byId.get(clean.parent_id);
     if (!parent?.at) return { min: 0, ground: parent ? `${clean.parent_id} (continued)` : null };
@@ -3498,6 +3555,59 @@ export function overCapHint(by, slug) {
   return `the cap is the law (MARKS.md 07-22 ruling: one claim per mark), and the town has a shape for the rest — the mark is the thing, its detail is predicated marks laid on it, one property each, each with its own ≤150-character body. Keep the one observation in this body, leave it, then lay the first detail as its own mark: { slug: "<detail>", kind: "predicated", parent_id: "${by}/${slug}", slot: "<the property>", value: "<its value>", body: "<one sentence about it>" }`;
 }
 
+// ── PLACING ON A RESIDENT'S BEHALF (POS-233) ────────────────────────────────
+//
+// A resident with no hands on the API cannot place their own home, and this door
+// writes only a resident's OWN act. Ruled by Keemin: "SHAPE RULED" 2026-09-26
+// and "RULED" 2026-09-27 (Linear POS-233). Three NAMED placers may place a
+// resident's FIRST parcel for them, and nothing else:
+//
+//   · the key holds one of ON_BEHALF_PLACERS — named handles, not any office hand;
+//   · kind is parcel (a sited/predicated/naming mark for another still bounces);
+//   · the resident holds no parcel yet — never an amend, never a second parcel;
+//   · consent names the resident's asking letter. REQUIRED, NOT VERIFIED: the
+//     office does not look the letter up; it is an audit pointer in the act log.
+//
+// The act is recorded AS THE RESIDENT'S OWN — author and household theirs — so
+// the settlement's and the git lane's authorship checks pass unchanged, and the
+// cap and every other guard run exactly as for the resident. The provenance
+// rides the act's payload UNDERSCORED, like `_set_down`: the public act log
+// carries the whole payload, and the record grammar refuses `_` keys at render,
+// so neither reaches the resident's mark file. (`consent` bare would: it is
+// already a world mark field — the three-word consent map, world
+// `tools/consent.mjs` — and a letter id there fails the world's lint.)
+export const ON_BEHALF_PLACERS = Object.freeze(["illuminator", "worldkeeper", "wright"]);
+const PLACED_BY_KEY = "_placed_by";
+const CONSENT_KEY = "_consent";
+
+/** Null when this is not a placement on another's behalf (the caller answers the unchanged 403); otherwise who placed, on whose asking, under which household. */
+function placingOnBehalf(by, payload, key, bounce) {
+  const placers = ON_BEHALF_PLACERS.filter((h) => key?.handles?.has(h));
+  if (!placers.length || payload.kind !== "parcel") return null;
+  const consent = typeof payload.consent === "string" ? payload.consent.trim() : "";
+  if (!consent) throw bounce(422, "a placement on a resident's behalf needs consent",
+    `pass consent: the id of the letter in which ${by} or their household asked for it`);
+  if (payload.amend === true) throw bounce(422, "a placement on a resident's behalf is a first placement, never an amend",
+    `an amend of ${by}'s ground is ${by}'s own act`);
+  const named = payload.placed_by === undefined ? null : String(payload.placed_by);
+  if (named !== null && !placers.includes(named))
+    throw bounce(403, `"${named}" is not a placer on this key`, `this key places as: ${placers.join(", ")}`);
+  if (named === null && placers.length > 1)
+    throw bounce(422, "which placer is placing this?", `pass placed_by: one of ${placers.join(", ")}`);
+  const household = pinnedLoginOf(by);
+  if (!household) throw bounce(422, `the office cannot tell which household "${by}" belongs to`,
+    "a placement lands under the resident's own household, read from the town's pins — this handle has none");
+  return { placer: named ?? placers[0], consent, household };
+}
+
+/** First placement only: a resident who already holds a parcel, published or live, is refused by its id. */
+async function refuseHeldParcel(by, household, bounce) {
+  const live = await guardedLiveMarks(null, { household });
+  const held = [...canonForGuards().marks, ...live].find((m) => m.kind === "parcel" && (m.by ?? String(m.id).split("/")[0]) === by);
+  if (held) throw bounce(409, `"${by}" already holds a parcel: ${held.id}`,
+    "a placement on a resident's behalf is their first parcel only — that ground is theirs to amend or withdraw");
+}
+
 // ── the write verb (credentialed) ────────────────────────────────────────────
 // world_leave_mark — leave a mark on the world. by/date are server-derived (never
 // the client's). A DRAFT COSTS NOTHING (Keemin-ruled 2026-08-22): this door's own
@@ -3521,7 +3631,11 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
   const handles = [...(key?.handles ?? [])];
   const by = payload.by ?? (handles.length === 1 ? handles[0] : undefined);
   if (!by) throw bounce(422, "which resident is leaving this mark?", handles.length ? `pass by: one of ${handles.join(", ")}` : "this key acts for no resident");
-  if (!key?.handles?.has(by)) throw bounce(403, `"${by}" is not one of your residents`, `this key acts for: ${handles.join(", ") || "(none)"}`);
+  const onBehalf = key?.handles?.has(by) ? null : placingOnBehalf(by, payload, key, bounce);
+  if (!key?.handles?.has(by) && !onBehalf) throw bounce(403, `"${by}" is not one of your residents`, `this key acts for: ${handles.join(", ") || "(none)"}`);
+  if (!onBehalf && (payload.consent !== undefined || payload.placed_by !== undefined))
+    throw bounce(422, "consent and placed_by are for a placement on another resident's behalf",
+      `"${by}" is your own resident — leave the mark without them`);
 
   const { slug, kind, at, extent, points, body, tier, slot, value, parent_id } = payload;
   if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) throw bounce(422, "slug must be kebab-case", `lowercase letters, digits, single hyphens — got "${slug}"`);
@@ -3641,8 +3755,12 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     throw bounce(422, "stamps must be a whole number, 0 or more",
       "stamps: 1 stakes your new mark in the same act — escrow is what publishes a commons mark; 0 or omitted keeps it a personal draft");
 
-  const household = String(key?.household ?? "").trim();
+  // THE ACT'S HOUSEHOLD. A placement on a resident's behalf lands under the
+  // RESIDENT'S household, never the placer's (POS-233): it is their act, their
+  // live layer, their sketchbook and their cap, and their own amend must find it.
+  const household = onBehalf ? onBehalf.household : String(key?.household ?? "").trim();
   if (!household) throw bounce(403, "this credential has no resident household", "sign in as a resident household before leaving a mark");
+  if (onBehalf) await refuseHeldParcel(by, household, bounce);
   // The class's OWN fields ride the record; another class's do not. This used to
   // read `klass === undefined ? {} : {class, ask, reward, status}` — correct while
   // bounty was the only class, and it would have written `ask: "undefined"` into
@@ -3655,6 +3773,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     ...classFields, ...(image !== undefined ? { image } : {}), ...(payload.amend === true ? { amend: true } : {}),
     ...(payload.preview === true ? { preview: true } : {}),
     ...(setDown ? { _set_down: setDown } : {}),
+    ...(onBehalf ? { [PLACED_BY_KEY]: onBehalf.placer, [CONSENT_KEY]: onBehalf.consent } : {}),
     // `stamps` now RIDES the declaration instead of being stripped here. It was
     // stripped because 1.0 routes escrow through the stake verb and the record
     // had no use for it — but under the stake-is-the-boundary ruling the amount
@@ -3868,7 +3987,8 @@ export function overhangOf({ id, kind, parent, at, extent, standing, spine }) {
 // note rides — over-noting is safe by construction, because a stake on ground
 // the crossing judges sovereign after all is simply extra weight behind your
 // own mark, never wasted. Pure, so it can be falsified without a clone.
-export function publishNoteFor({ id, parent, by, marks, residentsOf }) {
+export function publishNoteFor({ id, parent, by, marks, residentsOf, kind = null }) {
+  if (kind === "parcel") return null; // a parcel is its own ground — it publishes free (Keemin 2026-09-27, POS-233)
   const parentBy = parent ? String(parent).split("/")[0] : null;
   if (parent && parentBy !== "the-town") {
     const pm = (marks ?? []).find((m) => m.id === parent);
@@ -3923,7 +4043,7 @@ async function disclosePublishing(result, by) {
     }
     const w = await world();
     const note = publishNoteFor({
-      id: result.id, parent: result.parent ?? null, by,
+      id: result.id, parent: result.parent ?? null, by, kind: result.kind ?? null,
       marks: w?.marks ?? [],
       residentsOf: (h) => householdOf(h)?.residents ?? null,
     });
@@ -5066,7 +5186,10 @@ export async function worldWalkers(worldClone, key = null, { roll = null } = {})
     // inside `everyonePlaced` because that function is pure by contract and a
     // frame needs the engine; what it takes is a precomputed map, so the purity
     // holds and the two derivations still meet in exactly one place.
-    const walkers = everyonePlaced({ world: w, departures, at, where, roll: roll ?? [] });
+    // POS-284: over the projection the answer is kept per epoch ("walkers":
+    // these departures still name the vessel, presence's do not).
+    const place = eras.epoch != null && worldClone === WORLD_CLONE ? placedAt("walkers", eras.epoch) : everyonePlaced;
+    const walkers = place({ world: w, departures, at, where, roll: roll ?? [] });
     // ⚑ `available` WAS ON THE WALKERS DOOR TOO — the fourth surface, from the
     // same resolver `present` used, because these are two row-builders for one
     // roster ("world_walkers and present name the same residents, one
@@ -5141,7 +5264,7 @@ export const WORLD_TOOLS = [
       offset: { type: "number", description: "how many marks to skip in each shelf — the shelves are long-lived and this walks them" },
     }, additionalProperties: false } },
   { name: "world_leave_mark",
-    description: "Leave one mark in your household's private draft branch. One mark = one claim: stakes and rivalries attach per mark, so a bundled mark cannot be individually backed or contested. Your author (`by`) is your own handle; GEOMETRY decides which mark it nests inside; the town's own lint + fold gate it. HOW IT PUBLISHES: at the next Settlement, homes inside their own parcel and constitution marks publish automatically; commons marks (any ground not your household's own) publish ONLY while backed by escrow — pass stamps: 1 to stake it in the same act, or leave stamps at 0 (the default) for a personal draft only your household sees. The answer's `publishing` note tells you which case you are in, with the stake call ready. Walk targets still resolve against published main, so a draft becomes walkable only after it crosses. A slot is the rivalry key: on one parent, values in the same slot compete on ✦weight and the top value determines at Settlement; different slots coexist. Reusing a generic slot twice on one parent makes your own predicates rival each other.",
+    description: "Leave one mark in your household's private draft branch. One mark = one claim: stakes and rivalries attach per mark, so a bundled mark cannot be individually backed or contested. Your author (`by`) is your own handle; GEOMETRY decides which mark it nests inside; the town's own lint + fold gate it. HOW IT PUBLISHES: at the next Settlement, homes inside their own parcel and constitution marks publish automatically; commons marks (any ground not your household's own) publish ONLY while backed by escrow — pass stamps: 1 to stake it in the same act, or leave stamps at 0 (the default) for a personal draft only your household sees. A parcel is its own ground and publishes free: stamps: 0 puts it forward with nothing to buy. The answer's `publishing` note tells you which case you are in, with the stake call ready. Walk targets still resolve against published main, so a draft becomes walkable only after it crosses. A slot is the rivalry key: on one parent, values in the same slot compete on ✦weight and the top value determines at Settlement; different slots coexist. Reusing a generic slot twice on one parent makes your own predicates rival each other.",
     inputSchema: { type: "object", properties: {
       slug: { type: "string", description: "the mark's leaf name — kebab-case, unique among your own marks" },
       kind: { type: "string", enum: ["sited", "parcel", "predicated", "naming"], description: "predicated requires slot + value; naming requires value and uses slot \"name\"; sited/parcel carry neither slot nor value" },
@@ -5158,7 +5281,9 @@ export const WORLD_TOOLS = [
       slot: { type: "string", description: "REQUIRED for predicated: the freeform rivalry key; naming omits it or uses \"name\"; forbidden on sited/parcel" },
       value: { type: "string", description: "REQUIRED for predicated and naming; forbidden on sited/parcel" },
       parent_id: { type: "string", description: "predicated/naming: the mark this describes, <by>/<slug>" },
-      by: { type: "string", description: "which of your handles authors it (omit if your key holds exactly one)" },
+      by: { type: "string", description: "which of your handles authors it (omit if your key holds exactly one). The town's placers (illuminator, worldkeeper, wright) may instead name another resident, for that resident's FIRST parcel only, with consent: — it lands as the resident's own act" },
+      consent: { type: "string", description: "placers only: the id of the letter in which the resident or their household asked for this placement — required for a placement on their behalf, recorded in the act log" },
+      placed_by: { type: "string", description: "placers only: which placer on your key is placing, when it holds more than one" },
       // THE ENUM IS READ, NOT WRITTEN. A getter for the same reason world_say's
       // description is one: the tool list is serialized per `tools/list` call, so
       // the advertised set is whatever the record says at the moment a resident

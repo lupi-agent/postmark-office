@@ -114,6 +114,26 @@ export function humanHandFor(handles = []) {
   return `human-of-${slug ?? list[0]}`;
 }
 
+/**
+ * The household a resident's OWN key would carry, from the town's pins.
+ *
+ * POS-233: a placer places a resident's first parcel as the resident's own act,
+ * so the act must land under the household the resident's key names — and a
+ * signed-in key names it by the GitHub login (`oauth.mjs § householdFor`, whose
+ * pins are authoritative: "Pinned immutable IDs win"). This reads the same pin
+ * that function matches, in the other direction.
+ *
+ * Null for a handle with no pin: the office then cannot say which household the
+ * act belongs under, and the caller refuses rather than guessing.
+ */
+export function pinnedLoginOf(handle) {
+  try {
+    const pins = JSON.parse(readFileSync(join(TOWN_CLONE, "tools", "github-ids.json"), "utf8"));
+    const login = pins?.[handle]?.login;
+    return login ? String(login) : null;
+  } catch { return null; }
+}
+
 let warned = false;
 export function householdOf(handle) {
   if (!currentHouseholds) return null; // no engine at this checkout — garnish stays absent

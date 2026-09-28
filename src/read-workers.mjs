@@ -59,15 +59,60 @@ export const IN_READ_WORKER = !isMainThread && workerData?.readWorker === true;
  *   /household           — the standing read carries `world_writes`, the
  *                          bouncer's live budget, which is main-thread RAM.
  *
- * A read not named here and not refused by `workerSafe` goes to a worker.
+ * A read not named here, not refused by `workerSafe` and not the REST listen
+ * (`listensToVoices` below) goes to a worker.
  */
 // /world/say/stream (POS-265's push) waits on new voices, and voices land on the
 // main thread: served from a worker, the stream would open and never hear a word.
 export const MAIN_ONLY_READS = new Set(["/world/conversations", "/world/dynamic", "/household", "/world/say/stream"]);
 
-/** Does a read with this method and path go to a worker? */
-export function workerTakes(method, path) {
-  return method === "GET" && workerSafe(method, path) && !MAIN_ONLY_READS.has(path);
+/**
+ * GET /world/apex?read=say is the one read whose answer is the voices window by
+ * its QUERY, not its path: the same listen as the MCP `world { read: "say" }`,
+ * which `mcpWorkerTakes` below keeps home. Handed to a worker, it heard the
+ * worker's window as it hydrated and never another voice (POS-284's hotfix,
+ * measured before the fix: a say on the main thread, then this GET on worker-0,
+ * and the voice was not in it). `read` is trimmed as the apex trims it.
+ */
+function listensToVoices(path, query) {
+  return path === "/world/apex" && String(query?.get("read") ?? "").trim() === "say";
+}
+
+/** Does a read with this method, path and query go to a worker? */
+export function workerTakes(method, path, query = null) {
+  return method === "GET" && workerSafe(method, path) && !MAIN_ONLY_READS.has(path) && !listensToVoices(path, query);
+}
+
+/**
+ * THE AGENTS' READS (POS-284). An agent reads through POST /mcp, so the method
+ * rule above sends every one of them to the main thread, where on dev at 80
+ * agents open-your-eyes alone held a third of the thread. These MCP calls are
+ * the same reads the workers already answer as GETs (/world/orient,
+ * /world/eyes, /world/apex), through the same functions:
+ *
+ *   world_orient, world_open_your_eyes, and `world` with no `do:`: the bare
+ *   look and every `read:` shadow, save `read: "say"`, which listens, and a
+ *   listen is the voices window's RAM (it marks the listener present).
+ *
+ * A NAMED LIST, not "everything that is not a write": `writeShaped` answers
+ * which calls the bouncer charges as acts, not which answers live in the main
+ * thread's memory (the household standing read's `world_writes` is a read and
+ * is the bouncer's own RAM). A read not named here stays on the main thread.
+ * The main thread admits and charges the call first, exactly as for a GET;
+ * the worker answers it and refuses anything this list does not name.
+ */
+const MCP_WORKER_TOOLS = new Set(["world_orient", "world_open_your_eyes"]);
+export function mcpWorkerTakes(messages) {
+  if (!Array.isArray(messages) || !messages.length) return false;
+  return messages.every((m) => {
+    if (m?.jsonrpc !== "2.0" || m.method !== "tools/call" || m.id === undefined) return false;
+    const name = m.params?.name;
+    const args = m.params?.arguments ?? {};
+    if (MCP_WORKER_TOOLS.has(name)) return true;
+    if (name !== "world" || typeof args !== "object" || Array.isArray(args)) return false;
+    if (args.do != null && args.do !== "") return false;
+    return String(args.read ?? "").trim() !== "say";
+  });
 }
 
 /** How many workers: OFFICE_READ_WORKERS if it is a whole number, else cores − 1. */
@@ -150,13 +195,15 @@ export function serveReadsInWorker(handle) {
       return;
     }
     if (msg?.type !== "read") return;
-    const { id, method, url, headers, ip } = msg;
-    // An empty, ended request: every read a worker takes is a GET.
+    const { id, method, url, headers, ip, body = null, mcp = false } = msg;
+    // An ended request: a GET's is empty, an agent's MCP read (POS-284) carries
+    // the JSON-RPC body the main thread already read, delivered as one chunk
+    // before the end.
     const req = new Writable({ write(_c, _e, cb) { cb(); } });
-    Object.assign(req, { method, url, headers, socket: { remoteAddress: ip }, connection: { remoteAddress: ip } });
+    Object.assign(req, { method, url, headers, socket: { remoteAddress: ip }, connection: { remoteAddress: ip }, handedMcpRead: Boolean(mcp) });
     req.on = ((on) => function (ev, fn) {
-      if (ev === "end") { queueMicrotask(fn); return this; }
-      if (ev === "data") return this;
+      if (ev === "end") { queueMicrotask(() => queueMicrotask(fn)); return this; }
+      if (ev === "data") { if (body != null) queueMicrotask(() => fn(body)); return this; }
       return on.call(this, ev, fn);
     })(req.on);
     const res = new CollectedResponse((r) => {
@@ -287,8 +334,13 @@ export function startReadPool({ size, entry, argv = [], env = process.env, respa
 
   return {
     size,
-    /** Hand a read to a worker. False when none is ready: the caller answers it itself. */
-    forward(req, res) {
+    /**
+     * Hand a read to a worker. False when none is ready: the caller answers it
+     * itself. `body` and `mcp` are an agent's MCP read (POS-284): the body the
+     * main thread already read, and the flag that lets the worker's POST /mcp
+     * past the read role's refusal for this call alone.
+     */
+    forward(req, res, { body = null, mcp = false } = {}) {
       if (stopped) return false;
       return dispatch(res, {
         type: "read",
@@ -296,6 +348,7 @@ export function startReadPool({ size, entry, argv = [], env = process.env, respa
         url: req.url,
         headers: req.headers,
         ip: req.socket?.remoteAddress ?? null,
+        ...(mcp ? { body, mcp: true } : {}),
       });
     },
     /** What the pool is, for /release: how many workers are up and what each has served. */

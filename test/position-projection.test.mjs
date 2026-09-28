@@ -23,7 +23,13 @@
 //               equals `heardFromV2` over both eras, per voice.
 //   NEAR        the grid's `near` equals a scan of every row, at instants that
 //               carry a walker across cells and into arrival.
-//   DOOR        `/world/walkers` answers the same with the flag on as off.
+//   DOOR        `/world/walkers` answers the same with the flag on as off,
+//               at an instant with walkers on the road and again after they
+//               have arrived.
+//   KEPT        (POS-284) the placement kept per epoch answers what
+//               `everyonePlaced` answers at every instant, having placed the
+//               whole town once and only the walkers after; `positionsAt` over
+//               it answers what it answers without it.
 //
 // ── THE FLIP (run after the commit; the red line goes in the report) ─────────
 //
@@ -33,6 +39,13 @@
 // the leg they superseded. HEARING stays green under that flip, and that is the
 // POS-247 fact it pins rather than a gap: no walk record can frame a voice, so
 // which record the fold is handed cannot move one.
+//
+// POS-284's flips. (1) In `createPlacement § rows`, return the kept rows without
+// re-placing the drifting (`if (!k.drifting.size) return out;` →
+// `return out;`): PRESENCE, KEPT and DOOR go red, a walker answered where they
+// stood when the town was first placed. (2) In `world.mjs § placedAt`, drop
+// `${epoch}|` from the key: DOOR goes red at the recorded walk, a resident who
+// set off answered from their ground.
 //
 // Run: WORLD_CLONE=<world clone> node --test test/position-projection.test.mjs
 
@@ -51,7 +64,7 @@ import { positionsAt } from "../src/dynamic-presence.mjs";
 import { everyonePlaced } from "../src/positions.mjs";
 import { heardFromV2 } from "../src/world-movement.mjs";
 import {
-  createPositionGrid, createPositionProjection, governingOf, recordOfMovement,
+  createPlacement, createPositionGrid, createPositionProjection, governingOf, recordOfMovement,
 } from "../src/position-projection.mjs";
 import { atCrossing, departure, fixtureMarks, makeWorldClone } from "./movement-fixture.mjs";
 
@@ -201,13 +214,61 @@ test("PRESENCE: positionsAt over the projection equals positionsAt over the enti
       iso: d.iso, from: d.from, toward: d.toward, at: d.at, within: d.targetExtent, to: d.targetMarkId, pace: d.pace } }));
   }
   const projected = [...governingOf(derived.departures).values()];
+  // KEPT, through the presence layer: the hook the office hands it.
+  const kept = createPlacement();
+  const placed = (args) => kept.rows({ key: "one-epoch", at: args.at, place: (only, at) => everyonePlaced({ ...args, at, only }) });
   for (const atMs of [B + 30_000, B + 20 * 60_000, LATE]) {
+    const table = positionsAt(db, atMs, walk, null, { world: WORLD, where, stored, roll: ROLL });
     assert.deepEqual(
       positionsAt(db, atMs, walk, null, { world: WORLD, where, projected, roll: ROLL }),
-      positionsAt(db, atMs, walk, null, { world: WORLD, where, stored, roll: ROLL }),
+      table,
       `at ${new Date(atMs).toISOString()}: presence over the projection disagrees with presence over the table`);
+    assert.deepEqual(
+      positionsAt(db, atMs, walk, null, { world: WORLD, where, projected, roll: ROLL, placed }),
+      table,
+      `at ${new Date(atMs).toISOString()}: presence over the kept placement disagrees with presence over the table`);
   }
   db.close();
+});
+
+test("KEPT: the placement answers what everyonePlaced answers at every instant, placing the town once", async (t) => {
+  if (needsClone(t)) return;
+  install();
+  const { departuresAcrossEras } = await import("../src/world.mjs");
+  const walk = await worldToolModule("walk.mjs", { repo: WORLD_CLONE });
+  const where = await worldToolModule("where-is.mjs", { repo: WORLD_CLONE });
+  if (!STORE.length) for (let i = 0; i < 24; i++) await fileWalk(movementAt(i, walk));
+  const LATE = B + 48 * 3600_000;
+  const departures = [...governingOf((await departuresAcrossEras(WORLD_CLONE, { atMs: LATE })).departures).values()];
+
+  const asked = [];
+  const kept = createPlacement();
+  const rows = (key, at) => kept.rows({ key, at, place: (only, a) => {
+    asked.push(only ? [...only] : null);
+    return everyonePlaced({ world: WORLD, departures, at: a, where, roll: ROLL, only });
+  } });
+
+  // From the first leg's start to long after the last arrival, a minute apart
+  // where walkers are on the road.
+  const instants = [];
+  for (let ms = B; ms <= B + 40 * 60_000; ms += 60_000) instants.push(ms);
+  instants.push(B + 3600_000, LATE);
+  let moving = 0;
+  for (const atMs of instants) {
+    const at = walk.fractionalCrossing(atMs);
+    const want = everyonePlaced({ world: WORLD, departures, at, where, roll: ROLL });
+    moving += want.filter((r) => r.moving).length;
+    assert.deepEqual(rows("epoch-1", at), want, `at ${new Date(atMs).toISOString()} the kept placement disagrees with the derivation`);
+  }
+  assert.ok(moving > 10, "nobody was on the road at the instants asked — the drifting path is not exercised");
+  assert.equal(asked.filter((a) => a === null).length, 1, "the whole town is placed once per key");
+  const total = everyonePlaced({ world: WORLD, departures, at: walk.fractionalCrossing(B), where, roll: ROLL }).length;
+  assert.ok(asked.slice(1).every((a) => a.length < total), "after the first answer only the walking are placed again");
+  assert.deepEqual(kept.census(), [{ rows: total, drifting: 0 }], "everyone has arrived by LATE and is kept");
+
+  // A new key (a recorded walk moves the epoch) places the town afresh.
+  rows("epoch-2", walk.fractionalCrossing(LATE));
+  assert.equal(asked.filter((a) => a === null).length, 2);
 });
 
 test("HEARING: heardFromV2 over the governing record, no store read, equals heardFromV2 over both eras", async () => {
@@ -287,10 +348,11 @@ test("DOOR: /world/walkers answers the same with the projection on as off", asyn
   if (needsClone(t)) return;
   install();
   const world = await import("../src/world.mjs");
-  if (!STORE.length) {
-    const walk = await worldToolModule("walk.mjs", { repo: WORLD_CLONE });
-    for (let i = 0; i < 24; i++) await fileWalk(movementAt(i, walk));
-  }
+  // The replay's own store, always: HEARING leaves one act of its own behind,
+  // and a DOOR read over that one act compared a town with nobody on the road.
+  STORE.length = 0;
+  const walk = await worldToolModule("walk.mjs", { repo: WORLD_CLONE });
+  for (let i = 0; i < 24; i++) await fileWalk(movementAt(i, walk));
   mock.timers.enable({ apis: ["Date"], now: B + 45 * 60_000 });
   try {
     delete process.env.WORLD_POSITIONS;
@@ -299,7 +361,38 @@ test("DOOR: /world/walkers answers the same with the projection on as off", asyn
     world.positionProjection.invalidate();
     const on = await world.worldWalkers(WORLD_CLONE, null, { roll: ROLL });
     assert.ok(off.walkers.length > 20, "the door answered almost nobody — the comparison is vacuous");
+    assert.ok(off.walkers.some((w) => w.moving && w.source === "walk"), "nobody is on the road — the kept placement's re-placing is not exercised");
     assert.deepEqual(on, off);
+
+    // THE SECOND INSTANT, same epoch (POS-284): the kept placement must move
+    // the walkers it kept, and hold the ones who have arrived. Inside
+    // PROJECTION_MAX_AGE_MS, or the projection rebuilds, the epoch moves and
+    // the placement is made afresh rather than kept.
+    const epoch = world.positionProjection.epoch;
+    mock.timers.setTime(B + 45 * 60_000 + 50_000);
+    const later = await world.worldWalkers(WORLD_CLONE, null, { roll: ROLL });
+    assert.equal(world.positionProjection.epoch, epoch, "the projection rebuilt — the second instant did not read the kept placement");
+    delete process.env.WORLD_POSITIONS;
+    const laterOff = await world.worldWalkers(WORLD_CLONE, null, { roll: ROLL });
+    assert.notDeepEqual(laterOff.walkers, off.walkers, "nobody moved in fifty seconds — the second instant proves nothing");
+    assert.deepEqual(later, laterOff);
+
+    // A WALK RECORDED, same instant: the resident kept at rest on their ground
+    // sets off. The walk door's in-step record moves the epoch, and the kept
+    // placement must not answer them from their ground.
+    const setOff = B + 45 * 60_000 + 55_000;
+    mock.timers.setTime(setOff);
+    const m = { actor: "still-one", from: { x: 640, y: -220 }, toward: { x: 900, y: -220 }, crossing: walk.fractionalCrossing(setOff),
+      at: new Date(setOff).toISOString(), within: null, toMark: null, declaredBy: "still-one", pace: null };
+    await fileWalk(m);
+    process.env.WORLD_POSITIONS = "1";
+    world.positionProjection.record(recordOfMovement(m));
+    mock.timers.setTime(setOff + 5_000);
+    const moved = await world.worldWalkers(WORLD_CLONE, null, { roll: ROLL });
+    delete process.env.WORLD_POSITIONS;
+    const movedOff = await world.worldWalkers(WORLD_CLONE, null, { roll: ROLL });
+    assert.ok(movedOff.walkers.find((w) => w.handle === "still-one")?.moving, "still-one did not set off — the record proves nothing");
+    assert.deepEqual(moved, movedOff);
   } finally {
     mock.timers.reset();
     delete process.env.WORLD_POSITIONS;
