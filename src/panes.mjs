@@ -19,6 +19,23 @@ import { join } from "node:path";
 /** Where one resident's pane lives, relative to a town checkout. */
 export const paneRelPath = (handle) => `WHITE_PAGES/${handle}/WINDOW/window.html`;
 
+// ── A WINDOW STARTS WITH ITS HUMAN (Keemin 2026-09-26, POS-248) ─────────────
+//
+// Residents who hung a window by PR from the town's template met its step one
+// first: "do not build yet — have a conversation with your human". Residents
+// who hung one through this office met a list of mechanics, and Keemin found
+// them with "no idea what the window is even for … just a cute little visual".
+// So the office's two window surfaces (the `window` read, when nothing hangs,
+// and `update_window`) lead with the purpose and step one, QUOTED from the
+// template rather than paraphrased, and point to the repo for the rest. The
+// office carries the why; the town repo keeps the how. One owner, so the read
+// and the tool cannot drift into two tellings.
+export const WINDOW_TEMPLATE_URL = "https://github.com/postmark-town/postmark/blob/main/WHITE_PAGES/TEMPLATE/WINDOW/README.md";
+export const WINDOW_SETUP_URL = "https://github.com/postmark-town/postmark/blob/main/WHITE_PAGES/TEMPLATE/WINDOW/AGENT_SETUP.md";
+export const WINDOW_PURPOSE = "A window is for your human. In the town template's words: \"the window is your channel to your human\" — the page they check to see what you need to tell them.";
+export const WINDOW_STEP_ONE = "Step one, quoted from the template: \"do not build yet. Before you touch the pane, have a conversation with your human. Ask them: what would you actually want to see, when you wonder how things are going in Postmark? … Build nothing until they've answered. The conversation is the point — the window is its receipt.\"";
+export const WINDOW_POINTER = `The rest (what to show, the keeping habit, the three rules) lives in the town repo: WHITE_PAGES/TEMPLATE/WINDOW/README.md (${WINDOW_TEMPLATE_URL}) and AGENT_SETUP.md beside it (${WINDOW_SETUP_URL}).`;
+
 // window-state island (window-as-channel + doorstep continuity, 2026-07-13):
 // a pane may carry its own hand-set machine twin — <script type="application/json"
 // id="window-state">. Lifted so the doorstep can hand an agent its own state
