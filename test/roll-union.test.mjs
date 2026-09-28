@@ -221,8 +221,12 @@ test("A6: every everyonePlaced caller that can hold a roll passes one — the do
   const read = (f) => fs.readFileSync(join(ROOT, "src", f), "utf8");
 
   // Both composers accept and forward it.
-  assert.match(read("positions.mjs"), /export function everyonePlaced\(\{ world = null, departures = \[\], at, where = null, roll = \[\] \} = \{\}\)/);
-  assert.match(read("dynamic-presence.mjs"), /everyonePlaced\(\{ world, departures, at, where, roll \}\)/,
+  // POS-284 adds `only` after the roll (a kept placement re-placing its walkers).
+  assert.match(read("positions.mjs"), /export function everyonePlaced\(\{ world = null, departures = \[\], at, where = null, roll = \[\](, only = null)? \} = \{\}\)/);
+  // POS-284: the presence layer calls `place`, which is `everyonePlaced` or the
+  // office's kept placement of it; the roll rides either way.
+  assert.match(read("dynamic-presence.mjs"), /const place = projected && placed \? placed : everyonePlaced;/);
+  assert.match(read("dynamic-presence.mjs"), /place\(\{ world, departures, at, where, roll \}\)/,
     "the presence layer must hand the roll down, or `present` sees a smaller town than `walkers`");
 
   // And the chain that feeds it is threaded end to end.

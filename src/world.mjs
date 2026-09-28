@@ -73,7 +73,7 @@ import { byBand, presenceEnabled, presentNear, near as presenceNear, everyone as
 import { MEDIA_BASE, mediaUrlOk } from "./media.mjs"; // the mark door's image allowlist: only the town's own media hangs on marks
 import { imageFormat, MEDIA_FORMATS } from "./edit.mjs"; // the bytes decide the type, never the filename (with_image, below)
 import { everyonePlaced, withFrames } from "./positions.mjs"; // where is everyone: walk records ∪ parcel households, one derivation — plus Stage D's frame overlay
-import { createPositionGrid, createPositionProjection, recordOfMovement } from "./position-projection.mjs"; // POS-264: the governing departure per resident, kept current by the walk door
+import { createPlacement, createPositionGrid, createPositionProjection, recordOfMovement } from "./position-projection.mjs"; // POS-264: the governing departure per resident, kept current by the walk door
 import { announce, onAnnounce } from "./read-workers.mjs"; // POS-266: the workers learn what a walk moved
 import { boardAt, pinSnapshot, pinsAt, publicPin } from "./event-pins.mjs"; // POS-281: the pinned board reads the calendar
 import { ORIGIN, NO_GROUND_NEIGHBOURHOOD, isGroundlessDefault, groundlessStandpoint } from "./groundless.mjs"; // where a resident with no ground stands: the Origin, said once (#2900)
@@ -539,9 +539,11 @@ async function projectedPresenceRows(atMs) {
       frames = await withVehicleRiders(null, { world: w, repo: WORLD_CLONE, atMs });
     } catch { frames = null; }
   }
-  const departures = (await positionProjection.departures()).filter((d) => d.handle !== VESSEL_HANDLE);
+  const snap = await positionProjection.snapshot();
+  const departures = snap.departures.filter((d) => d.handle !== VESSEL_HANDLE);
+  const placed = placedAt("presence", snap.epoch);
   const rowsFor = async (handles, at) => {
-    const rows = withFrames(everyonePlaced({ world: w, departures, at: clock.fractionalCrossing(at), where }), frames);
+    const rows = withFrames(placed({ world: w, departures, at: clock.fractionalCrossing(at), where }), frames);
     if (!handles) return rows;
     const want = new Set(handles);
     return rows.filter((r) => want.has(r.handle));
@@ -576,6 +578,49 @@ export async function projectedNearby(at) {
     console.error(`[world] the projected presence read tripped (${String(e?.message ?? e).slice(0, 160)}) — the door answers without it`);
     return null;
   }
+}
+
+// ── WHERE EVERYONE STANDS, PLACED ONCE PER CHANGE (POS-284) ─────────────────
+//
+// `everyonePlaced` is kept per projection epoch, fold and roll
+// (position-projection.mjs § createPlacement), and only the residents who are
+// walking are placed again at each question. Every door that asks the plural
+// question over the projection comes through here: orient, open-your-eyes, the
+// witness, GET /world/present, the hearing grid and the walkers door. Each
+// thread keeps its own; a read worker places the town once per change too,
+// never once per request.
+const keptPlacement = createPlacement();
+const _objectIds = new WeakMap();
+let _objectIdNext = 0;
+const objectIdOf = (o) => {
+  if (!_objectIds.has(o)) _objectIds.set(o, ++_objectIdNext);
+  return _objectIds.get(o);
+};
+// A fold is named by its sha; one with none (a test's hand-built world) by the
+// object itself. The engine's where-is is named by the module object: presence
+// imports it at the main ref, the hearing grid at the blessed one, and a kept
+// answer must not cross from one to the other.
+const worldIdOf = (w) => (!w ? "no-fold" : w._raw?.sha ?? `fold-${objectIdOf(w)}`);
+
+/** An `everyonePlaced` whose answer is kept for this epoch. `tag` names which departures the caller passes. */
+function placedAt(tag, epoch) {
+  return (args) => keptPlacement.rows({
+    key: `${tag}|${epoch}|${worldIdOf(args.world)}|where-${args.where ? objectIdOf(args.where) : "none"}|${(args.roll ?? []).join(",")}`,
+    at: args.at,
+    place: (only, at) => everyonePlaced({ ...args, at, only }),
+  });
+}
+
+/**
+ * What a presence read is handed when this office keeps positions: the
+ * projection's snapshot (its departures, in place of the entities table and a
+ * store read per call) and the placement kept for it. Empty otherwise, and the
+ * read derives exactly as it did before POS-264.
+ */
+async function keptPresence() {
+  if (!positionsProjected() || !presenceEnabled()) return {};
+  const projected = await positionProjection.snapshot().catch(() => null);
+  return projected ? { projected, placed: placedAt("presence", projected.epoch) } : {};
 }
 
 // Where a bare call stands you: your BODY first — the walk ledger's derived
@@ -1577,6 +1622,7 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
     // leaves residents unasked about" (#1864). The caller passes it; a test
     // with no roll gets the two-term union it always had.
     roll,
+    ...(await keptPresence()), // POS-284: the kept positions, as GET /world/present reads them
   });
   const transport = await transportBlock(w, at);
   return { standpoint: { ...at, stance: choice.stance }, crossing: { n: crossing, derivation: CROSSING_DERIVATION }, note, primer, ...o, ...(present ? { present } : {}), ...(transport ? { transport } : {}) };
@@ -1814,6 +1860,7 @@ export async function worldEyes(args = {}, key = null, { roll = [] } = {}) {
     repo: WORLD_CLONE,
     world: w,
     roll, // DEC-11 — see worldOrient
+    ...(await keptPresence()), // POS-284 — see worldOrient
   });
   const section = presenceTelling(present);
   const telling = section ? `${engineTelling ?? ""}\n\n${section}` : engineTelling;
@@ -1902,10 +1949,11 @@ export async function worldPresent(args = {}, { roll = null } = {}) {
   // in place of the entities table plus a store read per request. Its rebuild
   // disclosure rides along; presence carries it into `disclosed`.
   const projected = positionsProjected() ? await positionProjection.snapshot().catch(() => null) : null;
-  if (!has) return presenceEveryone({ place, repo: WORLD_CLONE, world: w, roll: roll ?? [], projected });
+  const placed = projected ? placedAt("presence", projected.epoch) : null; // POS-284: placed once per change
+  if (!has) return presenceEveryone({ place, repo: WORLD_CLONE, world: w, roll: roll ?? [], projected, placed });
   const radiusM = Number.isFinite(Number(args.radius_m)) ? Math.max(1, Number(args.radius_m)) : undefined;
   const limit = Number.isFinite(Number(args.limit)) ? Math.max(1, Math.floor(Number(args.limit))) : undefined;
-  return presenceNear({ x, y, place, repo: WORLD_CLONE, world: w, roll: roll ?? [], projected, ...(radiusM ? { radiusM } : {}), ...(limit ? { limit } : {}) });
+  return presenceNear({ x, y, place, repo: WORLD_CLONE, world: w, roll: roll ?? [], projected, placed, ...(radiusM ? { radiusM } : {}), ...(limit ? { limit } : {}) });
 }
 
 // ── a mark's image, as bytes (world_investigate with_image, 2026-08-23) ──────
@@ -2832,7 +2880,7 @@ export async function witnessStampAt(handle, here, known = null) {
     // `presentNear` is null when the presence layer is switched off at this
     // office, and `{unavailable}` when it tripped. Both are "could not see",
     // and neither is "nobody was there".
-    const seen = await presentNear(here, { exclude: [handle], repo: WORLD_CLONE });
+    const seen = await presentNear(here, { exclude: [handle], repo: WORLD_CLONE, ...(await keptPresence()) });
     const witnesses = seen == null ? pinWitnesses({ unread: "presence-off" })
       : seen.unavailable ? pinWitnesses({ unread: seen.unavailable })
       : pinWitnesses({ residents: seen.residents ?? [], centreOf, chainAt });
@@ -5106,7 +5154,10 @@ export async function worldWalkers(worldClone, key = null, { roll = null } = {})
     // inside `everyonePlaced` because that function is pure by contract and a
     // frame needs the engine; what it takes is a precomputed map, so the purity
     // holds and the two derivations still meet in exactly one place.
-    const walkers = everyonePlaced({ world: w, departures, at, where, roll: roll ?? [] });
+    // POS-284: over the projection the answer is kept per epoch ("walkers":
+    // these departures still name the vessel, presence's do not).
+    const place = eras.epoch != null && worldClone === WORLD_CLONE ? placedAt("walkers", eras.epoch) : everyonePlaced;
+    const walkers = place({ world: w, departures, at, where, roll: roll ?? [] });
     // ⚑ `available` WAS ON THE WALKERS DOOR TOO — the fourth surface, from the
     // same resolver `present` used, because these are two row-builders for one
     // roster ("world_walkers and present name the same residents, one

@@ -81,10 +81,17 @@ export function positionRoster({ departures = [], world = null, roll = [] } = {}
  * `world` may be null: then the roster is the walk ledger alone, which is
  * exactly the state this file exists to stop happening silently. Callers that
  * can hold a fold must pass one, and say so when they cannot.
+ *
+ * `only` (POS-284), a Set of handles, asks about some of them: the same roster,
+ * in the same order, cut to those handles. `publicResidents` places each handle
+ * on its own, so a row asked for alone is the row the whole answer holds. It is
+ * how a kept placement re-places the few who are walking without re-placing the
+ * town.
  */
-export function everyonePlaced({ world = null, departures = [], at, where = null, roll = [] } = {}) {
+export function everyonePlaced({ world = null, departures = [], at, where = null, roll = [], only = null } = {}) {
   if (typeof where?.publicResidents !== "function") return [];
-  const rows = where.publicResidents(positionRoster({ departures, world, roll }), { world, departures, at });
+  const roster = positionRoster({ departures, world, roll });
+  const rows = where.publicResidents(only ? roster.filter((h) => only.has(h)) : roster, { world, departures, at });
   // ── ONE STANDPOINT FOR THE GROUNDLESS (#2900, ruled 2026-09-17) ───────────
   //
   // The roll is what finally put the question — and the engine answered it with
