@@ -411,3 +411,66 @@ test("§ 6 a `before:` page is answered by the main thread; at the door a voice 
     await gone;
   }
 });
+
+// ── § 7 A LETTER OPENED IN FULL IS A WRITE (POS-286, ruling (a)) ────────────
+//
+// A full letter read clears unread for the recipients the caller's key holds,
+// and a read-role worker does not write. So a KEYED GET /letters/{id} or
+// GET /town/apex?read=letter is answered here on the main thread, and a keyless
+// one (which writes nothing) still goes to the worker. The answer's bytes are
+// the same on both threads. Whether the clear lands is proved with a store in
+// test/unread.test.mjs (§ 7, through the stub) and against a real Postgres in
+// the lane's paperwork; this office has no store, so it proves the ROUTING.
+test("§ 7 a keyed full letter read stays on the main thread; a keyless one goes to the worker, and the bytes agree", async () => {
+  // Clear of § 6's 49600–49899 (POS-226), which this range overlapped until the rebase.
+  const port = 50500 + ((process.pid * 17) % 400);
+  const KEY2 = "read-workers-test-key-limen";
+  const env = { ...process.env, OFFICE_READ_WORKERS: "1", WORLD_APEX: "1",
+    OFFICE_KEYS: `${KEY}=keemin:wright;${KEY2}=limen-house:limen`,
+    WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") };
+  delete env.WORLD2_PG; delete env.WORLD2_PG_URL;
+  const proc = spawn(process.execPath, [
+    join(ROOT, "src", "server.mjs"), "--port", String(port),
+    "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
+  ], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const gone = new Promise((ok) => proc.on("exit", ok));
+  try {
+    let out = "";
+    await new Promise((ok, no) => {
+      const t = setTimeout(() => no(new Error(`the office never listened: ${out}`)), 30_000);
+      proc.stdout.on("data", (d) => { out += String(d); if (out.includes("listening")) { clearTimeout(t); ok(); } });
+    });
+    const base = `http://127.0.0.1:${port}`;
+    let ready = 0;
+    for (let i = 0; i < 300 && ready !== 1; i++) {
+      ready = (await (await fetch(`${base}/release`)).json()).read_workers?.ready ?? 0;
+      if (ready !== 1) await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(ready, 1, "the office's worker never came up");
+    const id = "limen-2026-07-01-to-wright-the-gap";   // limen → wright
+    const get = async (p, bearer) => {
+      const r = await fetch(`${base}${p}`, { headers: bearer ? { authorization: `Bearer ${bearer}` } : {} });
+      return { status: r.status, reader: r.headers.get("x-pm-reader"), body: await r.text() };
+    };
+    const letterPath = `/letters/${encodeURIComponent(id)}`;
+    const keyless = await get(letterPath);
+    assert.equal(keyless.status, 200, keyless.body.slice(0, 200));
+    assert.equal(keyless.reader, "worker-0", "a keyless letter read writes nothing and should be the worker's");
+    for (const [who, bearer] of [["the recipient", KEY], ["the sender", KEY2]]) {
+      const r = await get(letterPath, bearer);
+      assert.equal(r.status, 200, r.body.slice(0, 200));
+      assert.equal(r.reader, null, `${who}'s keyed letter read was handed to a worker, which cannot write the opening`);
+      assert.equal(r.body, keyless.body, `${who}'s answer is not the letter's bytes`);
+    }
+    const apexPath = `/town/apex?read=letter&args=${encodeURIComponent(JSON.stringify({ id }))}`;
+    const apexKeyed = await get(apexPath, KEY);
+    assert.equal(apexKeyed.status, 200, apexKeyed.body.slice(0, 200));
+    assert.equal(apexKeyed.reader, null, "the keyed town letter read was handed to a worker");
+    const apexKeyless = await get(apexPath);
+    assert.equal(apexKeyless.reader, "worker-0");
+    assert.equal(apexKeyed.body, apexKeyless.body);
+  } finally {
+    proc.kill();
+    await gone;
+  }
+});

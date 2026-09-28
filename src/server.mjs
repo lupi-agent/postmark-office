@@ -1132,7 +1132,7 @@ const handle = (req, res) => {
   // the pool takes (read-workers.mjs § workerTakes) is answered by a worker and
   // written back on this socket; when no worker is ready this thread answers it,
   // exactly as before.
-  if (readPool && workerTakes(req.method, path, url.searchParams) && readPool.forward(req, res)) return;
+  if (readPool && workerTakes(req.method, path, url.searchParams, key) && readPool.forward(req, res)) return;
 
   // MCP skin — same verbs, JSON-RPC dress (P3). The MCP door REQUIRES a
   // credential even for reads — deliberately unlike REST's public read tier:
@@ -1745,7 +1745,9 @@ const handle = (req, res) => {
       if ((m = /^\/letters\/(.+)$/.exec(path))) {
         const l = letter(db, decodeURIComponent(m[1]));
         if (!l) return bounce(res, 404, "no letter by that id", "ids come from /mail/{handle} or the ledger");
-        return j(res, 200, l);
+        // Opening clears it (POS-286); a keyed GET stays on this thread for it
+        // (read-workers.mjs § opensALetter).
+        return import("./unread-store.mjs").then(({ answerOpening }) => answerOpening(l, key)).then((a) => j(res, 200, a));
       }
 
       if ((m = /^\/doorstep\/([a-z0-9-]+)$/.exec(path))) {

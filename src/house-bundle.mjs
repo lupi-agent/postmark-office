@@ -44,6 +44,7 @@ import { join } from "node:path";
 
 import { doorstep, DOORSTEP_STANCES, mailList, mailAwaiting, stampsDetail, windowRead, outboxSettled } from "./queries.mjs";
 import { ownerGate } from "./doorstep-bundle.mjs";
+import { unreadFor } from "./unread-store.mjs";
 import { nextCrossingForDoorstep, currentCrossing, CROSSING_EPOCH_UTC, CROSSING_MS } from "./crossings.mjs";
 import { resolveHouse, houseRows, VIA } from "./household-deriver.mjs";
 
@@ -267,10 +268,17 @@ export async function houseBundle({ household = null } = {}, ctx = {}) {
   const first = ashore.length ? doorstep(db, ashore[0], asOf, { fresh: { odb, clone, asOf }, nowMs }) : null;
   const once = first ? Object.fromEntries(HOUSE_ONCE.filter((k) => k in first).map((k) => [k, first[k]])) : {};
 
+  // UNREAD, ONCE FOR THE HOUSE (POS-286): one store read for every resident
+  // this key holds, handed to each resident's owner gate.
+  const held = ashore.filter((h) => key?.handles?.has?.(h) === true);
+  const unread = held.length
+    ? await unreadFor(db, held).then((rows) => ({ rows }), (error) => ({ error }))
+    : null;
+
   const residents = {};
   for (const h of ashore) {
     const d = { handle: h, ...residentSegments(db, h, { odb, clone, asOf }) };
-    await ownerGate(d, h, { db, clone, key, odb, meta, asOf });
+    await ownerGate(d, h, { db, clone, key, odb, meta, asOf, unread });
     d.last_active = lastActiveOf(db, h);
     d.stands = stands.byHandle[h] ?? null;
     residents[h] = d;

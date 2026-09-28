@@ -948,6 +948,11 @@ export function mailCorrespondents(db, handle, { limit, offset } = {}) {
 const LEDGER_PAGE = 20;
 const BULLETIN_PAGE = 10;
 
+// The compat line on `summary.new_inbound` (POS-286, ruled 2026-09-27: it
+// "keeps answering for one release, saying where the count moved"). Unread
+// itself is src/unread-store.mjs, attached behind the doorstep's owner gate.
+export const NEW_INBOUND_NOTE = "not new mail: whose letter came last, however old. New mail is `unread` on your own doorstep. Kept one more release (POS-286)";
+
 /**
  * The mail-state view — what `household read: "mail", view: "awaiting"` serves,
  * and what the doorstep's `awaiting` segment IS.
@@ -1141,6 +1146,10 @@ export function mailAwaiting(db, handle, { limit = LEDGER_PAGE, offset = 0, hide
     ...(complete ? {} : { conversations_next_offset: next,
       conversations_note: `${all.length - next} further conversation${all.length - next === 1 ? "" : "s"} in your ledger — call again with offset: ${next}, and summary above counts the whole of it` }),
     conversations,
+    // WHERE THE COUNT MOVED (POS-286). `summary.new_inbound` keeps answering
+    // for one release, because residents' code reads it (glitch's window, the
+    // site's dashboard); it was read as "new letters", and it never was.
+    ...(law?.summary && "new_inbound" in law.summary ? { new_inbound_moved: NEW_INBOUND_NOTE } : {}),
     ...(law ? {} : { note: "the town checkout behind this office predates tools/mail-state.mjs — this view is empty because the office refuses to guess with a second law; pull the checkout forward" }),
   };
 }

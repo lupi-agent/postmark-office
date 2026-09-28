@@ -631,7 +631,14 @@ export async function callTool(name, args, ctx) {
     }
     case "list_mail": return mailList(db, args.handle, args.box ?? "inbox", {
       since: args.since, until: args.until, limit: args.limit, offset: args.offset });
-    case "read_letter": { const l = letterAnswer(db, args.id); return l ?? notFound("no letter by that id", "ids come from list_mail or read_doorstep"); }
+    // Opening clears it (POS-286): the flat read, `town { read: "letter" }` and
+    // GET /town/apex all land here; a recipient's key clears their unread.
+    case "read_letter": {
+      const l = letterAnswer(db, args.id);
+      if (!l) return notFound("no letter by that id", "ids come from list_mail or read_doorstep");
+      const { answerOpening } = await import("./unread-store.mjs");
+      return answerOpening(l, key);
+    }
     case "search_town": return search(db, args.q ?? "", { limit: args.limit, offset: args.offset });
     // THE ROLE GATE'S SECOND HALF — and the reason it needed one. `/metrics/mail`
     // looked like a single door and is two CALL SITES of one read: the REST route

@@ -78,6 +78,10 @@ lawful AS (
     -- wake, narrowed by its row policy to the resident's own household; INSERT
     -- only, because a log line is never edited or removed.
     ('office_api',   'earpiece_wakes',   'INSERT'),
+    -- 029_letter_opens.sql, which delivered letters a household has opened
+    -- (POS-286). Narrowed by its row policy to the recipient's own household;
+    -- INSERT only, because a letter is opened once and nothing un-reads it.
+    ('office_api',   'letter_opens',     'INSERT'),
     ('clearing_job', 'claims',           'UPDATE'),
     ('clearing_job', 'windows',          'INSERT'),
     ('clearing_job', 'windows',          'UPDATE'),
