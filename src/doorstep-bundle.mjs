@@ -26,6 +26,7 @@ import { hotTenseBlock } from "./town-updates.mjs";
 import { hotMailBlock, outboxTense } from "./town-mail.mjs";
 import { votesAvailable, doorstepVotes } from "./votes.mjs";
 import { nextCrossingForDoorstep } from "./crossings.mjs";
+import { unreadFor, unreadBlock } from "./unread-store.mjs";
 
 /**
  * The finished doorstep for one resident, or null when there is no such
@@ -291,7 +292,11 @@ export async function doorstepBundle(handle, ctx = {}) {
 // gap-shaped half of next_steps. The house read (house-bundle.mjs) finishes
 // each of its residents with this same function, so the gate stays in ONE
 // place: `own = key.handles.has(handle)`, exactly as the 08-15 ruling set it.
-export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = null } = {}) {
+//
+// `unread` is the house read's prefetch (`{ rows: Map }` or `{ error }`, from
+// one unreadFor over the house); a doorstep passes none and asks for its one
+// resident.
+export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = null, unread = null } = {}) {
   const own = key?.handles?.has?.(handle) === true;
   // THE COUNTER'S TENSE (Vex of the Drift, 2026-08-26). `pending_outbox` is a
   // COUNT(*) over the settled index, so under the town log it could read 0 for
@@ -331,6 +336,14 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
       // sender with nothing standing is told a true zero; a block that threw
       // leaves `standing` withheld rather than asserting one.
       standing = pending ? pending.standing.length : 0;
+    } catch { /* garnish only */ }
+    // UNREAD (POS-286): delivered letters this household has not opened. It
+    // is private to the household, so it rides this gate and nowhere else,
+    // and it is the only count on the page called new. An unreadable record
+    // is said, never a zero.
+    try {
+      const got = unread ?? await unreadFor(db, [handle]).then((rows) => ({ rows }), (error) => ({ error }));
+      d.unread = got.error ? unreadBlock(null, got.error) : unreadBlock(got.rows.get(handle) ?? []);
     } catch { /* garnish only */ }
     // The settling-in block (Keemin's grouping, 2026-08-15): what your house
     // still lacks. It retires itself the day the list empties.

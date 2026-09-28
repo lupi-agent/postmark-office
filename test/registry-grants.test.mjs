@@ -274,3 +274,47 @@ test("026 · the notary's export (snapshot_reader) never reads household_harness
   const exporter = readFileSync(join(HERE, "..", "world2", "tools", "snapshot-export.mjs"), "utf8");
   assert.doesNotMatch(exporter, /household_harnesses/);
 });
+
+// ── 029's OPENINGS: office_api's alone, under 026's row-policy shape ─────────
+//
+// POS-286, ruled 2026-09-27: unread is "private to the household: the office
+// keeps it, it never enters the public ledger". The table holds what a house
+// has opened, so it is private in exactly the harness row's way, and the same
+// three facts are asserted: no role but `office_api` is GRANTed anything on
+// it; row level security is enabled; every policy is `TO office_api` and
+// compares the acting household's spelling set. SELECT + INSERT only: a
+// letter is opened once and nothing un-reads it.
+const OPENS = "letter_opens";
+
+test("029 · letter_opens is GRANTed to office_api alone — SELECT, INSERT — and 003 lists the INSERT and nothing else", () => {
+  const named = allGrantsOn(OPENS).filter((g) => !g.allTables);
+  assert.ok(named.length > 0, "029 grants nothing on letter_opens, or this test proves nothing");
+  assert.deepEqual([...new Set(named.map((g) => g.grantee))], ["office_api"]);
+  assert.deepEqual(named.map((g) => g.privilege).sort(), ["INSERT", "SELECT"]);
+  for (const g of allGrantsOn(OPENS).filter((x) => x.allTables))
+    assert.ok(Number(g.file.slice(0, 3)) < 29, `${g.file} grants ${g.privilege} on ALL TABLES after 029 — letter_opens would be in it`);
+  const lawful = lawfulList();
+  assert.ok(lawful.has(`office_api|${OPENS}|INSERT`), `003 must list office_api INSERT on ${OPENS}`);
+  for (const p of ["UPDATE", "DELETE"]) assert.equal(lawful.has(`office_api|${OPENS}|${p}`), false, `nothing un-reads a letter (${p})`);
+});
+
+test("029 · letter_opens has row level security, and every policy is TO office_api and compares app.household_keys", () => {
+  const sql = schemaFiles().find((f) => f.file === "029_letter_opens.sql").sql;
+  assert.match(sql, /ALTER TABLE letter_opens ENABLE ROW LEVEL SECURITY;/);
+  const policies = [...sql.matchAll(/CREATE POLICY\s+(\w+)\s+ON\s+letter_opens\s+FOR\s+(\w+)\s+TO\s+(\w+)([\s\S]*?);/gi)]
+    .map((m) => ({ name: m[1], cmd: m[2].toUpperCase(), to: m[3], body: m[4] }));
+  assert.deepEqual(policies.map((p) => p.cmd).sort(), ["INSERT", "SELECT"]);
+  for (const p of policies) {
+    assert.equal(p.to, "office_api", `${p.name} is TO ${p.to}`);
+    assert.match(p.body, /household = ANY\(string_to_array\(NULLIF\(current_setting\('app\.household_keys', true\), ''\), ','\)\)/, `${p.name} does not compare the spelling set`);
+  }
+  const others = schemaFiles().flatMap(({ file, sql: s }) =>
+    [...s.matchAll(/CREATE POLICY\s+\w+\s+ON\s+letter_opens[\s\S]*?TO\s+(\w+)/gi)].map((m) => `${file}:${m[1]}`))
+    .filter((x) => !x.endsWith(":office_api"));
+  assert.deepEqual(others, []);
+});
+
+test("029 · the notary's export (snapshot_reader) never reads letter_opens", () => {
+  const exporter = readFileSync(join(HERE, "..", "world2", "tools", "snapshot-export.mjs"), "utf8");
+  assert.doesNotMatch(exporter, /letter_opens/);
+});

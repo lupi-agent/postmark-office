@@ -370,6 +370,21 @@ test('F5 · OPERATIONS.md: "REST: stable/simple for frozen consumers" — the RE
   const homeLive = full.acts.find((a) => a.fields && "assets" in a.fields);
   assert.equal(homeLive?.act, "home");
   assert.equal(homeLive?.fields?.title?.type, "string", "the live home card takes title — a founding the card did not advertise would be refused for a field nobody was told about");
+  // ⚑ REGENERATED 2026-09-28 FOR POS-286 (unread mail), named here for the
+  // same reason. What grew: one act card, `mark-all-read`, appended to `acts`.
+  // The capture diff, key by key: +6, −0, 0 retyped — act, blurb,
+  // dispatches_to, teaches and fields handle {type, description}, none on an
+  // existing card. PSA for the release notes: "mail has UNREAD, the way email
+  // does — your doorstep's `unread` counts the letters delivered to you that
+  // your house has not opened; household { read: "letter" } opens one, and
+  // household do: mark-all-read clears the rest. `new_inbound` never meant new
+  // mail and says so; it keeps answering for one more release."
+  //
+  // The witness is the act's own name, in the frozen copy's position and the
+  // live door: it is the only card whose one field is `handle`.
+  const onlyHandle = (a) => a.fields && Object.keys(a.fields).join() === "handle";
+  assert.equal(frozen.acts.filter(onlyHandle).length, 1, "the frozen shape carries exactly one handle-only card");
+  assert.equal(full.acts.find(onlyHandle)?.act, "mark-all-read");
 });
 
 test(`F5c · and the answer stays BOUNDED — REST under ${REST_CEILING}B, the connector's bare answer under ${SLIM_CEILING}B`, async () => {
@@ -448,7 +463,7 @@ test("F7 · an unknown read bounces naming BOTH namespaces — the reads and the
   assert.match(r.hint, /reads back its own full card/);
 });
 
-test("F7b · the FOURTEEN acts that own their name answer their card; the THREE that are also reads keep their read", async () => {
+test("F7b · the FIFTEEN acts that own their name answer their card; the THREE that are also reads keep their read", async () => {
   // ⚠ THE ROUND ASKED FOR A DISJOINTNESS GUARD. It fired on the live door:
   // `address`, `home` and `window` have been both an act and a read since long
   // before this branch, because a read here IS that act's shadow. At the world
@@ -475,7 +490,11 @@ test("F7b · the FOURTEEN acts that own their name answer their card; the THREE 
   // ⚑ THIRTEEN → FOURTEEN, 2026-09-26 (POS-227): `announce` joined as a BARE
   // act; what it says is read on the calendar at the TOWN door, so it shadows
   // no household read.
-  assert.equal(bare.length, 14);
+  //
+  // ⚑ FOURTEEN → FIFTEEN, 2026-09-28 (POS-286): `mark-all-read` joined as a
+  // BARE act; what it clears is counted on the doorstep's `unread` block, not
+  // at a household read of its name.
+  assert.equal(bare.length, 15);
   for (const act of bare) {
     const r = await householdApex({ read: act }, KEY, ctx({ slim: true, schemas: SCHEMAS, schemaRequired: REQUIRED }));
     assert.equal(r.error, undefined, `read: "${act}" bounced — an act nobody can read is an act nobody can learn`);
@@ -741,6 +760,18 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //
   //   full  19051 -> 19179 (+128, +0.67%) = set_downs_awaiting +24, set_downs_unavailable +104
   //   slim  16683 -> 16811 (+128, +0.77%) = set_downs_awaiting +24, set_downs_unavailable +104
+  //
+  // ⚠ AND REGENERATED A SEVENTH TIME, 2026-09-28 (POS-286), for the compat
+  // pointer Keemin ruled onto `new_inbound` ("keeps answering for one release,
+  // saying where the count moved"). The diff was run leaf by leaf BEFORE the
+  // capture: 928 paths before, 930 after, NONE removed and NONE changed; the two
+  // added are `full.awaiting.new_inbound_moved` and its slim twin. The `unread`
+  // block itself is owner-only, and this page is read keyless, so it does not
+  // ride here. The pointer leaves in the release after next, and these bytes
+  // with it.
+  //
+  //   full  19249 -> 19397 (+148, +0.77%) = new_inbound_moved +148
+  //   slim  16876 -> 17024 (+148, +0.88%) = new_inbound_moved +148
   //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:

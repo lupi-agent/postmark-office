@@ -443,6 +443,18 @@
     }
    },
    "teaches": "string"
+  },
+  {
+   "act": "string",
+   "blurb": "string",
+   "dispatches_to": "null",
+   "fields": {
+    "handle": {
+     "description": "string",
+     "type": "string"
+    }
+   },
+   "teaches": "string"
   }
  ],
  "credential": {
