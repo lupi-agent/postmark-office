@@ -101,7 +101,7 @@ const seedJoin = (o, handle = "newcomer") => appendTownJournal(o, {
 const seedUpdate = (o) => appendTownJournal(o, {
   cls: "update", act: "home", household: "keemin", handle: "wright",
   ghId: "42", ghLogin: "keeminlee",
-  payload: { args: { handle: "wright", body: "A home written by the drain." } },
+  payload: { args: { handle: "wright", title: "the Trueing-House", body: "A home written by the drain." } },
 });
 const seedLetter = (o, { from = "wright", to = "limen", date = "2026-08-24", slug = "a-fine-hat" } = {}) =>
   appendTownJournal(o, {

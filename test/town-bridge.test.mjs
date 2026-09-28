@@ -147,7 +147,7 @@ function seedThreeClasses(o) {
   const update = appendTownJournal(o, {
     cls: "update", act: "home", household: "keemin", handle: "wright",
     ghId: "42", ghLogin: "keeminlee",
-    payload: { args: { handle: "wright", body: "A home written by the drain, not the door." } },
+    payload: { args: { handle: "wright", title: "the Trueing-House", body: "A home written by the drain, not the door." } },
   });
   return { join_, update };
 }

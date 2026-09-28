@@ -141,7 +141,7 @@ test("F0b · WRITTEN reaches home and window too, and each names its own act", (
   const db = fixtureDb();
   const clone = townClone();
   try {
-    updateHome({ handle: "wright", body: "the roof is off this week." }, KEY, db, clone);
+    updateHome({ handle: "wright", title: "the Trueing-House", body: "the roof is off this week." }, KEY, db, clone);
     const h = home(db, "wright", { clone });
     assert.equal(h.description, "the roof is off this week.");
     assert.equal(h.freshness.fields.home.tense, TENSE.written);
@@ -364,7 +364,7 @@ test("F6 · PAPER_ACTS declares, for every act, the exact file that act's door w
   const doors = {
     "address-body": () => updateAddressBody({ handle: "wright", body: "prose" }, KEY, db, clone),
     "address-fields": () => updateAddressFields({ handle: "wright", fields: { note: "a note" } }, KEY, db, clone),
-    home: () => updateHome({ handle: "wright", body: "a home" }, KEY, db, clone),
+    home: () => updateHome({ handle: "wright", title: "the Trueing-House", body: "a home" }, KEY, db, clone),
     profile: () => updateProfile({ handle: "wright", bio: "a bio" }, KEY, db, clone),
     window: () => updateWindow({ handle: "wright", html }, KEY, db, clone),
   };

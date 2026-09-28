@@ -9,7 +9,7 @@ import { existsSync, rmSync, readFileSync, writeFileSync, mkdirSync, symlinkSync
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fixtureDb, editClone, fixtureKey } from "./fixture.mjs";
-import { updateAddressBody, updateHome, updateHomeImage, updateProfile, updateProfileAvatar, updateWindow } from "../src/edit.mjs";
+import { HOME_TITLE_MAX, updateAddressBody, updateHome, updateHomeImage, updateProfile, updateProfileAvatar, updateWindow } from "../src/edit.mjs";
 
 delete process.env.TOWN_PUSH; // belt and braces: the spine must stay local
 
@@ -299,30 +299,108 @@ test("body edits: empty body → 422, frontmatter-smuggle → 422, missing file 
 
 // ── the home founds on first write (chat-only residents have no PR hands) ─────
 
-test("update_home: first call founds the home (UNPLACED, office-stamped frontmatter), second edits body-only", () => {
+test("update_home: first call founds the home (UNPLACED, office-stamped frontmatter, its title), second edits body-only", () => {
   const clone = editClone();
   try {
     // a key that acts for a handle with no HOME yet — the chat-only resident who
     // could never open the founding PR by hand
     const newKey = { household: "keemin", handles: new Set(["newhome"]) };
-    const first = updateHome({ handle: "newhome", body: "# my first house\n\nOne warm room by the water." }, newKey, db, clone);
+    const first = updateHome({ handle: "newhome", title: "the fig house", body: "# my first house\n\nOne warm room by the water." }, newKey, db, clone);
     assert.equal(first.founded, true);
     assert.equal(first.file, "WHITE_PAGES/newhome/HOME/HOME.md");
     assert.ok(first.commit, "founding commits");
+    assert.deepEqual(first.written, ["body", "title"], "the receipt names the title it wrote");
 
     const founded = read(clone, "WHITE_PAGES", "newhome", "HOME", "HOME.md");
-    // office-stamped frontmatter is exactly the identity tie — UNPLACED, no title/region/sits
-    assert.equal(founded, "---\nresident: newhome\n---\n\n# my first house\n\nOne warm room by the water.\n");
-    assert.doesNotMatch(founded, /region:|sits:|title:/);
+    // office-stamped frontmatter is the identity tie and the name — UNPLACED, no region/sits
+    assert.equal(founded, "---\nresident: newhome\ntitle: the fig house\n---\n\n# my first house\n\nOne warm room by the water.\n");
+    assert.doesNotMatch(founded, /region:|sits:/);
     assert.match(lastLog(clone), /newhome: home founded .*key household keemin/);
 
     // second call edits body-only, frontmatter preserved verbatim
     const second = updateHome({ handle: "newhome", body: "Two rooms now, and a lamp in the window." }, newKey, db, clone);
     assert.equal(second.founded, false);
     const edited = read(clone, "WHITE_PAGES", "newhome", "HOME", "HOME.md");
-    assert.ok(edited.startsWith("---\nresident: newhome\n---"), "frontmatter untouched on edit");
+    assert.ok(edited.startsWith("---\nresident: newhome\ntitle: the fig house\n---"), "frontmatter untouched on edit");
     assert.match(edited, /---\n\nTwo rooms now, and a lamp in the window\.\n$/);
     assert.match(lastLog(clone), /newhome: home description updated/);
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+// ── POS-224: a home founded through the door has a name ──────────────────────
+//
+// stellar-scribe's home (town d8c45200f, 2026-09-23) was founded here with
+// `resident:` alone, and the site's card set its first paragraph in the
+// title's seat. Keemin, 2026-09-25: "we should require a name for the home as I
+// believe other things depend on that".
+
+test("POS-224 a founding with no title is REFUSED, by name, saying what a title is — and nothing is written", () => {
+  const clone = editClone();
+  try {
+    const freshKey = { household: "keemin", handles: new Set(["nameless"]) };
+    const e = bounceOf(() => updateHome({ handle: "nameless", body: "In the depths of the High Ground, where the moonlight filters through." }, freshKey, db, clone));
+    assert.equal(e.code, 422);
+    assert.match(e.defect, /no title/);
+    assert.match(e.hint, /a name, not a sentence/);
+    assert.ok(!existsSync(join(clone, "WHITE_PAGES", "nameless", "HOME", "HOME.md")), "a refused founding writes nothing");
+    // missing BOTH is one refusal naming both, not two round trips
+    const both = bounceOf(() => updateHome({ handle: "nameless", assets: [] }, freshKey, db, clone));
+    assert.match(both.defect, /no title and no body/);
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+test("POS-224 a title is a name: capped at HOME_TITLE_MAX, one line, never read back as data — and never quoted in the door's sentence", () => {
+  const clone = editClone();
+  try {
+    const freshKey = { household: "keemin", handles: new Set(["nameless"]) };
+    const found = (title) => bounceOf(() => updateHome({ handle: "nameless", title, body: "A room." }, freshKey, db, clone));
+    const long = "a house ".repeat(11).trim(); // 87 characters
+    const e = found(long);
+    assert.equal(e.code, 422);
+    assert.match(e.defect, new RegExp(`at most ${HOME_TITLE_MAX} characters`));
+    assert.ok(!`${e.defect} ${e.hint}`.includes(long), "the resident's text is never interpolated into the door's own sentence");
+    assert.equal(found("the fig\nhouse").code, 422);
+    assert.equal(found("   ").code, 422);
+    assert.equal(found(["the fig house"]).code, 422);
+    assert.equal(found("[the fig house]").code, 422);
+    // exactly the cap is a name
+    const r = updateHome({ handle: "nameless", title: "x".repeat(HOME_TITLE_MAX), body: "A room." }, freshKey, db, clone);
+    assert.equal(r.founded, true);
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+test("POS-224 a home founded before this (no title) may set one ONCE; a second, different title is refused and the first stands", () => {
+  const clone = editClone();
+  try {
+    // the shape the door founded until today: resident alone
+    setFm(clone, "---\nresident: wright\n---");
+    const one = updateHome({ handle: "wright", title: "the Trueing-House" }, fixtureKey, db, clone);
+    assert.deepEqual(one.written, ["title"]);
+    assert.ok(one.commit);
+    assert.match(lastLog(clone), /wright: home named/);
+    const named = homeMd(clone);
+    assert.ok(named.startsWith("---\nresident: wright\ntitle: the Trueing-House\n---\n\n# a home\n\nThe prose.\n"), named);
+
+    const e = bounceOf(() => updateHome({ handle: "wright", title: "the Leaning House", body: "New prose." }, fixtureKey, db, clone));
+    assert.equal(e.code, 422);
+    assert.match(e.defect, /this door does not write: title/);
+    assert.match(e.hint, /by PR/);
+    assert.equal(homeMd(clone), named, "the title is unchanged and the body with it — a refusal is total");
+
+    // the same name again is COMPARED, not refused: a resent envelope is not a rename
+    const again = updateHome({ handle: "wright", title: "the Trueing-House" }, fixtureKey, db, clone);
+    assert.equal(again.unchanged, true);
+    assert.deepEqual(again.compared, ["title"]);
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+test("POS-224 the join template's blank `title:` counts as none, and is filled where it stands", () => {
+  const clone = editClone();
+  try {
+    setFm(clone, "---\nresident: wright\ntitle:\nstyle: stone\n---");
+    updateHome({ handle: "wright", title: "the Trueing-House", body: "Warmer." }, fixtureKey, db, clone);
+    assert.ok(homeMd(clone).startsWith("---\nresident: wright\ntitle: the Trueing-House\nstyle: stone\n---\n\nWarmer.\n"));
+    assert.match(lastLog(clone), /wright: home description updated \+ named/);
   } finally { rmSync(clone, { recursive: true, force: true }); }
 });
 

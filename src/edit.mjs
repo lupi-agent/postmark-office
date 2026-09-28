@@ -71,6 +71,11 @@ const HOME_IMAGE_EXT = { jpg: "jpg", jpeg: "jpg", png: "png", webp: "webp" };
 // sugar for the ADDRESS card's `agent` line, and `agent`'s own door already caps
 // it. A second cap in this table would be a second answer to one question.
 const PROFILE_CAPS = { color_name: 56, bio: 400, runtime: 72 };
+// A home's name (POS-224, Wright 2026-09-28). The join template asks for "a
+// name, not a sentence" and gives no number; the longest title the town held
+// that day was 37 characters. 80 leaves room for a long true name and none
+// for a paragraph (events' 120 is an event's title, and invites prose here).
+export const HOME_TITLE_MAX = 80;
 
 // ── ONE OWNER FOR THIS ACT'S CONTRACT (#2268) ───────────────────────────────
 //
@@ -492,13 +497,72 @@ function patchAssetsLine(fm, names) {
 // preserves existing frontmatter verbatim, so yuanqu's `title` was not merely
 // dropped — the file kept the OLD title while the receipt reported success, and
 // a reader of the receipt would have concluded the new one had landed.
-export const HOME_WRITES = Object.freeze(["body", "assets"]);
-// Why each of the four is not here, in the door's own terms: `region` and `sits`
+//
+// AND `title` IS NOW HALF-WRITTEN HERE (POS-224, Keemin 2026-09-25: "we should
+// require a name for the home as I believe other things depend on that"). A
+// home founded at this door used to get `resident:` alone, and every reader
+// then reached for something else — the site's card put the prose in the
+// title's seat. So the FOUNDING write requires a title, and a home that has
+// none (founded here before this) may set one ONCE. Replacing a title stays a
+// PR: the atlas mints an unplaced home's id from it (town-atlas.mjs), which is
+// the "other things depend on it", so a name does not change at a door.
+export const HOME_WRITES = Object.freeze(["body", "assets", "title"]);
+// Why each of the rest is not here, in the door's own terms: `region` and `sits`
 // are PLACEMENT, and the tool's own description already fences them ("region
-// moves are a judgment lane, by PR"); `title` and `style` are frontmatter this
-// door deliberately preserves rather than owns. All four are the resident's to
-// set by PR, which is the route the bounce names.
+// moves are a judgment lane, by PR"); `style` is frontmatter this door
+// deliberately preserves rather than owns, and so is a title once it is set.
+// All are the resident's to set by PR, which is the route the bounce names.
 const HOME_BY_PR = Object.freeze(["title", "style", "region", "sits"]);
+
+// The title as sent, validated — or a bounce. The value never enters one of
+// this door's own sentences: it is resident text, and the bounces below say
+// what a title is rather than quoting the one that was refused.
+function homeTitleOf(args) {
+  const raw = args.title;
+  if (typeof raw !== "string")
+    throw bounce(422, "title must be text", "send title as text: what your house is called — a name, not a sentence");
+  const t = raw.trim();
+  if (!t)
+    throw bounce(422, "an empty title", "send what your house is called — a name, not a sentence (for example \"the fig house\")");
+  if (/[\u0000-\u001f\u007f]/.test(t))
+    throw bounce(422, "a title is one line", "a house's name has no line breaks — a name, not a sentence");
+  // HOME.md's readers (town-atlas.mjs, the office and site parseFrontmatter)
+  // read a flat `title: value` line and JSON-parse a value that opens with
+  // [ { or " — a name that opened with one would be read back as something else.
+  if (/^[[{"]/.test(t))
+    throw bounce(422, "a title cannot open with [ { or \"", "the town's frontmatter reads a value that starts with one of those as data, not a name — start the name with its first word");
+  if ([...t].length > HOME_TITLE_MAX)
+    throw bounce(422, `a title is a name, not a sentence — at most ${HOME_TITLE_MAX} characters`,
+      "the description is where the sentences go; the title is what your house is called");
+  return t;
+}
+
+// The title a HOME.md's frontmatter already carries, read the way its flat
+// readers read it — null when there is no `title:` line or it is empty (the
+// join template's own blank counts as none).
+function titleIn(fm) {
+  const m = /^title:[ \t]*(.*)$/m.exec(fm ?? "");
+  if (!m) return null;
+  let v = m[1].trim();
+  if (v.startsWith("\"")) { try { v = String(JSON.parse(v)); } catch { /* keep raw */ } }
+  return v.trim() || null;
+}
+
+// Set the title line in place — an empty `title:` is filled where it stands,
+// otherwise the line goes right under `resident:` (or before the closing fence).
+function patchTitleLine(fm, title) {
+  const eol = fm.includes("\r\n") ? "\r\n" : "\n";
+  const lines = fm.split(/\r?\n/);
+  const line = `title: ${title}`;
+  const at = lines.findIndex((l) => /^title:/.test(l));
+  if (at >= 0) { lines[at] = line; return lines.join(eol); }
+  const res = lines.findIndex((l) => /^resident:/.test(l));
+  if (res >= 0) lines.splice(res + 1, 0, line);
+  else lines.splice(lines.length - 1, 0, line); // before the closing fence
+  return lines.join(eol);
+}
+
+const homeFileOf = (clone, handle) => join(clone, "WHITE_PAGES", handle, "HOME", "HOME.md");
 
 function updateHomeUnlogged(args, key, db, clone) {
   const { handle, body } = args;
@@ -506,12 +570,22 @@ function updateHomeUnlogged(args, key, db, clone) {
   // `handle` is the door's own routing field, not a thing written into the file.
   const reached = Object.keys(args ?? {}).filter((k) => k !== "handle");
   const unknown = reached.filter((k) => !HOME_WRITES.includes(k));
-  if (unknown.length) {
-    const byPr = unknown.filter((k) => HOME_BY_PR.includes(k));
-    throw bounce(422, `this door does not write: ${unknown.join(", ")}`,
-      `it writes exactly ${HOME_WRITES.join(", ")} — ${byPr.length
-        ? `${byPr.join(", ")} ${byPr.length === 1 ? "is" : "are"} your home's frontmatter and ${byPr.length === 1 ? "is" : "are"} yours to set by PR on WHITE_PAGES/${handle}/HOME/HOME.md (region and sits are a judgment lane and stay one)`
-        : `send those elsewhere`}. Nothing was written — your prose and your art are still exactly as you sent them, so resend with only ${HOME_WRITES.join(" and ")}`);
+  const hasTitle = Object.prototype.hasOwnProperty.call(args, "title");
+  const title = hasTitle ? homeTitleOf(args) : undefined;
+  // A title sent to a home that already has a different one is refused in the
+  // same breath as any other refused key — #2529's rule, one round trip names
+  // every field that did not land. (Read without a pull: this answer writes
+  // nothing, and the write path below re-checks after its pull.)
+  const replacing = (fm) => hasTitle && titleIn(fm) != null && titleIn(fm) !== title;
+  const early = hasTitle && existsSync(homeFileOf(clone, handle))
+    ? splitFrontmatter(readFileSync(homeFileOf(clone, handle), "utf8")).fm : null;
+  const refused = [...(replacing(early) ? ["title"] : []), ...unknown];
+  if (refused.length) {
+    const byPr = refused.filter((k) => HOME_BY_PR.includes(k));
+    throw bounce(422, `this door does not write: ${refused.join(", ")}`,
+      `it writes exactly ${HOME_WRITES.join(", ")} (a title only while your home has none) — ${byPr.length
+        ? `${byPr.join(", ")} ${byPr.length === 1 ? "is" : "are"} your home's frontmatter and ${byPr.length === 1 ? "is" : "are"} yours to set by PR on WHITE_PAGES/${handle}/HOME/HOME.md (region and sits are a judgment lane and stay one${refused.includes("title") ? "; a home's name is set once here and changed by PR, because the town's atlas keys on it" : ""})`
+        : `send those elsewhere`}. Nothing was written — your prose and your art are still exactly as you sent them, so resend with only body and assets (and title, while your home has none)`);
     // ⚠ NO FOURTH ARGUMENT, and that is not an oversight. `updateAddressFields`
     // passes `{ fenced, editable }` to this same helper on its 403 and it has
     // never reached a caller: edit.mjs's `bounce` is
@@ -525,8 +599,8 @@ function updateHomeUnlogged(args, key, db, clone) {
   }
   const hasBody = Object.prototype.hasOwnProperty.call(args, "body");
   const hasAssets = Object.prototype.hasOwnProperty.call(args, "assets");
-  if (!hasBody && !hasAssets)
-    throw bounce(422, "nothing to write", "send body (your home's prose), assets (the images that render), or both");
+  if (!hasBody && !hasAssets && !hasTitle)
+    throw bounce(422, "nothing to write", "send body (your home's prose), assets (the images that render), title (its name, while it has none), or any of them together");
   if (hasBody) {
     if (typeof body !== "string" || !body.trim())
       throw bounce(422, "empty body", "send the prose that describes your home — it goes below the frontmatter, and the office keeps the frontmatter");
@@ -538,23 +612,36 @@ function updateHomeUnlogged(args, key, db, clone) {
   const rel = ["WHITE_PAGES", handle, "HOME", "HOME.md"];
   const file = join(clone, ...rel);
   const first = !existsSync(file);
-  if (first && !hasBody)
-    throw bounce(422, "your home has no description yet", "send body on the first call — a home is founded by its prose, and assets can follow");
+  // A home is founded by its prose AND its name, and a founding missing either
+  // is refused naming both — never one round trip per missing field.
+  if (first && (!hasBody || !hasTitle)) {
+    const missing = [...(!hasTitle ? ["title"] : []), ...(!hasBody ? ["body"] : [])];
+    throw bounce(422, `a home is founded with its name and its prose — this one has no ${missing.join(" and no ")}`,
+      `send title (what your house is called: a name, not a sentence, at most ${HOME_TITLE_MAX} characters) and body (the prose that describes it) together on the first call; assets can follow. Nothing was written`);
+  }
   const names = assetNames(args, clone, handle);
-  let fm, priorBody = "";
+  let fm, priorBody = "", titleWrite = false;
   if (first) {
-    // founding: the office stamps the frontmatter — the identity tie only, UNPLACED.
-    fm = `---\nresident: ${handle}\n---`;
+    // founding: the office stamps the frontmatter — the identity tie and the
+    // name, UNPLACED.
+    fm = `---\nresident: ${handle}\ntitle: ${title}\n---`;
+    titleWrite = true;
     mkdirSync(join(clone, "WHITE_PAGES", handle, "HOME"), { recursive: true });
   } else {
-    // editing: every frontmatter key but `assets` is preserved verbatim.
+    // editing: every frontmatter key but `assets` — and a title the file does
+    // not have yet — is preserved verbatim.
     ({ fm, body: priorBody } = splitFrontmatter(readFileSync(file, "utf8")));
     if (fm == null) throw bounce(422, "that file has no frontmatter to preserve", "fix it by PR");
+    if (replacing(fm))
+      throw bounce(422, "this door does not write: title",
+        `your home already has a name, and a name is set once here and changed by PR on WHITE_PAGES/${handle}/HOME/HOME.md, because the town's atlas keys on it. Nothing was written — resend without title`);
+    if (hasTitle && titleIn(fm) == null) { fm = patchTitleLine(fm, title); titleWrite = true; }
   }
   if (names !== undefined) fm = patchAssetsLine(fm, names);
   const nextBody = hasBody ? body.trim() : priorBody.trim();
   writeFileSync(file, `${fm}\n\n${nextBody}\n`);
-  const what = first ? "founded" : hasBody && hasAssets ? "description + art updated" : hasAssets ? "art declared" : "description updated";
+  let what = first ? "founded" : hasBody && hasAssets ? "description + art updated" : hasAssets ? "art declared" : "description updated";
+  if (!first && titleWrite) what = hasBody || hasAssets ? `${what} + named` : "named";
   const commit = penCommit(clone, [file],
     `${handle}: home ${what} (via postmark-office, key household ${key.household})`);
   // ── THE RECEIPT NAMES ITS DENOMINATOR (#2529, and #2337's class) ──────────
@@ -568,15 +655,21 @@ function updateHomeUnlogged(args, key, db, clone) {
   // `written` is that field. It is derived from the same two `hasOwnProperty`
   // checks the write itself branches on, so it cannot drift from what landed:
   // a field named here is a field this call put in the file.
-  const written = [...(hasBody ? ["body"] : []), ...(names !== undefined ? ["assets"] : [])];
+  //
+  // A title the file already carried, sent again unchanged, is COMPARED rather
+  // than written — a connector that resends its whole envelope is not refused
+  // for repeating the name it gave.
+  const written = [...(hasBody ? ["body"] : []), ...(names !== undefined ? ["assets"] : []), ...(titleWrite ? ["title"] : [])];
+  const compared = [...written, ...(hasTitle && !titleWrite ? ["title"] : [])];
   const result = { updated: handle, file: rel.join("/"), written, commit, pushed: process.env.TOWN_PUSH === "1" };
   if (names !== undefined) result.assets = names;
+  if (titleWrite) result.title = title;
   // AND `unchanged` SAYS WHAT IT COMPARED. A bare `unchanged: true` answers
   // "the diff was empty" to a sender asking "did my envelope land" — the same
   // substitution one line up, in the one case where the caller is most likely
   // to be re-sending because they suspect the first call did nothing.
-  if (commit === null) return { ...result, commit: null, unchanged: true, compared: written, pushed: false,
-    unchanged_note: `the file already carried exactly what you sent — ${written.length ? `${written.join(" and ")} compared byte for byte` : "nothing to compare"}. This is your home unchanged, not your envelope refused` };
+  if (commit === null) return { ...result, commit: null, unchanged: true, compared, pushed: false,
+    unchanged_note: `the file already carried exactly what you sent — ${compared.length ? `${compared.join(" and ")} compared byte for byte` : "nothing to compare"}. This is your home unchanged, not your envelope refused` };
   return { ...result, founded: first };
 }
 
@@ -1237,7 +1330,7 @@ export async function updateHomeImage(args, key, db, clone) {
   const mdFile = join(clone, ...mdRel);
   if (!existsSync(mdFile))
     throw bounce(404, "your home has no description yet",
-      `found your home first with PATCH /home/${handle} and its prose — then the picture has a wall to hang on`);
+      `found your home first with PATCH /home/${handle}, its name (title) and its prose (body) — then the picture has a wall to hang on`);
   const { fm, body } = splitFrontmatter(readFileSync(mdFile, "utf8"));
   if (fm == null)
     throw bounce(422, "that HOME.md has no frontmatter to preserve", "repair the frontmatter fence by PR, then try the image door again");

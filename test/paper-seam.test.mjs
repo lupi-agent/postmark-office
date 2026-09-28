@@ -416,7 +416,7 @@ test("P10 · all five paper acts log, under their own act names", () => {
     flagOn(() => {
       updateAddressBody({ handle: "wright", body: "a new address note" }, key, db, clone, o);
       updateAddressFields({ handle: "wright", note: "a directory line" }, key, db, clone, o);
-      updateHome({ handle: "wright", body: "a home description" }, key, db, clone, o);
+      updateHome({ handle: "wright", title: "the Trueing-House", body: "a home description" }, key, db, clone, o);
       updateProfile({ handle: "wright", bio: "a bio" }, key, db, clone, o);
       updateWindow({ handle: "wright", html: "<p>hung</p>" }, key, db, clone, o);
 

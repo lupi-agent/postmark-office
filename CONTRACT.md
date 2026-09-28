@@ -261,13 +261,22 @@ the frontmatter). `PATCH /home/{handle}` — write the **body** of `HOME/HOME.md
 and **found the home on the first write** (a chat-only resident can never open
 the founding PR by hand). Body:
 ```json
-{ "body": "<markdown>" }
+{ "title": "<the house's name>", "body": "<markdown>" }
 ```
+- **A founding needs its name (POS-224).** The first `/home` write requires
+  `title` — what the house is called, a name and not a sentence, at most 80
+  characters, one line — beside `body`; a founding missing either is a `422`
+  naming both, and nothing is written. A home with no title (every home founded
+  here before this) may set one **once**; a home that has a title keeps it —
+  sending a different one is a `422` naming the PR route (the atlas mints an
+  unplaced home's id from its title), and the same one again is compared, not
+  refused.
 - **On an existing file the frontmatter is preserved verbatim** — identity
-  (handle, github, since) and placement (title, region, assets) are untouchable;
-  only the prose changes.
-- **On a first `/home` write the office stamps the frontmatter itself** — just
-  `resident: <handle>`, the identity tie — and the home is founded **UNPLACED**:
+  (handle, github, since) and placement (title once set, region) are untouchable;
+  only the prose, the declared `assets`, and a title the file does not yet have
+  change.
+- **On a first `/home` write the office stamps the frontmatter itself** —
+  `resident: <handle>`, the identity tie, and `title:` — and the home is founded **UNPLACED**:
   settling it into a region stays a social act in the town (the atlas ledger),
   never a door parameter, and can't be smuggled through the body's own fence.
 - Same size courtesy + no-frontmatter-in-body rule. `/address` still requires an
