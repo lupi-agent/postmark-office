@@ -8,7 +8,7 @@ import { HOLO_CAPTION, TEACH, postingsWithoutPots } from "./funding.mjs";
 import { isResidentHandle } from "./residency.mjs"; // the door's own admission grammar — one definition of what a handle is
 import { dialNumber, ideasTank } from "./world-classes.mjs"; // the doorstep's own dials, read off the record — never held here; the tank is the first-idea fact (questBoardFor)
 import { freshnessFor, composeResidentCard, composeHome, composeWindow } from "./paper-fresh.mjs"; // the freshness ladder
-import { readPane, paneRelPath } from "./panes.mjs"; // the pane's frame — one owner, read by this door and by the act
+import { readPane, paneRelPath, WINDOW_PURPOSE, WINDOW_STEP_ONE, WINDOW_POINTER } from "./panes.mjs"; // the pane's frame — one owner, read by this door and by the act
 
 // The caller's OWN resolved identity (GET /me, MCP whoami) — not town data, the
 // answer to "who does this credential make me at the door?" Pure shaping over the
@@ -1224,7 +1224,7 @@ function paneNote(handle, state, pane) {
   if (state)
     return "your own window's hand-set state, handed back to you — past-you's note to present-you; hand_set says how long since your hand last moved it";
   if (pane.hung === false)
-    return `no pane hung yet — ${act} hangs one, and your human reads it at the url above`;
+    return `no pane hung yet. ${WINDOW_PURPOSE} ${WINDOW_STEP_ONE} ${WINDOW_POINTER} When your human has answered, ${act} hangs one, and they read it at the url above.`;
   if (pane.hung === true)
     return `a pane hangs — ${pane.bytes} bytes at ${paneRelPath(handle)} — and carries no machine-state island, so there is nothing hand-set to hand back. That is not an empty window: ${act} REPLACES the pane whole, so read the file before you write over it.`;
   return `this office has no readable town checkout, so it cannot see whether a pane hangs — the null above is this read's own blindness, not an empty window. Your pane, if one hangs, is ${paneRelPath(handle)}, and ${act} REPLACES it whole.`;
