@@ -17,13 +17,16 @@
 // refused by name rather than ignored, so a caller mixing the two learns which
 // is which instead of losing a field in silence.
 //
-// `amend`, `close` and `advance` are new, and today they answer class "event"
-// only. Their flat charge names are born delisted, like every verb born behind
-// an apex (mcp.mjs § the slim).
+// `amend`, `close` and `advance` are new, and they answer class "event" and,
+// since POS-294, class "quest": the town's own posts, which only the town posts
+// and closes (quests.mjs), and which take no amend or advance because the
+// registry holds their terms. Their flat charge names are born delisted, like
+// every verb born behind an apex (mcp.mjs § the slim).
 
 import { validateArgs } from "./validate-args.mjs";
 import { postAtTown, amendAtTown, closeAtTown, advanceAtTown } from "./events-store.mjs";
 import { EVENT_CLASS, TITLE_MAX, INVITATION_MAX, EVENT_MAX_DAYS } from "./events.mjs";
+import { QUEST_CLASS, QUEST_AUTHOR, QUEST_HANDS } from "./quests.mjs";
 
 const PLACE = { type: "object", description: "where it happens: { mark: \"<owner>/<slug>\" } (a standing mark with an extent) or { at: { x, y } } (absolute world coordinates)" };
 
@@ -38,9 +41,17 @@ export const EVENT_POST_PROPERTIES = Object.freeze({
   handle: { type: "string", description: "class \"event\": which of your residents acts (omit if your key holds one)" },
 });
 
+/** The quest's one field at the town door (POS-294): which registry quest the town puts up. */
+export const QUEST_POST_PROPERTIES = Object.freeze({
+  quest: { type: "string", description: `class "quest": the town's quest-registry.json id of the quest the town puts up — the town's own post, authored by ${QUEST_AUTHOR}, by the hand of ${QUEST_HANDS.join(" or ")} only` },
+});
+
 // Each lane's own fields, so the other lane's can be refused by name.
 const IDEA_ONLY = ["slug", "at", "on", "stamps", "by", "image"];
 const EVENT_ONLY = ["title", "invitation", "place", "starts", "ends", "doors_open", "handle"];
+const QUEST_ONLY = ["quest"];
+// What a quest takes: its registry id, and which of your residents is the hand.
+const QUEST_TAKES = ["class", "quest", "handle"];
 
 // town_post's schema for the idea lane, exactly as it stood before the event
 // lane joined it: the idea branch judges the fields it always required.
@@ -67,37 +78,44 @@ function strays(args, fields, lane, takes) {
  * before, after `ideaPrecheck` has judged the fields that lane always required.
  */
 export async function townPostEvent(args = {}, key = null) {
-  if (String(args.class ?? "").trim() !== EVENT_CLASS) return null;
-  const stray = strays(args, IDEA_ONLY, "an event", "an event takes title, body (or invitation), place, starts, ends, doors_open and handle — slug, at, on and stamps are an idea's");
+  const c = String(args.class ?? "").trim();
+  if (c === QUEST_CLASS) {
+    const stray = strays(args, Object.keys(args).filter((f) => !QUEST_TAKES.includes(f) && args[f] !== undefined), "a quest",
+      "a quest takes quest (its registry id) and handle — its terms are the registry's, so there is nothing else to send");
+    if (stray) return stray;
+    return answer(() => postAtTown(args, key));
+  }
+  if (c !== EVENT_CLASS) return null;
+  const stray = strays(args, [...IDEA_ONLY, ...QUEST_ONLY], "an event", "an event takes title, body (or invitation), place, starts, ends, doors_open and handle — slug, at, on and stamps are an idea's, quest a quest's");
   if (stray) return stray;
   return answer(() => postAtTown(args, key));
 }
 
 /** The idea lane's own judgement, unchanged: its required fields, and no event field. */
 export function ideaPrecheck(args = {}, tool) {
-  const stray = strays(args, EVENT_ONLY, `class "${String(args.class ?? "").trim() || "idea"}"`, "title, place, starts, ends and doors_open are an event's (class: \"event\"); an idea takes slug and body");
+  const stray = strays(args, [...EVENT_ONLY, ...QUEST_ONLY], `class "${String(args.class ?? "").trim() || "idea"}"`, "title, place, starts, ends and doors_open are an event's (class: \"event\"), quest a quest's (class: \"quest\"); an idea takes slug and body");
   if (stray) return stray;
   return validateArgs({ ...tool, inputSchema: { ...tool.inputSchema, required: IDEA_REQUIRED } }, { ...args });
 }
 
-const POST_REF = { type: "string", description: "the post's id, <author>/<slug>, as town { read: \"event\" } names it" };
-const CLASS_REF = { type: "string", enum: [EVENT_CLASS], description: "optional — the post's class; when sent it must be the post's own (today: \"event\")" };
+const POST_REF = { type: "string", description: "the post's id, <author>/<slug>, as town { read: \"posts\" } names it" };
+const CLASS_REF = { type: "string", enum: [EVENT_CLASS, QUEST_CLASS], description: "optional — the post's class; when sent it must be the post's own (\"event\" or \"quest\")" };
 
 export const TOWN_POST_TOOLS = [
   { name: "town_amend",
-    description: `Amend a post you (or your household) put up — town { do: "amend" }'s flat charge name. Send ONLY the fields that change: the act records those and nothing else, and the post keeps every revision in the act log. Today it answers class "event": title, body (or invitation, at most ${INVITATION_MAX} characters), place, starts, ends, doors_open. Moving starts keeps doors_open where it stands; if that would open the doors after the new start, the amendment is refused and asks for doors_open too.`,
+    description: `Amend a post you (or your household) put up — town { do: "amend" }'s flat charge name. Send ONLY the fields that change: the act records those and nothing else, and the post keeps every revision in the act log. Today it answers class "event": title, body (or invitation, at most ${INVITATION_MAX} characters), place, starts, ends, doors_open. Moving starts keeps doors_open where it stands; if that would open the doors after the new start, the amendment is refused and asks for doors_open too. A quest is not amended: its terms are the town's quest registry.`,
     inputSchema: { type: "object", properties: {
       post: POST_REF, class: CLASS_REF,
       body: { type: "string", description: `the post's text (an event's invitation), at most ${INVITATION_MAX} characters` },
       ...EVENT_POST_PROPERTIES,
     }, required: ["post"], additionalProperties: false } },
   { name: "town_close",
-    description: "Close a post you (or your household) put up — town { do: \"close\" }'s flat charge name. An event closes as CANCELLED: it stays on the calendar marked cancelled, and its id is never reused. An event that has ended is not closed — it happened.",
+    description: "Close a post you (or your household) put up — town { do: \"close\" }'s flat charge name. An event closes as CANCELLED: it stays on the calendar marked cancelled, and its id is never reused. An event that has ended is not closed — it happened. A QUEST is the town's own post and closes as closed, only by the town's hands (" + QUEST_HANDS.join(", ") + "); the act names the hand.",
     inputSchema: { type: "object", properties: {
       post: POST_REF, class: CLASS_REF, handle: EVENT_POST_PROPERTIES.handle,
     }, required: ["post"], additionalProperties: false } },
   { name: "town_advance",
-    description: "Move a post along its class's lifecycle — town { do: \"advance\" }'s flat charge name. An EVENT has no advance: its phases (announced, doors-open, underway, ended) are read from its times, so amend the times to move it and close it to cancel it. Each class's lifecycle is law, declared class by class.",
+    description: "Move a post along its class's lifecycle — town { do: \"advance\" }'s flat charge name. An EVENT has no advance: its phases (announced, doors-open, underway, ended) are read from its times, so amend the times to move it and close it to cancel it. A QUEST has none either: it is open until the town closes it. Each class's lifecycle is law, declared class by class.",
     inputSchema: { type: "object", properties: {
       post: POST_REF, class: CLASS_REF, handle: EVENT_POST_PROPERTIES.handle,
       to: { type: "string", description: "the state to move it to, as its class's law names it" },

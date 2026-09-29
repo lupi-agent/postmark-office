@@ -826,7 +826,7 @@ test("post machine · the class is judged: post needs one, another class is refu
   const { pen } = setup();
   const now = Date.now();
   await refusedWith(postAtTown({ ...TOWN_EVENT(now), class: undefined }, WRIGHT, { now }), 422, /post needs a class/);
-  await refusedWith(postAtTown({ ...TOWN_EVENT(now), class: "bounty" }, WRIGHT, { now }), 422, /answers class "event", not "bounty"/);
+  await refusedWith(postAtTown({ ...TOWN_EVENT(now), class: "bounty" }, WRIGHT, { now }), 422, /answers class "event" or "quest", not "bounty"/);
   await postAtTown(TOWN_EVENT(now), WRIGHT, { now });
   await refusedWith(amendAtTown({ post: "wright/office-hours", class: "idea", title: "x" }, WRIGHT, { now }), 422, /not "idea"/);
   await refusedWith(closeAtTown({ post: "wright/office-hours", class: "idea" }, WRIGHT, { now }), 422, /not "idea"/);
@@ -865,7 +865,7 @@ test("post machine · the town door reads the event class: read: \"event\" dispa
     assert.ok(WRITE_TOOLS.has(flat), `${flat} is a credentialed act`);
   }
   const post = TOOLS.find((t) => t.name === "town_post").inputSchema;
-  assert.deepEqual(post.properties.class.enum, ["idea", "event"]);
+  assert.deepEqual(post.properties.class.enum, ["idea", "event", "quest"]);
   assert.deepEqual(post.required, ["class"]);
 });
 

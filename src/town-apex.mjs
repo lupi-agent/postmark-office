@@ -54,8 +54,11 @@ const bounce = (code, defect, hint, extra = {}) => ({ error: "bounce", code, def
 //  AMENDED 2026-09-28 (POS-288, the post machine): post gained its second
 //  class, "event", and amend / close / advance joined it. The clause about
 //  post is replaced rather than appended to, for the reason above.
+//
+//  AMENDED 2026-09-28 evening (POS-294): the third class, "quest", the town's
+//  own post, which only the town's hands put up and close.
 export const REGISTER_LAW =
-  "the town's acts are the lanes' pen — do: \"post\" puts something with a life up in the town, by class (class: \"idea\" publishes at the Think Tank, placement computed for you; class: \"event\" puts it on the town's calendar), do: \"amend\" / \"close\" / \"advance\" carry a post you put up through its life, and do: \"stake\" / \"unstake\" put stamps behind one of its lanes' marks and take them back, target-typed to bounty and idea and the same escrow the world door keeps; your pen lives at household, your feet in the world, and every other mark is staked where you stand";
+  "the town's acts are the lanes' pen — do: \"post\" puts something with a life up in the town, by class (class: \"idea\" publishes at the Think Tank, placement computed for you; class: \"event\" puts it on the town's calendar; class: \"quest\" is the town's own, put up by its hands alone), do: \"amend\" / \"close\" / \"advance\" carry a post you put up through its life, and do: \"stake\" / \"unstake\" put stamps behind one of its lanes' marks and take them back, target-typed to bounty and idea and the same escrow the world door keeps; your pen lives at household, your feet in the world, and every other mark is staked where you stand";
 
 // ── the reads · the town's public face ──────────────────────────────────────
 //
@@ -128,6 +131,13 @@ export const TOWN_READS = Object.freeze({
   // are the calendar — so this is the SAME read under the class's name, never a
   // second answer to keep in step. Each event also carries the post's names.
   event: { tool: "read_calendar", blurb: "The event class's posts — the calendar, the same read under the post machine's name: each event also carries class, author, body, state and fields (args: { post } opens one). Post one with do: \"post\", args: { class: \"event\", … }." },
+  // ── THE ONE POSTS READ (POS-294) ───────────────────────────────────────────
+  // The Posts project's phase 1: one read that takes a class, every class
+  // declaring its finished states. The rows come from the posts table's one
+  // reader (household-posts.mjs § postRowsOf), the one household { read:
+  // "posts" } already asks. `quest` below is the quest class's alias.
+  posts: { tool: "read_posts", blurb: "Every post of one class, as the general row, with the class's finished states (args: { class: \"quest\" | \"event\", post? }). Quests are the town's own posts; each carries its terms from the quest registry." },
+  quest: { tool: "read_posts", args: { class: "quest" }, blurb: "The quest class's posts — read: \"posts\" with class \"quest\"." },
   asks: { tool: "read_asks", blurb: "The Civic Quarter itself — the five buildings' plaques in the town's own words: what your resident may put on each lane (an idea, a bounty, a listing, a vote) and what only the town can put there, with the verb that opens each." },
 });
 
@@ -169,11 +179,11 @@ export const TOWN_READABLE = Object.freeze(Object.keys(TOWN_READS));
 // unchanged until ideas become posts (POS-290).
 const TOWN_ACTS = {
   post: { tool: "town_post",
-    inline: "put something with a life up in the town, by class. class: \"idea\" publishes at the Think Tank: the door picks the cell, stakes 1✦ escrow unless you pass more, and the body is the claim (one breath, ≤150 chars). An idea may stand anywhere: at: {x,y} puts it somewhere else — an idea standing in a place is an idea OF that place — and on: \"<by>/<slug>\" plants it as a predicate of that mark, an idea ABOUT it. The two are exclusive; pass neither and you get the Tank cell, exactly as before. class: \"event\" puts an event on the town's calendar: title, body, place ({ mark } or { at: { x, y } }), starts, ends, and doors_open if they open early" },
+    inline: "put something with a life up in the town, by class. class: \"idea\" publishes at the Think Tank: the door picks the cell, stakes 1✦ escrow unless you pass more, and the body is the claim (one breath, ≤150 chars). An idea may stand anywhere: at: {x,y} puts it somewhere else — an idea standing in a place is an idea OF that place — and on: \"<by>/<slug>\" plants it as a predicate of that mark, an idea ABOUT it. The two are exclusive; pass neither and you get the Tank cell, exactly as before. class: \"event\" puts an event on the town's calendar: title, body, place ({ mark } or { at: { x, y } }), starts, ends, and doors_open if they open early. class \"quest\" is the town's own post, by its hands only (quest: the registry id)" },
   amend: { tool: "town_amend",
     inline: "amend a post you or your household put up — send only the fields that change, and only those change; every revision stays in the act log. Today: class \"event\" (title, body, place, starts, ends, doors_open)" },
   close: { tool: "town_close",
-    inline: "close a post you or your household put up — an event closes as cancelled, stays on the calendar marked so, and its id is never reused" },
+    inline: "close a post you or your household put up — an event closes as cancelled, stays on the calendar marked so, and its id is never reused; a quest closes as closed, by the town's hands, and the act names the hand" },
   advance: { tool: "town_advance",
     inline: "move a post along its class's lifecycle — an event has no advance (its phases follow its clock: amend its times, or close it)" },
   stake: { tool: "town_stake", shadow: { tool: "town_stake_read", key: "stakes" },
@@ -347,7 +357,8 @@ export async function townApex(args = {}, key = null, ctx = {}) {
       const bad = validateReadArgs({ read: what, tool: spec.tool, properties: schemas?.[spec.tool], fields });
       if (bad) return bounce(bad.wiring ? 500 : 422, bad.defect, bad.hint, bad.extra);
     }
-    return call(spec.tool, fields);
+    // A class's alias (read: "quest") is the posts read with its class fixed.
+    return call(spec.tool, spec.args ? { ...fields, ...spec.args } : fields);
   }
 
   // ── the act ───────────────────────────────────────────────────────────────

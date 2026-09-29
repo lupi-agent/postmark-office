@@ -38,6 +38,12 @@
 // theirs. Until a drift has been seen once, no automatic repair is proposed.
 
 import { foldPostActs, responseKey, EVENT_CLASS, RESPONSE_RSVP } from "../../src/events.mjs";
+import { QUEST_CLASS } from "../../src/quests.mjs";
+
+// THE CLASSES A REBUILD FOLDS (POS-294): the event, and the town's quests, whose
+// rows are the pen's `post` and `close` acts like any post's. A quest has no
+// responses, so its fold compares the posts alone.
+export const REBUILT_CLASSES = Object.freeze([EVENT_CLASS, QUEST_CLASS]);
 
 // The tables a rebuild restores, and the one it never touches.
 export const REBUILT_TABLES = Object.freeze(["posts", "responses"]);
@@ -90,8 +96,8 @@ export function compareRebuild(stored, acts) {
 
 /**
  * THE DRY RUN, on a client the caller connected: one READ ONLY transaction,
- * the event acts and the two tables, compared. It asks nothing else of the
- * store, and in particular nothing of `household_harnesses`.
+ * each class's acts and rows, compared class by class. It asks nothing else of
+ * the store, and in particular nothing of `household_harnesses`.
  */
 export async function dryRun(client) {
   await client.query("BEGIN READ ONLY");
@@ -100,8 +106,15 @@ export async function dryRun(client) {
     const acts = await eventActs(client);
     const { rows: posts } = await client.query("SELECT * FROM posts WHERE class = $1 ORDER BY id", [EVENT_CLASS]);
     const { rows: responses } = await client.query("SELECT * FROM responses WHERE kind = $1 ORDER BY post, handle", [RESPONSE_RSVP]);
+    const questActs = await eventActs(client, QUEST_CLASS);
+    const { rows: quests } = await client.query("SELECT * FROM posts WHERE class = $1 ORDER BY id", [QUEST_CLASS]);
     await client.query("COMMIT");
-    return compareRebuild({ posts, responses }, acts);
+    const ev = compareRebuild({ posts, responses }, acts);
+    const qu = compareRebuild({ posts: quests, responses: [] }, questActs);
+    return { equal: ev.equal && qu.equal, drift: [...ev.drift, ...qu.drift],
+      counts: { acts: ev.counts.acts, posts: ev.counts.posts, responses: ev.counts.responses,
+        quest_acts: qu.counts.acts, quests: qu.counts.posts },
+      never_touched: NEVER_TOUCHED };
   } catch (e) {
     try { await client.query("ROLLBACK"); } catch { /* connection already gone */ }
     throw e;
@@ -124,7 +137,7 @@ async function main() {
     const out = await dryRun(client);
     if (argv.includes("--json")) console.log(JSON.stringify(out, null, 2));
     else {
-      console.log(`${out.equal ? "equal" : "DRIFT"} · ${out.counts.acts} event acts → ${out.counts.posts} posts, ${out.counts.responses} responses · every column of both restored and compared · ${NEVER_TOUCHED_LINE}`);
+      console.log(`${out.equal ? "equal" : "DRIFT"} · ${out.counts.acts} event acts → ${out.counts.posts} posts, ${out.counts.responses} responses · ${out.counts.quest_acts} quest acts → ${out.counts.quests} quest posts · every column of both restored and compared · ${NEVER_TOUCHED_LINE}`);
       for (const d of out.drift) console.log(`  ${d}`);
     }
     process.exit(out.equal ? 0 : 1);
