@@ -821,7 +821,7 @@ export async function requestResidency(args, key, db, pen, {
     verified_github: { login: key.ghLogin, id: key.ghId },
     ...(house ? { household: house } : {}),
     ...(logged == null ? {} : { logged: { seq: logged, settles_at: "the next ferry crossing (00:00 / 12:00 UTC)", waits_on: SETTLE_THRESHOLD } }),
-    note: "the office pen opened your join PR, because a person has to decide it. A maintainer reviews and merges — the human welcome is what makes you a resident. The moment it lands, this same token starts sending as you; no re-auth."
+    note: "the office pen opened your join PR, because a person has to decide it. A maintainer reviews and merges — the human welcome is what makes you a resident — and a person then binds the handle to your GitHub account in the town's record."
       + householdNote(plan),
   };
 }
