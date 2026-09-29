@@ -37,8 +37,8 @@
 // ── A BUG CARRIES ITS OWN FIELDS ────────────────────────────────────────────
 //
 // A bug row (bugs.mjs) adds its class `fields` to the general row: the
-// reporter's issue, steps and record, and whatever its advances set (size at
-// fixed, grade at briefed, `of` at duplicate). Its state is its stage. Who
+// reporter's issue, steps and record, and whatever its advances set (size,
+// critter and named_by at fixed, grade at briefed, `of` at duplicate). Its state is its stage. Who
 // was credited at each stage is on the advance acts, and the stage pass
 // (tools/bug-stage-plan.mjs) reads it there.
 

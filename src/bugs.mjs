@@ -20,7 +20,8 @@
 // ── THE ADVANCE RECORDS; IT MINTS NOTHING ───────────────────────────────────
 //
 // Each advance act names the stage and whom it credits (`credit`), and at
-// `briefed` the grade, at `fixed` the size. What a stage pays is the ladder
+// `briefed` the grade, at `fixed` the size and the critter the fixer named
+// (POS-298; kept as fields.critter with fields.named_by). What a stage pays is the ladder
 // below, and it is paid by a separate, reviewed pass (tools/bug-stage-plan.mjs)
 // that reads these acts, so a door call never moves money. The town's own
 // ledger holds the ladder again at verify (its stamp-mint.mjs § the stage
@@ -96,6 +97,28 @@ export const RECORD_MAX = 300;
 export const ISSUE_RE = /^https:\/\/github\.com\/postmark-town\/[A-Za-z0-9._-]+\/issues\/\d+$/;
 /** A handle as the town spells one: lowercase, digits, `-`, and the `.` some live handles carry. */
 export const BUG_HANDLE_RE = /^[a-z0-9][a-z0-9._-]{0,39}$/;
+
+/**
+ * The critter (POS-298, Keemin 2026-09-29): every caught bug becomes a small
+ * critter for the town's jar, and the resident credited with the fix names it.
+ * The town's hands record the name on the advance to fixed. It is text, never
+ * HTML (the reading law): stored and returned exactly as sent, so whoever
+ * paints it escapes it. It pays nothing; the ladder reads size and grade only.
+ */
+export const CRITTER_MAX = 40;
+export const CRITTER_NAMER = "the resident who fixes a bug names it";
+const CRITTER_HOW = `critter: "<name>", 1–${CRITTER_MAX} characters on one line — ${CRITTER_NAMER}, and tells the town's hands (${BUG_HANDS.join(", ")}) in the PR or the issue`;
+
+export function judgeCritter(v) {
+  if (v === undefined) throw refuse(422, `fixed needs a critter: ${CRITTER_NAMER}`, CRITTER_HOW, { field: "critter" });
+  if (typeof v !== "string") throw refuse(422, "critter is text", CRITTER_HOW, { field: "critter" });
+  const s = v.trim();
+  if (!s) throw refuse(422, "critter is empty", CRITTER_HOW, { field: "critter" });
+  if (/[\r\n]/.test(s)) throw refuse(422, "critter is one line", CRITTER_HOW, { field: "critter" });
+  const n = [...s].length;
+  if (n > CRITTER_MAX) throw refuse(422, `critter is at most ${CRITTER_MAX} characters`, `this one is ${n}`, { field: "critter" });
+  return s;
+}
 
 /** The fields a bug's reporter may send and amend, beside title and body. */
 export const BUG_FIELDS = Object.freeze(["issue", "steps", "record"]);
@@ -176,7 +199,7 @@ export function judgeBugHand(fields, key, { act }) {
 
 /**
  * Judge an advance against the post's current state. Returns the payload's
- * judged parts: `{ to, credit, size?, grade?, of? }`. `reporter` is the post's
+ * judged parts: `{ to, credit, size?, critter?, grade?, of? }`. `reporter` is the post's
  * author, the credit a `confirmed` defaults to.
  */
 export function judgeAdvance(fields, prev, roll) {
@@ -204,9 +227,11 @@ export function judgeAdvance(fields, prev, roll) {
   }
   if (fields.size !== undefined && to !== STATE_FIXED) throw refuse(422, "size is fixed's", "only an advance to fixed takes size (S, M or L)", { field: "size" });
   if (fields.grade !== undefined && to !== STATE_BRIEFED) throw refuse(422, "grade is briefed's", "only an advance to briefed takes grade (light or heavy)", { field: "grade" });
+  if (fields.critter !== undefined && to !== STATE_FIXED) throw refuse(422, `critter is fixed's: ${CRITTER_NAMER}`, "only an advance to fixed takes critter", { field: "critter" });
   if (to === STATE_FIXED) {
     if (!BUG_SIZES.includes(fields.size)) throw refuse(422, "fixed needs a size", `size: one of ${BUG_SIZES.join(", ")} — it picks the stamps (${BUG_SIZES.map((s) => `${s} ${BUG_LADDER.fixed.n[s]}`).join(", ")})`, { field: "size" });
     out.size = fields.size;
+    out.critter = judgeCritter(fields.critter);
   }
   if (to === STATE_BRIEFED) {
     if (!BUG_GRADES.includes(fields.grade)) throw refuse(422, "briefed needs a grade", `grade: ${BUG_GRADES.join(" or ")} — the bless's revision (${BUG_GRADES.map((g) => `${g} ${BUG_LADDER.briefed.n[g]}`).join(", ")})`, { field: "grade" });

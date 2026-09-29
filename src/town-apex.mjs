@@ -188,7 +188,7 @@ const TOWN_ACTS = {
   close: { tool: "town_close",
     inline: "close a post you or your household put up — an event closes as cancelled, stays on the calendar marked so, and its id is never reused; a quest closes as closed, by the town's hands, and the act names the hand" },
   advance: { tool: "town_advance",
-    inline: "move a post along its class's lifecycle — an event has no advance (its phases follow its clock: amend its times, or close it). A bug advances by the town's hands: reported → confirmed → reproduced → diagnosed → briefed → fixed → shipped, or to duplicate / not-a-bug; each paid stage names whom it credits" },
+    inline: "move a post along its class's lifecycle — an event has no advance (its phases follow its clock: amend its times, or close it). A bug advances by the town's hands: reported → confirmed → reproduced → diagnosed → briefed → fixed → shipped, or to duplicate / not-a-bug; each paid stage names whom it credits, and fixed carries the critter its fixer named" },
   stake: { tool: "town_stake", shadow: { tool: "town_stake_read", key: "stakes" },
     inline: "put stamps behind one of the town's own lane marks — a bounty on the board or an idea in the tank: the stamps leave your balance and sit in escrow on the mark, raising its ✦weight at the next Settlement and anchoring it against retirement. Yours the whole time; any other class is refused by name and staked at the world door" },
   unstake: { tool: "town_unstake", shadow: { tool: "town_stake_read", key: "stakes" },

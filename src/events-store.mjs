@@ -621,7 +621,9 @@ async function advanceBug(fields, key, id, { now, env, roll }) {
     const j = judgeAdvance(fields, prev, roll);
     if (j.of && !(await bugRow(client, j.of)))
       throw refuse(404, `no bug "${j.of}" to be a duplicate of`, 'of: a standing bug post — town { read: "posts", args: { class: "bug" } } lists them', { field: "of" });
-    const set = { ...(j.size ? { size: j.size } : {}), ...(j.grade ? { grade: j.grade } : {}), ...(j.of ? { of: j.of } : {}) };
+    // The critter's namer is the fix's credit, kept beside the name so the post says who named it.
+    const set = { ...(j.size ? { size: j.size } : {}), ...(j.critter ? { critter: j.critter, named_by: j.credit } : {}),
+      ...(j.grade ? { grade: j.grade } : {}), ...(j.of ? { of: j.of } : {}) };
     const payload = { post: id, from: prev.state, to: j.to, ...(j.credit ? { credit: j.credit } : {}),
       ...(Object.keys(set).length ? { fields: set } : {}), hand };
     const actId = await insertAct(client, bugActRow({ action: ACT_ADVANCE, actor: hand, object: id, payload, now }));
@@ -636,7 +638,8 @@ async function advanceBug(fields, key, id, { now, env, roll }) {
       ? `the ladder owes ${j.credit} ${n} stamps for ${j.to}, paid by the reviewed stage pass (not by this act), subject to the town's meep law and, at confirmed, three paid reports per household a week`
       : `${j.to} pays nothing`;
     return { post: bugAnswer(row), act_id: actId, hand, stage: j.to, ...(j.credit ? { credit: j.credit } : {}), stamps: n,
-      receipt: `advanced: ${id} ${prev.state} → ${j.to} by ${hand}'s hand; ${pays}${skipped.length ? `; skipped ${skipped.join(", ")}, and a skipped stage pays nothing` : ""}`,
+      ...(j.critter ? { critter: j.critter } : {}),
+      receipt: `advanced: ${id} ${prev.state} → ${j.to} by ${hand}'s hand; ${pays}${skipped.length ? `; skipped ${skipped.join(", ")}, and a skipped stage pays nothing` : ""}${j.critter ? `; its critter is "${j.critter}", named by ${j.credit}` : ""}`,
       read: bugReadHint(id) };
   }, env);
 }
