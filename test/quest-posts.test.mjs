@@ -48,7 +48,11 @@ const { compareRebuild, dryRun } = await import("../world2/tools/events-rebuild.
 
 const REGISTRY = readQuestRegistry(TOWN);
 const QUEST_IDS = questEntries(REGISTRY).map((q) => q.id);
-const NOW = Date.parse("2026-09-28T23:00:00.000Z");
+// THE REAL CLOCK, NOT A PINNED DAY. The pen refuses a row stamped for a
+// crossing older than the open window (src/events.mjs § refuse, the act-4171
+// class), and the open window is read from the wall clock. A pinned 09-28 went
+// red the day the window moved to 219: a calendar-pinned control decays.
+const NOW = Date.now();
 
 // The four cards the site's Quest Guild draws today (site src/lib/civic.mjs §
 // QUEST_REGISTRY): the daily pair and the two milestones, by title.
