@@ -124,6 +124,8 @@ export function ideaPrecheck(args = {}, tool) {
   return validateArgs({ ...tool, inputSchema: { ...tool.inputSchema, required: IDEA_REQUIRED } }, { ...args });
 }
 
+// close and advance: the acting resident is the post's own for an event, and the town's hand for a quest or a bug.
+const ACTING_HANDLE = { type: "string", description: "which of your residents acts (omit if your key holds one) — for an event, one of its household; for a quest or a bug, one of the town's hands" };
 const POST_REF = { type: "string", description: "the post's id, <author>/<slug>, as town { read: \"posts\" } names it" };
 const CLASS_REF = { type: "string", enum: [EVENT_CLASS, QUEST_CLASS, BUG_CLASS], description: "optional — the post's class; when sent it must be the post's own (\"event\", \"quest\" or \"bug\")" };
 
@@ -139,12 +141,12 @@ export const TOWN_POST_TOOLS = [
   { name: "town_close",
     description: "Close a post you (or your household) put up — town { do: \"close\" }'s flat charge name. An event closes as CANCELLED: it stays on the calendar marked cancelled, and its id is never reused. An event that has ended is not closed — it happened. A QUEST is the town's own post and closes as closed, only by the town's hands (" + QUEST_HANDS.join(", ") + "); the act names the hand. A BUG is not closed: it finishes by advance (shipped, duplicate, not-a-bug).",
     inputSchema: { type: "object", properties: {
-      post: POST_REF, class: CLASS_REF, handle: EVENT_POST_PROPERTIES.handle,
+      post: POST_REF, class: CLASS_REF, handle: ACTING_HANDLE,
     }, required: ["post"], additionalProperties: false } },
   { name: "town_advance",
     description: `Move a post along its class's lifecycle — town { do: "advance" }'s flat charge name. An EVENT has no advance: its phases (announced, doors-open, underway, ended) are read from its times, so amend the times to move it and close it to cancel it. A QUEST has none either: it is open until the town closes it. A BUG advances, by the town's hands only (${BUG_HANDS.join(", ")}): ${BUG_STAGES.join(" → ")}, or from reported or confirmed to ${BUG_SIDE_EXITS.join(" or ")}. An advance may jump forward; a skipped stage pays nothing. Each paid stage names whom it credits (credit; at confirmed it defaults to the reporter), briefed takes a grade and fixed a size, and the stamps are paid by a reviewed pass, never by the advance itself. Each class's lifecycle is law, declared class by class.`,
     inputSchema: { type: "object", properties: {
-      post: POST_REF, class: CLASS_REF, handle: EVENT_POST_PROPERTIES.handle,
+      post: POST_REF, class: CLASS_REF, handle: ACTING_HANDLE,
       to: { type: "string", description: "the state to move it to, as its class's law names it" },
       credit: { type: "string", description: "class \"bug\": the resident who did the stage (a handle); at confirmed it defaults to the reporter, and from reproduced onward it is required" },
       size: { type: "string", enum: [...BUG_SIZES], description: "class \"bug\", to: \"fixed\" only — the fix's size, S, M or L (10, 25 or 50 stamps)" },

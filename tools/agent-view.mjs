@@ -142,9 +142,11 @@ const twin = (s) => (s.env.do
   ? `POST /town/apex\nAuthorization: Bearer &lt;your key&gt;\n\n${esc(JSON.stringify(s.env))}`
   : `GET /town/apex?read=${encodeURIComponent(s.env.read)}${s.env.args ? `&amp;args=${esc(encodeURIComponent(JSON.stringify(s.env.args)))}` : ""}${s.env.read === "posts" && s.env.args?.class ? `\n(or GET /posts?class=${esc(s.env.args.class)})` : ""}`);
 
+/** The card's fields, as world-apex.mjs § actionFields shapes them: `{ name: { type, description, enum?, required? } }`. */
 function fieldsTable(card) {
-  if (!card?.fields?.length) return "";
-  const rows = card.fields.map((f) => `<tr><td><code>${esc(f.name ?? f.field ?? "")}</code>${f.required ? " <b>required</b>" : ""}</td><td>${esc(f.type ?? "")}${f.enum ? ` (${esc(f.enum.join(", "))})` : ""}</td><td>${esc(f.description ?? "")}</td></tr>`).join("");
+  const entries = Object.entries(card?.fields ?? {});
+  if (!entries.length) return "";
+  const rows = entries.map(([name, f]) => `<tr><td><code>${esc(name)}</code>${f.required ? " <b>required</b>" : ""}</td><td>${esc(f.type ?? "")}${f.enum ? ` (${esc(f.enum.join(", "))})` : ""}</td><td>${esc(f.description ?? "")}</td></tr>`).join("");
   return `<table><thead><tr><th>field</th><th>type</th><th>description</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
@@ -154,18 +156,18 @@ export function render({ town, steps, plan, acts }, { commit = commitOf() } = {}
     const pct = Math.min(100, Math.round((n / FOYER_BOUND) * 100));
     return `<span class="bytes ${n > FOYER_BOUND ? "over" : ""}">${n.toLocaleString("en-US")} B · ${pct}% of the foyer's ${FOYER_BOUND.toLocaleString("en-US")} B</span><span class="bar"><i style="width:${pct}%"></i></span>`;
   };
-  const toc = steps.map((s, i) => `<li class="${s.kind}"><a href="#s${i + 1}">${i + 1}. ${esc(s.title)}</a>${s.refused ? " <em>refused</em>" : ""}</li>`).join("");
+  const toc = steps.map((s, i) => `<li class="k-${s.kind}"><a href="#s${i + 1}">${esc(s.title)}</a>${s.refused ? " <em>refused</em>" : ""}</li>`).join("");
   const sections = steps.map((s, i) => {
     const card = s.answer?.card ?? (s.env.read && s.answer?.card) ?? null;
     const refusal = s.refused ? `<div class="refusal"><p class="defect">${esc(s.answer.defect)}</p><p class="hint"><b>next step (hint):</b> ${esc(s.answer.hint ?? "")}</p></div>` : "";
     const receipt = !s.refused && s.answer?.result?.receipt ? `<p class="receipt">${esc(s.answer.result.receipt)}</p>` : "";
-    return `<section id="s${i + 1}" class="${s.kind}${s.refused ? " refused" : ""}">
+    return `<section id="s${i + 1}" class="k-${s.kind}${s.refused ? " refused" : ""}">
 <h2>${i + 1}. ${esc(s.title)} <small>${s.refused ? `refused · ${s.status}` : `answered · ${s.status}`}${s.who ? ` · as ${esc(s.who)}` : " · no key"}</small></h2>
 ${s.note ? `<p class="note">${esc(s.note)}</p>` : ""}
 <h3>The call</h3><pre>town ${esc(JSON.stringify(s.env))}</pre>
 <h3>The HTTP twin</h3><pre>${twin(s)}</pre>
 ${refusal}${receipt}
-<h3>The answer ${meter(s.bytes)}</h3><details${s.refused ? " open" : ""}><summary>the whole answer</summary><pre>${pretty(s.answer)}</pre></details>
+<h3>The answer ${meter(s.bytes)}</h3><details><summary>the whole answer</summary><pre>${pretty(s.answer)}</pre></details>
 ${card ? `<h3>The act's card: <code>${esc(card.act)}</code> → <code>${esc(card.dispatches_to)}</code></h3><p>${esc(card.blurb)}</p>${fieldsTable(card)}` : ""}
 ${s.flat ? `<details><summary>the flat verb <code>${esc(s.flat.name)}</code>'s description (${bytes(s.flat.description).toLocaleString("en-US")} B)</summary><p>${esc(s.flat.description)}</p></details>` : ""}
 </section>`;
@@ -174,8 +176,9 @@ ${s.flat ? `<details><summary>the flat verb <code>${esc(s.flat.name)}</code>'s d
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>What the agent sees: bugs</title>
 <style>
-:root { --bg:#fbfaf7; --ink:#1d1b16; --soft:#6b6558; --line:#e3ded2; --no:#9c2f1f; --nobg:#fbeeea; --ok:#2f6b3a; --bar:#c9c1ad; }
-@media (prefers-color-scheme: dark) { :root { --bg:#16140f; --ink:#ece7da; --soft:#a39b88; --line:#332f26; --no:#f0947f; --nobg:#2c1a15; --ok:#8fcf99; --bar:#4a4436; } }
+:root { --bg:#fbfaf7; --ink:#1d1b16; --soft:#6b6558; --line:#e3ded2; --no:#9c2f1f; --nobg:#fbeeea; --ok:#2f6b3a; --bar:#c9c1ad; --link:#1f4f8a; }
+@media (prefers-color-scheme: dark) { :root { --bg:#16140f; --ink:#ece7da; --soft:#a39b88; --line:#332f26; --no:#f0947f; --nobg:#2c1a15; --ok:#8fcf99; --bar:#4a4436; --link:#9cc3f0; } }
+a { color:var(--link); }
 body { background:var(--bg); color:var(--ink); font:15px/1.5 system-ui, sans-serif; margin:0 auto; max-width:980px; padding:24px 16px 80px; }
 h1 { font-size:26px; margin:0 0 4px; } h2 { font-size:18px; margin:0 0 8px; } h3 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--soft); margin:16px 0 6px; }
 small { color:var(--soft); font-weight:normal; } .meta { color:var(--soft); }
@@ -186,7 +189,7 @@ pre { background:rgba(127,127,127,.08); border:1px solid var(--line); border-rad
 .bytes { font-weight:normal; text-transform:none; letter-spacing:0; margin-left:8px; } .bytes.over { color:var(--no); font-weight:600; }
 .bar { display:inline-block; width:120px; height:6px; background:var(--line); border-radius:3px; margin-left:8px; vertical-align:middle; } .bar i { display:block; height:6px; background:var(--bar); border-radius:3px; }
 table { border-collapse:collapse; width:100%; font-size:13px; } td, th { border-bottom:1px solid var(--line); padding:4px 6px; text-align:left; vertical-align:top; }
-ol.toc { columns:2; font-size:13.5px; } ol.toc li.refusal a { color:var(--no); } em { color:var(--no); font-style:normal; font-size:12px; }
+ol.toc { columns:2; font-size:13.5px; } ol.toc li.k-refusal a { color:var(--no); } em { color:var(--no); font-style:normal; font-size:12px; }
 @media (max-width:640px) { ol.toc { columns:1; } }
 </style></head><body>
 <h1>What the agent sees: the bug lifecycle</h1>
