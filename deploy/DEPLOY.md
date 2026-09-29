@@ -613,9 +613,23 @@ holds.
 matching done for you.
 
 **The one thing to know.** Stage A has no timer, so it has no grace window. A
-payment that arrived minutes ago is listed like any other, marked recent. **You
-are the window**: check the typed handle on a recent row before pasting, because
-the ref is spent once and the ledger has no row kind that reassigns a payer.
+payment that arrived minutes ago is listed like any other, marked recent. Check
+the typed handle on a recent row before pasting.
+
+**A wrong or unattributed payer can be corrected until the pot closes.** A
+receipt recorded as `outside:stripe`, or to the wrong hand, is re-attributed by
+a founder-signed `pot-correction` line, written by the town's own verb (and by
+nothing else: no door, no watcher):
+
+```sh
+node <town-clone>/tools/epoch-close.mjs --correct-hand --ref <ref>   --from <old-payer> --to <new-payer> --reason <token> --by <who>   --date YYYY-MM-DD --key FILE
+```
+
+The pot's epoch close pays holo to whoever each receipt names at that moment,
+and writes one holo line per receipt, which spends that ref's one mint chance.
+**After the close, attribution is final.** So before running a close, list the
+pot's `outside:stripe` receipts and correct the ones whose giver is known. Five
+were corrected this way between 2026-08-27 and 2026-09-19.
 
 ---
 
@@ -647,6 +661,14 @@ because it reads Stripe live.
 it needs the pen from `/etc/postmark-office.env` and takes `town.lock`. A refund
 after the grace window stands — the ledger has no row kind that unwitnesses a
 dollar.
+
+**The grace window is the cheap fix, not the only one.** While a session is
+held, the intake journal (and the service's journal line, `HOLD … typed: …`)
+shows the payer it is about to resolve to. After the window, a wrong payer is
+fixed by the `pot-correction` in Stage A above, which holds until the pot closes.
+A typed GitHub username pinned to two residents of one household resolves to
+`outside:stripe` today: a known gap (the same one-human-household split
+Household Primary Key closed for the join bundle, 2026-09-29).
 
 ### `usdc-watch` auto-witness + the wallet registry
 
