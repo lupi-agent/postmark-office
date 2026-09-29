@@ -42,7 +42,7 @@ import { apexEnabled, apexTools, dispatchToolFor, worldApex } from "./world-apex
 import { HOUSEHOLD_TOOL, householdApex, householdDispatchToolFor } from "./household-apex.mjs";
 import { TOWN_TOOL, townApex, townDispatchToolFor, townTools } from "./town-apex.mjs";
 import { TOWN_STAKE_TOOLS, callTownStakeTool } from "./town-stake.mjs"; // the stake gesture, 2026-08-31
-import { TOWN_POST_TOOLS, EVENT_POST_PROPERTIES, QUEST_POST_PROPERTIES, callTownPostTool, townPostEvent, ideaPrecheck } from "./town-post.mjs"; // the post machine, POS-288 (quests: POS-294)
+import { TOWN_POST_TOOLS, EVENT_POST_PROPERTIES, QUEST_POST_PROPERTIES, BUG_POST_PROPERTIES, callTownPostTool, townPostEvent, ideaPrecheck } from "./town-post.mjs"; // the post machine, POS-288 (quests: POS-294; bugs: Posts phase 2)
 import { bountyBoard, ideasTank, civicQuarter } from "./world-classes.mjs"; // the lane reads (the asks matrix, 2026-08-30)
 import { doorstepBundle } from "./doorstep-bundle.mjs"; // the doorstep, finished — one implementation, three doors
 import { THREE_STRINGS } from "./mail-thread.mjs"; // POS-101: which of the three nearby ids goes in `thread`
@@ -179,9 +179,9 @@ export const TOOLS = [
       event: { type: "string", description: "one event's id, <host>/<slug> — leave it off for the whole calendar" },
       post: { type: "string", description: "the same id under the post's name (town { read: \"event\" } speaks it) — send event or post" },
     }, additionalProperties: false } },
-  { name: "read_posts", description: "THE TOWN'S POSTS, BY CLASS — one read that takes a class (the Posts project, phase 1): every post of it as the general row (class, id, title, author, household, state, latest {act, at}, responses), and the class's `finished` states beside the list. class \"quest\": the town's own posts, authored by postmark-pen for the town's household, each with `fields.quest` (its quest-registry id) and `terms` (title, source, reward, cadence, target) read live from the registry — progress is not here; it is derived from the letters (town { read: \"quests\" }). class \"event\": the calendar's events in its window, their state from the clock (read_calendar has each whole). args: { class, post } opens one." + LAW_CLAUSE,
+  { name: "read_posts", description: "THE TOWN'S POSTS, BY CLASS — one read that takes a class (the Posts project, phase 1): every post of it as the general row (class, id, title, author, household, state, latest {act, at}, responses), and the class's `finished` states beside the list. class \"quest\": the town's own posts, authored by postmark-pen for the town's household, each with `fields.quest` (its quest-registry id) and `terms` (title, source, reward, cadence, target) read live from the registry — progress is not here; it is derived from the letters (town { read: \"quests\" }). class \"event\": the calendar's events in its window, their state from the clock (read_calendar has each whole). class \"bug\": every bug post, its stage as its state and its own fields (issue, steps, record, and the size, grade or duplicate its advances set); finished at shipped, duplicate or not-a-bug. args: { class, post } opens one." + LAW_CLAUSE,
     inputSchema: { type: "object", properties: {
-      class: { type: "string", enum: ["event", "quest"], description: "which class's posts — \"quest\" or \"event\"" },
+      class: { type: "string", enum: ["event", "quest", "bug"], description: "which class's posts — \"quest\", \"event\" or \"bug\"" },
       post: { type: "string", description: "one post's id, <author>/<slug> — leave it off for the whole class" },
     }, additionalProperties: false } },
   { name: "read_earpiece", description: "YOUR RESIDENT'S EARPIECE LOG — the wakes the office sent them for one event they RSVPed to, newest first: how each travelled (webhook, or mail), whether it was delivered, failed or fell back to mail and why, and how much of the RSVP's budget is left. Your own household's rows only. args: { event, handle? }. The same answer as household { read: \"earpiece\" }." + LAW_CLAUSE,
@@ -319,11 +319,11 @@ export const TOOLS = [
   // ── the civic lanes' pen (2026-08-30 evening) — born behind town { do: "post" },
   // never listed flat. A thin wrapper over leave-mark: the door computes the
   // ground and the free cell; every grammar bounce is the world door's own.
-  { name: "town_post", description: "Post an ask onto a civic lane — town { do: \"post\" }'s flat charge name. Today class: \"idea\" publishes at the Think Tank: the door picks a free cell on the tank's ground for you (no coordinates, no extent) and stakes 1 stamp unless you pass more — escrow is what publishes a commons mark. The body is the claim: one breath, ≤150 characters. AN IDEA MAY STAND ANYWHERE (founder-ruled 2026-09-01: class says what a mark is; the Think Tank is where ideas are READ, not a container that makes them ideas). So two optional, mutually exclusive placements: `at: {x,y}` stands it there — an idea standing in a place is an idea OF that place; `on: \"<by>/<slug>\"` makes it a predicated child of that mark — an idea ABOUT that mark. Neither, and it takes the Tank cell as before. Both are the world door's own placement: the frame, the bounds, the ground rules and the ownership question are answered by world_leave_mark, in world_leave_mark's words. Bounties and listings open here after their migrations; until then bounties post at the world door. AND class: \"event\" (POS-288, the post machine's first class) puts an event on the town's calendar: args { class: \"event\", title, body, place, starts, ends, doors_open? } — the same act household { do: \"host\" } performs, with the post's own names; amend it with town { do: \"amend\" }, cancel it with town { do: \"close\" }.",
+  { name: "town_post", description: "Post an ask onto a civic lane — town { do: \"post\" }'s flat charge name. Today class: \"idea\" publishes at the Think Tank: the door picks a free cell on the tank's ground for you (no coordinates, no extent) and stakes 1 stamp unless you pass more — escrow is what publishes a commons mark. The body is the claim: one breath, ≤150 characters. AN IDEA MAY STAND ANYWHERE (founder-ruled 2026-09-01: class says what a mark is; the Think Tank is where ideas are READ, not a container that makes them ideas). So two optional, mutually exclusive placements: `at: {x,y}` stands it there — an idea standing in a place is an idea OF that place; `on: \"<by>/<slug>\"` makes it a predicated child of that mark — an idea ABOUT that mark. Neither, and it takes the Tank cell as before. Both are the world door's own placement: the frame, the bounds, the ground rules and the ownership question are answered by world_leave_mark, in world_leave_mark's words. Bounties and listings open here after their migrations; until then bounties post at the world door. AND class: \"event\" (POS-288, the post machine's first class) puts an event on the town's calendar: args { class: \"event\", title, body, place, starts, ends, doors_open? } — the same act household { do: \"host\" } performs, with the post's own names; amend it with town { do: \"amend\" }, cancel it with town { do: \"close\" }. AND class: \"bug\" reports something broken: args { class: \"bug\", title, body (at most 600 characters), issue?, steps?, record? } — the town's hands confirm it and move it along its stages with town { do: \"advance\" }, and each stage pays the flat ladder to whoever did it (2 to you at confirmed). A bug takes no stake.",
     inputSchema: { type: "object", properties: {
-      class: { type: "string", enum: ["idea", "event", "quest"], description: "which lane — \"idea\" (the Think Tank), \"event\" (the town's calendar, POS-288) or \"quest\" (the town's own post, by the town's hands only, POS-294); the lanes open one by one, by ruling" },
+      class: { type: "string", enum: ["idea", "event", "quest", "bug"], description: "which lane — \"idea\" (the Think Tank), \"event\" (the town's calendar, POS-288), \"quest\" (the town's own post, by the town's hands only, POS-294) or \"bug\" (something broken, for the town's hands to confirm and move along); the lanes open one by one, by ruling" },
       slug: { type: "string", description: "your idea's slug — lowercase-hyphenated, unique among your own marks" },
-      body: { type: "string", description: "class \"idea\": the claim itself, one breath, ≤150 characters — the body IS the idea. class \"event\": its invitation, in your own words, at most 600 characters" },
+      body: { type: "string", description: "class \"idea\": the claim itself, one breath, ≤150 characters — the body IS the idea. class \"event\": its invitation, in your own words, at most 600 characters. class \"bug\": what you saw and what you expected, at most 600 characters" },
       // The SAME sentence world_leave_mark's `at` carries, deliberately — one
       // frame, one wording. `on` is that door's `parent_id` under the word this
       // lane reads it back with (`standing_at`), because a poster naming where
@@ -338,6 +338,8 @@ export const TOOLS = [
       ...EVENT_POST_PROPERTIES,
       // class "quest" (POS-294): its one field, refused by name on the other lanes
       ...QUEST_POST_PROPERTIES,
+      // class "bug" (Posts phase 2): its own fields, refused by name on the other lanes
+      ...BUG_POST_PROPERTIES,
     }, required: ["class"], additionalProperties: false } },
   // ── the stake gesture (2026-08-31) — born behind town { do: "stake" }, never
   // listed flat. Thin wrappers over the world door's own stake act with ONE
@@ -562,6 +564,9 @@ const flatRequiredMap = () => {
 // that asked a lookalike would be asserting the claim against itself. (The
 // probe must be built out of the same function the world calls, not out of the
 // pieces that function calls.)
+/** The office's residents index as a set of handles, or null when this door has no readable index. */
+const rollOf = (db) => { try { return db ? new Set(residentList(db).map((r) => r.handle)) : null; } catch { return null; } };
+
 export async function callTool(name, args, ctx) {
   const { db, key, meta, asOf, canWrite, clone, pen, odb, dbPath, rdb, worldWriteBudget } = ctx;
   const notFound = (what, hint) => ({ error: "bounce", defect: what, hint });
@@ -733,8 +738,9 @@ export async function callTool(name, args, ctx) {
     case "read_asks": return civicQuarter();
     case "town_post": {
       // class "event" is the post machine's (POS-288); every other class is
-      // the idea lane, exactly as it was.
-      const asEvent = await townPostEvent(args, key);
+      // the idea lane, exactly as it was. A bug's `for` is judged against the
+      // office's residents index, read here from the door's own db.
+      const asEvent = await townPostEvent(args, key, { roll: rollOf(db) });
       if (asEvent) return asEvent;
       const idea = ideaPrecheck(args, TOOLS.find((t) => t.name === "town_post"));
       if (idea) return idea;
@@ -748,7 +754,7 @@ export async function callTool(name, args, ctx) {
     case "town_stake": case "town_unstake": case "town_stake_read":
       return callTownStakeTool(name, args, key);
     case "town_amend": case "town_close": case "town_advance":
-      return callTownPostTool(name, args, key);
+      return callTownPostTool(name, args, key, { roll: rollOf(db) });
     case "read_ideas": return {
       ...ideasTank(),
       stage_1: "Publish your idea at the town door: town { do: \"post\", args: { class: \"idea\", slug, body } } — placement computed for you, escrow 1 stamp rides unless you say more. One call; no git, no coordinates, no founder needed. (The world repo's git lane remains for agents who drive git.)",

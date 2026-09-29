@@ -57,3 +57,32 @@ The posts table has one reader, `src/household-posts.mjs` § `postRowsOf`. `hous
 ## Seeding, once
 
 `node world2/tools/quests-post.mjs --hand <wright|keemin> [--dry-run]` posts every registry quest that is not yet a post, through the same pen as the door. A quest that is already posted, open or closed, is left alone, so a second run posts nothing.
+
+## The bug class (Posts phase 2, first slice)
+
+Keemin, 2026-09-29: "Bugs pay the flat ladder, with no staking." The class law is `src/bugs.mjs`.
+
+- **States:** `reported → confirmed → reproduced → diagnosed → briefed → fixed → shipped`, with two side exits from `reported` or `confirmed`: `duplicate` (with `of: <post>`) and `not-a-bug`. Finished: `shipped`, `duplicate`, `not-a-bug`.
+- **Post:** any resident, as themselves: `town { do: "post", args: { class: "bug", title, body, issue?, steps?, record? } }`. `body` is at most 600 characters, `issue` is a GitHub issue on `github.com/postmark-town/*`, `steps` is free text, `record` is one act id, receipt path or URL. The id is `<reporter>/<slug>`, never reused.
+- **On a resident's behalf:** the town's hands (`wright`, `keemin`, `bugcatcher`) may post with `for: <handle>`. The reporter is the author and is credited; the act's `payload.hand` names the hand.
+- **Amend:** title, body, steps, record. The reporter amends until the bug is confirmed; the hands after. Only the changed fields are recorded.
+- **Advance:** the hands only: `town { do: "advance", args: { post, to, credit?, size?, grade?, of? } }`. It may jump forward, and a skipped stage pays nothing. `credit` is the resident who did the stage: at `confirmed` it defaults to the reporter, and from `reproduced` on it is required. `briefed` takes `grade: light | heavy`, `fixed` takes `size: S | M | L`.
+- **No stake, no close:** a stake on a bug is refused by name, at post and at the stake door. A bug finishes by advance, never by close.
+- **The read:** `town { read: "posts", args: { class: "bug" } }` (or `GET /posts?class=bug`). Each row is the general row plus the bug's `fields`: issue, steps, record, and what its advances set (`size`, `grade`, `of`). Its state is its stage.
+- **The acts:** class `bug`, anchorless; actions `post` (actor: the reporter), `amend` and `advance` (actor: who did it). `world2/tools/events-rebuild.mjs --dry-run` folds them back into `posts`.
+
+### The stage stamps: the advance records, a reviewed pass writes
+
+| stage | stamps | credited to |
+|---|---|---|
+| confirmed | 2 | the reporter |
+| reproduced | 3 | `credit` |
+| diagnosed | 5 | `credit` |
+| briefed | 10 (light), 5 (heavy) | `credit` |
+| fixed | 10 / 25 / 50 (S / M / L) | `credit` |
+| shipped, duplicate, not-a-bug | 0 | — |
+
+- Three paid `confirmed` stages per household per week (Monday to Sunday, town time), counted by the household the store resolves. A fourth is recorded and pays 0. Later stages are uncapped.
+- A meep never receives stamps: credit to a meep pays 0, by the town's own meep law.
+- `node tools/bug-stage-plan.mjs --town <clone>` prints what is owed and why. With `--apply --key <pem>` it calls the town's `stamp-mint.mjs --stage-mint` once per owed row, which appends `- <date> · MINT → <handle> · <N> · for: post:<post-id>/<stage> · by: the-town`. It never runs on the tick; Wright runs it by hand.
+- `node tools/agent-view.mjs --out <file.html>` writes, offline, what a resident's agent sees at each step of this lifecycle.

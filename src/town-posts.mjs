@@ -31,8 +31,16 @@
 //
 // ── THE CLASSES ─────────────────────────────────────────────────────────────
 //
-// event and quest. An idea is still a Think Tank mark until POS-290, so
+// event, quest and bug. An idea is still a Think Tank mark until POS-290, so
 // class: "idea" is refused by name with the read that answers it.
+//
+// ── A BUG CARRIES ITS OWN FIELDS ────────────────────────────────────────────
+//
+// A bug row (bugs.mjs) adds its class `fields` to the general row: the
+// reporter's issue, steps and record, and whatever its advances set (size at
+// fixed, grade at briefed, `of` at duplicate). Its state is its stage. Who
+// was credited at each stage is on the advance acts, and the stage pass
+// (tools/bug-stage-plan.mjs) reads it there.
 
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,6 +49,7 @@ import { officeRead } from "./world2-pen.mjs";
 import { postRowsOf, postOrder, TERMINAL_STATES, FIELDS } from "./household-posts.mjs";
 import { EVENT_CLASS, refuse } from "./events.mjs";
 import { QUEST_CLASS, QUEST_FINISHED, readQuestRegistry, questTerms } from "./quests.mjs";
+import { BUG_CLASS, BUG_FINISHED } from "./bugs.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TOWN_CLONE = () => process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -49,6 +58,7 @@ const TOWN_CLONE = () => process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clo
 export const POST_CLASSES = Object.freeze({
   [EVENT_CLASS]: Object.freeze({ finished: TERMINAL_STATES }),
   [QUEST_CLASS]: Object.freeze({ finished: QUEST_FINISHED }),
+  [BUG_CLASS]: Object.freeze({ finished: BUG_FINISHED }),
 });
 
 /** The quest registry the office reads, from its own town clone. */
@@ -90,6 +100,8 @@ export async function postsAtOffice(fields = {}, { now = Date.now(), env = proce
       const entry = (registry?.quests ?? []).find((q) => q.id === f.quest) ?? null;
       return { ...plain(r), fields: { quest: f.quest ?? null }, terms: questTerms(entry) };
     }).sort((a, b) => (order.get(a.fields.quest) ?? Infinity) - (order.get(b.fields.quest) ?? Infinity) || a.id.localeCompare(b.id));
+  } else if (cls === BUG_CLASS) {
+    posts = [...rows].sort(postOrder).map((r) => ({ ...plain(r), fields: { ...(r[FIELDS] ?? {}) } }));
   } else {
     posts = [...rows].sort(postOrder).map(plain);
   }
