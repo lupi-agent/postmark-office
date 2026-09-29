@@ -46,6 +46,9 @@ export const ACT_ANNOUNCE = "announce";
 export const ACT_POST = "post";
 export const ACT_AMEND_POST = "amend";
 export const ACT_CLOSE = "close";
+// The bug class's one move along its lifecycle (Posts phase 2): the state it
+// moves to, and the class's own fields that stage sets.
+export const ACT_ADVANCE = "advance";
 // A post's stored state is what its acts made it. An event's clock phases
 // (announced · doors-open · underway · ended) are `phaseAt`'s, never stored.
 export const STATE_ANNOUNCED = "announced";
@@ -419,6 +422,13 @@ export function applyPostAct(state, act) {
   if (act.action === ACT_CANCEL || act.action === ACT_CLOSE) {
     if (!prev) return null;
     const row = { ...prev, state: act.action === ACT_CANCEL ? STATE_CANCELLED : (p.state ?? STATE_CANCELLED), last_act: actId };
+    state.posts.set(id, row);
+    return row;
+  }
+  // The advance: the state it names, and ONLY the class fields it carries.
+  if (act.action === ACT_ADVANCE) {
+    if (!prev) return null;
+    const row = { ...prev, fields: { ...prev.fields, ...(p.fields ?? {}) }, state: p.to, last_act: actId };
     state.posts.set(id, row);
     return row;
   }

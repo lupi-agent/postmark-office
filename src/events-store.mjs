@@ -2,9 +2,9 @@
 //
 // The rules are src/events.mjs's, pure. This file is where they meet the
 // record: the queries, the transaction, the four household acts, the town's
-// post / amend / close / advance for class "event" (POS-288) and class "quest"
-// (POS-294, the town's own posts; its rules are quests.mjs's), and the
-// calendar read.
+// post / amend / close / advance for class "event" (POS-288), class "quest"
+// (POS-294, the town's own posts; its rules are quests.mjs's) and class "bug"
+// (Posts phase 2; its rules are bugs.mjs's), and the calendar read.
 //
 // ── ONE ACT, ONE TRANSACTION (the pen's R1, src/world2-pen.mjs) ─────────────
 //
@@ -40,11 +40,15 @@ import {
   QUEST_NO_AMEND, QUEST_NO_ADVANCE,
 } from "./quests.mjs";
 import {
-  EVENT_CLASS, ACT_POST, ACT_AMEND_POST, ACT_CLOSE, ACT_RSVP, ACT_ANNOUNCE, ENDED_LIST_DAYS,
+  BUG_CLASS, BUG_FINISHED, BUG_LADDER, BUG_STAGES, BUG_HANDS, STATE_REPORTED, stageAmount,
+  judgeBugText, judgeBugHand, judgeHandleField, judgeAdvance, BUG_NO_STAKE, BUG_NO_CLOSE,
+} from "./bugs.mjs";
+import {
+  EVENT_CLASS, ACT_POST, ACT_AMEND_POST, ACT_CLOSE, ACT_ADVANCE, ACT_RSVP, ACT_ANNOUNCE, ENDED_LIST_DAYS,
   STATE_CANCELLED, RESPONSE_RSVP, RESPONSE_STANDING,
   BUDGET_DEFAULT, BUDGET_MAX, FELL_BACK_NO_ECHO, SECRET_BYTES, SECRET_NOTE, HARNESS_REUSED_NOTE,
   refuse, mintEventId, judgeInterval, judgePlaceShape, placeFromMarkRow, anchorForPlace,
-  judgeText, judgeRsvp, challengeWebhook, harnessPlan, applyPostAct, eventView, calendarFrom,
+  judgeText, judgeRsvp, challengeWebhook, harnessPlan, applyPostAct, eventView, calendarFrom, slugFromTitle,
   judgeAnnouncement, announceMax, ANNOUNCE_MAX_ENV,
 } from "./events.mjs";
 
@@ -324,16 +328,16 @@ export async function cancelAtOffice(fields, key, { now = Date.now(), env = proc
 // ── the town door: post · amend · close · advance (POS-288, POS-294) ───────
 //
 // `town { do: "post" | "amend" | "close" | "advance", args: { class, … } }`.
-// These answer class "event" and class "quest"; town-post.mjs routes every
-// other class where it went before (an idea is still a mark at the Think Tank
-// until POS-290).
+// These answer class "event", class "quest" and class "bug"; town-post.mjs
+// routes every other class where it went before (an idea is still a mark at
+// the Think Tank until POS-290).
 
-const POST_MACHINE_CLASSES = [EVENT_CLASS, QUEST_CLASS];
+const POST_MACHINE_CLASSES = [EVENT_CLASS, QUEST_CLASS, BUG_CLASS];
 
 function judgeClass(fields, { required }) {
   const c = fields.class == null ? "" : String(fields.class).trim();
-  if (!c && required) throw refuse(422, "post needs a class", 'class: "event" puts it on the calendar; class: "quest" is the town\'s own', { field: "class" });
-  if (c && !POST_MACHINE_CLASSES.includes(c)) throw refuse(422, `this act answers class "event" or "quest", not "${c}"`, "the post machine's classes join it one by one", { field: "class" });
+  if (!c && required) throw refuse(422, "post needs a class", 'class: "event" puts it on the calendar; class: "quest" is the town\'s own; class: "bug" reports something broken', { field: "class" });
+  if (c && !POST_MACHINE_CLASSES.includes(c)) throw refuse(422, `this act answers class "event", "quest" or "bug", not "${c}"`, "the post machine's classes join it one by one", { field: "class" });
   return c || null;
 }
 function postId(fields) {
@@ -350,18 +354,20 @@ function bodyOf(fields) {
 
 /**
  * The class of the post an act names, when the caller did not send one. Only
- * "is it a quest" is asked: every other post goes the event path, which
- * answers its own "no event", exactly as it did before quests joined.
+ * "is it a quest" and "is it a bug" are asked: every other post goes the event
+ * path, which answers its own "no event", exactly as it did before they joined.
  */
 async function classOf(fields, id, env) {
   const c = judgeClass(fields, { required: false });
   if (c) return c;
-  const quest = await read((client) => questRow(client, id), env);
-  return quest ? QUEST_CLASS : EVENT_CLASS;
+  return read(async (client) => ((await questRow(client, id)) ? QUEST_CLASS
+    : (await bugRow(client, id)) ? BUG_CLASS : EVENT_CLASS), env);
 }
 
 export async function postAtTown(fields, key, { now = Date.now(), env = process.env, registry = undefined } = {}) {
-  if (judgeClass(fields, { required: true }) === QUEST_CLASS) return postQuest(fields, key, { now, env, registry });
+  const cls = judgeClass(fields, { required: true });
+  if (cls === QUEST_CLASS) return postQuest(fields, key, { now, env, registry });
+  if (cls === BUG_CLASS) return postBug(fields, key, { now, env });
   const handle = standpointHandle(fields, key);
   return postEvent(handle, { title: fields.title, body: bodyOf(fields), place: fields.place,
     doors_open: fields.doors_open, starts: fields.starts, ends: fields.ends }, { now, env, door: "town" });
@@ -369,7 +375,9 @@ export async function postAtTown(fields, key, { now = Date.now(), env = process.
 
 export async function amendAtTown(fields, key, { now = Date.now(), env = process.env } = {}) {
   const id = postId(fields);
-  if (await classOf(fields, id, env) === QUEST_CLASS) throw QUEST_NO_AMEND();
+  const cls = await classOf(fields, id, env);
+  if (cls === QUEST_CLASS) throw QUEST_NO_AMEND();
+  if (cls === BUG_CLASS) return amendBug(fields, key, id, { now, env });
   const handle = standpointHandle(fields, key);
   return amendEvent(handle, id, { title: fields.title, body: bodyOf(fields), place: fields.place,
     doors_open: fields.doors_open, starts: fields.starts, ends: fields.ends }, { now, env, door: "town" });
@@ -377,7 +385,9 @@ export async function amendAtTown(fields, key, { now = Date.now(), env = process
 
 export async function closeAtTown(fields, key, { now = Date.now(), env = process.env } = {}) {
   const id = postId(fields);
-  if (await classOf(fields, id, env) === QUEST_CLASS) return closeQuest(fields, key, id, { now, env });
+  const cls = await classOf(fields, id, env);
+  if (cls === QUEST_CLASS) return closeQuest(fields, key, id, { now, env });
+  if (cls === BUG_CLASS) throw BUG_NO_CLOSE(id);
   const handle = standpointHandle(fields, key);
   return closeEvent(handle, id, { now, env, door: "town" });
 }
@@ -386,12 +396,14 @@ export async function closeAtTown(fields, key, { now = Date.now(), env = process
  * `advance` moves a post along its class's lifecycle. An event has no such
  * move: its phases (announced · doors-open · underway · ended) follow its
  * clock, and its only act-made state beyond announced is cancelled, which is
- * `close`. A quest's one move is `close` too. The classes' own law is
- * POS-289's sitting; until then this refuses by name, and writes nothing.
+ * `close`. A quest's one move is `close` too. A bug is the class that
+ * advances (bugs.mjs), by the town's hands.
  */
-export async function advanceAtTown(fields, key, { env = process.env } = {}) {
+export async function advanceAtTown(fields, key, { now = Date.now(), env = process.env } = {}) {
   const id = postId(fields);
-  if (await classOf(fields, id, env) === QUEST_CLASS) throw QUEST_NO_ADVANCE();
+  const cls = await classOf(fields, id, env);
+  if (cls === QUEST_CLASS) throw QUEST_NO_ADVANCE();
+  if (cls === BUG_CLASS) return advanceBug(fields, key, id, { now, env });
   standpointHandle(fields, key);
   throw refuse(422, "an event's phases follow its clock",
     "announced, doors-open, underway and ended are read from its times — amend them to move it; close it to cancel it", { field: "to" });
@@ -486,6 +498,148 @@ export async function seedQuestPosts({ hand, registry, now = Date.now(), env = p
     out.posted.push({ id, act_id: r.act_id });
   }
   return out;
+}
+
+// ── the bug class (Posts phase 2): any resident posts, the town's hands move it
+//
+// A bug's acts are anchorless, like a quest's: it has no place and no span. The
+// act's actor is who did it. A post names its reporter as the actor (so the one
+// fold makes them the author and their household the post's), and when a hand
+// put it up on their behalf the payload names the hand. An amend or an advance
+// names its own actor; an advance, and an amend by anyone but the reporter,
+// also carries `hand` in the payload, so every act a hand made says so in the
+// same field.
+
+async function bugRow(client, id) {
+  const { rows } = await client.query(`SELECT ${POST_COLUMNS} FROM posts WHERE id = $1 AND class = $2`, [id, BUG_CLASS]);
+  return rowOf(rows[0]);
+}
+
+function bugActRow({ action, actor, object, payload, now }) {
+  return {
+    written_at: new Date(now).toISOString(), crossing: currentCrossing(now),
+    actor, action, object,
+    at_anchor: null, at_dx: null, at_dy: null, witnesses: null,
+    class: BUG_CLASS, payload: JSON.stringify(payload),
+    effect: null, household: actor,   // insertAct resolves the actor's house
+  };
+}
+
+const bugReadHint = (id) => `town { read: "posts", args: { class: "bug", post: "${id}" } } — or GET /posts/${id}?class=bug`;
+const bugAnswer = (row) => ({ id: row.id, class: BUG_CLASS, title: row.title, body: row.body, author: row.author,
+  household: row.household ?? null, state: row.state, fields: row.fields });
+
+/** The id a new bug takes: `<reporter>/<slug>` from its title, never reused (`-2`, `-3`, … while held). */
+function mintBugId(reporter, title, held) {
+  const slug = slugFromTitle(title);
+  if (!slug) throw refuse(422, "the title mints no id", "a bug's id is <reporter>/<slug>, and the slug comes from the title's letters and digits — give the title at least one", { field: "title" });
+  const base = `${reporter}/${slug}`;
+  if (!held.has(base)) return base;
+  for (let n = 2; n < 1000; n++) if (!held.has(`${base}-${n}`)) return `${base}-${n}`;
+  throw refuse(409, `"${base}" has been used too many times`, "give this bug a different title");
+}
+
+/** Post a bug: one `post` act, one `posts` row, reported. */
+async function postBug(fields, key, { now, env }) {
+  if (fields.stamps !== undefined) throw BUG_NO_STAKE();
+  let reporter;
+  let hand = null;
+  if (fields.for !== undefined) {
+    hand = judgeBugHand(fields, key, { act: "post a bug on a resident's behalf" });
+    reporter = judgeHandleField("for", fields.for);
+  } else {
+    reporter = standpointHandle(fields, key);
+  }
+  const text = judgeBugText({ title: fields.title, body: fields.body, issue: fields.issue, steps: fields.steps, record: fields.record });
+  return write(async (client) => {
+    const { rows } = await client.query("SELECT id, state, ends FROM posts WHERE id LIKE $1", [`${reporter}/%`]);
+    const id = mintBugId(reporter, text.title, new Set(rows.map((r) => r.id)));
+    const payload = { post: id, class: BUG_CLASS, title: text.title, body: text.body, state: STATE_REPORTED,
+      fields: text.fields, ...(hand ? { hand } : {}) };
+    const actId = await insertAct(client, bugActRow({ action: ACT_POST, actor: reporter, object: id, payload, now }));
+    const household = await householdKeyFor(client, reporter);
+    const row = applyPostAct({ posts: new Map(), responses: new Map() },
+      { id: actId, action: ACT_POST, actor: reporter, object: id, payload, household });
+    await insertPost(client, row);
+    return { post: bugAnswer(row), act_id: actId, ...(hand ? { hand } : {}),
+      receipt: `posted: ${id} (a bug), reported by ${reporter}${hand ? `, put up by ${hand}'s hand` : ""}. `
+        + `The town's hands (${BUG_HANDS.join(", ")}) confirm it; each stage then pays the flat ladder to whoever did it (${reporter} is credited at confirmed), `
+        + "paid by a reviewed pass, never by the act itself. A bug takes no stake.",
+      read: bugReadHint(id) };
+  }, env);
+}
+
+/** Amend a bug: its reporter until it is confirmed, the hands after. Only what changes is recorded. */
+async function amendBug(fields, key, id, { now, env }) {
+  if (fields.stamps !== undefined) throw BUG_NO_STAKE(id);
+  if (fields.issue !== undefined)
+    throw refuse(422, "a bug's issue is set when it is posted", "amend takes title, body, steps and record", { field: "issue" });
+  const acting = standpointHandle(fields, key);
+  const text = judgeBugText({ title: fields.title, body: fields.body, steps: fields.steps, record: fields.record }, { partial: true });
+  return write(async (client) => {
+    const prev = await bugRow(client, id);
+    if (!prev) throw refuse(404, `no bug "${id}"`, 'town { read: "posts", args: { class: "bug" } } lists them');
+    const isHand = BUG_HANDS.includes(acting);
+    if (BUG_FINISHED.includes(prev.state)) throw refuse(409, `"${id}" is finished (${prev.state})`, "a finished bug is not amended — post a new one if it came back");
+    if (!isHand && acting !== prev.author)
+      throw refuse(403, `"${id}" is not yours to amend`, `its reporter is ${prev.author}; after them, only the town's hands (${BUG_HANDS.join(", ")}) amend a bug`);
+    if (!isHand && prev.state !== STATE_REPORTED)
+      throw refuse(409, `"${id}" is ${prev.state}, so only the town's hands amend it now`,
+        `a reporter amends until the bug is confirmed; tell ${BUG_HANDS.join(", ")} what changed, by letter`);
+    const now_ = { title: text.title ?? prev.title, body: text.body ?? prev.body, ...prev.fields, ...text.fields };
+    const was = { title: prev.title, body: prev.body, ...prev.fields };
+    const changed = ["title", "body", "steps", "record"].filter((k) => k in now_ && now_[k] !== was[k]);
+    if (!changed.length) throw refuse(422, "nothing to amend", `every field you sent already stands on "${id}"`);
+    const payload = { post: id, changed };
+    for (const k of changed) {
+      if (k === "title" || k === "body") payload[k] = now_[k];
+      else (payload.fields ??= {})[k] = now_[k];
+    }
+    if (acting !== prev.author) payload.hand = acting;
+    const actId = await insertAct(client, bugActRow({ action: ACT_AMEND_POST, actor: acting, object: id, payload, now }));
+    const row = applyPostAct({ posts: new Map([[id, prev]]), responses: new Map() },
+      { id: actId, action: ACT_AMEND_POST, actor: acting, object: id, payload, household: prev.household });
+    await updatePost(client, row);
+    return { post: bugAnswer(row), act_id: actId, amended: changed,
+      receipt: `amended: ${id} (${changed.join(", ")}) — revision ${row.revised}; only these fields changed, and the act log keeps every revision`,
+      read: bugReadHint(id) };
+  }, env);
+}
+
+/** Advance a bug: one `advance` act by a town hand, naming the stage and whom it credits. It mints nothing. */
+async function advanceBug(fields, key, id, { now, env }) {
+  if (fields.stamps !== undefined) throw BUG_NO_STAKE(id);
+  const hand = judgeBugHand(fields, key, { act: "advance a bug" });
+  return write(async (client) => {
+    const prev = await bugRow(client, id);
+    if (!prev) throw refuse(404, `no bug "${id}"`, 'town { read: "posts", args: { class: "bug" } } lists them');
+    const j = judgeAdvance(fields, prev);
+    if (j.of && !(await bugRow(client, j.of)))
+      throw refuse(404, `no bug "${j.of}" to be a duplicate of`, 'of: a standing bug post — town { read: "posts", args: { class: "bug" } } lists them', { field: "of" });
+    const set = { ...(j.size ? { size: j.size } : {}), ...(j.grade ? { grade: j.grade } : {}), ...(j.of ? { of: j.of } : {}) };
+    const payload = { post: id, from: prev.state, to: j.to, ...(j.credit ? { credit: j.credit } : {}),
+      ...(Object.keys(set).length ? { fields: set } : {}), hand };
+    const actId = await insertAct(client, bugActRow({ action: ACT_ADVANCE, actor: hand, object: id, payload, now }));
+    const row = applyPostAct({ posts: new Map([[id, prev]]), responses: new Map() },
+      { id: actId, action: ACT_ADVANCE, actor: hand, object: id, payload, household: prev.household });
+    await updatePost(client, row);
+    const from = BUG_STAGES.indexOf(prev.state);
+    const at = BUG_STAGES.indexOf(j.to);
+    const skipped = at > from ? BUG_STAGES.slice(from + 1, at).filter((s) => BUG_LADDER[s]) : [];
+    const n = stageAmount(j.to, j);
+    const pays = BUG_LADDER[j.to]
+      ? `the ladder owes ${j.credit} ${n} stamps for ${j.to}, paid by the reviewed stage pass (not by this act), subject to the town's meep law and, at confirmed, three paid reports per household a week`
+      : `${j.to} pays nothing`;
+    return { post: bugAnswer(row), act_id: actId, hand, stage: j.to, ...(j.credit ? { credit: j.credit } : {}), stamps: n,
+      receipt: `advanced: ${id} ${prev.state} → ${j.to} by ${hand}'s hand; ${pays}${skipped.length ? `; skipped ${skipped.join(", ")}, and a skipped stage pays nothing` : ""}`,
+      read: bugReadHint(id) };
+  }, env);
+}
+
+/** Is this id a bug post? For the stake door's refusal; a store that cannot be read answers no. */
+export async function isBugPost(id, { env = process.env } = {}) {
+  try { return Boolean(await officeRead((client) => bugRow(client, String(id)), { env })); }
+  catch { return false; }
 }
 
 // ── rsvp (POS-208 B) ────────────────────────────────────────────────────────
