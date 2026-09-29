@@ -64,6 +64,8 @@ export const LANDED = {
   "027_act_nonce.sql":             { probe: `${col("acts", "nonce")} AND ${rel("acts_actor_nonce_idx")}` },
   "028_posts.sql":                 { probe: `${rel("posts")} AND ${rel("responses")} AND ${col("posts", "class")} AND ${col("responses", "kind")}` },
   "029_letter_opens.sql":          { probe: `${rel("letter_opens")} AND ${col("letter_opens", "how")}` },
+  // 030 (POS-292): the table, and the counting function WITH its fold of small cells.
+  "030_arrival_heard.sql":         { probe: `${rel("arrival_heard")} AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'arrival_heard_weekly' AND prosrc LIKE '%fewer-than-3%')` },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */
