@@ -364,10 +364,10 @@ async function classOf(fields, id, env) {
     : (await bugRow(client, id)) ? BUG_CLASS : EVENT_CLASS), env);
 }
 
-export async function postAtTown(fields, key, { now = Date.now(), env = process.env, registry = undefined } = {}) {
+export async function postAtTown(fields, key, { now = Date.now(), env = process.env, registry = undefined, roll = null } = {}) {
   const cls = judgeClass(fields, { required: true });
   if (cls === QUEST_CLASS) return postQuest(fields, key, { now, env, registry });
-  if (cls === BUG_CLASS) return postBug(fields, key, { now, env });
+  if (cls === BUG_CLASS) return postBug(fields, key, { now, env, roll });
   const handle = standpointHandle(fields, key);
   return postEvent(handle, { title: fields.title, body: bodyOf(fields), place: fields.place,
     doors_open: fields.doors_open, starts: fields.starts, ends: fields.ends }, { now, env, door: "town" });
@@ -399,11 +399,11 @@ export async function closeAtTown(fields, key, { now = Date.now(), env = process
  * `close`. A quest's one move is `close` too. A bug is the class that
  * advances (bugs.mjs), by the town's hands.
  */
-export async function advanceAtTown(fields, key, { now = Date.now(), env = process.env } = {}) {
+export async function advanceAtTown(fields, key, { now = Date.now(), env = process.env, roll = null } = {}) {
   const id = postId(fields);
   const cls = await classOf(fields, id, env);
   if (cls === QUEST_CLASS) throw QUEST_NO_ADVANCE();
-  if (cls === BUG_CLASS) return advanceBug(fields, key, id, { now, env });
+  if (cls === BUG_CLASS) return advanceBug(fields, key, id, { now, env, roll });
   standpointHandle(fields, key);
   throw refuse(422, "an event's phases follow its clock",
     "announced, doors-open, underway and ended are read from its times — amend them to move it; close it to cancel it", { field: "to" });
@@ -540,13 +540,13 @@ function mintBugId(reporter, title, held) {
 }
 
 /** Post a bug: one `post` act, one `posts` row, reported. */
-async function postBug(fields, key, { now, env }) {
+async function postBug(fields, key, { now, env, roll }) {
   if (fields.stamps !== undefined) throw BUG_NO_STAKE();
   let reporter;
   let hand = null;
   if (fields.for !== undefined) {
     hand = judgeBugHand(fields, key, { act: "post a bug on a resident's behalf" });
-    reporter = judgeHandleField("for", fields.for);
+    reporter = judgeHandleField("for", fields.for, roll);
   } else {
     reporter = standpointHandle(fields, key);
   }
@@ -569,18 +569,23 @@ async function postBug(fields, key, { now, env }) {
   }, env);
 }
 
-/** Amend a bug: its reporter until it is confirmed, the hands after. Only what changes is recorded. */
+/**
+ * Amend a bug: its reporter until it is confirmed, the hands after. Only what
+ * changes is recorded. `issue` is amendable too (Wright's ruling on #257): a
+ * discussion opened after the post has to be linkable.
+ */
 async function amendBug(fields, key, id, { now, env }) {
   if (fields.stamps !== undefined) throw BUG_NO_STAKE(id);
-  if (fields.issue !== undefined)
-    throw refuse(422, "a bug's issue is set when it is posted", "amend takes title, body, steps and record", { field: "issue" });
   const acting = standpointHandle(fields, key);
-  const text = judgeBugText({ title: fields.title, body: fields.body, steps: fields.steps, record: fields.record }, { partial: true });
+  const text = judgeBugText({ title: fields.title, body: fields.body, issue: fields.issue, steps: fields.steps, record: fields.record }, { partial: true });
   return write(async (client) => {
     const prev = await bugRow(client, id);
     if (!prev) throw refuse(404, `no bug "${id}"`, 'town { read: "posts", args: { class: "bug" } } lists them');
     const isHand = BUG_HANDS.includes(acting);
-    if (BUG_FINISHED.includes(prev.state)) throw refuse(409, `"${id}" is finished (${prev.state})`, "a finished bug is not amended — post a new one if it came back");
+    // A finished bug takes one amendment only: a hand linking its discussion (issue), at any stage.
+    const onlyIssue = Object.keys(text.fields).length === 1 && text.fields.issue !== undefined && text.title === undefined && text.body === undefined;
+    if (BUG_FINISHED.includes(prev.state) && !(isHand && onlyIssue))
+      throw refuse(409, `"${id}" is finished (${prev.state})`, `a finished bug is not amended — post a new one if it came back; the town's hands may still link its issue`);
     if (!isHand && acting !== prev.author)
       throw refuse(403, `"${id}" is not yours to amend`, `its reporter is ${prev.author}; after them, only the town's hands (${BUG_HANDS.join(", ")}) amend a bug`);
     if (!isHand && prev.state !== STATE_REPORTED)
@@ -588,7 +593,7 @@ async function amendBug(fields, key, id, { now, env }) {
         `a reporter amends until the bug is confirmed; tell ${BUG_HANDS.join(", ")} what changed, by letter`);
     const now_ = { title: text.title ?? prev.title, body: text.body ?? prev.body, ...prev.fields, ...text.fields };
     const was = { title: prev.title, body: prev.body, ...prev.fields };
-    const changed = ["title", "body", "steps", "record"].filter((k) => k in now_ && now_[k] !== was[k]);
+    const changed = ["title", "body", "issue", "steps", "record"].filter((k) => k in now_ && now_[k] !== was[k]);
     if (!changed.length) throw refuse(422, "nothing to amend", `every field you sent already stands on "${id}"`);
     const payload = { post: id, changed };
     for (const k of changed) {
@@ -607,13 +612,13 @@ async function amendBug(fields, key, id, { now, env }) {
 }
 
 /** Advance a bug: one `advance` act by a town hand, naming the stage and whom it credits. It mints nothing. */
-async function advanceBug(fields, key, id, { now, env }) {
+async function advanceBug(fields, key, id, { now, env, roll }) {
   if (fields.stamps !== undefined) throw BUG_NO_STAKE(id);
   const hand = judgeBugHand(fields, key, { act: "advance a bug" });
   return write(async (client) => {
     const prev = await bugRow(client, id);
     if (!prev) throw refuse(404, `no bug "${id}"`, 'town { read: "posts", args: { class: "bug" } } lists them');
-    const j = judgeAdvance(fields, prev);
+    const j = judgeAdvance(fields, prev, roll);
     if (j.of && !(await bugRow(client, j.of)))
       throw refuse(404, `no bug "${j.of}" to be a duplicate of`, 'of: a standing bug post — town { read: "posts", args: { class: "bug" } } lists them', { field: "of" });
     const set = { ...(j.size ? { size: j.size } : {}), ...(j.grade ? { grade: j.grade } : {}), ...(j.of ? { of: j.of } : {}) };

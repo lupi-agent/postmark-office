@@ -143,10 +143,18 @@ export function judgeBugText(input, { partial = false } = {}) {
   return out;
 }
 
-/** A handle named in `for` or `credit`: the town's spelling, or refused by name. */
-export function judgeHandleField(name, v) {
+/**
+ * A handle named in `for` or `credit`: the town's spelling, AND a resident
+ * standing in the office's residents index (Wright's review of #257: a handle
+ * that is no one records, and the town's --stage-mint later dies on it with
+ * "no WHITE_PAGES room"). `roll` is that index's handles; when the office
+ * cannot read it, the act refuses rather than guessing.
+ */
+export function judgeHandleField(name, v, roll) {
   const s = typeof v === "string" ? v.trim() : "";
   if (!BUG_HANDLE_RE.test(s)) throw refuse(422, `${name} names a resident by handle`, `${name}: "<handle>", as the town's white pages spell it`, { field: name });
+  if (!roll) throw refuse(503, `the office cannot read its residents index, so it cannot check "${s}"`, "nothing was written — ask again shortly", { field: name });
+  if (!roll.has(s)) throw refuse(422, `"${s}" is not a resident here`, `${name}: the resident's handle as the white pages spell it — town { read: "residents" } lists them`, { field: name });
   return s;
 }
 
@@ -171,7 +179,7 @@ export function judgeBugHand(fields, key, { act }) {
  * judged parts: `{ to, credit, size?, grade?, of? }`. `reporter` is the post's
  * author, the credit a `confirmed` defaults to.
  */
-export function judgeAdvance(fields, prev) {
+export function judgeAdvance(fields, prev, roll) {
   const to = typeof fields?.to === "string" ? fields.to.trim() : "";
   if (!to) throw refuse(422, "advance to which stage?", `to: one of ${BUG_STATES.filter((s) => s !== STATE_REPORTED).join(", ")}`, { field: "to" });
   if (!BUG_STATES.includes(to) || to === STATE_REPORTED)
@@ -190,7 +198,7 @@ export function judgeAdvance(fields, prev) {
   if (fields.credit !== undefined && !paid)
     throw refuse(422, `${to} pays nothing and credits no one`, "leave credit off", { field: "credit" });
   if (paid) {
-    if (fields.credit !== undefined) out.credit = judgeHandleField("credit", fields.credit);
+    if (fields.credit !== undefined) out.credit = judgeHandleField("credit", fields.credit, roll);
     else if (to === STATE_CONFIRMED) out.credit = prev.author;
     else throw refuse(422, `${to} names whom it credits`, `credit: "<handle>" — the resident who did the stage (from reproduced onward it is always named)`, { field: "credit" });
   }

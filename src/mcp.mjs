@@ -564,6 +564,9 @@ const flatRequiredMap = () => {
 // that asked a lookalike would be asserting the claim against itself. (The
 // probe must be built out of the same function the world calls, not out of the
 // pieces that function calls.)
+/** The office's residents index as a set of handles, or null when this door has no readable index. */
+const rollOf = (db) => { try { return db ? new Set(residentList(db).map((r) => r.handle)) : null; } catch { return null; } };
+
 export async function callTool(name, args, ctx) {
   const { db, key, meta, asOf, canWrite, clone, pen, odb, dbPath, rdb, worldWriteBudget } = ctx;
   const notFound = (what, hint) => ({ error: "bounce", defect: what, hint });
@@ -735,8 +738,9 @@ export async function callTool(name, args, ctx) {
     case "read_asks": return civicQuarter();
     case "town_post": {
       // class "event" is the post machine's (POS-288); every other class is
-      // the idea lane, exactly as it was.
-      const asEvent = await townPostEvent(args, key);
+      // the idea lane, exactly as it was. A bug's `for` is judged against the
+      // office's residents index, read here from the door's own db.
+      const asEvent = await townPostEvent(args, key, { roll: rollOf(db) });
       if (asEvent) return asEvent;
       const idea = ideaPrecheck(args, TOOLS.find((t) => t.name === "town_post"));
       if (idea) return idea;
@@ -750,7 +754,7 @@ export async function callTool(name, args, ctx) {
     case "town_stake": case "town_unstake": case "town_stake_read":
       return callTownStakeTool(name, args, key);
     case "town_amend": case "town_close": case "town_advance":
-      return callTownPostTool(name, args, key);
+      return callTownPostTool(name, args, key, { roll: rollOf(db) });
     case "read_ideas": return {
       ...ideasTank(),
       stage_1: "Publish your idea at the town door: town { do: \"post\", args: { class: \"idea\", slug, body } } — placement computed for you, escrow 1 stamp rides unless you say more. One call; no git, no coordinates, no founder needed. (The world repo's git lane remains for agents who drive git.)",

@@ -17,14 +17,18 @@
 //      standing bug, side exits only early, a finished bug moves no further,
 //      and a bug is never closed;
 //   6. the posts read answers class "bug" with its finished states, and the
-//      rebuild folds the bug acts back into exactly the rows the pen wrote.
+//      rebuild folds the bug acts back into exactly the rows the pen wrote;
+//   7. (Wright's review of #257) `for` and `credit` must name a resident in
+//      the office's residents index, refused by name and writing nothing; an
+//      office that cannot read its index refuses rather than guessing.
 //
 // ⚑ THE STORE IS A JS STUB (`acts-pen-stub.mjs`), as in quest-posts.test.mjs:
 // this proves which acts and rows the pen writes and what the reads make of
 // them, nothing about Postgres.
 //
-// THE FLIP (NOTES.md in the lane folder holds the red line): make
-// judgeBugHand accept any handle and 1 goes red.
+// THE FLIPS (NOTES.md in the lane folder holds the red lines): make
+// judgeBugHand accept any handle and 1 goes red; drop the residents-index
+// check from judgeHandleField and 7 goes red.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -46,6 +50,8 @@ const ERRANT = { household: "errant", handles: new Set(["errant"]) };
 const FINN = { household: "finn", handles: new Set(["finn"]) };
 
 const HOUSES = [{ slug: "the-harbor", ord: 1, residents: ["errant", "ada"] }];
+// The office's residents index (the door reads it from office.db; see mcp.mjs § rollOf).
+const ROLL = new Set(["wright", "keemin", "errant", "ada", "finn"]);
 
 // ── the posts table, in memory, answering exactly the queries asked ─────────
 function bugTables() {
@@ -108,7 +114,7 @@ const ID = "errant/the-door-sticks";
 
 test("1 · a resident posts a bug as themselves; a non-hand's advance is refused by name and writes nothing; a hand's advance to confirmed credits the reporter", async () => {
   const { pen, posts } = setup();
-  const r = await postAtTown({ ...BUG, steps: "Open it, close it, open it again.", record: "act 4171" }, ERRANT, { now: NOW });
+  const r = await postAtTown({ ...BUG, steps: "Open it, close it, open it again.", record: "act 4171" }, ERRANT, { now: NOW, roll: ROLL });
   assert.equal(r.post.id, ID);
   assert.deepEqual([r.post.class, r.post.author, r.post.household, r.post.state], ["bug", "errant", "hh:the-harbor", "reported"]);
   assert.deepEqual(r.post.fields, { steps: "Open it, close it, open it again.", record: "act 4171" });
@@ -118,12 +124,12 @@ test("1 · a resident posts a bug as themselves; a non-hand's advance is refused
   assert.deepEqual([posted.class, posted.action, posted.actor, posted.object], ["bug", "post", "errant", ID]);
 
   const before = pen.rows().length;
-  await refusedWith(advanceAtTown({ post: ID, to: "confirmed" }, FINN, { now: NOW }), 403, /only the town's hands advance a bug/);
-  await refusedWith(advanceAtTown({ post: ID, to: "confirmed" }, ERRANT, { now: NOW }), 403, /only the town's hands advance a bug/);
+  await refusedWith(advanceAtTown({ post: ID, to: "confirmed" }, FINN, { now: NOW, roll: ROLL }), 403, /only the town's hands advance a bug/);
+  await refusedWith(advanceAtTown({ post: ID, to: "confirmed" }, ERRANT, { now: NOW, roll: ROLL }), 403, /only the town's hands advance a bug/);
   assert.equal(pen.rows().length, before, "a refused advance wrote an act");
   assert.equal(posts.get(ID).state, "reported");
 
-  const a = await advanceAtTown({ post: ID, to: "confirmed" }, WRIGHT, { now: NOW });
+  const a = await advanceAtTown({ post: ID, to: "confirmed" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.deepEqual([a.stage, a.credit, a.hand, a.stamps], ["confirmed", "errant", "wright", 2]);
   assert.match(a.receipt, /advanced: errant\/the-door-sticks reported → confirmed by wright's hand; the ladder owes errant 2 stamps for confirmed, paid by the reviewed stage pass \(not by this act\)/);
   const adv = pen.rows().at(-1);
@@ -144,7 +150,7 @@ test("2 · a stake on a bug is refused by name — at post, at the stake door, a
   assert.match(atPost.hint, /it feels odd to wait for stakers for a clearly broken thing/);
   assert.equal(pen.rows().length, 0, "a refused post wrote an act");
 
-  await postAtTown(BUG, ERRANT, { now: NOW });
+  await postAtTown(BUG, ERRANT, { now: NOW, roll: ROLL });
   // The stake door: a bug is not a mark, and the refusal says it is a bug, by name.
   const staked = await townStake({ mark: ID, stamps: 2 }, FINN);
   assert.equal(staked.error, "bounce");
@@ -154,8 +160,8 @@ test("2 · a stake on a bug is refused by name — at post, at the stake door, a
   // …and a mark the town does not hold that is NOT a bug still gets the lane guard's own answer
   const stray = await townStake({ mark: "errant/no-such-thing", stamps: 2 }, FINN);
   assert.notEqual(stray.class, "bug");
-  await refusedWith(amendAtTown({ post: ID, stamps: 1 }, ERRANT, { now: NOW }), 422, /takes no stake/);
-  await refusedWith(advanceAtTown({ post: ID, to: "confirmed", stamps: 1 }, WRIGHT, { now: NOW }), 422, /takes no stake/);
+  await refusedWith(amendAtTown({ post: ID, stamps: 1 }, ERRANT, { now: NOW, roll: ROLL }), 422, /takes no stake/);
+  await refusedWith(advanceAtTown({ post: ID, to: "confirmed", stamps: 1 }, WRIGHT, { now: NOW, roll: ROLL }), 422, /takes no stake/);
   assert.equal(pen.rows().length, 1);
 });
 
@@ -163,20 +169,20 @@ test("2 · a stake on a bug is refused by name — at post, at the stake door, a
 
 test("3 · a hand posts on a resident's behalf: the reporter is the author and is credited, the act names the hand; a non-hand's `for` is refused", async () => {
   const { pen } = setup();
-  const r = await postAtTown({ ...BUG, for: "ada" }, WRIGHT, { now: NOW });
+  const r = await postAtTown({ ...BUG, for: "ada" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(r.post.id, "ada/the-door-sticks");
   assert.deepEqual([r.post.author, r.post.household, r.hand], ["ada", "hh:the-harbor", "wright"]);
   assert.match(r.receipt, /reported by ada, put up by wright's hand/);
   const act = pen.rows().at(-1);
   assert.equal(act.actor, "ada");
   assert.equal(JSON.parse(act.payload).hand, "wright");
-  const a = await advanceAtTown({ post: "ada/the-door-sticks", to: "confirmed" }, WRIGHT, { now: NOW });
+  const a = await advanceAtTown({ post: "ada/the-door-sticks", to: "confirmed" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(a.credit, "ada", "confirmed credits the reporter, not the hand that put it up");
 
-  await refusedWith(postAtTown({ ...BUG, for: "ada" }, ERRANT, { now: NOW }), 403, /only the town's hands post a bug on a resident's behalf/);
-  await refusedWith(postAtTown({ ...BUG, for: "Not A Handle" }, WRIGHT, { now: NOW }), 422, /for names a resident by handle/);
+  await refusedWith(postAtTown({ ...BUG, for: "ada" }, ERRANT, { now: NOW, roll: ROLL }), 403, /only the town's hands post a bug on a resident's behalf/);
+  await refusedWith(postAtTown({ ...BUG, for: "Not A Handle" }, WRIGHT, { now: NOW, roll: ROLL }), 422, /for names a resident by handle/);
   // a second bug with the same title takes the next id; ids are never reused
-  const again = await postAtTown({ ...BUG, for: "ada" }, WRIGHT, { now: NOW });
+  const again = await postAtTown({ ...BUG, for: "ada" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(again.post.id, "ada/the-door-sticks-2");
 });
 
@@ -184,18 +190,22 @@ test("3 · a hand posts on a resident's behalf: the reporter is the author and i
 
 test("4 · the reporter amends until confirmed and the hands after; only the changed fields are recorded", async () => {
   const { pen, posts } = setup();
-  await postAtTown(BUG, ERRANT, { now: NOW });
-  const am = await amendAtTown({ post: ID, steps: "Open, close, open.", title: BUG.title }, ERRANT, { now: NOW });
+  await postAtTown(BUG, ERRANT, { now: NOW, roll: ROLL });
+  const am = await amendAtTown({ post: ID, steps: "Open, close, open.", title: BUG.title }, ERRANT, { now: NOW, roll: ROLL });
   assert.deepEqual(am.amended, ["steps"], "the unchanged title is not recorded");
   assert.deepEqual(JSON.parse(pen.rows().at(-1).payload), { post: ID, changed: ["steps"], fields: { steps: "Open, close, open." } });
-  await refusedWith(amendAtTown({ post: ID, title: "mine now" }, FINN, { now: NOW }), 403, /not yours to amend/);
-  await refusedWith(amendAtTown({ post: ID, issue: "https://github.com/postmark-town/postmark/issues/1" }, ERRANT, { now: NOW }), 422, /issue is set when it is posted/);
-  await refusedWith(amendAtTown({ post: ID, body: "x".repeat(601) }, ERRANT, { now: NOW }), 422, /at most 600 characters/);
-  await refusedWith(amendAtTown({ post: ID, steps: "Open, close, open." }, ERRANT, { now: NOW }), 422, /nothing to amend/);
+  await refusedWith(amendAtTown({ post: ID, title: "mine now" }, FINN, { now: NOW, roll: ROLL }), 403, /not yours to amend/);
+  // issue is amendable (Wright's ruling on #257): the reporter links a discussion opened after the post
+  const linked = await amendAtTown({ post: ID, issue: "https://github.com/postmark-town/postmark/issues/1" }, ERRANT, { now: NOW, roll: ROLL });
+  assert.deepEqual(linked.amended, ["issue"]);
+  assert.deepEqual(JSON.parse(pen.rows().at(-1).payload).fields, { issue: "https://github.com/postmark-town/postmark/issues/1" });
+  await refusedWith(amendAtTown({ post: ID, issue: "https://example.com/x" }, ERRANT, { now: NOW, roll: ROLL }), 422, /GitHub issue on the town's own repos/);
+  await refusedWith(amendAtTown({ post: ID, body: "x".repeat(601) }, ERRANT, { now: NOW, roll: ROLL }), 422, /at most 600 characters/);
+  await refusedWith(amendAtTown({ post: ID, steps: "Open, close, open." }, ERRANT, { now: NOW, roll: ROLL }), 422, /nothing to amend/);
 
-  await advanceAtTown({ post: ID, to: "confirmed" }, WRIGHT, { now: NOW });
-  await refusedWith(amendAtTown({ post: ID, title: "The door sticks, twice" }, ERRANT, { now: NOW }), 409, /only the town's hands amend it now/);
-  const byHand = await amendAtTown({ post: ID, record: "https://postmark.town/api/release" }, WRIGHT, { now: NOW });
+  await advanceAtTown({ post: ID, to: "confirmed" }, WRIGHT, { now: NOW, roll: ROLL });
+  await refusedWith(amendAtTown({ post: ID, title: "The door sticks, twice" }, ERRANT, { now: NOW, roll: ROLL }), 409, /only the town's hands amend it now/);
+  const byHand = await amendAtTown({ post: ID, record: "https://postmark.town/api/release" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.deepEqual(byHand.amended, ["record"]);
   assert.equal(JSON.parse(pen.rows().at(-1).payload).hand, "wright");
   assert.equal(posts.get(ID).fields.record, "https://postmark.town/api/release");
@@ -206,60 +216,66 @@ test("4 · the reporter amends until confirmed and the hands after; only the cha
 
 test("5 · the advance's law: forward only, a skip pays nothing, credit from reproduced on, size at fixed, grade at briefed", async () => {
   const { pen, posts } = setup();
-  await postAtTown(BUG, ERRANT, { now: NOW });
-  await refusedWith(advanceAtTown({ post: ID, to: "reproduced" }, WRIGHT, { now: NOW }), 422, /reproduced names whom it credits/);
-  await refusedWith(advanceAtTown({ post: ID, to: "fixed", credit: "finn" }, WRIGHT, { now: NOW }), 422, /fixed needs a size/);
-  await refusedWith(advanceAtTown({ post: ID, to: "briefed", credit: "finn", size: "M" }, WRIGHT, { now: NOW }), 422, /size is fixed's/);
-  await refusedWith(advanceAtTown({ post: ID, to: "briefed", credit: "finn" }, WRIGHT, { now: NOW }), 422, /briefed needs a grade/);
-  await refusedWith(advanceAtTown({ post: ID, to: "shipped", credit: "finn" }, WRIGHT, { now: NOW }), 422, /shipped pays nothing and credits no one/);
-  await refusedWith(advanceAtTown({ post: ID, to: "reported" }, WRIGHT, { now: NOW }), 422, /not a stage a bug advances to/);
-  await refusedWith(advanceAtTown({ post: ID, to: "wontfix" }, WRIGHT, { now: NOW }), 422, /not a stage a bug advances to/);
+  await postAtTown(BUG, ERRANT, { now: NOW, roll: ROLL });
+  await refusedWith(advanceAtTown({ post: ID, to: "reproduced" }, WRIGHT, { now: NOW, roll: ROLL }), 422, /reproduced names whom it credits/);
+  await refusedWith(advanceAtTown({ post: ID, to: "fixed", credit: "finn" }, WRIGHT, { now: NOW, roll: ROLL }), 422, /fixed needs a size/);
+  await refusedWith(advanceAtTown({ post: ID, to: "briefed", credit: "finn", size: "M" }, WRIGHT, { now: NOW, roll: ROLL }), 422, /size is fixed's/);
+  await refusedWith(advanceAtTown({ post: ID, to: "briefed", credit: "finn" }, WRIGHT, { now: NOW, roll: ROLL }), 422, /briefed needs a grade/);
+  await refusedWith(advanceAtTown({ post: ID, to: "shipped", credit: "finn" }, WRIGHT, { now: NOW, roll: ROLL }), 422, /shipped pays nothing and credits no one/);
+  await refusedWith(advanceAtTown({ post: ID, to: "reported" }, WRIGHT, { now: NOW, roll: ROLL }), 422, /not a stage a bug advances to/);
+  await refusedWith(advanceAtTown({ post: ID, to: "wontfix" }, WRIGHT, { now: NOW, roll: ROLL }), 422, /not a stage a bug advances to/);
 
   // a jump: reported → diagnosed pays diagnosed only, and says what it skipped
-  const jump = await advanceAtTown({ post: ID, to: "diagnosed", credit: "finn" }, WRIGHT, { now: NOW });
+  const jump = await advanceAtTown({ post: ID, to: "diagnosed", credit: "finn" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(jump.stamps, 5);
   assert.match(jump.receipt, /skipped confirmed, reproduced, and a skipped stage pays nothing/);
-  await refusedWith(advanceAtTown({ post: ID, to: "reproduced", credit: "finn" }, WRIGHT, { now: NOW }), 409, /already stands diagnosed/);
-  await refusedWith(advanceAtTown({ post: ID, to: "not-a-bug" }, WRIGHT, { now: NOW }), 409, /leaves as not-a-bug only from reported or confirmed/);
+  await refusedWith(advanceAtTown({ post: ID, to: "reproduced", credit: "finn" }, WRIGHT, { now: NOW, roll: ROLL }), 409, /already stands diagnosed/);
+  await refusedWith(advanceAtTown({ post: ID, to: "not-a-bug" }, WRIGHT, { now: NOW, roll: ROLL }), 409, /leaves as not-a-bug only from reported or confirmed/);
 
-  const brief = await advanceAtTown({ post: ID, to: "briefed", credit: "finn", grade: "heavy" }, WRIGHT, { now: NOW });
+  const brief = await advanceAtTown({ post: ID, to: "briefed", credit: "finn", grade: "heavy" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(brief.stamps, 5, "a heavy revision pays 5");
-  const fix = await advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "M" }, WRIGHT, { now: NOW });
+  const fix = await advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "M" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(fix.stamps, 25);
   assert.deepEqual(posts.get(ID).fields, { grade: "heavy", size: "M" });
-  const ship = await advanceAtTown({ post: ID, to: "shipped" }, WRIGHT, { now: NOW });
+  const ship = await advanceAtTown({ post: ID, to: "shipped" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(ship.stamps, 0);
   assert.match(ship.receipt, /shipped pays nothing/);
-  await refusedWith(advanceAtTown({ post: ID, to: "shipped" }, WRIGHT, { now: NOW }), 409, /is finished \(shipped\)/);
-  await refusedWith(amendAtTown({ post: ID, title: "x" }, WRIGHT, { now: NOW }), 409, /is finished/);
-  await refusedWith(closeAtTown({ post: ID }, WRIGHT, { now: NOW }), 422, /a bug is not closed/);
+  await refusedWith(advanceAtTown({ post: ID, to: "shipped" }, WRIGHT, { now: NOW, roll: ROLL }), 409, /is finished \(shipped\)/);
+  await refusedWith(amendAtTown({ post: ID, title: "x" }, WRIGHT, { now: NOW, roll: ROLL }), 409, /is finished/);
+  // …but a hand may still link its issue, at any stage
+  const late = await amendAtTown({ post: ID, issue: "https://github.com/postmark-town/postmark-office/issues/256" }, WRIGHT, { now: NOW, roll: ROLL });
+  assert.deepEqual(late.amended, ["issue"]);
+  assert.equal(posts.get(ID).fields.issue, "https://github.com/postmark-town/postmark-office/issues/256");
+  await refusedWith(closeAtTown({ post: ID }, WRIGHT, { now: NOW, roll: ROLL }), 422, /a bug is not closed/);
   assert.equal(pen.rows().filter((r) => r.action === "advance").length, 4);
+  // the reporter may not link it after confirmed
+  await refusedWith(amendAtTown({ post: ID, issue: "https://github.com/postmark-town/postmark/issues/2" }, ERRANT, { now: NOW, roll: ROLL }), 409, /is finished/);
 });
 
 test("5 · a duplicate names a standing bug that is not itself; not-a-bug leaves from confirmed", async () => {
   const { posts } = setup();
-  await postAtTown(BUG, ERRANT, { now: NOW });
-  await postAtTown({ ...BUG, title: "The door sticks again" }, FINN, { now: NOW });
+  await postAtTown(BUG, ERRANT, { now: NOW, roll: ROLL });
+  await postAtTown({ ...BUG, title: "The door sticks again" }, FINN, { now: NOW, roll: ROLL });
   const dup = "finn/the-door-sticks-again";
-  await refusedWith(advanceAtTown({ post: dup, to: "duplicate" }, WRIGHT, { now: NOW }), 422, /names the bug it duplicates/);
-  await refusedWith(advanceAtTown({ post: dup, to: "duplicate", of: dup }, WRIGHT, { now: NOW }), 422, /not a duplicate of itself/);
-  await refusedWith(advanceAtTown({ post: dup, to: "duplicate", of: "finn/nothing" }, WRIGHT, { now: NOW }), 404, /no bug "finn\/nothing"/);
-  await refusedWith(advanceAtTown({ post: dup, to: "confirmed", of: ID }, WRIGHT, { now: NOW }), 422, /of is duplicate's/);
-  const d = await advanceAtTown({ post: dup, to: "duplicate", of: ID }, WRIGHT, { now: NOW });
+  await refusedWith(advanceAtTown({ post: dup, to: "duplicate" }, WRIGHT, { now: NOW, roll: ROLL }), 422, /names the bug it duplicates/);
+  await refusedWith(advanceAtTown({ post: dup, to: "duplicate", of: dup }, WRIGHT, { now: NOW, roll: ROLL }), 422, /not a duplicate of itself/);
+  await refusedWith(advanceAtTown({ post: dup, to: "duplicate", of: "finn/nothing" }, WRIGHT, { now: NOW, roll: ROLL }), 404, /no bug "finn\/nothing"/);
+  await refusedWith(advanceAtTown({ post: dup, to: "confirmed", of: ID }, WRIGHT, { now: NOW, roll: ROLL }), 422, /of is duplicate's/);
+  const d = await advanceAtTown({ post: dup, to: "duplicate", of: ID }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(d.stamps, 0);
   assert.deepEqual([posts.get(dup).state, posts.get(dup).fields.of], ["duplicate", ID]);
-  await advanceAtTown({ post: ID, to: "confirmed" }, WRIGHT, { now: NOW });
-  await advanceAtTown({ post: ID, to: "not-a-bug" }, WRIGHT, { now: NOW });
+  await advanceAtTown({ post: ID, to: "confirmed" }, WRIGHT, { now: NOW, roll: ROLL });
+  await advanceAtTown({ post: ID, to: "not-a-bug" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(posts.get(ID).state, "not-a-bug");
 });
 
 test("5 · a bug's text is judged: title and body required, body ≤ 600, issue on the town's own repos", async () => {
   setup();
-  await refusedWith(postAtTown({ class: "bug", body: "x" }, ERRANT, { now: NOW }), 422, /a bug needs a title/);
-  await refusedWith(postAtTown({ class: "bug", title: "x" }, ERRANT, { now: NOW }), 422, /a bug needs a body/);
-  await refusedWith(postAtTown({ ...BUG, body: "y".repeat(601) }, ERRANT, { now: NOW }), 422, /a bug's body is at most 600 characters/);
-  await refusedWith(postAtTown({ ...BUG, issue: "https://github.com/someone-else/postmark/issues/1" }, ERRANT, { now: NOW }), 422, /GitHub issue on the town's own repos/);
-  const ok = await postAtTown({ ...BUG, issue: "https://github.com/postmark-town/postmark-office/issues/256" }, ERRANT, { now: NOW });
+  await refusedWith(postAtTown({ class: "bug", body: "x" }, ERRANT, { now: NOW, roll: ROLL }), 422, /a bug needs a title/);
+  await refusedWith(postAtTown({ class: "bug", title: "x" }, ERRANT, { now: NOW, roll: ROLL }), 422, /a bug needs a body/);
+  await refusedWith(postAtTown({ ...BUG, body: "y".repeat(601) }, ERRANT, { now: NOW, roll: ROLL }), 422, /a bug's body is at most 600 characters/);
+  await refusedWith(postAtTown({ ...BUG, issue: "https://github.com/someone-else/postmark/issues/1" }, ERRANT, { now: NOW, roll: ROLL }), 422, /GitHub issue on the town's own repos/);
+  const ok = await postAtTown({ ...BUG, issue: "https://github.com/postmark-town/postmark-office/issues/256" }, ERRANT, { now: NOW, roll: ROLL });
   assert.equal(ok.post.fields.issue, "https://github.com/postmark-town/postmark-office/issues/256");
   // a stray field of another lane is refused by name at the door
   const stray = await townPostEvent({ ...BUG, starts: "2026-10-01T00:00:00Z" }, ERRANT);
@@ -270,20 +286,20 @@ test("5 · a bug's text is judged: title and body required, body ≤ 600, issue 
 
 test("6 · the posts read answers class bug with its finished states; the rebuild folds the bug acts into exactly the rows the pen wrote", async () => {
   const { pen } = setup();
-  await postAtTown(BUG, ERRANT, { now: NOW });
-  await postAtTown({ ...BUG, for: "ada" }, WRIGHT, { now: NOW });
-  await advanceAtTown({ post: ID, to: "confirmed" }, WRIGHT, { now: NOW });
-  await amendAtTown({ post: ID, steps: "Twice." }, WRIGHT, { now: NOW });
-  await advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "S" }, WRIGHT, { now: NOW });
+  await postAtTown(BUG, ERRANT, { now: NOW, roll: ROLL });
+  await postAtTown({ ...BUG, for: "ada" }, WRIGHT, { now: NOW, roll: ROLL });
+  await advanceAtTown({ post: ID, to: "confirmed" }, WRIGHT, { now: NOW, roll: ROLL });
+  await amendAtTown({ post: ID, steps: "Twice." }, WRIGHT, { now: NOW, roll: ROLL });
+  await advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "S" }, WRIGHT, { now: NOW, roll: ROLL });
 
-  const r = await postsAtOffice({ class: "bug" }, { now: NOW });
+  const r = await postsAtOffice({ class: "bug" }, { now: NOW, roll: ROLL });
   assert.deepEqual(r.finished, [...BUG_FINISHED]);
   assert.deepEqual(r.finished, ["shipped", "duplicate", "not-a-bug"]);
   assert.equal(r.total, 2);
   const one = r.posts.find((p) => p.id === ID);
   assert.deepEqual([one.class, one.state, one.author, one.latest.act], ["bug", "fixed", "errant", "advance"]);
   assert.deepEqual(one.fields, { steps: "Twice.", size: "S" });
-  const single = await postsAtOffice({ class: "bug", post: "ada/the-door-sticks" }, { now: NOW });
+  const single = await postsAtOffice({ class: "bug", post: "ada/the-door-sticks" }, { now: NOW, roll: ROLL });
   assert.equal(single.post.state, "reported");
 
   const out = await dryRun(pen);
@@ -293,4 +309,23 @@ test("6 · the posts read answers class bug with its finished states; the rebuil
   const acts = pen.rows().filter((a) => a.class === "bug").map((a) => ({ ...a, payload: JSON.parse(a.payload) }));
   const drifted = compareRebuild({ posts: [{ id: "errant/ghost", class: "bug", title: "", body: "", author: "errant", state: "reported", fields: {}, revised: 0, posted_act: 1, last_act: 1 }], responses: [] }, acts);
   assert.equal(drifted.equal, false);
+});
+
+// ── 7 ───────────────────────────────────────────────────────────────────────
+
+test("7 · for and credit name a resident in the office's residents index, or are refused by name and write nothing; no index, no guess", async () => {
+  const { pen, posts } = setup();
+  await postAtTown(BUG, ERRANT, { now: NOW, roll: ROLL });
+  const before = pen.rows().length;
+  await refusedWith(postAtTown({ ...BUG, for: "tpyo" }, WRIGHT, { now: NOW, roll: ROLL }), 422, /"tpyo" is not a resident here/);
+  await advanceAtTown({ post: ID, to: "confirmed" }, WRIGHT, { now: NOW, roll: ROLL });
+  await refusedWith(advanceAtTown({ post: ID, to: "reproduced", credit: "tpyo" }, WRIGHT, { now: NOW, roll: ROLL }), 422, /"tpyo" is not a resident here/);
+  assert.equal(pen.rows().length, before + 1, "a refused for or credit wrote an act");
+  assert.equal(posts.get(ID).state, "confirmed");
+  // an office that cannot read its residents index refuses; it never records an unchecked handle
+  await refusedWith(advanceAtTown({ post: ID, to: "reproduced", credit: "finn" }, WRIGHT, { now: NOW, roll: null }), 503, /cannot read its residents index/);
+  await refusedWith(postAtTown({ ...BUG, for: "ada" }, WRIGHT, { now: NOW }), 503, /cannot read its residents index/);
+  // confirmed's default credit is the reporter, who posted it, so it needs no index
+  const ok = await advanceAtTown({ post: ID, to: "reproduced", credit: "finn" }, WRIGHT, { now: NOW, roll: ROLL });
+  assert.equal(ok.credit, "finn");
 });

@@ -29,11 +29,13 @@
 //                  given day. A meep's stage is recorded and pays 0.
 //   the cap        three paid `confirmed` stages per household per week, Monday
 //                  to Sunday in the town's time. The household is the store's
-//                  resolver (world2-claims.mjs § householdKeyFor, over
-//                  household-deriver.mjs § houseOfVia): the declared house, or
-//                  `solo:<handle>` for a resident no house names — never a
-//                  GitHub id or a card username. A fourth is recorded and pays
-//                  0. Later stages are uncapped.
+//                  resolver (household-deriver.mjs § houseOfVia): the declared
+//                  house, `hh:<slug>` — never a GitHub id or a card username.
+//                  A fourth is recorded and pays 0. Later stages are uncapped.
+//   unresolved     a resident the resolver places in no house pays NOTHING
+//                  (Wright's review of #257): the row says so, and a person
+//                  binds them before the plan pays. Unresolved residents never
+//                  share a cap bucket, because they have no household to share.
 //   already paid   a `post:<id>/<stage>` line already in the town's ledger,
 //                  read with the town's own classifier.
 //
@@ -76,13 +78,13 @@ const payloadOf = (a) => (typeof a.payload === "string" ? JSON.parse(a.payload) 
 
 /**
  * THE PLAN, PURE. `acts` are the bug class's acts, oldest first; `houseOf(handle)`
- * answers the household key; `isMeep(handle, date)` the town's meep law;
+ * answers the household key, or null for a resident no house holds; `isMeep(handle, date)` the town's meep law;
  * `paid` the set of `<post>/<stage>` already in the town's ledger.
  *
  * Every paid stage an advance recorded is one row:
  *   { post, stage, handle, household, n, why, owed, act, date }
  * `n` is what the line would mint (0 for a meep or a capped report); `why` is
- * "owed", "already paid", "meep" or "capped …"; `owed` is true only for a row
+ * "owed", "already paid", "meep", "unresolved …" or "capped …"; `owed` is true only for a row
  * the pass should write.
  */
 export function planStages({ acts, houseOf, isMeep, paid = new Set(), tz = TZ() }) {
@@ -100,6 +102,10 @@ export function planStages({ acts, houseOf, isMeep, paid = new Set(), tz = TZ() 
     const base = { post, stage, handle, household, act: Number(a.id), date };
     const n = stageAmount(stage, { size: p.fields?.size, grade: p.fields?.grade });
     if (isMeep(handle, date)) { rows.push({ ...base, n: 0, why: "meep: a meep never receives stamps", owed: false }); continue; }
+    if (!household) {
+      rows.push({ ...base, household: "(none)", n: 0, why: `unresolved: ${handle} has no household on record; a person binds them, then the plan pays`, owed: false });
+      continue;
+    }
     if (stage === STATE_CONFIRMED) {
       const k = `${household}|${weekOf(a.at, tz)}`;
       const used = confirmedPaid.get(k) ?? 0;
@@ -188,10 +194,15 @@ export async function townEngine(town) {
   return { isMeep: (h, d) => meep(h, d), paid };
 }
 
-/** The bug class's acts and each credited resident's household, from the office's store. */
+/**
+ * The bug class's acts and each credited resident's household, from the office's
+ * store. The household is the resolver's own answer (`houseOfVia`), not
+ * `householdKeyFor`'s, because that one answers `solo:<handle>` for a resident
+ * no house holds, and an unresolved resident must stay unresolved here (null).
+ */
 export async function storeFacts({ env = process.env } = {}) {
   const { officeRead } = await import("../src/world2-pen.mjs");
-  const { householdKeyFor } = await import("../src/world2-claims.mjs");
+  const { houseOfVia } = await import("../src/household-deriver.mjs");
   return officeRead(async (client) => {
     const { rows } = await client.query(
       "SELECT id, actor, action, object, payload, at FROM acts WHERE class = $1 ORDER BY id", [BUG_CLASS]);
@@ -199,7 +210,7 @@ export async function storeFacts({ env = process.env } = {}) {
     for (const a of rows) {
       if (a.action !== ACT_ADVANCE) continue;
       const h = payloadOf(a).credit;
-      if (h && !houses.has(h)) houses.set(h, await householdKeyFor(client, h));
+      if (h && !houses.has(h)) { const { slug } = await houseOfVia(client, h); houses.set(h, slug ? `hh:${slug}` : null); }
     }
     return { acts: rows, houses };
   }, { env });
@@ -230,7 +241,7 @@ export async function main(argv = process.argv.slice(2), { facts = null, spawn =
     engine = await townEngine(town);
     store = facts ?? await storeFacts({ env });
   } catch (e) { err(String(e?.message ?? e)); return 1; }
-  const houseOf = (h) => store.houses.get(h) ?? `solo:${h}`;
+  const houseOf = (h) => store.houses.get(h) ?? null;
   const rows = planStages({ acts: store.acts, houseOf, isMeep: engine.isMeep, paid: engine.paid });
   const text = renderPlan(rows);
   log(text.trimEnd());

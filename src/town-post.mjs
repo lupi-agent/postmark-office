@@ -94,7 +94,7 @@ function strays(args, fields, lane, takes) {
  * `null` for any other class — the caller then runs the idea lane exactly as
  * before, after `ideaPrecheck` has judged the fields that lane always required.
  */
-export async function townPostEvent(args = {}, key = null) {
+export async function townPostEvent(args = {}, key = null, { roll = null } = {}) {
   const c = String(args.class ?? "").trim();
   if (c === BUG_CLASS) {
     // THE STAKE FIRST, by name: `stamps` is the idea lane's escrow, and a
@@ -103,7 +103,7 @@ export async function townPostEvent(args = {}, key = null) {
     const stray = strays(args, Object.keys(args).filter((f) => !BUG_TAKES.includes(f) && args[f] !== undefined), "a bug",
       "a bug takes title, body, and optionally issue, steps, record and handle (for, by the town's hands only)");
     if (stray) return stray;
-    return answer(() => postAtTown(args, key));
+    return answer(() => postAtTown(args, key, { roll }));
   }
   if (c === QUEST_CLASS) {
     const stray = strays(args, Object.keys(args).filter((f) => !QUEST_TAKES.includes(f) && args[f] !== undefined), "a quest",
@@ -131,12 +131,12 @@ const CLASS_REF = { type: "string", enum: [EVENT_CLASS, QUEST_CLASS, BUG_CLASS],
 
 export const TOWN_POST_TOOLS = [
   { name: "town_amend",
-    description: `Amend a post you (or your household) put up — town { do: "amend" }'s flat charge name. Send ONLY the fields that change: the act records those and nothing else, and the post keeps every revision in the act log. Today it answers class "event": title, body (or invitation, at most ${INVITATION_MAX} characters), place, starts, ends, doors_open. Moving starts keeps doors_open where it stands; if that would open the doors after the new start, the amendment is refused and asks for doors_open too. A quest is not amended: its terms are the town's quest registry. A BUG: title, body (at most ${BODY_MAX} characters), steps and record — its reporter amends it until it is confirmed, the town's hands (${BUG_HANDS.join(", ")}) after.`,
+    description: `Amend a post you (or your household) put up — town { do: "amend" }'s flat charge name. Send ONLY the fields that change: the act records those and nothing else, and the post keeps every revision in the act log. Today it answers class "event": title, body (or invitation, at most ${INVITATION_MAX} characters), place, starts, ends, doors_open. Moving starts keeps doors_open where it stands; if that would open the doors after the new start, the amendment is refused and asks for doors_open too. A quest is not amended: its terms are the town's quest registry. A BUG: title, body (at most ${BODY_MAX} characters), issue, steps and record — its reporter amends it until it is confirmed, the town's hands (${BUG_HANDS.join(", ")}) after.`,
     inputSchema: { type: "object", properties: {
       post: POST_REF, class: CLASS_REF,
       body: { type: "string", description: `the post's text (an event's invitation), at most ${INVITATION_MAX} characters` },
       ...EVENT_POST_PROPERTIES,
-      steps: BUG_POST_PROPERTIES.steps, record: BUG_POST_PROPERTIES.record,
+      issue: BUG_POST_PROPERTIES.issue, steps: BUG_POST_PROPERTIES.steps, record: BUG_POST_PROPERTIES.record,
     }, required: ["post"], additionalProperties: false } },
   { name: "town_close",
     description: "Close a post you (or your household) put up — town { do: \"close\" }'s flat charge name. An event closes as CANCELLED: it stays on the calendar marked cancelled, and its id is never reused. An event that has ended is not closed — it happened. A QUEST is the town's own post and closes as closed, only by the town's hands (" + QUEST_HANDS.join(", ") + "); the act names the hand. A BUG is not closed: it finishes by advance (shipped, duplicate, not-a-bug).",
@@ -155,11 +155,12 @@ export const TOWN_POST_TOOLS = [
     }, required: ["post"], additionalProperties: false } },
 ];
 
-export async function callTownPostTool(name, args = {}, key = null) {
+/** `roll` is the office's residents index (handles), which a bug's `for` and `credit` must stand in. */
+export async function callTownPostTool(name, args = {}, key = null, { roll = null } = {}) {
   switch (name) {
     case "town_amend": return answer(() => amendAtTown(args, key));
     case "town_close": return answer(() => closeAtTown(args, key));
-    case "town_advance": return answer(() => advanceAtTown(args, key));
+    case "town_advance": return answer(() => advanceAtTown(args, key, { roll }));
     default: return null;
   }
 }

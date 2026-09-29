@@ -9,7 +9,9 @@
 //   2. the fourth confirmed report by one household in a week pays 0 and says
 //      "capped"; two residents of one house share the cap, and the store's
 //      resolver decides the house;
-//   3. credit to a meep pays 0 and says "meep";
+//   3. credit to a meep pays 0 and says "meep"; (Wright's review of #257) a
+//      resident no household holds pays 0 and says "unresolved", and two of
+//      them share no cap;
 //   4. the pass is bound to its own plan: a count the rows do not match refuses;
 //   5. after --apply, the ledger holds exactly one signed `post:<id>/confirmed`
 //      line, and a second --apply writes nothing.
@@ -44,8 +46,9 @@ const NOW = Date.now();
 const WRIGHT = { household: "starforge", handles: new Set(["wright"]) };
 const key = (h) => ({ household: h, handles: new Set([h]) });
 
-// ada and bram keep one house; carol is her own.
-const HOUSES = [{ slug: "the-harbor", ord: 1, residents: ["ada", "bram"] }];
+// ada and bram keep one house; carol keeps her own. dan and eve are residents no house holds.
+const HOUSES = [{ slug: "the-harbor", ord: 1, residents: ["ada", "bram"] }, { slug: "carols", ord: 2, residents: ["carol"] }];
+const ROLL = new Set(["wright", "ada", "bram", "carol", "dan", "eve", "bugcatcher"]);
 
 function bugTables() {
   const posts = new Map();
@@ -64,14 +67,14 @@ test.afterEach(() => uninstallActsPen());
 
 /** Post a bug by `who` and confirm it by a hand; returns its id. */
 async function confirmed(who, title) {
-  const r = await postAtTown({ class: "bug", title, body: "It broke." }, key(who), { now: NOW });
-  await advanceAtTown({ post: r.post.id, to: "confirmed" }, WRIGHT, { now: NOW });
+  const r = await postAtTown({ class: "bug", title, body: "It broke." }, key(who), { now: NOW, roll: ROLL });
+  await advanceAtTown({ post: r.post.id, to: "confirmed" }, WRIGHT, { now: NOW, roll: ROLL });
   return r.post.id;
 }
 const noMeeps = () => false;
 async function plan({ isMeep = noMeeps, paid = new Set() } = {}) {
   const facts = await storeFacts();
-  return planStages({ acts: facts.acts, houseOf: (h) => facts.houses.get(h) ?? `solo:${h}`, isMeep, paid });
+  return planStages({ acts: facts.acts, houseOf: (h) => facts.houses.get(h) ?? null, isMeep, paid });
 }
 
 // ── 1 ───────────────────────────────────────────────────────────────────────
@@ -82,10 +85,10 @@ test("1 · the plan lists 2 stamps for a confirmed bug, owed to its reporter, wi
   const rows = await plan();
   assert.equal(rows.length, 1);
   assert.deepEqual([rows[0].post, rows[0].stage, rows[0].handle, rows[0].household, rows[0].n, rows[0].why, rows[0].owed],
-    [id, "confirmed", "carol", "solo:carol", 2, "owed", true]);
+    [id, "confirmed", "carol", "hh:carols", 2, "owed", true]);
   const text = renderPlan(rows);
   assert.match(text, /^bug stage plan — 1 paid stage\(s\) recorded, 0 already paid, 0 pay nothing, 1 owed \(2 stamps\)$/m);
-  assert.match(text, /^ {2}carol\/the-map-drifts\/confirmed · carol · solo:carol · 2 · owed · act \d+ on \d{4}-\d{2}-\d{2}$/m);
+  assert.match(text, /^ {2}carol\/the-map-drifts\/confirmed · carol · hh:carols · 2 · owed · act \d+ on \d{4}-\d{2}-\d{2}$/m);
   // a stage already in the ledger is named, and not owed again
   const again = await plan({ paid: new Set([`${id}/confirmed`]) });
   assert.deepEqual([again[0].why, again[0].owed], ["already paid", false]);
@@ -111,7 +114,7 @@ test("2 · the fourth confirmed report by one household in a week pays 0 and say
   assert.equal(byPost.get("carol/four").n, 2, "another house's report is not capped by the harbor's");
   assert.match(renderPlan(rows), /PAYS NOTHING\n {2}bram\/five\/confirmed · bram · hh:the-harbor · 0 · capped/);
   // later stages are uncapped
-  await advanceAtTown({ post: fourth, to: "reproduced", credit: "bram" }, WRIGHT, { now: NOW });
+  await advanceAtTown({ post: fourth, to: "reproduced", credit: "bram" }, WRIGHT, { now: NOW, roll: ROLL });
   const later = (await plan()).find((r) => r.post === fourth && r.stage === "reproduced");
   assert.deepEqual([later.n, later.owed], [3, true]);
 });
@@ -127,12 +130,26 @@ test("2 · the week is Monday to Sunday in the town's time", () => {
 test("3 · credit to a meep pays 0 and says meep; the meep's report does not use its house's cap", async () => {
   setup();
   const id = await confirmed("carol", "Wires crossed");
-  await advanceAtTown({ post: id, to: "reproduced", credit: "bugcatcher" }, WRIGHT, { now: NOW });
+  await advanceAtTown({ post: id, to: "reproduced", credit: "bugcatcher" }, WRIGHT, { now: NOW, roll: ROLL });
   const rows = await plan({ isMeep: (h) => h === "bugcatcher" });
   const r = rows.find((x) => x.stage === "reproduced");
   assert.deepEqual([r.handle, r.n, r.owed], ["bugcatcher", 0, false]);
   assert.match(r.why, /^meep: a meep never receives stamps$/);
   assert.equal(rows.find((x) => x.stage === "confirmed").n, 2);
+});
+
+test("3 · a resident no household holds pays 0 and says unresolved; two of them are neither paid nor capped together", async () => {
+  setup();
+  // four each: were they one bucket, the fourth would be "capped"; were they paid, they'd be owed
+  for (const who of ["dan", "eve"]) for (const t of ["One", "Two", "Three", "Four"]) await confirmed(who, `${who} ${t}`);
+  const rows = await plan();
+  assert.equal(rows.length, 8);
+  for (const r of rows) {
+    assert.deepEqual([r.n, r.owed, r.household], [0, false, "(none)"], r.post);
+    assert.match(r.why, new RegExp(`^unresolved: ${r.handle} has no household on record; a person binds them, then the plan pays$`));
+  }
+  assert.ok(!rows.some((r) => /capped/.test(r.why)), "unresolved residents were capped together");
+  assert.match(renderPlan(rows), /0 owed \(0 stamps\)/);
 });
 
 // ── 4 ───────────────────────────────────────────────────────────────────────
@@ -195,7 +212,7 @@ test("5 · after --apply the ledger holds exactly one signed post:<id>/confirmed
       const again = await main(argv, { facts: await storeFacts(), log: (s) => second.push(s), err: (s) => second.push(`ERR ${s}`) });
       assert.equal(again, 0, second.join("\n"));
       assert.match(second.join("\n"), /0 owed \(0 stamps\)/);
-      assert.match(second.join("\n"), /ALREADY PAID\n {2}carol\/the-map-drifts\/confirmed · carol · solo:carol · 2 · already paid/);
+      assert.match(second.join("\n"), /ALREADY PAID\n {2}carol\/the-map-drifts\/confirmed · carol · hh:carols · 2 · already paid/);
       assert.equal(stageLinesOf(repo).length, 1, "a second --apply wrote a line");
     } finally { rmSync(repo, { recursive: true, force: true }); }
   });

@@ -58,6 +58,7 @@ export const STEPS = [
   { kind: "refusal", title: "Stake on it at the stake door", who: FINN, env: { do: "stake", args: { mark: ID, stamps: 2 } } },
   { kind: "refusal", title: "A body over 600 characters", who: ERRANT, env: { do: "post", args: { ...BUG, title: "Long", body: "x".repeat(601) } } },
   { kind: "refusal", title: "An issue off the town's repos", who: ERRANT, env: { do: "post", args: { ...BUG, title: "Linked", issue: "https://github.com/someone/else/issues/1" } } },
+  { kind: "refusal", title: "A hand posts for a handle that is no resident", who: WRIGHT, env: { do: "post", args: { class: "bug", title: "Typo", body: "x", for: "tpyo" } } },
   { kind: "step", title: "A hand posts on a resident's behalf", who: WRIGHT, env: { do: "post", args: { class: "bug", title: "The map drifts", body: "The map drifts one cell east after every settlement.", for: "ada" } } },
   { kind: "refusal", title: "A resident tries to post for someone else", who: ERRANT, env: { do: "post", args: { class: "bug", title: "Not mine", body: "x", for: "ada" } } },
   { kind: "step", title: "The reporter amends it", who: ERRANT, env: { do: "amend", args: { post: ID, steps: "Open it, close it, open it again: it sticks the second time." } } },
@@ -65,6 +66,7 @@ export const STEPS = [
   { kind: "step", title: "Advance: confirmed (the reporter is credited)", who: WRIGHT, env: { do: "advance", args: { post: ID, to: "confirmed" } } },
   { kind: "refusal", title: "The reporter amends after confirmed", who: ERRANT, env: { do: "amend", args: { post: ID, title: "The door sticks, twice" } } },
   { kind: "refusal", title: "Advance to reproduced without a credit", who: WRIGHT, env: { do: "advance", args: { post: ID, to: "reproduced" } } },
+  { kind: "refusal", title: "Credit a handle that is no resident", who: WRIGHT, env: { do: "advance", args: { post: ID, to: "reproduced", credit: "tpyo" } } },
   { kind: "step", title: "Advance: reproduced", who: WRIGHT, env: { do: "advance", args: { post: ID, to: "reproduced", credit: "finn" } } },
   { kind: "refusal", title: "Advance backwards", who: WRIGHT, env: { do: "advance", args: { post: ID, to: "confirmed" } } },
   { kind: "refusal", title: "A side exit after confirmed", who: WRIGHT, env: { do: "advance", args: { post: ID, to: "not-a-bug" } } },
@@ -77,6 +79,7 @@ export const STEPS = [
   { kind: "step", title: "Advance: shipped", who: WRIGHT, env: { do: "advance", args: { post: ID, to: "shipped" } } },
   { kind: "refusal", title: "Advance a finished bug", who: WRIGHT, env: { do: "advance", args: { post: ID, to: "shipped" } } },
   { kind: "step", title: "A hand jumps a bug: reported → diagnosed", who: WRIGHT, env: { do: "advance", args: { post: "ada/the-map-drifts", to: "diagnosed", credit: "finn" } }, note: "A skipped stage pays nothing; the receipt says which." },
+  { kind: "step", title: "A hand links the issue on a finished bug", who: WRIGHT, env: { do: "amend", args: { post: ID, issue: "https://github.com/postmark-town/postmark-office/issues/256" } }, note: "Wright's ruling on #257: a discussion opened after the post has to be linkable." },
   { kind: "step", title: "Read the bug posts", who: null, env: { read: "posts", args: { class: "bug" } } },
 ];
 
@@ -112,20 +115,26 @@ export async function collect() {
   const { townDispatchToolFor, TOWN_READS } = await import("../src/town-apex.mjs");
   const { planStages, renderPlan, storeFacts } = await import("./bug-stage-plan.mjs");
 
-  const pen = installActsPen({ households: [{ slug: "the-harbor", ord: 1, residents: ["errant", "ada"] }], also: postsTable() });
+  const pen = installActsPen({ households: [{ slug: "the-harbor", ord: 1, residents: ["errant", "ada"] }, { slug: "finns-place", ord: 2, residents: ["finn"] }], also: postsTable() });
+  // The office's residents index, which a bug's `for` and `credit` must stand in: an in-memory
+  // office.db `residents` table, read by the door's own residentList.
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE residents (handle TEXT PRIMARY KEY, json TEXT)");
+  for (const h of ["wright", "keemin", "errant", "ada", "finn"]) db.prepare("INSERT INTO residents VALUES (?, ?)").run(h, JSON.stringify({ display: h }));
   try {
     const town = toolList().find((t) => t.name === "town");
     const flat = (name) => TOOLS.find((t) => t.name === name) ?? null;
     const out = [];
     for (const s of STEPS) {
-      const answer = await callTool("town", s.env, { key: s.who, clone: null });
+      const answer = await callTool("town", s.env, { key: s.who, clone: null, db });
       const verb = s.env.do ? townDispatchToolFor(s.env.do) : TOWN_READS[s.env.read]?.tool ?? townDispatchToolFor(s.env.read);
       const status = answer?.error === "bounce" ? (answer.code ?? 422) : 200;
       out.push({ ...s, who: s.who ? [...s.who.handles][0] : null, answer, verb, flat: flat(verb), status, bytes: bytes(answer),
         refused: answer?.error === "bounce" });
     }
     const facts = await storeFacts();
-    const rows = planStages({ acts: facts.acts, houseOf: (h) => facts.houses.get(h) ?? `solo:${h}`, isMeep: () => false, paid: new Set() });
+    const rows = planStages({ acts: facts.acts, houseOf: (h) => facts.houses.get(h) ?? null, isMeep: () => false, paid: new Set() });
     return { town, steps: out, plan: renderPlan(rows), acts: pen.rows().length };
   } finally { uninstallActsPen(); }
 }
