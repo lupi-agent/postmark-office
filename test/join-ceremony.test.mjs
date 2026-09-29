@@ -650,8 +650,22 @@ test("a mint whose write fails REFUSES the join — never a warn with a false no
   // on saying "the same PR declares your household … the Registrar's merge
   // completes both at once". It did not. A house that was not founded,
   // announced as founded, is the one receipt a town must never hand out.
+  //
+  // Since 2026-09-29 the mint runs inside the locked writer that binds the
+  // join (src/join-bind.mjs), so the writer is injected in-process here, the
+  // way `test/join-pr-at-the-cosign.test.mjs` drives it, over a temp clone.
   const { requestResidency } = await import("../src/residency.mjs");
+  const { bindUnderLock } = await import("../src/join-bind.mjs");
   const { fixtureDb } = await import("./fixture.mjs");
+  const { mkdtempSync, mkdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { execFileSync } = await import("node:child_process");
+  const clone = mkdtempSync(join(tmpdir(), "mint-refuses-"));
+  mkdirSync(join(clone, "WHITE_PAGES"));
+  execFileSync("git", ["-C", clone, "init", "-q"]);
+  const db = fixtureDb();
+  const bind = (payload, { clone: c }) => bindUnderLock({ ...payload, clone: c, db, date: "2026-09-29" });
 
   const seeded = stubPool();
   const readsButCannotWrite = {
@@ -668,8 +682,9 @@ test("a mint whose write fails REFUSES the join — never a warn with a false no
       () => requestResidency(
         { handle: "told-the-truth", card: "hello", household: "A House That Will Not Land" },
         { ghId: 4242, ghLogin: "truthful-human", handles: new Set() },
-        fixtureDb(),
-        { apiBase: "http://127.0.0.1:1", token: "t", owner: "o", repo: "r", baseBranch: "main" }),
+        db,
+        { apiBase: "http://127.0.0.1:1", token: "t", owner: "o", repo: "r", baseBranch: "main" },
+        { clone, bind }),
       (e) => {
         assert.ok(e.code, "it is a bounce, with a code");
         assert.match(String(e.defect), /permission denied|record/i, "and it says what happened");

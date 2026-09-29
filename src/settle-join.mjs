@@ -38,16 +38,28 @@
 // `tools/github-ids.json` and `tools/households.json` from the record in one
 // pen commit. The door never writes either file by hand.
 //
-// OUT OF SCOPE (the ruling): no webhook, no timer, and never a join whose PR
-// is not the pen's.
+// AMENDED (Keemin, 2026-09-29, Household Primary Key reopened): the office
+// decides whatever a machine can decide. So the office tick runs this after
+// every merge (deploy/settle-pass.mjs, before the join-bundle pass), which
+// overturns the "no timer" clause above; and a HAND-WRITTEN join PR settles
+// too, keyed by its author's GitHub id (the API's `user.id`, never the card),
+// with the card's `github:` resolving to that same id:
+//   · an account already on a house → that house;
+//   · an unknown account whose card names no existing house → a house is
+//     minted, as the pen road does;
+//   · a card naming an existing house the account is not on → refused, a
+//     person's call.
+// And NOTHING THE LEDGER ALREADY KNOWS UNBOUND IS BOUND HERE: a pin re-keys a
+// handle's ledger lines from genesis, and for Wildcat that put two welcome
+// lines in one house and stopped every office write (2026-09-28).
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRegistryRows } from "./registry-store.mjs";
 import { registryFromRows, pinsFromRows } from "./registry-rows.mjs";
-import { HANDLE_RE, joinBranch, houseForName, ghFetch } from "./residency.mjs";
-import { joinHousehold } from "./ceremony.mjs";
+import { HANDLE_RE, joinBranch, houseForName, houseForAccount, planRegistryJoin, ghFetch } from "./residency.mjs";
+import { mintHousehold, joinHousehold, NO_DRAIN } from "./ceremony.mjs";
 
 // ── WHO MAY CALL IT ─────────────────────────────────────────────────────────
 //
@@ -71,7 +83,10 @@ export const SETTLE_REFUSALS = Object.freeze({
   NO_PEN: { code: 503, defect: "not-yet-open", hint: "this office has no pen token, so it cannot read the join PR back — nothing was written" },
   GITHUB: { code: 502, defect: "the pen couldn't read the town's PRs", hint: "nothing was written; try again shortly" },
   NO_PR: { code: 409, defect: "no join PR for this handle", hint: "a merged pen join opens from the branch residency/<handle>; nothing was written" },
-  NOT_PEN: { code: 409, defect: "this join was not opened by the office pen", hint: "settle-join settles only the pen's joins (immutable id 301406700); a hand-made join carries its own binding and a person reads it" },
+  NOT_A_JOIN: { code: 409, defect: "this PR is not a single-address join", hint: "a hand-written join adds one WHITE_PAGES/<handle>/ADDRESS.md and touches nothing outside that folder; anything else is a person's read" },
+  CARD_NOT_AUTHOR: { code: 409, defect: "the card's github: is not the account that opened the PR", hint: "a hand-written join is keyed by its author's GitHub id, and the card's github: must resolve to that same id — a person reads it" },
+  OTHER_HOUSE: { code: 409, defect: "the card names a house its author is not on", hint: "the account that opened the PR is not one of that house's accounts — a person's call (a sibling vouches by letter)" },
+  MINTED: { code: 409, defect: "the ledger already knows this handle unbound", hint: "binding it now would re-key its ledger lines from genesis and turn stamp-verify red (Wildcat, 2026-09-28) — a person binds it with a dated ledger line" },
   NOT_MERGED: { code: 409, defect: "the pen's join PR has not merged", hint: "the merge is the Registrar's admission; settle-join binds a join only after it" },
   NO_IDENTITY: { code: 409, defect: "the join PR carries no verified-identity block", hint: "the pen always writes one (`**Verified via GitHub sign-in:** `@login` (immutable id `n`)`); its absence is the finding, and a person reads the PR" },
   NO_ADDRESS: { code: 409, defect: "the handle has no ADDRESS on town main", hint: "settle-join binds a join the Registrar has merged; the card is what the merge put there" },
@@ -105,31 +120,105 @@ export function penIdentity(body) {
 }
 
 /**
- * The handle's merged pen join, read through the pen's own client.
- * Throws the named refusal when there is none.
+ * The handle's merged join from `residency/<handle>`, read through the pen's
+ * own client: the pen's own when there is one, else a hand-written one from
+ * that branch. (A hand-written join from any other branch is found by the
+ * tick's pass, which lists merges rather than branches.) Throws the named
+ * refusal when there is none.
  */
-export async function findPenJoin(pen, handle) {
+export async function findJoin(pen, handle) {
   const branch = joinBranch(handle);
   const r = await ghFetch(pen, "GET",
     `/repos/${pen.owner}/${pen.repo}/pulls?state=all&per_page=100&head=${encodeURIComponent(`${pen.owner}:${branch}`)}`);
   if (!r.ok) throw refuse(SETTLE_REFUSALS.GITHUB, `listing the join PRs answered ${r.status}`);
   const prs = (Array.isArray(r.json) ? r.json : []).filter((p) => p?.head?.ref === branch);
   if (!prs.length) throw refuse(SETTLE_REFUSALS.NO_PR, `no PR from ${branch}`);
+  const newest = (list) => list.filter((p) => p.merged_at).sort((a, b) => String(b.merged_at).localeCompare(String(a.merged_at)))[0];
   const pens = prs.filter((p) => Number(p?.user?.id) === PEN_GH_ID);
-  if (!pens.length) throw refuse(SETTLE_REFUSALS.NOT_PEN, `#${prs[0].number} was opened by @${prs[0].user?.login ?? "?"}`);
-  const merged = pens.filter((p) => p.merged_at).sort((a, b) => String(b.merged_at).localeCompare(String(a.merged_at)));
-  if (!merged.length) throw refuse(SETTLE_REFUSALS.NOT_MERGED, `#${pens[0].number} is ${pens[0].state}`);
-  const pr = merged[0];
-  const who = penIdentity(pr.body);
-  if (!who) throw refuse(SETTLE_REFUSALS.NO_IDENTITY, `#${pr.number}`);
-  return { pr: pr.number, ...who };
+  const pr = pens.length ? newest(pens) : newest(prs);
+  if (!pr) throw refuse(SETTLE_REFUSALS.NOT_MERGED, `#${(pens[0] ?? prs[0]).number} is ${(pens[0] ?? prs[0]).state}`);
+  return joinOfMergedPR(pen, pr);
 }
 
-// The card's `household:` line, read from its frontmatter only.
-function cardHousehold(text) {
+/**
+ * Which road a merged PR is, judged from the PR and its files alone.
+ *   pen   the office pen's, from `residency/<handle>`; the identity is the
+ *         verified block the pen wrote into the body.
+ *   hand  anyone else's: it adds one `WHITE_PAGES/<handle>/ADDRESS.md` and
+ *         touches nothing outside that folder; the identity is the author.
+ */
+export function judgeJoinPR(pr, files = []) {
+  if (Number(pr?.user?.id) === PEN_GH_ID) {
+    const m = /^residency\/(.+)$/.exec(String(pr?.head?.ref ?? ""));
+    if (!m) throw refuse(SETTLE_REFUSALS.NOT_A_JOIN, `#${pr.number} is the pen's, from ${pr?.head?.ref}`);
+    const who = penIdentity(pr.body);
+    if (!who) throw refuse(SETTLE_REFUSALS.NO_IDENTITY, `#${pr.number}`);
+    return { handle: m[1], road: "pen", ...who };
+  }
+  if (!Array.isArray(files) || files.length >= 100) throw refuse(SETTLE_REFUSALS.NOT_A_JOIN, `#${pr?.number} has too many files`);
+  let handle = null;
+  for (const f of files) {
+    const m = /^WHITE_PAGES\/([^/]+)\/.+$/.exec(String(f?.filename ?? ""));
+    if (!m || f.status !== "added") throw refuse(SETTLE_REFUSALS.NOT_A_JOIN, `#${pr.number} touches ${f?.filename} (${f?.status})`);
+    if (handle && m[1] !== handle) throw refuse(SETTLE_REFUSALS.NOT_A_JOIN, `#${pr.number} touches ${handle} and ${m[1]}`);
+    handle = m[1];
+  }
+  if (!handle || !HANDLE_RE.test(handle) || !files.some((f) => f.filename === `WHITE_PAGES/${handle}/ADDRESS.md`))
+    throw refuse(SETTLE_REFUSALS.NOT_A_JOIN, `#${pr?.number} adds no ADDRESS.md`);
+  if (pr?.user?.id == null) throw refuse(SETTLE_REFUSALS.NO_IDENTITY, `#${pr.number} names no author id`);
+  return { handle, road: "hand", ghId: Number(pr.user.id), ghLogin: String(pr.user.login ?? "") };
+}
+
+/**
+ * A merged PR, as a join settle-join can act on: its road, handle and
+ * identity, and for a hand-written one the card's `github:` resolved to an id
+ * and matched against the author's. Throws the named refusal otherwise.
+ */
+export async function joinOfMergedPR(pen, pr) {
+  if (!pr?.merged_at) throw refuse(SETTLE_REFUSALS.NOT_MERGED, `#${pr?.number} is ${pr?.state}`);
+  const repo = `/repos/${pen.owner}/${pen.repo}`;
+  let files = [];
+  if (Number(pr?.user?.id) !== PEN_GH_ID) {
+    const f = await ghFetch(pen, "GET", `${repo}/pulls/${pr.number}/files?per_page=100`);
+    if (!f.ok) throw refuse(SETTLE_REFUSALS.GITHUB, `reading #${pr.number}'s files answered ${f.status}`);
+    files = f.json;
+  }
+  const found = judgeJoinPR(pr, files);
+  if (found.road === "pen") return { pr: pr.number, ...found };
+
+  const c = await ghFetch(pen, "GET", `${repo}/contents/WHITE_PAGES/${found.handle}/ADDRESS.md?ref=${pr.merge_commit_sha}`);
+  if (!c.ok) throw refuse(SETTLE_REFUSALS.GITHUB, `reading #${pr.number}'s card answered ${c.status}`);
+  const cardLogin = cardGithub(Buffer.from(String(c.json?.content ?? ""), "base64").toString("utf8"));
+  if (!cardLogin) throw refuse(SETTLE_REFUSALS.CARD_NOT_AUTHOR, `#${pr.number}'s card carries no github: line`);
+  const u = await ghFetch(pen, "GET", `/users/${encodeURIComponent(cardLogin)}`);
+  if (!u.ok && u.status !== 404) throw refuse(SETTLE_REFUSALS.GITHUB, `resolving @${cardLogin} answered ${u.status}`);
+  if (!u.ok || Number(u.json?.id) !== found.ghId)
+    throw refuse(SETTLE_REFUSALS.CARD_NOT_AUTHOR, `github: ${cardLogin} is ${u.ok ? `id ${u.json.id}` : "no account"}; #${pr.number} was opened by @${found.ghLogin} (id ${found.ghId})`);
+  return { pr: pr.number, ...found, cardLogin };
+}
+
+// A line of the card's frontmatter, read from its frontmatter only.
+function cardField(text, field) {
   const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(String(text ?? ""));
-  const m = fm && /^household:[ \t]*(.*)$/m.exec(fm[1]);
+  const m = fm && new RegExp(`^${field}:[ \\t]*(.*)$`, "m").exec(fm[1]);
   return m ? m[1].trim() : null;
+}
+const cardHousehold = (text) => cardField(text, "household");
+const cardGithub = (text) => cardField(text, "github")?.replace(/^@/, "") || null;
+
+// Does the ledger hold lines for this handle that a bind would re-key? A handle
+// with a MINT line and no signed `registry: <handle> = gh:<id>` line naming this
+// same id is filed under its card username, and a pin applies from genesis
+// (town tools/stamp-mint.mjs § householdKeys; the tulip class the town clock's
+// pinner skips for the same reason).
+export function ledgerKnowsUnbound(clone, handle, ghId) {
+  let ledger;
+  try { ledger = readFileSync(join(clone, "WHITE_PAGES", "stamp-ledger.md"), "utf8"); } catch { return false; }
+  if (!ledger.includes(`· MINT → ${handle} ·`)) return false;
+  let sealed = null;
+  for (const m of ledger.matchAll(/· registry: ([a-z0-9._-]+) = gh:(\d+) · sig:/g))
+    if (m[1] === handle) sealed = Number(m[2]);
+  return sealed !== Number(ghId);
 }
 
 function alreadySettled(handle, pin, registry) {
@@ -149,7 +238,7 @@ function alreadySettled(handle, pin, registry) {
  * Every check that decides is made HERE, against the record and the clone as
  * they stand now; the door's earlier reads were courtesy.
  */
-export async function settleUnderLock({ handle, ghId, ghLogin, pr, clone, env = process.env, date, drain, drainOptions = {}, adopt } = {}) {
+export async function settleUnderLock({ handle, ghId, ghLogin, pr, road = "pen", cardLogin = null, clone, env = process.env, date, drain, drainOptions = {}, adopt } = {}) {
   const h = String(handle ?? "").trim().toLowerCase();
   if (!existsSync(join(clone, "WHITE_PAGES", h, "ADDRESS.md"))) throw refuse(SETTLE_REFUSALS.NO_ADDRESS, `WHITE_PAGES/${h}/ADDRESS.md`);
 
@@ -158,34 +247,65 @@ export async function settleUnderLock({ handle, ghId, ghLogin, pr, clone, env = 
   const registry = registryFromRows(rows);
   const pins = pinsFromRows(rows);
   if (pins[h]) return alreadySettled(h, pins[h], registry);
+  if (ledgerKnowsUnbound(clone, h, ghId)) throw refuse(SETTLE_REFUSALS.MINTED, `WHITE_PAGES/stamp-ledger.md mints to ${h}`);
 
-  const line = cardHousehold(readFileSync(join(clone, "WHITE_PAGES", h, "ADDRESS.md"), "utf8"));
-  const slug = line ? houseForName(registry, line) : null;
-  if (!slug) throw refuse(SETTLE_REFUSALS.NO_HOUSE, `the card says household: ${line ?? "(nothing)"}`);
-  const house = registry.households[slug];
+  const card = readFileSync(join(clone, "WHITE_PAGES", h, "ADDRESS.md"), "utf8");
+  const line = cardHousehold(card);
+  const coSign = { ghId, ghLogin };
+  let slug, founded = null;
 
-  // THE VOUCH, BY THE IMMUTABLE ID. The ruling's words: "the account must still
-  // be one of that house's accounts". `joinHousehold` would APPEND an unlisted
-  // account, which is right at a door where the account is the caller's own and
-  // wrong here, where the caller is the Registrar acting on somebody else's
-  // join — so the refusal comes before the ceremony is reached.
-  const listed = (house.accounts ?? []).some((a) => a?.id != null && Number(a.id) === Number(ghId));
-  if (!listed) throw refuse(SETTLE_REFUSALS.NOT_VOUCHED, `${slug} lists ${(house.accounts ?? []).map((a) => `@${a.login}`).join(", ") || "no account"}, not @${ghLogin} (id ${ghId})`);
+  if (road === "hand") {
+    // THE CARD ON MAIN IS THE CARD THAT WAS RESOLVED, read again under the lock.
+    if (String(cardGithub(card) ?? "").toLowerCase() !== String(cardLogin ?? "").toLowerCase())
+      throw refuse(SETTLE_REFUSALS.CARD_NOT_AUTHOR, `the card on main says github: ${cardGithub(card) ?? "(nothing)"}`);
+    // "(unstated — ask them)" is the card saying nobody has named the house.
+    const named = line && !/^\(unstated/i.test(line) ? line : null;
+    const byAccount = houseForAccount(registry, ghId, ghLogin);
+    const byName = named ? houseForName(registry, named) : null;
+    if (byName && byName !== byAccount)
+      throw refuse(SETTLE_REFUSALS.OTHER_HOUSE, `the card names ${byName}; @${ghLogin} (id ${ghId}) ${byAccount ? `keeps ${byAccount}` : "is on no house"}`);
+    slug = byAccount;
+    if (!slug) {
+      const siblings = Object.entries(pins).filter(([, p]) => Number(p.id) === Number(ghId)).map(([k]) => k);
+      const plan = planRegistryJoin(registry, { handle: h, household: named, ghId, ghLogin, siblings, date });
+      if (plan?.action !== "created") throw refuse(SETTLE_REFUSALS.NO_HOUSE, `the card says household: ${line ?? "(nothing)"}`);
+      await mintHousehold({
+        slug: plan.slug, name: plan.houseLine, coSign, residents: [...plan.siblings], since: date,
+        declaredBy: `admission of ${h} by hand-written join PR #${pr} (${date}), settled by the office`,
+        drain: NO_DRAIN, env, ...(adopt ? { adopt } : {}),
+      });
+      slug = plan.slug;
+      founded = plan.name;
+    }
+  } else {
+    slug = line ? houseForName(registry, line) : null;
+    if (!slug) throw refuse(SETTLE_REFUSALS.NO_HOUSE, `the card says household: ${line ?? "(nothing)"}`);
+    // THE VOUCH, BY THE IMMUTABLE ID. The ruling's words: "the account must still
+    // be one of that house's accounts". `joinHousehold` would APPEND an unlisted
+    // account, which is right at a door where the account is the caller's own and
+    // wrong here, where the caller is the Registrar acting on somebody else's
+    // join — so the refusal comes before the ceremony is reached.
+    const house = registry.households[slug];
+    const listed = (house.accounts ?? []).some((a) => a?.id != null && Number(a.id) === Number(ghId));
+    if (!listed) throw refuse(SETTLE_REFUSALS.NOT_VOUCHED, `${slug} lists ${(house.accounts ?? []).map((a) => `@${a.login}`).join(", ") || "no account"}, not @${ghLogin} (id ${ghId})`);
+  }
 
   const joined = await joinHousehold({
-    slug, handle: h, coSign: { ghId, ghLogin }, pinnedOn: date, env,
+    slug, handle: h, coSign, pinnedOn: date, env,
     ...(drain ? { drain } : {}), drainOptions: { clone, ...drainOptions },
     ...(adopt ? { adopt } : {}),
   });
+  const name = founded ?? registry.households[slug]?.name ?? slug;
   return {
     settled: true,
     handle: h,
+    road,
     pin: { handle: h, login: ghLogin, gh_id: ghId, pinned: date },
-    house: { slug, name: house.name ?? slug },
+    house: { slug, name },
     pr,
     commit: joined.drained?.commit ?? null,
     registry: joined.registry,
-    note: `${h} is bound to @${ghLogin} (id ${ghId}) and is a resident of ${house.name ?? slug}; both files are re-rendered from the record`,
+    note: `${h} is bound to @${ghLogin} (id ${ghId}) and is a resident of ${name}; both files are re-rendered from the record`,
   };
 }
 
@@ -226,6 +346,6 @@ export async function settleJoinAtOffice(fields, key, { pen, clone, env = proces
   if (pins[handle]) return alreadySettled(handle, pins[handle], registryFromRows(rows));
 
   if (!pen?.token) throw refuse(SETTLE_REFUSALS.NO_PEN);
-  const found = await findPenJoin(pen, handle);
-  return run({ handle, ...found }, { clone, env });
+  const found = await findJoin(pen, handle);
+  return run({ ...found, handle }, { clone, env });
 }
