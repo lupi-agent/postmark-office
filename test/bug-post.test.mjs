@@ -350,7 +350,7 @@ test("8 · an advance to fixed without a critter is refused by name, says who na
   await toBriefed();
   const before = pen.rows().length;
   await refusedWith(advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "M" }, WRIGHT, { now: NOW, roll: ROLL }), 422,
-    /fixed needs a critter: the resident who fixes a bug names it .*critter: "<name>", 1–40 characters on one line .*tells the town's hands \(wright, keemin, bugcatcher\) in the PR or the issue/);
+    /fixed needs a critter: the resident who fixes a bug names it .*critter: "<name>", 1–40 characters on one line — the fixer chooses it and tells the town's hands \(wright, keemin, bugcatcher\) in the PR or the issue/);
   for (const bad of ["", "   ", 7, "Hinge\nNibbler", "x".repeat(41)])
     await refusedWith(advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "M", critter: bad }, WRIGHT, { now: NOW, roll: ROLL }), 422, /critter is/);
   assert.equal(pen.rows().length, before, "a refused fixed wrote an act");

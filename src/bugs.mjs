@@ -107,7 +107,7 @@ export const BUG_HANDLE_RE = /^[a-z0-9][a-z0-9._-]{0,39}$/;
  */
 export const CRITTER_MAX = 40;
 export const CRITTER_NAMER = "the resident who fixes a bug names it";
-const CRITTER_HOW = `critter: "<name>", 1–${CRITTER_MAX} characters on one line — ${CRITTER_NAMER}, and tells the town's hands (${BUG_HANDS.join(", ")}) in the PR or the issue`;
+const CRITTER_HOW = `critter: "<name>", 1–${CRITTER_MAX} characters on one line — the fixer chooses it and tells the town's hands (${BUG_HANDS.join(", ")}) in the PR or the issue`;
 
 export function judgeCritter(v) {
   if (v === undefined) throw refuse(422, `fixed needs a critter: ${CRITTER_NAMER}`, CRITTER_HOW, { field: "critter" });
