@@ -556,10 +556,10 @@ const GREEN_TABLE = {
   "https://postmark.town/daily/ferrys-daily.html": { status: 200, body: `<h2>"An arithmetic that balances is not an arithmetic that agrees"</h2>` },
   "https://raw.githubusercontent.com/postmark-town/postmark/main/TOWN_BULLETIN/ferrys-daily.md": { status: 200, body: DAILY_MD },
   "https://api.github.com/repos/postmark-town/postmark/commits": { status: 200, body: JSON.stringify([{ commit: { committer: { date: "2026-08-25T06:00:00Z" } } }]) },
-  "https://api.github.com/repos/keeminlee/postmark-site/actions/runs": {
+  // One read per watched workflow, by its file (the false DOWN of 2026-09-29).
+  "https://api.github.com/repos/keeminlee/postmark-site/actions/workflows/deploy.yml/runs": {
     status: 200,
     body: JSON.stringify({ workflow_runs: [
-      { name: "Sync Postmark atlas", status: "completed", conclusion: "success", created_at: "2026-08-25T11:42:00Z" },
       { name: "Deploy (snapshot -> dev, release -> prod)", status: "completed", conclusion: "success", created_at: "2026-08-25T11:44:00Z" },
     ] }),
   },
@@ -1170,4 +1170,16 @@ test("the bark names EVERY problem it can and says how many it held back", () =>
   assert.match(p.reason, /and 6 more/, "the remainder is counted, never dropped");
   // and the singular reads as English
   assert.match(classifyProblems({ haveStamp: true, problems: ["one thing"] }).reason, /published with 1 problem its build/);
+});
+
+// ── the false DOWN of 2026-09-29 ─────────────────────────────────────────────
+// The retired atlas sync (dispatch-only since the box took over publishing) was
+// still watched, and read from a stale anonymous mixed list: DOWN, citing a run
+// from 2026-08-06. The watched set is now named, each with the file its own read
+// uses, and the atlas sync is not in it.
+test("the sentinel watches Deploy by its workflow file, and no longer the retired atlas sync", async () => {
+  const { WATCHED_WORKFLOWS } = await import("../tools/site-sentinel.mjs");
+  assert.deepEqual(WATCHED_WORKFLOWS.map((w) => w.name), ["Deploy"]);
+  for (const w of WATCHED_WORKFLOWS) assert.match(w.file, /^[a-z0-9-]+\.ya?ml$/, `${w.name} names its workflow file`);
+  assert.ok(!WATCHED_WORKFLOWS.some((w) => /atlas/i.test(w.name)), "the atlas sync is dispatch-only; watching it can only raise stale alarms");
 });

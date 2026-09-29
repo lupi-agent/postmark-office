@@ -630,6 +630,11 @@ export function classifyWatcher({ adopted = true, exists, mtimeMs = null, nowMs,
   return { verdict: "OK", reason: `ticked ${Math.round(age / 60000)} min ago` };
 }
 
+/** The site workflows the sentinel watches, by name (for its rows) and file (for its read). */
+export const WATCHED_WORKFLOWS = Object.freeze([
+  Object.freeze({ name: "Deploy", file: "deploy.yml" }),
+]);
+
 export function classifyWorkflows(latest, { watch = ["Sync Postmark atlas", "Deploy"] } = {}) {
   const rows = [];
   for (const wanted of watch) {
@@ -1085,10 +1090,24 @@ export async function tick({
   });
   probes.push({ key: "site_daily_content", label: "Ferry's Daily on the site", kind: "fresh", verdict: d.verdict, reason: d.reason });
 
-  // §5 — the workflows. REST call 2 of 2: ONE read covers every workflow.
+  // §5 — the workflows: one read PER WATCHED WORKFLOW, by its file.
+  //
+  // FIXED 2026-09-29 (a false DOWN). This used to be ONE read of the 50 newest
+  // runs on main across every workflow, unauthenticated. Two things broke it:
+  // the busy workflows pushed a quiet one off the page, and GitHub answered that
+  // anonymous, branch-filtered, mixed list from a stale view (measured: its
+  // newest row was 2026-08-07), so the sentinel reported the atlas sync's
+  // 2026-08-06 failure as today's. A per-workflow read answers each workflow's
+  // own newest runs, and it is correct without a token (measured the same day).
+  // And "Sync Postmark atlas" is no longer watched: its schedule was retired
+  // when the box took over publishing, so it runs only by hand.
   try {
-    const runs = await ghJson(`/repos/${config.siteRepo.owner}/${config.siteRepo.name}/actions/runs?branch=main&per_page=50`, { fetchImpl, token });
-    for (const row of classifyWorkflows(latestDecisiveRunPerWorkflow(runs?.workflow_runs ?? []))) {
+    const runs = [];
+    for (const w of WATCHED_WORKFLOWS) {
+      const page = await ghJson(`/repos/${config.siteRepo.owner}/${config.siteRepo.name}/actions/workflows/${w.file}/runs?branch=main&per_page=10`, { fetchImpl, token });
+      runs.push(...(page?.workflow_runs ?? []));
+    }
+    for (const row of classifyWorkflows(latestDecisiveRunPerWorkflow(runs), { watch: WATCHED_WORKFLOWS.map((w) => w.name) })) {
       probes.push({ ...row, label: `the "${row.workflow}" workflow`, kind: "workflow" });
     }
   } catch (e) {
