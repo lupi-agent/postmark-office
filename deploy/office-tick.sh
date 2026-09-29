@@ -100,27 +100,36 @@ trap 'rm -rf "$SNAP"' EXIT
       echo "[office-tick] mint catch-up OFF — the ledger arrived red (stamp-verify above names the line), so this tick appended nothing; the catch-up resumes on the first tick that finds it green" >&2
       exit 0
     fi
-    cp "$LEDGER" "$SNAP/ledger.arrived" || exit 1
-    git ls-files --others --exclude-standard > "$SNAP/untracked.arrived" || exit 1
-    armed=1
+    # The arrival copy lives in a directory THIS subshell owns: a stopped unit
+    # signals the whole tick, and the outer shell must not be able to take the
+    # copy away before this trap has put it back.
+    HOLD="$(mktemp -d /tmp/postmark-tick-hold.XXXXXX)" || exit 1
+    armed=0
     restore() {
-      [ "$armed" = 1 ] || return 0
-      armed=0
-      cp "$SNAP/ledger.arrived" "$LEDGER"
-      git reset -q -- "$LEDGER"
-      git ls-files --others --exclude-standard | grep -vxF -f "$SNAP/untracked.arrived" |
-        while IFS= read -r made; do rm -f -- "$made"; done
-      echo "[office-tick] mint catch-up ROLLED BACK — the ledger is back to its arrival bytes and every path the pass created is gone; the rows re-derive on the next tick" >&2
+      if [ "$armed" = 1 ]; then
+        armed=0
+        if cp "$HOLD/ledger.arrived" "$LEDGER" && git reset -q -- "$LEDGER"; then
+          git ls-files --others --exclude-standard | grep -vxF -f "$HOLD/untracked.arrived" |
+            while IFS= read -r made; do rm -f -- "$made"; done
+          echo "[office-tick] mint catch-up ROLLED BACK — the ledger is back to its arrival bytes and every path the pass created is gone; the rows re-derive on the next tick" >&2
+        else
+          echo "[office-tick] mint catch-up ROLL-BACK FAILED — the town clone may hold uncommitted rows; git -C $TOWN_CLONE status" >&2
+        fi
+      fi
+      rm -rf "$HOLD"
     }
     trap restore EXIT
     trap 'exit 143' TERM
     trap 'exit 130' INT
     trap 'exit 129' HUP
+    cp "$LEDGER" "$HOLD/ledger.arrived" || exit 1
+    git ls-files --others --exclude-standard > "$HOLD/untracked.arrived" || exit 1
+    armed=1
     node tools/stamp-mint.mjs --append --key /srv/postmark-office/stamp-key.pem || exit 1
     node /srv/postmark-office/deploy/welcome-pass.mjs \
         --town "$TOWN_CLONE" --key /srv/postmark-office/stamp-key.pem \
       || echo "[office-tick] welcome pass had refusals (non-fatal) — the lines above name each one; the household keeps its claim and the next crossing asks again" >&2
-    if ! cmp -s "$LEDGER" "$SNAP/ledger.arrived"; then
+    if ! cmp -s "$LEDGER" "$HOLD/ledger.arrived"; then
       node tools/stamp-verify.mjs || exit 1
     fi
     if ! git diff --quiet -- "$LEDGER"; then

@@ -333,7 +333,8 @@ test("tick · a tick killed during the post-write verify restores the ledger too
   const r = runKilled(fx, [tickScript(fx)], { STUB_APPEND: "mint row 3", STUB_WELCOME: "welcome row 4", STUB_VERIFY_HANG: "2" });
   assert.ok(existsSync(join(fx.root, "hanging")), `the kill never happened: ${r.stdout} ${r.stderr}`);
   assert.match(r.stdout, /rc=(143|130|129)/, `the tick died of the signal: ${r.stdout}`);
-  assert.equal(ledgerAt(fx), before, "the killed tick's rows are gone");
+  assert.equal(ledgerAt(fx), before, `the killed tick's rows are gone: ${r.stdout} ${r.stderr}`);
+  assert.match(r.stderr, /mint catch-up ROLLED BACK/, "the trap says what it did");
   assert.equal(status(fx), "", "and the clone is clean");
 });
 
@@ -409,6 +410,7 @@ test("ferry · a crossing stopped mid-pass restores too", { skip }, () => {
   const r = runKilled(fx, ["-c", ferryScript(fx)], { STUB_APPEND: "mint row 2", STUB_VERIFY_HANG: "1" });
   assert.ok(existsSync(join(fx.root, "hanging")), `the kill never happened: ${r.stdout} ${r.stderr}`);
   assert.match(r.stdout, /rc=(143|130|129)/, `the crossing died of the signal: ${r.stdout}`);
-  assert.equal(status(fx), "", "the stopped crossing's mint row is gone");
+  assert.equal(status(fx), "", `the stopped crossing's mint row is gone: ${r.stderr}`);
+  assert.match(r.stderr, /\[ferry\] a gate refused \(exit (143|130|129)\)/, "the trap says what it did");
   assert.equal(ledgerAt(fx), "row 1\n");
 });
