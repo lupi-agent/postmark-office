@@ -455,7 +455,11 @@ test("MCP tools/list, apex OFF: the full flat list — the slim's delist is apex
   // 53 -> 56 (the post machine, 2026-09-28, POS-288): town_amend,
   // town_close and town_advance — town { do: "amend" | "close" | "advance" },
   // born delisted behind the town apex. The counts moved in the same commit.
-  assert.equal(names.length, 56);
+  // 56 -> 57 (the posts read, 2026-09-28 evening, POS-294): read_posts —
+  // town { read: "posts" | "quest" }. Born delisted behind the town apex. The
+  // three counts moved in the same commit.
+  assert.equal(names.length, 57);
+  assert.ok(names.includes("read_posts"), "the posts read has a flat definition, delisted only while the apex serves it");
   assert.ok(names.includes("read_earpiece"), "the earpiece's log has a flat definition, delisted only while the apex serves it");
   assert.ok(names.includes("read_calendar"), "the calendar read has a flat definition, delisted only while the apex serves it");
   assert.ok(names.includes("read_marks"), "the marks read has a flat definition, delisted only while the apex serves it");
@@ -895,4 +899,18 @@ test("GET /world/find with no q → 422, naming q", async () => {
     assert.equal(res.status, 422, path);
     assert.match((await res.json()).defect, /`q` is empty/, path);
   }
+});
+
+// POS-294: the posts read's plain twin. The judgement of the class comes before
+// any store read, so this office (no record) answers it in full.
+test("GET /posts takes a class: none → 422 naming it, an idea → 422 naming the read that answers ideas", async () => {
+  const none = await get("/posts", null);
+  assert.equal(none.status, 422);
+  assert.match((await none.json()).defect, /which class/);
+  const idea = await get("/posts?class=idea", null);
+  assert.equal(idea.status, 422);
+  assert.match((await idea.json()).hint, /read: "ideas"/);
+  const one = await get("/posts/postmark-pen/first-idea?class=bounty", null);
+  assert.equal(one.status, 422);
+  assert.match((await one.json()).defect, /"bounty" is not a post class/);
 });

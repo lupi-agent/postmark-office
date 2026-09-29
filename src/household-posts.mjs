@@ -102,48 +102,86 @@ async function houseOf(handle, { clone, readers }) {
   return { resolve: resolveOne };
 }
 
+// ── THE ONE READER OF THE POSTS PROJECTION (POS-294) ───────────────────────
+//
+// Wright, reviewing POS-294's shape: "one question, one owner". This house's
+// read and the town's `posts` read (town-posts.mjs) ask the posts table the
+// same question, a class's posts with their counted responses and their
+// newest act, so they share this function and nothing else reads the table
+// for them. What differs is only who is asking: the house keeps the posts
+// its residents wrote or answered (`keep`), the town keeps them all.
+//
+// THE WINDOW is the class's. An event is in it while it has not ended or
+// ended within ENDED_LIST_DAYS, the calendar's own window. A class with no
+// span (a quest) has no window: every post of it is answered, open or not.
+//
+// Each row is the general row (posts-fields.md § 4) without the reader's own
+// keys (role, stake, ours): class, id, title, author, household, state,
+// latest, responses. `RESPONDENTS` (a symbol, never on an answer) carries who
+// answered, for a reader that needs it; `STARTS` carries the span's start for
+// the order.
+
+const WINDOWED = new Set([EVENT_CLASS]);
+export const RESPONDENTS = Symbol("respondents");
+
+/** A post's state as the reader sees it: an event's from the clock, any other class's as its acts stored it. */
+const stateOf = (p, now) => (p.class === EVENT_CLASS ? eventState(p, now) : p.state);
+
+/**
+ * `cls`'s posts, on a client inside the caller's read. `keep(post, who)` is
+ * asked before the acts are read, `who` being the handles whose responses
+ * stand on it, so a reader that keeps a few reads the acts of those few only.
+ */
+export async function postRowsOf(client, cls, now, { keep = null } = {}) {
+  const { rows: posts } = WINDOWED.has(cls)
+    ? await client.query(`SELECT ${POST_COLUMNS} FROM posts WHERE class = $1 AND ends > $2 ORDER BY starts, id`,
+      [cls, new Date(now - ENDED_LIST_DAYS * DAY_MS).toISOString()])
+    : await client.query(`SELECT ${POST_COLUMNS} FROM posts WHERE class = $1 ORDER BY id`, [cls]);
+  if (!posts.length) return [];
+  const { rows: responses } = await client.query(
+    "SELECT post, handle, state FROM responses WHERE post = ANY($1) ORDER BY post, handle", [posts.map((p) => p.id)]);
+  const who = new Map();
+  for (const r of responses) {
+    if (!COUNTED.has(r.state)) continue;
+    who.set(r.post, [...(who.get(r.post) ?? []), r.handle]);
+  }
+  const kept = keep ? posts.filter((p) => keep(p, who.get(p.id) ?? [])) : posts;
+  if (!kept.length) return [];
+  // every act on these posts, oldest first, so the last one kept is the newest:
+  // a post, its amends, its RSVPs and its announcements — a handful each
+  const { rows: acts } = await client.query(
+    "SELECT id, object, action, at FROM acts WHERE class = $1 AND object = ANY($2) ORDER BY id",
+    [cls, kept.map((p) => p.id)]);
+  const latest = new Map(acts.map((a) => [a.object, { act: ACT_WORD[a.action] ?? a.action, at: new Date(a.at).toISOString() }]));
+  return kept.map((p) => ({
+    class: p.class,
+    id: p.id,
+    title: p.title,
+    author: p.author,
+    household: p.household ?? null,
+    state: stateOf(p, now),
+    latest: latest.get(p.id) ?? null,
+    responses: (who.get(p.id) ?? []).length,
+    // the span's start, for the order only; never on the answer (§ ORDER)
+    [STARTS]: p.starts == null ? null : new Date(p.starts).toISOString(),
+    [RESPONDENTS]: who.get(p.id) ?? [],
+    [FIELDS]: typeof p.fields === "string" ? JSON.parse(p.fields) : (p.fields ?? {}),
+  }));
+}
+
 /** The events half: `{ rows }` or `{ unavailable }`. */
 async function eventRows(members, now, { env }) {
   const house = new Set(members);
   try {
     return await officeRead(async (client) => {
-      const since = new Date(now - ENDED_LIST_DAYS * DAY_MS).toISOString();
-      const { rows: posts } = await client.query(
-        `SELECT ${POST_COLUMNS} FROM posts WHERE class = $1 AND ends > $2 ORDER BY starts, id`, [EVENT_CLASS, since]);
-      if (!posts.length) return { rows: [] };
-      const ids = posts.map((p) => p.id);
-      const { rows: responses } = await client.query(
-        "SELECT post, handle, state FROM responses WHERE post = ANY($1) ORDER BY post, handle", [ids]);
-      const counted = new Map();
-      const ours = new Set();
-      for (const r of responses) {
-        if (!COUNTED.has(r.state)) continue;
-        counted.set(r.post, (counted.get(r.post) ?? 0) + 1);
-        if (house.has(r.handle)) ours.add(r.post);
-      }
-      const mine = posts.filter((p) => house.has(p.author) || ours.has(p.id));
-      if (!mine.length) return { rows: [] };
-      // every act on these posts, oldest first, so the last one kept is the newest:
-      // a post, its amends, its RSVPs and its announcements — a handful each
-      const { rows: acts } = await client.query(
-        "SELECT id, object, action, at FROM acts WHERE class = $1 AND object = ANY($2) ORDER BY id",
-        [EVENT_CLASS, mine.map((p) => p.id)]);
-      const latest = new Map(acts.map((a) => [a.object, { act: ACT_WORD[a.action] ?? a.action, at: new Date(a.at).toISOString() }]));
+      const rows = await postRowsOf(client, EVENT_CLASS, now,
+        { keep: (p, who) => house.has(p.author) || who.some((h) => house.has(h)) });
       return {
-        rows: mine.map((p) => ({
-          class: EVENT_CLASS,
-          id: p.id,
-          title: p.title,
-          author: p.author,
-          household: p.household ?? null,
-          state: eventState(p, now),
-          latest: latest.get(p.id) ?? null,
-          responses: counted.get(p.id) ?? 0,
-          role: house.has(p.author) ? "author" : "participant",
+        rows: rows.map((r) => ({
+          ...r,
+          role: house.has(r.author) ? "author" : "participant",
           stake: 0,
           ours: 0,
-          // the span's start, for the order only; never on the answer (§ ORDER)
-          [STARTS]: new Date(p.starts).toISOString(),
         })),
       };
     }, { env });
@@ -238,6 +276,8 @@ async function ideaRows(members, whose, { worldDb, townClone }) {
 // so the cut keeps what is live rather than whatever acted last. The keys are
 // general: a state, a span, an act. No class is asked.
 const STARTS = Symbol("starts");
+/** A post's class `fields`, for a class reader that joins them (a quest's registry id); never on this read's answer. */
+export const FIELDS = Symbol("fields");
 export const TERMINAL_STATES = Object.freeze(["ended", STATE_CANCELLED]);
 const terminal = (r) => TERMINAL_STATES.includes(r.state);
 const newest = (a, b) => String(b.latest?.at ?? "").localeCompare(String(a.latest?.at ?? ""));
@@ -266,7 +306,7 @@ export async function householdPosts(handle, { now = Date.now(), env = process.e
   const rows = [...(events.rows ?? []), ...(ideas.rows ?? [])].sort(postOrder);
   const list = (role) => {
     const all = rows.filter((r) => r.role === role);
-    const plain = ({ [STARTS]: _starts, ...r }) => r;
+    const plain = ({ [STARTS]: _starts, [RESPONDENTS]: _who, [FIELDS]: _fields, ...r }) => r;
     return { total: all.length, shown: Math.min(all.length, POSTS_CAP), rows: all.slice(0, POSTS_CAP).map(plain) };
   };
   const unavailable = [house.unread, events.unavailable, ideas.unavailable].filter(Boolean);

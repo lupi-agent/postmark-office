@@ -2,8 +2,9 @@
 //
 // The rules are src/events.mjs's, pure. This file is where they meet the
 // record: the queries, the transaction, the four household acts, the town's
-// post / amend / close / advance for class "event" (POS-288), and the calendar
-// read.
+// post / amend / close / advance for class "event" (POS-288) and class "quest"
+// (POS-294, the town's own posts; its rules are quests.mjs's), and the
+// calendar read.
 //
 // ── ONE ACT, ONE TRANSACTION (the pen's R1, src/world2-pen.mjs) ─────────────
 //
@@ -34,6 +35,10 @@ import { householdKeyFor } from "./world2-claims.mjs";
 import { currentCrossing } from "./crossings.mjs";
 import { wakesNote, earpieceEnabled } from "./earpiece.mjs";
 import { WORLD_ANCHOR } from "./world-journal.mjs";
+import {
+  QUEST_CLASS, QUEST_AUTHOR, STATE_OPEN, STATE_CLOSED, questPostId, questEntries, judgeQuestEntry, judgeQuestHand,
+  QUEST_NO_AMEND, QUEST_NO_ADVANCE,
+} from "./quests.mjs";
 import {
   EVENT_CLASS, ACT_POST, ACT_AMEND_POST, ACT_CLOSE, ACT_RSVP, ACT_ANNOUNCE, ENDED_LIST_DAYS,
   STATE_CANCELLED, RESPONSE_RSVP, RESPONSE_STANDING,
@@ -316,21 +321,24 @@ export async function cancelAtOffice(fields, key, { now = Date.now(), env = proc
   return closeEvent(handle, id, { now, env, door: "household" });
 }
 
-// ── the town door: post · amend · close · advance (POS-288) ─────────────────
+// ── the town door: post · amend · close · advance (POS-288, POS-294) ───────
 //
 // `town { do: "post" | "amend" | "close" | "advance", args: { class, … } }`.
-// These answer class "event"; town-post.mjs routes every other class where it
-// went before (an idea is still a mark at the Think Tank until POS-290).
+// These answer class "event" and class "quest"; town-post.mjs routes every
+// other class where it went before (an idea is still a mark at the Think Tank
+// until POS-290).
+
+const POST_MACHINE_CLASSES = [EVENT_CLASS, QUEST_CLASS];
 
 function judgeClass(fields, { required }) {
   const c = fields.class == null ? "" : String(fields.class).trim();
-  if (!c && required) throw refuse(422, "post needs a class", 'class: "event" puts it on the calendar', { field: "class" });
-  if (c && c !== EVENT_CLASS) throw refuse(422, `this act answers class "event", not "${c}"`, "the post machine's first class is the event; the others join it one by one", { field: "class" });
-  return EVENT_CLASS;
+  if (!c && required) throw refuse(422, "post needs a class", 'class: "event" puts it on the calendar; class: "quest" is the town\'s own', { field: "class" });
+  if (c && !POST_MACHINE_CLASSES.includes(c)) throw refuse(422, `this act answers class "event" or "quest", not "${c}"`, "the post machine's classes join it one by one", { field: "class" });
+  return c || null;
 }
 function postId(fields) {
   const id = String(fields.post ?? "").trim();
-  if (!id) throw refuse(422, "which post?", 'post: "<author>/<slug>", as town { read: "event" } names it', { field: "post" });
+  if (!id) throw refuse(422, "which post?", 'post: "<author>/<slug>", as town { read: "posts" } names it', { field: "post" });
   return id;
 }
 /** `invitation` is the calendar's word for the body; it is taken as one, never beside it. */
@@ -340,40 +348,144 @@ function bodyOf(fields) {
   return fields.body !== undefined ? fields.body : fields.invitation;
 }
 
-export async function postAtTown(fields, key, { now = Date.now(), env = process.env } = {}) {
-  judgeClass(fields, { required: true });
+/**
+ * The class of the post an act names, when the caller did not send one. Only
+ * "is it a quest" is asked: every other post goes the event path, which
+ * answers its own "no event", exactly as it did before quests joined.
+ */
+async function classOf(fields, id, env) {
+  const c = judgeClass(fields, { required: false });
+  if (c) return c;
+  const quest = await read((client) => questRow(client, id), env);
+  return quest ? QUEST_CLASS : EVENT_CLASS;
+}
+
+export async function postAtTown(fields, key, { now = Date.now(), env = process.env, registry = undefined } = {}) {
+  if (judgeClass(fields, { required: true }) === QUEST_CLASS) return postQuest(fields, key, { now, env, registry });
   const handle = standpointHandle(fields, key);
   return postEvent(handle, { title: fields.title, body: bodyOf(fields), place: fields.place,
     doors_open: fields.doors_open, starts: fields.starts, ends: fields.ends }, { now, env, door: "town" });
 }
 
 export async function amendAtTown(fields, key, { now = Date.now(), env = process.env } = {}) {
-  judgeClass(fields, { required: false });
-  const handle = standpointHandle(fields, key);
   const id = postId(fields);
+  if (await classOf(fields, id, env) === QUEST_CLASS) throw QUEST_NO_AMEND();
+  const handle = standpointHandle(fields, key);
   return amendEvent(handle, id, { title: fields.title, body: bodyOf(fields), place: fields.place,
     doors_open: fields.doors_open, starts: fields.starts, ends: fields.ends }, { now, env, door: "town" });
 }
 
 export async function closeAtTown(fields, key, { now = Date.now(), env = process.env } = {}) {
-  judgeClass(fields, { required: false });
+  const id = postId(fields);
+  if (await classOf(fields, id, env) === QUEST_CLASS) return closeQuest(fields, key, id, { now, env });
   const handle = standpointHandle(fields, key);
-  return closeEvent(handle, postId(fields), { now, env, door: "town" });
+  return closeEvent(handle, id, { now, env, door: "town" });
 }
 
 /**
  * `advance` moves a post along its class's lifecycle. An event has no such
  * move: its phases (announced · doors-open · underway · ended) follow its
  * clock, and its only act-made state beyond announced is cancelled, which is
- * `close`. The class's own law is POS-289's sitting; until then this refuses
- * by name, and writes nothing.
+ * `close`. A quest's one move is `close` too. The classes' own law is
+ * POS-289's sitting; until then this refuses by name, and writes nothing.
  */
-export async function advanceAtTown(fields, key) {
-  judgeClass(fields, { required: false });
+export async function advanceAtTown(fields, key, { env = process.env } = {}) {
+  const id = postId(fields);
+  if (await classOf(fields, id, env) === QUEST_CLASS) throw QUEST_NO_ADVANCE();
   standpointHandle(fields, key);
-  postId(fields);
   throw refuse(422, "an event's phases follow its clock",
     "announced, doors-open, underway and ended are read from its times — amend them to move it; close it to cancel it", { field: "to" });
+}
+
+// ── the quest class (POS-294): the town posts and closes, the act names the hand
+//
+// The act is the pen's: `actor` is postmark-pen, so the one fold makes the
+// row's author the pen and its household the pen's (hh:the-town) with no
+// special case, and `payload.hand` is the resident whose key did it. A quest
+// has no place and no span, so the act is anchorless, like an enter or an exit.
+
+async function questRow(client, id) {
+  const { rows } = await client.query(`SELECT ${POST_COLUMNS} FROM posts WHERE id = $1 AND class = $2`, [id, QUEST_CLASS]);
+  return rowOf(rows[0]);
+}
+
+function questActRow({ action, object, payload, now }) {
+  return {
+    written_at: new Date(now).toISOString(), crossing: currentCrossing(now),
+    actor: QUEST_AUTHOR, action, object,
+    at_anchor: null, at_dx: null, at_dy: null, witnesses: null,
+    class: QUEST_CLASS, payload: JSON.stringify(payload),
+    effect: null, household: QUEST_AUTHOR,   // insertAct resolves the pen's house
+  };
+}
+
+const questReadHint = (id) => `town { read: "posts", args: { class: "quest", post: "${id}" } } — or GET /posts/${id}`;
+const questAnswer = (row) => ({ id: row.id, class: QUEST_CLASS, author: row.author, household: row.household ?? null, state: row.state, fields: row.fields });
+
+/** Put a registry quest up as the town's post: one `post` act, one `posts` row. */
+async function postQuest(fields, key, { now, env, registry }) {
+  const hand = judgeQuestHand(fields, key);
+  let reg = registry;
+  if (reg === undefined) reg = (await import("./town-posts.mjs")).questRegistryAtOffice();
+  const entry = judgeQuestEntry(reg, fields.quest);
+  const id = questPostId(entry.id);
+  return write(async (client) => {
+    const prev = await questRow(client, id);
+    if (prev) throw refuse(409, `"${id}" is already posted`, `it stands ${prev.state}; a quest is posted once, and its id is never reused`, { post: id });
+    const payload = { post: id, class: QUEST_CLASS, title: String(entry.title ?? entry.id), body: String(entry.source ?? ""),
+      state: STATE_OPEN, fields: { quest: entry.id }, hand };
+    const actId = await insertAct(client, questActRow({ action: ACT_POST, object: id, payload, now }));
+    const household = await householdKeyFor(client, QUEST_AUTHOR);
+    const row = applyPostAct({ posts: new Map(), responses: new Map() },
+      { id: actId, action: ACT_POST, actor: QUEST_AUTHOR, object: id, payload, household });
+    await insertPost(client, row);
+    return { post: questAnswer(row), act_id: actId, hand,
+      receipt: `posted: ${id} (a quest), the town's post by ${hand}'s hand; its terms are the registry's "${entry.id}"`,
+      read: questReadHint(id) };
+  }, env);
+}
+
+/** Close a town quest: one `close` act naming the hand; it stays, marked closed. */
+async function closeQuest(fields, key, id, { now, env }) {
+  const hand = judgeQuestHand(fields, key);
+  return write(async (client) => {
+    const prev = await questRow(client, id);
+    if (!prev) throw refuse(404, `no quest "${id}"`, 'town { read: "posts", args: { class: "quest" } } lists them');
+    if (prev.state === STATE_CLOSED) throw refuse(409, `"${id}" is already closed`, "nothing to do");
+    const payload = { post: id, state: STATE_CLOSED, hand };
+    const actId = await insertAct(client, questActRow({ action: ACT_CLOSE, object: id, payload, now }));
+    const row = applyPostAct({ posts: new Map([[id, prev]]), responses: new Map() },
+      { id: actId, action: ACT_CLOSE, actor: QUEST_AUTHOR, object: id, payload, household: prev.household });
+    await updatePost(client, row);
+    return { post: questAnswer(row), act_id: actId, hand, state: STATE_CLOSED,
+      receipt: `closed: ${id} by ${hand}'s hand; a closed quest stays on the record, marked closed, and its id is never reused`,
+      read: questReadHint(id) };
+  }, env);
+}
+
+/**
+ * THE SEEDING, run once by the town (world2/tools/quests-post.mjs): every
+ * registry quest that is not yet a post is posted by the named hand, through
+ * the same pen as the door. A quest already posted, open or closed, is left
+ * alone, so a second run posts nothing. `dryRun` reads and writes nothing.
+ */
+export async function seedQuestPosts({ hand, registry, now = Date.now(), env = process.env, dryRun = false }) {
+  const key = { handles: new Set([hand]) };
+  judgeQuestHand({ handle: hand }, key);
+  if (!registry) throw refuse(503, "the quest registry could not be read", "nothing was written");
+  const posted = await read(async (client) => {
+    const { rows } = await client.query("SELECT id, state FROM posts WHERE class = $1 ORDER BY id", [QUEST_CLASS]);
+    return new Map(rows.map((r) => [r.id, r.state]));
+  }, env);
+  const out = { hand, posted: [], already: [], would_post: [] };
+  for (const q of questEntries(registry)) {
+    const id = questPostId(q.id);
+    if (posted.has(id)) { out.already.push(id); continue; }
+    if (dryRun) { out.would_post.push(id); continue; }
+    const r = await postQuest({ class: QUEST_CLASS, quest: q.id, handle: hand }, key, { now, env, registry });
+    out.posted.push({ id, act_id: r.act_id });
+  }
+  return out;
 }
 
 // ── rsvp (POS-208 B) ────────────────────────────────────────────────────────
@@ -550,9 +662,9 @@ export async function calendarAtOffice(fields = {}, { now = Date.now(), env = pr
   }, env);
 }
 
-/** Every event act, oldest first — what the rebuild folds. */
-export async function eventActs(client) {
+/** Every act of one post class (the event's by default), oldest first — what the rebuild folds. */
+export async function eventActs(client, cls = EVENT_CLASS) {
   const { rows } = await client.query(
-    "SELECT id, actor, action, object, payload, household FROM acts WHERE class = $1 ORDER BY id", [EVENT_CLASS]);
+    "SELECT id, actor, action, object, payload, household FROM acts WHERE class = $1 ORDER BY id", [cls]);
   return rows;
 }

@@ -204,6 +204,9 @@ const ROSTER = {
   // The calendar's rebuild (POS-207): no --dry-run, so it refuses before it
   // opens any connection — it has no write mode at all.
   "world2/tools/events-rebuild.mjs": { args: [], env: NO_PG, code: 2, needle: "only --dry-run exists" },
+  // The quests' one-time posting (POS-294): no --hand, so it refuses before it
+  // reads the registry or opens any connection.
+  "world2/tools/quests-post.mjs": { args: [], env: NO_PG, code: 2, needle: "--hand <wright|keemin> is required" },
   // The earpiece's deliverer (POS-209): bare, it is usage and opens nothing —
   // the timer passes --run, and even then W2_EARPIECE=1 gates every read.
   "world2/tools/earpiece-deliver.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: earpiece-deliver.mjs --run" },
