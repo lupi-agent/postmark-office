@@ -44,6 +44,17 @@ trap 'rm -rf "$SNAP"' EXIT
   flock -w 300 9
   git -C "$TOWN_CLONE" pull --ff-only -q
   git -C "$WORLD_CLONE" fetch --prune -q origin
+  # settle-on-tick (Keemin, 2026-09-29; overturns #3231's "no timer"): every
+  # join merged since the last tick is bound here — the pen's residency/* and
+  # hand-written single-address joins — BEFORE the mint catch-up and the
+  # welcome pass below. A handle bound first is paid its bundle under its
+  # GitHub id; one bound after is paid under its card username, and binding it
+  # then puts two welcome lines in one house (Wildcat, 2026-09-28). Inside this
+  # flock, so the pass calls settle-join's critical section directly. NON-FATAL
+  # like the mint: a join that cannot settle now is logged and asked again.
+  node /srv/postmark-office/deploy/settle-pass.mjs \
+      --town "$TOWN_CLONE" --cursor /srv/postmark-office/settle-pass.cursor \
+    || echo "[office-tick] settle pass FAILED (non-fatal) — the lines above name why; the next tick asks again from the same cursor" >&2
   # mint-on-tick (2026-08-06): a MANUAL crossing delivers without minting (the
   # key is box custody), opening an owed-window that used to last until the
   # next automated crossing — and a settlement landing inside it refuses

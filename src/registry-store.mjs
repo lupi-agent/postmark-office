@@ -23,28 +23,13 @@
 // for "I looked". A registry read that turned "I could not look" into "the town
 // has no households" would hand `planRegistryJoin` an empty registry, and an
 // empty registry is a registry in which every account is unknown and every
-// house is available — which mints duplicates over live rows. The callers
-// below must branch on null, and the one that cannot is named in the header of
-// this lane's PR as the reason the door readers did not move this week.
+// house is available — which mints duplicates over live rows. Every caller
+// branches on null: the doors refuse on it (src/declare.mjs § readRegisters,
+// src/residency.mjs § requestResidency), and so do the ceremonies.
 //
-// ── WHY NOTHING IN `src/` IMPORTS THIS YET ──────────────────────────────────
-//
-// See § THE STOP in the PR body, and the same sentence here so it is impossible
-// to wire this in by accident:
-//
-//     The ceremony that DECLARES a household reads the registry, folds a whole
-//     new registry object over it, and commits that object as the FILE
-//     (src/declare-exec.mjs:50 + src/declare.mjs:410, src/residency.mjs:547 +
-//     :584). Nothing writes the table. So a reader switched to the store today
-//     would read a table frozen at its seed, fold over it, and commit a file
-//     that DROPS every house declared since — which is precisely the revert
-//     `src/residency.mjs:540-546` already warns about, arriving by the other
-//     door. The table has to gain its write (POS-158's mint, which calls
-//     `drainRegistry()` after its own commit) before any reader may leave the
-//     file.
-//
-// Until then this module is proven against fixtures and imported by nothing at
-// a door. `tools/registry-drain.mjs` uses it, and it only ever READS.
+// The store is the registry's one writer (src/ceremony.mjs); the town's
+// tools/households.json and tools/github-ids.json are printed from it by
+// tools/registry-drain.mjs.
 
 import { actsQuery } from "./world2-acts.mjs";
 import { registryFromRows, pinsFromRows, HOUSEHOLD_KEYS, PIN_KEYS } from "./registry-rows.mjs";

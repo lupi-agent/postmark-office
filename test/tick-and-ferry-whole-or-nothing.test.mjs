@@ -137,6 +137,11 @@ process.exit(Number(process.env.STUB_SEAL_VERIFY_EXIT || 0));
 // ── the office's side, stubbed where the tick and the ferry call it ─────────
 const OFFICE_FILES = {
   "stamp-key.pem": "not a key\n",
+  "deploy/settle-pass.mjs": `
+import { appendFileSync } from "node:fs";
+if (process.env.STUB_CALLS) appendFileSync(process.env.STUB_CALLS, "settle\\n");
+process.exit(Number(process.env.STUB_SETTLE_EXIT || 0));
+`,
   "deploy/welcome-pass.mjs": `
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -283,7 +288,7 @@ test("tick · control: a green ledger gets the pass's rows committed and pushed,
   assert.equal(status(fx), "", "the clone ends clean");
   const shown = fx.g("-C", fx.origin, "show", `main:${LEDGER}`);
   assert.match(shown, /mint row 3\nwelcome row 4\n$/, "both rows reached origin");
-  assert.deepEqual(calls(fx), ["verify", "mint --append", "welcome", "verify"], "a verify before the write and one after it");
+  assert.deepEqual(calls(fx), ["settle", "verify", "mint --append", "welcome", "verify"], "the joins settle first; a verify before the write and one after it");
   assert.doesNotMatch(r.stderr, /ROLLED BACK|catch-up OFF|FAILED/);
   assert.ok(existsSync(join(fx.office, "office.db")), "the tick went on to hydrate");
 });
@@ -294,7 +299,7 @@ test("tick · a ledger that arrives red gets nothing appended, and the journal s
   const at = head(fx);
   const r = run(fx, [tickScript(fx)], { STUB_APPEND: "mint row 3", STUB_WELCOME: "Corey's welcome" });
   assert.equal(r.status, 0, `the tick itself carries on: ${r.stderr}`);
-  assert.deepEqual(calls(fx), ["verify"], "neither the mint nor the welcome pass ran onto a red ledger");
+  assert.deepEqual(calls(fx), ["settle", "verify"], "neither the mint nor the welcome pass ran onto a red ledger");
   assert.equal(ledgerAt(fx), before, "not one byte appended");
   assert.equal(status(fx), "", "the clone is as clean as it arrived");
   assert.equal(head(fx), at);
@@ -315,7 +320,7 @@ test("tick · a verify that fails after the write restores the ledger and remove
     STUB_WELCOME_MAKES: "WHITE_PAGES/made-by-the-pass.md",
   });
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(calls(fx), ["verify", "mint --append", "welcome", "verify"]);
+  assert.deepEqual(calls(fx), ["settle", "verify", "mint --append", "welcome", "verify"]);
   assert.equal(tracked(fx), "", "no tracked file left modified: every pull and pen write can proceed");
   assert.equal(ledgerAt(fx), before, "the ledger is back to its arrival bytes");
   assert.equal(existsSync(join(fx.town, "WHITE_PAGES", "made-by-the-pass.md")), false, "the path the pass created is gone");
@@ -342,9 +347,25 @@ test("tick · a quiet tick (nothing owed) costs one verify, as before", { skip }
   const fx = fixture(["row 1"]);
   const r = run(fx, [tickScript(fx)], {});
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(calls(fx), ["verify", "mint --append", "welcome"],
+  assert.deepEqual(calls(fx), ["settle", "verify", "mint --append", "welcome"],
     "the arrival check already read these bytes; a second verify would lengthen every tick's lock hold for nothing");
   assert.equal(status(fx), "");
+});
+
+test("tick · merged joins settle BEFORE the join-bundle pass, and a failed settle stops nothing", { skip }, () => {
+  // THE ORDER IS THE WHOLE FIX (Keemin, 2026-09-29). A handle bound before the
+  // welcome pass is paid under its GitHub id; one bound after it is paid under
+  // its card username, and binding it then puts two welcome lines in one house
+  // (Wildcat, 2026-09-28). Read from the calls the shipped tick makes, not its text.
+  const fx = fixture(["row 1"]);
+  const r = run(fx, [tickScript(fx)], { STUB_WELCOME: "welcome row 2", STUB_SETTLE_EXIT: "1" });
+  assert.equal(r.status, 0, r.stderr);
+  const seen = calls(fx);
+  assert.ok(seen.indexOf("settle") !== -1 && seen.indexOf("settle") < seen.indexOf("welcome"),
+    `the settle pass runs before the welcome pass: ${seen.join(", ")}`);
+  assert.equal(seen.filter((c) => c === "settle").length, 1, "once per tick");
+  assert.match(r.stderr, /settle pass FAILED \(non-fatal\)/, "a settle that fails says so");
+  assert.match(fx.g("-C", fx.origin, "show", `main:${LEDGER}`), /welcome row 2\n$/, "and the welcome still ran and landed");
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

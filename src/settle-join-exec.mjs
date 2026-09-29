@@ -7,7 +7,7 @@
 // ceremony; the registry drain makes the one pen commit. Prints one JSON line.
 //
 // Env: TOWN_CLONE, TOWN_PUSH=1, BOT_NAME/BOT_EMAIL (penCommit's), TOWN_TZ.
-// argv[2]: JSON { handle, ghId, ghLogin, pr } — the join the door read back.
+// argv[2]: JSON { handle, ghId, ghLogin, pr, road, cardLogin } — the join the door read back.
 //
 // Exit 0 with the answer or { error: { code, defect, hint } } (a refusal is an
 // answer); exit 1 only when the machinery itself trips.
@@ -28,7 +28,7 @@ const townDate = () =>
   new Intl.DateTimeFormat("en-CA", { timeZone: process.env.TOWN_TZ ?? "America/New_York" }).format(new Date());
 
 async function main() {
-  const { handle, ghId, ghLogin, pr } = JSON.parse(process.argv[2] ?? "{}");
+  const { handle, ghId, ghLogin, pr, road, cardLogin } = JSON.parse(process.argv[2] ?? "{}");
   if (!existsSync(CLONE))
     return answer({ error: { code: 409, defect: "not-yet-open", hint: "the office has no town clone to settle into" } });
 
@@ -42,7 +42,7 @@ async function main() {
       execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
 
     try {
-      return await settleUnderLock({ handle, ghId, ghLogin, pr, clone: CLONE, date: townDate() });
+      return await settleUnderLock({ handle, ghId, ghLogin, pr, road, cardLogin, clone: CLONE, date: townDate() });
     } catch (e) {
       if (!e?.code) throw e;
       return { error: { code: e.code, defect: e.defect ?? String(e.message), hint: e.hint ?? null } };

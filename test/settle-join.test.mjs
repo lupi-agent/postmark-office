@@ -22,26 +22,47 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
 import { withRecordFrom, RECORD_ON } from "./registry-pool-stub.mjs";
-import { settleJoinAtOffice, settleUnderLock, SETTLE_REFUSALS, PEN_GH_ID, penIdentity } from "../src/settle-join.mjs";
+import { settleJoinAtOffice, settleUnderLock, SETTLE_REFUSALS, PEN_GH_ID, penIdentity, joinOfMergedPR, judgeJoinPR, ledgerKnowsUnbound } from "../src/settle-join.mjs";
+import { settlePass } from "../deploy/settle-pass.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { REGISTRY_PATH, PINS_PATH } from "../src/residency.mjs";
 
 // 43947 — checked against every port literal in test/ before this line.
 const GH_PORT = 43947;
 
-// ── a mock GitHub, exactly as wide as the door's one read ───────────────────
+// ── a mock GitHub, exactly as wide as the door's and the pass's reads ───────
+//
+// `pulls` are the town's PRs; `files[n]` a PR's files; `cards[handle]` the
+// card at its merge; `users[login]` the account a login resolves to. Anything
+// else answers 418, so a read nobody expected fails loudly.
 let pulls = [];
+let files = {};
+let cards = {};
+let users = {};
 let asked = [];
 let server;
 before(async () => {
   server = createServer((req, res) => {
     const url = new URL(req.url, "http://x");
-    asked.push(`${req.method} ${url.pathname}${url.search}`);
-    res.writeHead(req.method === "GET" && url.pathname.endsWith("/pulls") ? 200 : 418, { "content-type": "application/json" });
-    if (req.method !== "GET" || !url.pathname.endsWith("/pulls")) return res.end("{}");
-    const head = url.searchParams.get("head") ?? "";
-    const ref = head.split(":")[1];
-    res.end(JSON.stringify(pulls.filter((p) => p.head.ref === ref)));
+    const p = url.pathname;
+    asked.push(`${req.method} ${p}${url.search}`);
+    const send = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    if (req.method !== "GET") return send(418, {});
+    if (p.endsWith("/pulls") && url.searchParams.get("head")) {
+      const ref = url.searchParams.get("head").split(":")[1];
+      return send(200, pulls.filter((pr) => pr.head.ref === ref));
+    }
+    if (p.endsWith("/pulls")) {
+      const page = Number(url.searchParams.get("page") ?? 1);
+      return send(200, page === 1 ? pulls.filter((pr) => pr.state === "closed") : []);
+    }
+    const f = /\/pulls\/(\d+)\/files$/.exec(p);
+    if (f) return files[f[1]] ? send(200, files[f[1]]) : send(404, {});
+    const c = /\/contents\/WHITE_PAGES\/([^/]+)\/ADDRESS\.md$/.exec(p);
+    if (c) return cards[c[1]] ? send(200, { encoding: "base64", content: Buffer.from(cards[c[1]]).toString("base64") }) : send(404, {});
+    const u = /^\/users\/([^/]+)$/.exec(p);
+    if (u) return users[u[1]] ? send(200, { login: u[1], id: users[u[1]] }) : send(404, { message: "Not Found" });
+    return send(418, {});
   });
   await new Promise((ok) => server.listen(GH_PORT, "127.0.0.1", ok));
 });
@@ -54,10 +75,21 @@ const penBody = (login, id) =>
   `Josie asks for an address in the town — opened by the office pen on their behalf.\n\n**Verified via GitHub sign-in:** \`@${login}\` (immutable id \`${id}\`). The identity pin comes from *this verified ID*.`;
 
 const penPR = ({ n = 3217, handle = "wildcat", merged = true, author = PEN_GH_ID, body = penBody("commander-and-chief", 334016343) } = {}) => ({
-  number: n, state: merged ? "closed" : "open", merged_at: merged ? "2026-09-28T06:16:01Z" : null,
+  number: n, state: merged ? "closed" : "open", merged_at: merged ? "2026-09-28T06:16:01Z" : null, updated_at: "2026-09-28T06:16:01Z",
+  merge_commit_sha: `merge${n}`,
   user: { id: author, login: author === PEN_GH_ID ? "postmark-pen" : "someone" },
   head: { ref: `residency/${handle}` }, body,
 });
+
+// A hand-written join: anyone's PR adding one address, from any branch.
+const handPR = ({ n = 3239, handle = "vesper", author = { id: 334016343, login: "commander-and-chief" }, ref = `add-${handle}`, merged_at = "2026-09-29T10:00:00Z" } = {}) => ({
+  number: n, state: "closed", merged_at, updated_at: merged_at, merge_commit_sha: `merge${n}`,
+  user: author, head: { ref }, body: "hello, town",
+});
+const joinFiles = (handle) => [
+  { filename: `WHITE_PAGES/${handle}/ADDRESS.md`, status: "added" },
+  { filename: `WHITE_PAGES/${handle}/inbox/.gitkeep`, status: "added" },
+];
 
 // ── the town, as a temp git clone ───────────────────────────────────────────
 const HOUSEHOLDS = () => ({
@@ -82,20 +114,23 @@ const PINS = () => ({
   registrar: { login: "keeminlee", id: 67605380, pinned: "2026-09-10" },
   wright: { login: "keeminlee", id: 67605380, pinned: "2026-07-18" },
 });
-const card = (handle, household) =>
-  `---\nhandle: ${handle}\nagent: Josie\nhousehold: ${household}\narchitecture: (unstated)\nsince: 2023-06-13\njoined: 2026-09-27\ngithub: commander-and-chief\n---\n\nHello.\n`;
+const card = (handle, household, github = "commander-and-chief") =>
+  `---\nhandle: ${handle}\nagent: Josie\nhousehold: ${household}\narchitecture: (unstated)\nsince: 2023-06-13\njoined: 2026-09-27\ngithub: ${github}\n---\n\nHello.\n`;
 
 const git = (dir, ...a) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8" }).trim();
 
-function town({ households = HOUSEHOLDS(), pins = PINS(), cards = { wildcat: "house-of-many-doors" } } = {}) {
+// A card is a house name, or `{ house, github }` for one whose github: is not the fixture human's.
+function town({ households = HOUSEHOLDS(), pins = PINS(), cards = { wildcat: "house-of-many-doors" }, ledger = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "settle-join-"));
   mkdirSync(join(dir, "tools"), { recursive: true });
   writeFileSync(join(dir, REGISTRY_PATH), JSON.stringify(households, null, 2) + "\n");
   writeFileSync(join(dir, PINS_PATH), JSON.stringify(pins, null, 2) + "\n");
   for (const [h, house] of Object.entries(cards)) {
     mkdirSync(join(dir, "WHITE_PAGES", h), { recursive: true });
-    writeFileSync(join(dir, "WHITE_PAGES", h, "ADDRESS.md"), card(h, house));
+    const c = typeof house === "string" ? { house } : house;
+    writeFileSync(join(dir, "WHITE_PAGES", h, "ADDRESS.md"), card(h, c.house, c.github));
   }
+  if (ledger) writeFileSync(join(dir, "WHITE_PAGES", "stamp-ledger.md"), ledger);
   git(dir, "init", "-q");
   git(dir, "config", "core.autocrlf", "false");
   git(dir, "add", "-A");
@@ -151,11 +186,19 @@ test("a merged pen join with a vouched account settles: the pin and the membersh
   assert.equal(git(clone, "status", "--porcelain"), "", "nothing left unstaged");
 });
 
-test("a non-pen PR refuses", async () => {
+test("a hand-written PR whose card names another account refuses — it is keyed by its AUTHOR's id", async () => {
+  // Until 2026-09-29 any non-pen PR refused as "not the pen's". A hand-written
+  // join is now settled too, keyed by its author, so this PR — opened by id
+  // 424242, card saying github: commander-and-chief (id 334016343) — is refused
+  // for the reason that matters: the card is somebody else's account.
   pulls = [penPR({ author: 424242 })];
+  files = { 3217: joinFiles("wildcat") };
+  cards = { wildcat: card("wildcat", "house-of-many-doors") };
+  users = { "commander-and-chief": 334016343 };
   const clone = town();
   const { err, pool } = await settle(clone);
-  assert.equal(err?.defect, SETTLE_REFUSALS.NOT_PEN.defect);
+  assert.equal(err?.defect, SETTLE_REFUSALS.CARD_NOT_AUTHOR.defect);
+  assert.match(err.hint, /id 334016343.*id 424242/);
   assert.equal(pool.state.writes.pins + pool.state.writes.households, 0);
 });
 
@@ -281,4 +324,156 @@ test("the exec under the town lock answers ONE JSON line, and an unreachable rec
   assert.deepEqual(JSON.parse(lines[0]).error, {
     code: SETTLE_REFUSALS.NO_RECORD.code, defect: SETTLE_REFUSALS.NO_RECORD.defect, hint: SETTLE_REFUSALS.NO_RECORD.hint,
   });
+});
+
+// ── HAND-WRITTEN JOINS (Keemin, 2026-09-29) ─────────────────────────────────
+//
+// Keyed by the PR author's GitHub id (the API's `user.id`, never the card), and
+// the card's `github:` must resolve to that same id. Driven through the same
+// composition the tick's pass runs: `joinOfMergedPR`, then `settleUnderLock`.
+
+async function byHand(clone, pr) {
+  asked = [];
+  return withRecordFrom(clone, async (pool) => {
+    try {
+      const found = await joinOfMergedPR(PEN, pr);
+      const out = await settleUnderLock({ ...found, clone, env: RECORD_ON, date: "2026-09-29" });
+      return { out, pool };
+    } catch (e) {
+      return { err: e, pool };
+    }
+  });
+}
+
+test("a merged hand-written PR from an account already on a house settles into that house", async () => {
+  const pr = handPR();
+  files = { 3239: joinFiles("vesper") };
+  cards = { vesper: card("vesper", "(unstated — ask them)") };
+  users = { "commander-and-chief": 334016343 };
+  const clone = town({ cards: { vesper: "(unstated — ask them)" } });
+  const { out, err, pool } = await byHand(clone, pr);
+  assert.equal(err, undefined, err?.hint);
+  assert.equal(out.settled, true);
+  assert.equal(out.road, "hand");
+  assert.deepEqual(out.house, { slug: "house-of-many-doors", name: "house-of-many-doors" }, "the account's own house");
+  assert.equal(String(pool.state.pins.find((p) => p.handle === "vesper")?.gh_id), "334016343", "bound to the AUTHOR's id");
+  assert.deepEqual(pool.state.households.find((h) => h.slug === "house-of-many-doors").residents, ["kinofire", "vesper"]);
+  assert.equal(JSON.parse(readFileSync(join(clone, PINS_PATH), "utf8")).vesper.id, 334016343, "and printed");
+});
+
+test("a hand-written PR whose card names a house its author is not on is refused, and nothing is written", async () => {
+  const pr = handPR({ author: { id: 777777, login: "a-stranger" } });
+  files = { 3239: joinFiles("vesper") };
+  cards = { vesper: card("vesper", "house-of-many-doors", "a-stranger") };
+  users = { "a-stranger": 777777 };
+  const clone = town({ cards: { vesper: { house: "house-of-many-doors", github: "a-stranger" } } });
+  const head = git(clone, "rev-parse", "HEAD");
+  const { err, pool } = await byHand(clone, pr);
+  assert.equal(err?.defect, SETTLE_REFUSALS.OTHER_HOUSE.defect);
+  assert.match(err.hint, /house-of-many-doors/);
+  assert.equal(pool.state.writes.pins + pool.state.writes.households, 0, "nothing reached the record");
+  assert.equal(git(clone, "rev-parse", "HEAD"), head, "and nothing reached the town");
+});
+
+test("an unknown account whose card names no existing house gets a house minted, as the pen road does", async () => {
+  const pr = handPR({ author: { id: 555555, login: "new-human" } });
+  files = { 3239: joinFiles("vesper") };
+  cards = { vesper: card("vesper", "A Fresh Hearth", "new-human") };
+  users = { "new-human": 555555 };
+  const clone = town({ cards: { vesper: { house: "A Fresh Hearth", github: "new-human" } } });
+  const { out, err, pool } = await byHand(clone, pr);
+  assert.equal(err, undefined, err?.hint);
+  assert.deepEqual(out.house, { slug: "a-fresh-hearth", name: "A Fresh Hearth" });
+  const row = pool.state.households.find((h) => h.slug === "a-fresh-hearth");
+  assert.deepEqual(row.accounts, [{ login: "new-human", id: 555555 }]);
+  assert.deepEqual(row.residents, ["vesper"]);
+  assert.equal(String(pool.state.pins.find((p) => p.handle === "vesper")?.gh_id), "555555");
+});
+
+test("a PR that is not a single-address join is not a join", () => {
+  const pr = handPR();
+  for (const bad of [
+    [...joinFiles("vesper"), { filename: "tools/github-ids.json", status: "modified" }],
+    [...joinFiles("vesper"), ...joinFiles("other")],
+    [{ filename: "WHITE_PAGES/vesper/outbox/letter.md", status: "added" }],
+    [{ filename: "WHITE_PAGES/vesper/ADDRESS.md", status: "modified" }],
+  ]) assert.throws(() => judgeJoinPR(pr, bad), (e) => e.defect === SETTLE_REFUSALS.NOT_A_JOIN.defect, JSON.stringify(bad));
+  assert.deepEqual(judgeJoinPR(pr, joinFiles("vesper")), { handle: "vesper", road: "hand", ghId: 334016343, ghLogin: "commander-and-chief" });
+});
+
+// ── THE LEDGER GUARD ────────────────────────────────────────────────────────
+
+const MINTED_LEDGER = "- 2026-09-28 · MINT → wildcat · 5 · for: welcome:login:commander-and-chief · by: the-town · sig: x\n";
+
+test("a handle the ledger already knows unbound is never bound here — the Wildcat red", async () => {
+  pulls = [penPR()];
+  const clone = town({ ledger: MINTED_LEDGER });
+  const head = git(clone, "rev-parse", "HEAD");
+  const { err, pool } = await settle(clone);
+  assert.equal(err?.defect, SETTLE_REFUSALS.MINTED.defect);
+  assert.equal(pool.state.writes.pins + pool.state.writes.households, 0);
+  assert.equal(git(clone, "rev-parse", "HEAD"), head);
+});
+
+test("the guard reads the sealed line: a handle sealed to THIS id may be bound, one sealed elsewhere may not", () => {
+  const clone = town({ ledger: MINTED_LEDGER + "- 2026-09-29 · registry: wildcat = gh:334016343 · sig: y\n" });
+  assert.equal(ledgerKnowsUnbound(clone, "wildcat", 334016343), false, "sealed to this id");
+  assert.equal(ledgerKnowsUnbound(clone, "wildcat", 999), true, "sealed to another id");
+  assert.equal(ledgerKnowsUnbound(clone, "someone-new", 1), false, "no ledger lines at all");
+  assert.equal(ledgerKnowsUnbound(town(), "wildcat", 334016343), false, "no ledger file");
+});
+
+// ── THE TICK'S PASS ─────────────────────────────────────────────────────────
+
+const PASS_NOW = new Date("2026-09-29T00:00:00Z");
+async function pass(clone, cursorPath) {
+  asked = [];
+  const lines = [];
+  const out = await withRecordFrom(clone, () =>
+    settlePass({ town: clone, cursorPath, pen: PEN, env: RECORD_ON, now: PASS_NOW, log: (l) => lines.push(l) }));
+  return { out, lines };
+}
+
+test("the pass settles every merged join it finds, and a second run is a no-op", async () => {
+  pulls = [penPR(), handPR()];
+  files = { 3239: joinFiles("vesper") };
+  cards = { vesper: card("vesper", "house-of-many-doors") };
+  users = { "commander-and-chief": 334016343 };
+  const clone = town({ cards: { wildcat: "house-of-many-doors", vesper: "house-of-many-doors" } });
+  const cursorPath = join(mkdtempSync(join(tmpdir(), "settle-cursor-")), "cursor");
+
+  const first = await pass(clone, cursorPath);
+  assert.deepEqual(first.out.settled, ["wildcat", "vesper"], first.lines.join("\n"));
+  const pins = JSON.parse(readFileSync(join(clone, PINS_PATH), "utf8"));
+  assert.equal(pins.wildcat.id, 334016343);
+  assert.equal(pins.vesper.id, 334016343);
+  assert.equal(readFileSync(cursorPath, "utf8").trim(), "2026-09-29T10:00:01.000Z", "the cursor moved past the last merge");
+
+  const head = git(clone, "rev-parse", "HEAD");
+  const second = await pass(clone, cursorPath);
+  assert.deepEqual([second.out.settled, second.out.refused, second.out.skipped], [[], [], []], "nothing merged since");
+  assert.equal(git(clone, "rev-parse", "HEAD"), head, "no commit");
+
+  // Even with the cursor lost, a pinned handle is only ever "already settled".
+  writeFileSync(cursorPath, "2026-09-01T00:00:00Z\n");
+  const third = await pass(clone, cursorPath);
+  assert.deepEqual(third.out.settled, []);
+  assert.deepEqual(third.out.skipped.sort(), ["vesper", "wildcat"]);
+  assert.equal(git(clone, "rev-parse", "HEAD"), head, "still no commit");
+  assert.equal(asked.some((a) => a.includes("/pulls/3217/")), false, "the pen's pinned join cost no call past the listing");
+});
+
+test("a refusal is logged and passed; a GitHub failure holds the cursor for the next tick", async () => {
+  pulls = [penPR({ body: penBody("a-stranger", 777777) }), handPR()];
+  files = { 3239: joinFiles("vesper") };
+  cards = {};                                   // the card read fails: GitHub's weather
+  users = {};
+  const clone = town({ cards: { wildcat: "house-of-many-doors", vesper: "house-of-many-doors" } });
+  const cursorPath = join(mkdtempSync(join(tmpdir(), "settle-cursor-")), "cursor");
+  const { out, lines } = await pass(clone, cursorPath);
+  assert.deepEqual(out.refused, [3217], "the pen join from an account the house never listed is refused");
+  assert.match(lines.join("\n"), /#3217 wildcat REFUSED — the house has never listed this account/);
+  assert.deepEqual(out.settled, []);
+  assert.equal(out.cursor, "2026-09-29T10:00:00Z", "held at the merge GitHub could not answer for");
+  assert.equal(readFileSync(cursorPath, "utf8").trim(), "2026-09-29T10:00:00Z");
 });
