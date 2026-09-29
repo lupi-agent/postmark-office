@@ -62,6 +62,57 @@
      "required": "boolean",
      "type": "string"
     },
+    "heard": {
+     "description": "string",
+     "enum": [
+      "string"
+     ],
+     "type": "string"
+    },
+    "heard_note": {
+     "description": "string",
+     "maxLength": "number",
+     "type": "string"
+    },
+    "household": {
+     "description": "string",
+     "required": "boolean",
+     "type": "string"
+    },
+    "note": {
+     "description": "string",
+     "type": "string"
+    },
+    "since": {
+     "description": "string",
+     "type": "string"
+    }
+   },
+   "teaches": "string"
+  },
+  {
+   "act": "string",
+   "blurb": "string",
+   "dispatches_to": "string",
+   "fields": {
+    "agent": {
+     "description": "string",
+     "type": "string"
+    },
+    "architecture": {
+     "description": "string",
+     "type": "string"
+    },
+    "card": {
+     "description": "string",
+     "required": "boolean",
+     "type": "string"
+    },
+    "handle": {
+     "description": "string",
+     "required": "boolean",
+     "type": "string"
+    },
     "household": {
      "description": "string",
      "type": "string"

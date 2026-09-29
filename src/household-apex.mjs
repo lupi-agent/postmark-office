@@ -24,7 +24,8 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { DECLARE_SCHEMA, declareViaOffice, SETTLING_ASHORE } from "./declare.mjs";
+import { DECLARE_SCHEMA, BEGIN_PROPERTIES, declareViaOffice, SETTLING_ASHORE } from "./declare.mjs";
+import { HEARD_FIELD_NAMES } from "./arrival-heard.mjs";
 // The join ceremony's refusal vocabulary (POS-158). Static is safe here:
 // `ceremony.mjs` reaches `residency.mjs` through `tools/registry-drain.mjs`
 // and nothing in that graph reaches back to this door.
@@ -575,11 +576,21 @@ export const READING_LAW =
  * absence of the word `fields`, because the law is about what the page costs a
  * reader, not about a key name.
  */
+// POS-292 (Wright's ruling, 2026-09-28): declare's two optional "where did you
+// hear" fields stay OFF this abridged index. With them the connector's bare
+// answer measured 8,207 B against SLIM_CEILING's 8,192; without them it is
+// back under with the headroom test/foyer-shrink.test.mjs F5c states. Their
+// card (household { read: "declare" }), the REST answer, the MCP schema and
+// GET /join all carry them, and the join form is built from the card.
+const OFF_INDEX = Object.freeze({ declare: new Set(HEARD_FIELD_NAMES) });
+
 export const capabilityIndex = (ctx = {}) =>
   HOUSEHOLD_DISPATCHABLE.map((act) => {
     const fields = {};
-    for (const [name, spec] of Object.entries(fieldsForAct(act, ctx)))
+    for (const [name, spec] of Object.entries(fieldsForAct(act, ctx))) {
+      if (OFF_INDEX[act]?.has(name)) continue;
       fields[name] = spec?.required === true ? { required: true } : {};
+    }
     return { act, teaches: ACTS[act].inline, fields };
   });
 
@@ -870,9 +881,9 @@ function fieldsForAct(act, { schemas, schemaRequired } = {}, { human = false } =
   // `human`: the card read carries the schema's human hints (title, examples,
   // x-group, x-multiline — world-apex.mjs § withoutHumanHints says why the
   // index never does). A form for a person is generated from the CARD.
-  if (act === "begin" || act === "declare") {
-    return actionFields(DECLARE_SCHEMA.properties, DECLARE_SCHEMA.required, { strip, human });
-  }
+  if (act === "declare") return actionFields(DECLARE_SCHEMA.properties, DECLARE_SCHEMA.required, { strip, human });
+  // begin: declare's fields without the human's question (POS-292, ruling B)
+  if (act === "begin") return actionFields(BEGIN_PROPERTIES, DECLARE_SCHEMA.required, { strip, human });
   const own = APEX_ONLY_FIELDS[act];
   if (own) return actionFields(own.properties, own.required, { strip, human });
   return actionFields(schemas?.[spec.tool] ?? {}, schemaRequired?.[spec.tool] ?? [], { strip, human });
@@ -1520,13 +1531,14 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
     return bounce(422, "`args` must be an object", `the act's own fields ride inside it — household { do: "${act}", args: { … } }`);
   }
   // One validator, the target's: unknown fields bounce by name against the
-  // flat tool's own schema (begin and declare validate against DECLARE_SCHEMA).
+  // flat tool's own schema (declare validates against DECLARE_SCHEMA, begin
+  // against BEGIN_PROPERTIES: the same fields without POS-292's question).
   // The apex-only acts have no flat tool to borrow a schema from, so they
   // declare their own fields here — otherwise `schemas?.[null]` is null and the
   // unknown-field check silently stops running for exactly the newest acts, the
   // ones most likely to be called with a guessed field name.
-  const declared = act === "begin" || act === "declare"
-    ? DECLARE_SCHEMA.properties
+  const declared = act === "declare" ? DECLARE_SCHEMA.properties
+    : act === "begin" ? BEGIN_PROPERTIES
     : APEX_ONLY_FIELDS[act]?.properties ?? spec.fields?.properties ?? schemas?.[spec.tool] ?? null;
   // THE JUDGEMENT IS THE CONTRACT'S NOW (POS-70, src/one-contract.mjs) — the
   // same function POST /letters and every other plain-API route call, so the

@@ -25,6 +25,13 @@
 //                         OAuth, and the views are the moderators' insights.
 //   X         followers + views   BY HAND. The API needs a paid key.
 //
+// HOW ARRIVALS HEARD (POS-292): the office's keyless GET /ops/heard on the
+// box (OFFICE_DOOR, the unit's port, as office-tick.sh reads it). Counts
+// only, and safe by construction: the store's own function folds any choice
+// answered fewer than 3 times in a week into one "fewer than 3" count, and
+// never returns a note. Every week's counts are re-read each run, so a late
+// answer is never lost; a week the door cannot answer keeps what it had.
+//
 // Everything BY HAND comes from a small file (deploy/awareness-by-hand.json, or
 // AWARENESS_BY_HAND) keyed by ISO week, and the page labels each such number
 // "entered by hand, <date>". No key is read by this tool, and none belongs in
@@ -114,6 +121,45 @@ export function newHouseholds(activity, monday) {
   }
   const end = addDays(monday, 7);
   return [...first.values()].filter((j) => j >= monday && j < end).length;
+}
+
+/** The words the page uses for the office's keys (the office's own `choices` win when it sends them). */
+export const HEARD_WORDS = Object.freeze({
+  youtube: "YouTube", discord: "Discord", x: "X / Twitter", reddit: "Reddit", friend: "a friend or another resident",
+  "their-ai": "their AI told them", search: "a search", commons: "the Commons / another agent community", other: "other",
+  "fewer-than-3": "fewer than 3 each (folded, so no one answer shows)",
+});
+
+/**
+ * The office's weekly counts, as `{ byWeek: { <Monday>: { <key>: n } }, choices }`,
+ * or `{ error }`. Reads nothing but counts; a missing store is an error, never zeroes.
+ */
+export async function readHeard({ door, fetchImpl = globalThis.fetch, timeoutMs = 10_000, weeks = 12 } = {}) {
+  try {
+    const res = await fetchImpl(`${String(door).replace(/\/+$/, "")}/ops/heard?weeks=${weeks}`, { headers: { "user-agent": UA, accept: "application/json" }, signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    const body = await res.json();
+    if (!Array.isArray(body?.weeks)) return { error: body?.note ? String(body.note).slice(0, 60) : "no weeks" };
+    const byWeek = {};
+    for (const r of body.weeks) {
+      if (!r || typeof r.week !== "string" || typeof r.heard !== "string" || !Number.isFinite(r.n)) continue;
+      (byWeek[r.week.slice(0, 10)] ??= {})[r.heard] = r.n;
+    }
+    return { byWeek, choices: body.choices ?? null, since: typeof body.since === "string" ? body.since.slice(0, 10) : null };
+  } catch (e) {
+    return { error: String(e?.message ?? e).slice(0, 60) };
+  }
+}
+
+/**
+ * Put the office's counts on each week's line (keyed by its Monday). A week
+ * inside the window the door answered gets its counts ({} = none that week); a
+ * week before it, or every week when the door did not answer, keeps its own.
+ */
+export function withHeard(history, heard) {
+  if (!heard || heard.error) return history;
+  const covered = (l) => !heard.since || l.from >= heard.since;
+  return history.map((l) => (covered(l) ? { ...l, heard: heard.byWeek[l.from] ?? {} } : l));
 }
 
 /** Ask the three public sources. Each failure is that cell's "not read", never a zero. */
@@ -225,6 +271,7 @@ export function render(M) {
     `weeks recorded: ${M.history.length}`,
     `by hand: ${M.by_hand}`,
     `households: ${M.activity_source}`,
+    `heard: ${M.heard_source ?? "not read"}`,
   ].map((s) => V.chip(/not read|missing|none/.test(s) ? "warn" : "", s)).join("");
 
   const note = `<p class="note"><b>One reading a week.</b> Followers and views are each channel's own running totals, read
@@ -252,6 +299,16 @@ public pages with no key. Reddit and X are <b>entered by hand</b> and say so bes
     { label: "Discord members", value: cur.discord.members == null ? "—" : comma(cur.discord.members), sub: cur.discord.members == null ? esc(cur.discord.members_error) : "bots included" },
   ]);
 
+  // HOW ARRIVALS HEARD (POS-292): one row per choice, one column per recent week.
+  const heardWeeks = M.history.filter((l) => l.heard && typeof l.heard === "object").slice(-8).reverse();
+  const heardKeys = Object.keys(HEARD_WORDS).filter((k) => heardWeeks.some((l) => Number.isFinite(l.heard[k])));
+  const heardTable = heardWeeks.length
+    ? V.table(["heard from", ...heardWeeks.map((l) => esc(l.week))],
+      heardKeys.length
+        ? heardKeys.map((k) => [esc(HEARD_WORDS[k]), ...heardWeeks.map((l) => Number.isFinite(l.heard[k]) ? comma(l.heard[k]) : `<span class="dim">—</span>`)])
+        : [[`<span class="dim">no answers yet</span>`, ...heardWeeks.map(() => "")]])
+    : `<p class="note"><span class="dim">${esc(M.heard_source ?? "not read")}</span></p>`;
+
   const f = (c) => c?.value != null ? comma(c.value) : `<span class="dim">—</span>`;
   const weekTable = V.table(["ISO week", "from", ...CHANNELS.filter((c) => c.open !== false).flatMap((c) => [`${esc(c.name)} followers`, ...(c.views === null ? [] : [`${esc(c.name)} views`])]), "new households", "Discord members", "new in the Discord"],
     M.history.slice().reverse().map((l) => [l.week, l.from,
@@ -265,6 +322,10 @@ ${note}
 ${kpiRow}
 <section class="fig"><h2>This week, channel by channel</h2>
 <div class="tablewrap">${channelTable}</div></section>
+<section class="fig"><h2>How arrivals heard</h2>
+<p class="note">The optional question on the join, answered by the human. Counts only: any answer given fewer than 3 times in a
+week is folded into one "fewer than 3" count, so no single arrival's answer can be read here, and the notes never leave the office.</p>
+<div class="tablewrap">${heardTable}</div></section>
 <section class="fig"><h2>Every week</h2>
 <p class="note">One line per ISO week, Monday to Sunday UTC, kept in <code>history.jsonl</code> beside this page.</p>
 <div class="tablewrap">${weekTable}</div></section>
@@ -309,6 +370,7 @@ function args(argv, env) {
     out: flag("out") ?? env.AWARENESS_OUT ?? join(opsRoot, "awareness"),
     byHand: flag("by-hand") ?? env.AWARENESS_BY_HAND ?? join(ROOT, "deploy", "awareness-by-hand.json"),
     activity: flag("activity") ?? env.AWARENESS_ACTIVITY ?? join(opsRoot, "activity", "data.json"),
+    door: flag("door") ?? env.OFFICE_DOOR ?? "http://127.0.0.1:4380",
     now: Date.parse(flag("now") ?? env.AWARENESS_NOW ?? "") || Date.now(),
     offline: argv.includes("--offline") || env.AWARENESS_OFFLINE === "1",
   };
@@ -335,11 +397,13 @@ async function main() {
     : await readChannels();
   const prev = history0.filter((l) => l.from < from).at(-1) ?? null;
   const line = weekLine({ week, from, now: a.now, read, hand: hand?.weeks?.[week], prev, households: newHouseholds(activity, from) });
-  const history = upsertWeek(history0, line).map((l) => (l.week === week ? l : fillFromHand(l, hand?.weeks?.[l.week])));
+  const heard = a.offline ? { error: "offline" } : await readHeard({ door: a.door });
+  const history = withHeard(upsertWeek(history0, line).map((l) => (l.week === week ? l : fillFromHand(l, hand?.weeks?.[l.week]))), heard);
   const M = {
     generated_at: new Date(a.now).toISOString(), history,
     by_hand: hand ? `${Object.keys(hand.weeks ?? {}).length} week(s) in ${a.byHand.split(/[\\/]/).pop()}` : `none (${a.byHand} missing)`,
     activity_source: activity ? "the activity twin" : `not read (no ${a.activity})`,
+    heard_source: heard.error ? `not read (${heard.error})` : "the office's /ops/heard",
   };
   mkdirSync(a.out, { recursive: true });
   writeFileSync(histPath, history.map((l) => JSON.stringify(l)).join("\n") + "\n");

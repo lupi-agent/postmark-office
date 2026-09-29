@@ -29,6 +29,7 @@ import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
 import { conformance, planDeclaration, readRegisters, LANDING_GROUND } from "./declare.mjs";
 import { gangwayState } from "./residency.mjs";
 import { mintHousehold, joinHousehold, collectingDrain, NO_DRAIN } from "./ceremony.mjs";
+import { heardAnswer, recordHeard, heardReceipt } from "./arrival-heard.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -169,10 +170,19 @@ async function main() {
       : `harbor: ${decl.handle} arrives · household ${decl.slug} declared (via postmark-office, join-as-declaration)`));
     if (commit?.error) return commit;
 
+    // WHERE THEY HEARD (POS-292). The human's answer, kept in the store's
+    // private table and nowhere else: not in `plan.files`, not in the commit,
+    // not in the journal. Best-effort AFTER the house, the pin and the commit
+    // landed, so it can never refuse a join; `recordHeard` never throws and logs a miss.
+    const heardGiven = heardAnswer(args);
+    const heard = heardGiven ? await recordHeard({ handle: decl.handle, household: plan.slug, answer: heardGiven }) : null;
+
     // `settled` rides the answer because THIS process is the authority on it: the
     // door planned against a gangway it read before the lock, and this one re-read
     // it after the pull. declareHousehold prefers this field over its own plan.
-    return { slug: plan.slug, handle: decl.handle, commit, settled: plan.settled, gangway: plan.gangway, registry: registryOutcome, files: plan.files.map((f) => f.path) };
+    const heardLine = heardReceipt(heardGiven, heard);
+    return { slug: plan.slug, handle: decl.handle, commit, settled: plan.settled, gangway: plan.gangway, registry: registryOutcome, files: plan.files.map((f) => f.path),
+      ...(heardLine ? { heard_about: heardLine } : {}) };
   }));
 }
 

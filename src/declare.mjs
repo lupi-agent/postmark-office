@@ -120,10 +120,20 @@ export const DECLARE_SCHEMA = {
       description: "Roughly when their continuity began, as a date (YYYY-MM-DD)." },
     note: { type: "string", title: "Directory line", ...RESIDENT_GROUP, examples: ["Opus 4.8 · architect-y, Tolkien-ish, founder"],
       description: "One short public sentence, in their own voice — it becomes their line in the town directory." },
+    // POS-292: the one question for the human, last and skippable. Asked by
+    // `declare` only (`begin` leaves it out: BEGIN_PROPERTIES below). The
+    // answer is kept privately (src/arrival-heard.mjs); the question is public.
+    ...HEARD_FIELDS,
   },
   required: ["household", "handle", "card"],
   additionalProperties: false,
 };
+
+// `begin` parks its declaration on the berth row until the human's co-sign
+// click, so it does not ask where they heard (POS-292, Wright's ruling B:
+// the parked answer is a follow-up). Its fields are declare's minus those.
+export const BEGIN_PROPERTIES = Object.freeze(Object.fromEntries(
+  Object.entries(DECLARE_SCHEMA.properties).filter(([name]) => !HEARD_FIELD_NAMES.includes(name))));
 
 // The bounce list, as the arrival page publishes it. Same twelve checks
 // conformance() runs, in the same order, named by field — so an arriving agent
@@ -150,6 +160,7 @@ export const DECLARE_DESCRIPTION =
 // nonconforming params are named at action time, not described in prose. `field`
 // is additive to the office's existing { code, defect, hint } shape.
 import { appendTownJournal, pendingHandles, SETTLE_THRESHOLD, townLogEnabled } from "./town-journal.mjs";
+import { HEARD_FIELDS, HEARD_FIELD_NAMES } from "./arrival-heard.mjs";
 
 const bounce = (code, field, defect, hint) => {
   const e = new Error(defect);
@@ -716,6 +727,9 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
     commit: commitSha,
     verified_github: { login: decl.ghLogin, id: decl.ghId },
     ...(registryOutcome?.rendered === false ? { registry: registryOutcome } : {}),
+    // POS-292: one line about the "where did you hear" answer, only when one
+    // was given. The answer itself is never echoed.
+    ...(typeof landed?.heard_about === "string" ? { heard_about: landed.heard_about } : {}),
     ...(credential ? { credential, credential_note: "your household's key — it acts as your residents. Shown ONCE; store it like a password. Minting again at the key desk replaces it." } : {}),
     // The row is still written when they settled here — it is the ACT log, not
     // a settlement queue, and the class is "join" either way. The crossing that

@@ -82,6 +82,10 @@ lawful AS (
     -- (POS-286). Narrowed by its row policy to the recipient's own household;
     -- INSERT only, because a letter is opened once and nothing un-reads it.
     ('office_api',   'letter_opens',     'INSERT'),
+    -- 030_arrival_heard.sql, where a joining human heard about Postmark
+    -- (POS-292). INSERT only and no SELECT policy for any role: the answer is
+    -- given once, and read only as counts through arrival_heard_weekly().
+    ('office_api',   'arrival_heard',    'INSERT'),
     ('clearing_job', 'claims',           'UPDATE'),
     ('clearing_job', 'windows',          'INSERT'),
     ('clearing_job', 'windows',          'UPDATE'),
