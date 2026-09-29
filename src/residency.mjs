@@ -141,9 +141,12 @@ export const joinTitle = (handle) => `address: ${handle} joins`;
 export const joinBranch = (handle) => `residency/${handle}`;
 
 // ── the declared registry (the door law, ruled 2026-08-07) ──────────────────
-// A join PR that changes household membership carries the tools/households.json
-// diff IN THE SAME PR, so the merge IS the declaration — no second act, no
-// registry drifting behind the white pages. Everything below is pure: it folds
+// A join PR carries the ADDRESS only (POS-158). The household half is NOT in
+// the PR and the merge does not write it: the town's registry is the store
+// (POS-187; tools/households.json and tools/github-ids.json are renderings of
+// it), and a merged join is bound there afterwards, by the Registrar's
+// settle-join for a house that already lists the account (office #240), or by
+// a person's step for a new house or a vouch. Everything below is pure: it folds
 // the registry the pen just read into the registry the pen is about to write.
 //
 // The office never invents a second answer to "whose house is this". The
@@ -448,17 +451,20 @@ export function registryNote(plan, { handle, ghLogin, ghId }) {
     const seeded = plan.siblings.length
       ? ` The house is seeded whole — \`${plan.siblings.join("`, `")}\` already answer${plan.siblings.length === 1 ? "s" : ""} to this account, and one human is one household.`
       : "";
-    return `\n\n**Household — a new house.** This PR also mints **${plan.name}** in ${where} ` +
+    return `\n\n**Household — a new house.** This PR asks for a new house, **${plan.name}**, in ${where} ` +
       `(slug \`${plan.slug}\`, derived at admission), declared in their own words on the ADDRESS \`household:\` line.${seeded} ` +
+      `The house is founded in the town's record by a person's step after this merges (a founder or the Registrar): ` +
+      `settle-join binds only to a house that already stands, and this one does not yet. ` +
       `No \`hh:\` ledger line is minted here: keys stay minimal until grouping becomes real (upgrade-at-second-ness).`;
   }
   if (plan.vouched) {
-    return `\n\n**Household — pre-vouched.** This PR also appends \`${handle}\` to **${plan.name}** in ${where}. ` +
+    return `\n\n**Household — pre-vouched.** This PR asks to add \`${handle}\` to **${plan.name}** in ${where}. ` +
       `The account that opened it (\`@${ghLogin}\`, id \`${ghId}\`) is ALREADY one of that house's accounts, so the vouch is inherent — ` +
-      `this is a house adding its own resident. Merge at full authority; the merge is the declaration.`;
+      `this is a house adding its own resident. Merge at full authority. The merge admits the address; the Registrar then settles the join ` +
+      `(\`household { do: "settle-join" }\`), which writes the pin and the membership to the town's record.`;
   }
-  return `\n\n**Household — HOLD, please.** This PR appends \`${handle}\` to **${plan.name}** in ${where} ` +
-    `and adds \`@${ghLogin}\` (id \`${ghId}\`) to that house's accounts — an account the house has never listed. ` +
+  return `\n\n**Household — HOLD, please.** This PR asks to add \`${handle}\` to **${plan.name}** in ${where}, ` +
+    `and \`@${ghLogin}\` (id \`${ghId}\`) to that house's accounts — an account the house has never listed. ` +
     `The office verified the ACCOUNT, never the BELONGING: nothing here proves this account speaks for that house. ` +
     `Per the door law, hold until a sibling of **${plan.name}** vouches by letter. Care, not refusal.`;
 }
@@ -521,7 +527,7 @@ export function joinBody({ handle, agent, ghLogin, ghId, household, registryUnre
   // sentence this replaces asked a human to hand-edit a file that is now a
   // rendering — which would have been reverted by the next drain, or refused by
   // its shrink guard, either way costing the Registrar an afternoon.
-  const pinLine = `The identity pin is not in this PR and needs no hand: \`${handle}\` binds to id \`${ghId}\` in the town's record at the first ferry crossing after this merges, and \`tools/github-ids.json\` is re-rendered from that record. Merging is the whole of what is asked.`;
+  const pinLine = `The identity pin is not in this PR and needs no hand: \`${handle}\` binds to id \`${ghId}\` in the town's record when the join is settled after this merges (the Registrar's settle-join, for a house that already lists this account; otherwise a person's step), and \`tools/github-ids.json\` is re-rendered from that record. The merge admits the address; the bind is a separate act.`;
   const registryLine = registryUnreadable && household?.trim()
     ? `\n\n**The registry was unreadable at the door:** this office could not reach the town's record when it opened this PR, so the household this card names (\`${household.trim()}\`) has no row yet. The card stands and the merge still admits them; a person or the next crossing adds the row.`
     : "";
@@ -956,8 +962,8 @@ function householdNote(plan, key) {
   if (plan.action === "chosen")
     return ` Your house was carrying the provisional key "${plan.from}"; it has now chosen its own — "${plan.name}" (slug ${plan.slug}) — and the old key is kept in the record. A house chooses once: this key does not change again at a door.`;
   if (plan.action === "created")
-    return ` The same PR declares your household "${plan.name}" (slug ${plan.slug}) in tools/households.json — the Registrar's merge completes both at once.`;
+    return ` Your household "${plan.name}" (slug ${plan.slug}) is founded in the town's record by a person after your PR merges. It is not automatic yet, and you don't need to do anything for it.`;
   if (plan.vouched)
-    return ` The same PR adds the new handle to your house "${plan.name}" in tools/households.json. Your key is already one of that house's accounts, so the vouch is inherent — the Registrar merges at full authority, and that merge completes it.`;
+    return ` Your key is already one of "${plan.name}"'s accounts, so the vouch is inherent: the Registrar merges your PR, then adds you to that house in the town's record on her round. You don't need to do anything for it.`;
   return ` The same PR asks to join the existing house "${plan.name}" from an account it has never listed. The Registrar will HOLD the PR — care, not refusal — until a resident of that house vouches for you by letter. Write to one of them; the ferry carries it.`;
 }

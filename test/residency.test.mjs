@@ -275,7 +275,8 @@ test("request_residency (REST) opens a PR byte-shaped like a hand-made join", as
   // Registrar who did would have had the edit reverted by the next drain.
   assert.doesNotMatch(captured.pulls[0].body, /Please pin/);
   assert.match(captured.pulls[0].body, /needs no hand/);
-  assert.match(captured.pulls[0].body, /at the first ferry crossing after this merges/);
+  assert.match(captured.pulls[0].body, /when the join is settled after this merges/);
+  assert.doesNotMatch(captured.pulls[0].body, /first ferry crossing/, "no bind at the crossing is promised: nothing on that path binds (#3231)");
   const card = addressFromTree(captured.trees[0], "newcomer");
   assert.match(card, /^---\nhandle: newcomer\n/);
   assert.match(card, /github: some-stranger/);
