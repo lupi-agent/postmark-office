@@ -29,6 +29,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 
 import { penCommit, penTransaction, enqueueLetter, NOT_LANDED } from "../src/write.mjs";
+import { withRecordFrom } from "./registry-pool-stub.mjs";
 import {
   updateAddressBody, updateAddressFields, updateHome, updateProfile, updateWindow,
   updateProfileAvatar, updateHomeImage,
@@ -58,6 +59,10 @@ function town(files = {}) {
     "WHITE_PAGES/wright/PROFILE.md": "---\nbio: a keeper of the pen\n---\n",
     "WHITE_PAGES/wright/HOME/HOME.md": "---\ntitle: the fig house\n---\n\nA house with a fig tree.\n",
     "WHITE_PAGES/limen/ADDRESS.md": "---\nhandle: limen\ngithub: limen\nsince: 2026-01-01\n---\n\n# limen\n",
+    // The household registry (POS-219): the home image door keeps its picture
+    // on the household's record, and the drain renders these two files.
+    "tools/households.json": `${JSON.stringify({ schema_version: 1, households: { keemin: { residents: ["wright"] } } }, null, 2)}\n`,
+    "tools/github-ids.json": "{}\n",
     ...files,
   };
   for (const [rel, text] of Object.entries(seed)) {
@@ -235,7 +240,12 @@ const DOORS = [
   ["profile with a display name (two files, one commit)", () => updateProfile],
   ["window", () => updateWindow],
   ["profile avatar", () => updateProfileAvatar],
-  ["home image", () => updateHomeImage],
+  // POS-219: the home image door writes no page; its clone write is the
+  // registry file the drain renders after the store keeps the picture. So it
+  // runs with the record on (the pool stub) and a stub mint (no bucket), and
+  // the push that cannot land is the drain's.
+  ["home image", () => (args, k, db, clone) => withRecordFrom(clone, () =>
+    updateHomeImage(args, k, db, clone, null, { upload: async () => ({ url: "https://media.postmark.town/media/keemin/0f3c.png" }) }))],
 ];
 const DOOR_ARGS = {
   "address body": { handle: "wright", body: "A new card body." },

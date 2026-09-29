@@ -380,8 +380,9 @@ test("`formerly` sits in the template and an EMPTY one renders byte-equal to tod
   // one optional tail column and the wrong words for a template with two.
   assert.equal(HOUSEHOLD_KEYS.indexOf("formerly"), HOUSEHOLD_KEYS.indexOf("declared_by") + 1,
     "formerly sits immediately after declared_by");
-  assert.deepEqual(HOUSEHOLD_KEYS.slice(-2), ["formerly", "provisional"],
-    "the tail is the two optional columns, in the order their migrations landed");
+  // …and POS-219's `home_images` (migration 050) after that, by the same law.
+  assert.deepEqual(HOUSEHOLD_KEYS.slice(-3), ["formerly", "provisional", "home_images"],
+    "the tail is the optional columns, in the order their migrations landed");
   const rows = rowsFromRegistry(JSON.parse(HOUSEHOLDS_RAW), JSON.parse(PINS_RAW));
   assert.ok(rows.households.every((r) => Array.isArray(r.formerly) && r.formerly.length === 0));
   assert.equal(renderRegistry(rows).households, HOUSEHOLDS_RAW, "118 rows, not one `formerly` key");
