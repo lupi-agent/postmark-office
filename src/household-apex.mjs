@@ -25,6 +25,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { DECLARE_SCHEMA, BEGIN_PROPERTIES, declareViaOffice, SETTLING_ASHORE } from "./declare.mjs";
+import { HEARD_FIELD_NAMES } from "./arrival-heard.mjs";
 // The join ceremony's refusal vocabulary (POS-158). Static is safe here:
 // `ceremony.mjs` reaches `residency.mjs` through `tools/registry-drain.mjs`
 // and nothing in that graph reaches back to this door.
@@ -575,11 +576,21 @@ export const READING_LAW =
  * absence of the word `fields`, because the law is about what the page costs a
  * reader, not about a key name.
  */
+// POS-292 (Wright's ruling, 2026-09-28): declare's two optional "where did you
+// hear" fields stay OFF this abridged index. With them the connector's bare
+// answer measured 8,207 B against SLIM_CEILING's 8,192; without them it is
+// back under with the headroom test/foyer-shrink.test.mjs F5c states. Their
+// card (household { read: "declare" }), the REST answer, the MCP schema and
+// GET /join all carry them, and the join form is built from the card.
+const OFF_INDEX = Object.freeze({ declare: new Set(HEARD_FIELD_NAMES) });
+
 export const capabilityIndex = (ctx = {}) =>
   HOUSEHOLD_DISPATCHABLE.map((act) => {
     const fields = {};
-    for (const [name, spec] of Object.entries(fieldsForAct(act, ctx)))
+    for (const [name, spec] of Object.entries(fieldsForAct(act, ctx))) {
+      if (OFF_INDEX[act]?.has(name)) continue;
       fields[name] = spec?.required === true ? { required: true } : {};
+    }
     return { act, teaches: ACTS[act].inline, fields };
   });
 
