@@ -136,7 +136,7 @@ import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
-import { enqueueLetter, penCommit } from "./write.mjs";
+import { enqueueLetter, penCommit, NOT_LANDED } from "./write.mjs";
 import {
   updateAddressBody, updateAddressFields, updateHome, updateProfile, updateWindow,
 } from "./edit.mjs";
@@ -236,6 +236,7 @@ export const drainLine = (r) =>
     + ` head=${r.head} cursor=${r.cursor} commit=${r.commit ?? "none"}`
     + (r.gangway_held ? ` GANGWAY=${r.gangway}(${r.gangway_held} held, cursor still)` : "")
     + (r.bounced ? ` BOUNCED=${r.bounced}` : "")
+    + (r.held ? ` HELD=${r.held}(not landed, cursor still)` : "")
     + (r.refused ? ` REFUSED=${r.refused}` : "")
     : `skipped — ${r.skipped}`} took=${r.took_ms}ms`;
 
@@ -511,9 +512,23 @@ export async function runTownDrain(odb, {
   // row is still sitting in `town_journal` afterwards, with its seq, its
   // arguments and its defect written into this report. Nothing is lost; an
   // operator is told, and the boat sails.
+  //
+  // A PUSH THAT CANNOT LAND IS HELD, NEVER BOUNCED (POS-296, Wright's ruling
+  // 2026-09-28). The pen is whole or nothing now: a push that loses its race
+  // three times leaves no file and no commit behind. Recording that as a bounce
+  // and moving the cursor past it would drop a letter the door told its sender
+  // was accepted — before POS-296 the stranded local commit sailed on the
+  // ferry's own push, and now there is nothing left to sail. So the row is
+  // HELD: the cursor stays below it, exactly as it does for a stalled join, and
+  // the next crossing re-drives it (every row before it answers `already` by
+  // the resume checks). An accepted letter is never lost; it may be a crossing late.
   const updates = [], letters = [];
-  let bounced = 0;
+  let bounced = 0, held = 0;
   const bounce = (e) => {
+    if (e?.pen === NOT_LANDED) {
+      held += 1;
+      return { held: e.defect, code: e.code };
+    }
     bounced += 1;
     return { bounced: e?.defect ?? String(e?.message ?? e), code: e?.code ?? null };
   };
@@ -582,7 +597,9 @@ export async function runTownDrain(odb, {
   }
 
   // ── the cursor, LAST — and not at all while the gangway holds a row ──────
-  if (!gangwayHold && !stalledRows.length) advanceTownCursor(odb, head);
+  if (held)
+    log(`drain: ${held} row(s) could not land on the town's remote and are held — the cursor stays for the next crossing`);
+  if (!gangwayHold && !stalledRows.length && !held) advanceTownCursor(odb, head);
 
   return done({
     ran: true, date: stamp, drained: rows.length, counts, head,
@@ -600,7 +617,7 @@ export async function runTownDrain(odb, {
     skipped_rows: plan.skipped
       .filter(({ row }) => row.cls === "join")
       .map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })),
-    updates, letters, bounced,
+    updates, letters, bounced, ...(held ? { held } : {}),
     // FROM THE CURSOR, NOT FROM `head`. The two are the same integer on every
     // crossing that advances, and they part company on one that does not: a
     // held crossing leaves rows at or below `head` still pending, and counting

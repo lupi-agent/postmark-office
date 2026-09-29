@@ -764,3 +764,74 @@ test("F12 · every paper act and the mail door have a door to replay through", (
   // it is draining.
   assert.equal(TOWN_DOORS[MAIL_DOOR].name, "enqueueLetter");
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// F13 · A PUSH THAT CANNOT LAND IS HELD, NEVER BOUNCED (POS-296)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Wright's ruling, 2026-09-28: "An accepted letter is never lost; late by a
+// crossing is fine." The pen is whole or nothing, so a letter whose push loses
+// three times leaves no file and no commit. Before POS-296 that throw was
+// counted a bounce, the cursor walked past the row, and the ferry's belt push
+// carried the stranded commit anyway. With nothing stranded, walking past the
+// row would drop the letter. So it is HELD: the clone is clean, the cursor
+// stays below the row, and the next crossing delivers it — once.
+test("F13 · A LETTER AND A PAPER ACT WHOSE PUSH CANNOT LAND ARE HELD, and the next crossing delivers each once", async () => {
+  const clone = townClone();
+  const o = liveShapeOdb();
+  const bare = `${clone}-origin.git`;
+  const g = (...a) => execFileSync("git", ["-C", clone, ...a], { encoding: "utf8" }).trim();
+  const was = process.env.TOWN_PUSH;
+  try {
+    g("branch", "-M", "main");
+    execFileSync("git", ["clone", "-q", "--bare", clone, bare]);
+    g("remote", "add", "origin", bare);
+    g("fetch", "-q", "origin");
+    g("branch", "-q", "--set-upstream-to=origin/main", "main");
+    g("remote", "set-url", "--push", "origin", `${clone}-nowhere.git`);
+    process.env.TOWN_PUSH = "1";
+    await flagOn(async () => {
+      const before = g("rev-parse", "HEAD");
+      const cursor0 = townDrainCursor(o);
+      appendTownJournal(o, {
+        cls: "update", act: "home", household: "keemin", handle: "wright", ghId: "42", ghLogin: "keeminlee",
+        payload: { args: { handle: "wright", body: "A home the town did not take the first time." } },
+      });
+      seedLetter(o);
+      const head = pendingRows(o).at(-1).seq;
+
+      const lines = [];
+      const r1 = await run(o, { clone, date: "2026-09-28", log: (l) => lines.push(l) });
+      assert.equal(r1.ran, true, "the crossing completes — a held row never stops the boat");
+      assert.equal(r1.held, 2, "both rows are held");
+      assert.equal(r1.bounced, 0, "…and neither is called a bounce");
+      assert.match(r1.letters[0].held, /the town did not take this write/);
+      assert.match(r1.updates[0].held, /the town did not take this write/);
+      assert.equal(townDrainCursor(o), cursor0, "THE CURSOR STAYS below the held rows");
+      assert.equal(g("rev-parse", "HEAD"), before, "no commit stands for a push that did not land");
+      assert.equal(g("status", "--porcelain", "--untracked-files=all"), "", "the clone is clean");
+      assert.deepEqual(outboxFiles(clone, "wright"), [], "no letter file stands for a letter the town did not take");
+      assert.match(lines.at(-1), /HELD=2/, "the operator's one line names it");
+
+      // the next crossing, the town reachable again
+      g("remote", "set-url", "--push", "origin", bare);
+      const r2 = await run(o, { clone, date: "2026-09-28" });
+      assert.equal(r2.held ?? 0, 0);
+      assert.equal(r2.bounced, 0);
+      assert.equal(townDrainCursor(o), head, "the cursor moves once both have landed");
+      assert.equal(outboxFiles(clone, "wright").length, 1, "the letter is delivered");
+      const origin = (...a) => execFileSync("git", ["-C", bare, ...a], { encoding: "utf8" }).trim();
+      const file = outboxRelPath("wright", letterDate(), "limen", "a-fine-hat");
+      assert.equal(origin("log", "--format=%H", "main", "--", file).split("\n").filter(Boolean).length, 1,
+        "…and it is on the town's main exactly once");
+      assert.match(origin("show", "main:WHITE_PAGES/wright/HOME/HOME.md"), /did not take the first time/,
+        "the paper act is on the town's main too");
+      const r3 = await run(o, { clone, date: "2026-09-28" });
+      assert.equal(r3.letters.length + r3.updates.length, 0, "a third crossing has nothing left to deliver");
+    });
+  } finally {
+    if (was === undefined) delete process.env.TOWN_PUSH; else process.env.TOWN_PUSH = was;
+    o.close(); dropOdbHomes();
+    for (const d of [clone, bare]) rmSync(d, { recursive: true, force: true, maxRetries: 5 });
+  }
+});

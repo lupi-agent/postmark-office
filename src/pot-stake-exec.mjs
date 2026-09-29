@@ -26,7 +26,7 @@ import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { penCommit } from "./write.mjs";
+import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -91,20 +91,27 @@ async function main() {
   const keyPem = readFileSync(KEY_PATH, "utf8");
   const { potStakeLine, appendSigned } = await import(pathToFileURL(join(CLONE, "tools", "stamp-mint.mjs")));
 
-  if (process.env.TOWN_PUSH === "1")
-    execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
+  // WHOLE OR NOTHING (POS-296), stake-exec's shape: a keeping stake the pen
+  // cannot land leaves no line and no commit behind.
+  const result = await penTransaction(CLONE, async () => {
+    if (process.env.TOWN_PUSH === "1")
+      execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
 
-  const { state, pots } = await potStakeInputs(CLONE);
-  const result = clipPotStake({ state, pots, ...payload });
-  if (result.error) { console.log(JSON.stringify(result)); return; }
+    const { state, pots } = await potStakeInputs(CLONE);
+    const result = clipPotStake({ state, pots, ...payload });
+    if (result.error) return result;
 
-  if (result.applied > 0) {
-    appendSigned(CLONE, [potStakeLine({
-      date: payload.date, handle: payload.handle, pot: payload.pot, n: result.applied, via: payload.via ?? "api",
-    })], keyPem);
-    result.commit = penCommit(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
-      `keeping stake: ${payload.handle} -> pot/${payload.pot} · ${result.applied} (via ${payload.via ?? "api"})`);
-  }
+    if (result.applied > 0) {
+      appendSigned(CLONE, [potStakeLine({
+        date: payload.date, handle: payload.handle, pot: payload.pot, n: result.applied, via: payload.via ?? "api",
+      })], keyPem);
+      const commit = landOrRefuse(() => penCommit(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
+        `keeping stake: ${payload.handle} -> pot/${payload.pot} · ${result.applied} (via ${payload.via ?? "api"})`));
+      if (commit?.error) return commit;
+      result.commit = commit;
+    }
+    return result;
+  });
   console.log(JSON.stringify(result));
 }
 

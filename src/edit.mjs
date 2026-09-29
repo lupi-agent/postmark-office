@@ -27,7 +27,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { penCommit } from "./write.mjs";
+import { penCommit, penTransaction } from "./write.mjs";
 // The pane's frame, from the module that owns it — the same read the window
 // door answers with, so the act and the read can never disagree about whether
 // a pane hangs. (src/panes.mjs § THE FRAME AND THE WORDS.)
@@ -314,7 +314,13 @@ const CLEARED = "(unstated)";
  * an empty line — a blank `architecture:` reads as a field somebody forgot,
  * while "(unstated)" reads as a resident who has not said, which is the truth.
  */
-function updateAddressFieldsUnlogged(args, key, db, clone) {
+// `defer` is the profile door's (POS-296): it writes the card and returns the
+// path instead of committing it, so a profile call that also sets a display
+// name lands both files in ONE commit — whole or nothing, never a landed card
+// beside a refused profile.
+const addressFieldsMessage = (handle, key) => `${handle}: address fields updated (via postmark-office, key household ${key.household})`;
+
+function updateAddressFieldsUnlogged(args, key, db, clone, { defer = false } = {}) {
   const { handle } = args ?? {};
   scope(handle, key);
 
@@ -360,9 +366,11 @@ function updateAddressFieldsUnlogged(args, key, db, clone) {
     set.push({ field: k, value });
   }
 
-  writeFileSync(file, `${lines.join("\n")}\n\n${String(body ?? "").trim()}\n`);
+  const next = `${lines.join("\n")}\n\n${String(body ?? "").trim()}\n`;
+  writeFileSync(file, next);
   const rel = ["WHITE_PAGES", handle, "ADDRESS.md"].join("/");
-  const commit = penCommit(clone, [file], `${handle}: address fields updated (via postmark-office, key household ${key.household})`);
+  if (defer) return { updated: handle, file: rel, set, abs: file, changed: next !== src };
+  const commit = penCommit(clone, [file], addressFieldsMessage(handle, key));
   if (commit === null) return { updated: handle, file: rel, set, commit: null, unchanged: true, pushed: false };
   return { updated: handle, file: rel, set, commit, pushed: process.env.TOWN_PUSH === "1" };
 }
@@ -802,12 +810,16 @@ function updateProfileUnlogged(args, key, db, clone) {
   // handle this function does not have, and the row for this act is already
   // being written by the profile door's own paperDoor with these same args, so
   // the crossing replays both halves from one row.
-  let named = null;
+  // ONE COMMIT FOR BOTH FILES (POS-296). When this call also writes PROFILE.md,
+  // the card is written but not committed (`defer`), and the profile's commit
+  // below carries both: before this, the card landed as its own commit first,
+  // and a profile write refused after it could not take the landed card back.
+  let named = null, namedPen = null;
   if (elsewhere.length) {
     const fields = Object.fromEntries(elsewhere.map(([field, target]) => [target, args[field]]));
     let out;
     try {
-      out = updateAddressFieldsUnlogged({ handle, fields }, key, db, clone);
+      out = updateAddressFieldsUnlogged({ handle, fields }, key, db, clone, { defer: touchesFile });
     } catch (e) {
       // A REFUSAL MUST NAME THE FIELD THE CALLER SENT. The rule that refused is
       // `agent`'s and its wording stays exactly as its own door wrote it — this
@@ -821,8 +833,14 @@ function updateProfileUnlogged(args, key, db, clone) {
       if (typeof e?.hint === "string") e.hint = `${e.hint} — you sent ${sent}, which is the field being described here`;
       throw e;
     }
-    named = { file: out.file, set: out.set, commit: out.commit };
+    if (touchesFile) namedPen = out;
+    named = { file: out.file, set: out.set, commit: out.commit ?? null };
   }
+  // The card alone, when the profile turns out to have nothing to write: its
+  // own commit and its own message, exactly as the card's door makes it.
+  const landNamedAlone = () => namedPen?.changed
+    ? { ...named, commit: penCommit(clone, [namedPen.abs], addressFieldsMessage(handle, key)) }
+    : named;
 
   // Echoed under the key the value actually landed under, so a caller who sent
   // `image` can see where in their file it went.
@@ -833,30 +851,37 @@ function updateProfileUnlogged(args, key, db, clone) {
   if (!touchesFile)
     return { updated: handle, file: rel.join("/"), profile: saved, commit: null, unchanged: true, pushed: false, named };
 
-  pullIfPush(clone);
+  // The card's write already pulled; a second pull would refuse over the card
+  // this call has written and not yet committed.
+  if (!namedPen) pullIfPush(clone);
   const file = join(clone, ...rel);
   const first = !existsSync(file);
-  let next;
+  let next, current = null;
   if (first) {
     const frontmatter = patchProfileFrontmatter("", "\n", values);
     // All-empty values found nothing: clearing fields a resident never
     // declared is a no-op, and writing the empty fence would hand the next
     // call a file no parser splits (the 2026-07-31 rei wedge).
     if (!frontmatter)
-      return { updated: handle, file: rel.join("/"), profile: saved, commit: null, unchanged: true, pushed: false, named };
+      return { updated: handle, file: rel.join("/"), profile: saved, commit: null, unchanged: true, pushed: false, named: landNamedAlone() };
     next = `---\n${frontmatter}\n---\n`;
     mkdirSync(join(clone, "WHITE_PAGES", handle), { recursive: true });
   } else {
-    const current = readFileSync(file, "utf8");
+    current = readFileSync(file, "utf8");
     const split = splitProfileFile(current);
     if (!split)
       throw bounce(422, "that PROFILE.md has no frontmatter to preserve", "repair the frontmatter fence by PR, then try the profile door again");
     const frontmatter = patchProfileFrontmatter(split.frontmatter, split.eol, values);
     next = `${split.opening}${split.eol}${frontmatter}${split.closing}${split.rest}`;
   }
+  // A profile that would not change is answered as unchanged, with the card's
+  // own commit beside it, exactly as when the card was committed first.
+  if (!first && next === current)
+    return { updated: handle, file: rel.join("/"), profile: saved, commit: null, unchanged: true, pushed: false, named: landNamedAlone() };
   writeFileSync(file, next);
-  const commit = penCommit(clone, [file],
-    `${handle}: profile ${first ? "founded" : "updated"} (via postmark-office, key household ${key.household})`);
+  const commit = penCommit(clone, namedPen ? [namedPen.abs, file] : [file],
+    `${handle}: profile ${first ? "founded" : "updated"}${namedPen?.changed ? " and address fields updated" : ""} (via postmark-office, key household ${key.household})`);
+  if (namedPen) named = { ...named, commit: namedPen.changed ? commit : null };
   if (commit === null)
     return { updated: handle, file: rel.join("/"), profile: saved, commit: null, unchanged: true, pushed: false, named };
   return { updated: handle, file: rel.join("/"), profile: saved, founded: first, commit, pushed: process.env.TOWN_PUSH === "1", named };
@@ -1107,7 +1132,7 @@ export async function decodeWhole(bytes, ext, what = "image") {
   }
 }
 
-export async function updateProfileAvatar(args, key, db, clone) {
+async function profileAvatarWrite(args, key, db, clone) {
   const { handle } = args;
   scope(handle, key);
   const bytes = decodeImage(args.image, MAX_IMAGE, "avatar"); // size first
@@ -1310,7 +1335,7 @@ function replacedPaneWarning(handle, prior, priorCommit) {
 // naming an explicit file. Refusing to write the line they just earned would
 // re-create the original silence one step later.
 
-export async function updateHomeImage(args, key, db, clone) {
+async function homeImageWrite(args, key, db, clone) {
   const { handle } = args;
   scope(handle, key);
   const bytes = decodeImage(args.image, MAX_IMAGE, "home image");
@@ -1407,8 +1432,24 @@ export async function updateHomeImage(args, key, db, clone) {
 // not among them — so wrapping them would invent a sixth and seventh class of
 // row that no drain has a replay for. Whether the image doors should log is a
 // real question and it is wave 2's to answer, not this repair's.
-export const updateAddressBody = paperDoor("address-body", updateAddressBodyUnlogged);
-export const updateAddressFields = paperDoor("address-fields", updateAddressFieldsUnlogged);
-export const updateHome = paperDoor("home", updateHomeUnlogged);
-export const updateProfile = paperDoor("profile", updateProfileUnlogged);
-export const updateWindow = paperDoor("window", updateWindowUnlogged);
+//
+// AND EVERY DOOR IS WHOLE OR NOTHING (POS-296). `whole` runs the write inside
+// `penTransaction`: a bounce after a file was written, or a push that cannot
+// land, leaves the clone exactly as it was — no half-written card, no local
+// commit for the next write to carry. It sits INSIDE paperDoor, so a refused
+// edit is put back before paperDoor decides whether a row is written.
+const whole = (impl) => (args, key, db, clone, ...rest) => penTransaction(clone, () => impl(args, key, db, clone, ...rest));
+
+export const updateAddressBody = paperDoor("address-body", whole(updateAddressBodyUnlogged));
+export const updateAddressFields = paperDoor("address-fields", whole(updateAddressFieldsUnlogged));
+export const updateHome = paperDoor("home", whole(updateHomeUnlogged));
+export const updateProfile = paperDoor("profile", whole(updateProfileUnlogged));
+export const updateWindow = paperDoor("window", whole(updateWindowUnlogged));
+// The image doors keep their own names (paper-seam P8b tells them from the
+// paper doors by name), and are whole the same way.
+export function updateProfileAvatar(args, key, db, clone) {
+  return penTransaction(clone, () => profileAvatarWrite(args, key, db, clone));
+}
+export function updateHomeImage(args, key, db, clone) {
+  return penTransaction(clone, () => homeImageWrite(args, key, db, clone));
+}
