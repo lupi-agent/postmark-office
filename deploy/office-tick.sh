@@ -74,16 +74,70 @@ trap 'rm -rf "$SNAP"' EXIT
   # and the commit below — stranding the `--append` rows that DID land, unsealed
   # and unpushed, until a later tick. A refusal means one household waits one
   # crossing; it must never hold the mint pass hostage. Bad rows are still caught:
-  # anything this writes goes through the verify on the next line.
-  ( cd "$TOWN_CLONE" && \
-    node tools/stamp-mint.mjs --append --key /srv/postmark-office/stamp-key.pem && \
-    { node /srv/postmark-office/deploy/welcome-pass.mjs \
+  # anything this writes goes through the verify below it.
+  #
+  # ⚑ WHOLE OR NOTHING (POS-295, 2026-09-28). On 09-28 the verify failed on an
+  # OLDER committed line (red since 13:59Z), the `&&` chain skipped the commit,
+  # and nothing restored the file: Corey's appended welcome sat uncommitted in
+  # the town clone from 18:37Z to 23:31Z, and every office write that pulls it
+  # refused. Two rules now, both below:
+  #   · CHECK BEFORE WRITING. A ledger that arrives red appends nothing, and the
+  #     journal says the catch-up is off and why. A green arrival is the only
+  #     state a new row is signed onto.
+  #   · A FAILED CHECK AFTER WRITING PUTS THE CLONE BACK: the ledger's arrival
+  #     bytes and no path the pass created, from an EXIT trap, so a tick killed
+  #     mid-pass restores too (TERM/INT/HUP become exits so the trap runs; only
+  #     SIGKILL escapes it). Discarding is safe because every row this pass
+  #     writes is re-derivable: `--append` recomputes from the mail and the
+  #     welcome plan re-reads the ledger, so the household waits one tick.
+  # A pass that changed nothing skips the second verify: the arrival check
+  # already read these exact bytes, so the quiet tick costs one verify, as before.
+  # The trap disarms the moment the commit lands; a push that then fails leaves
+  # a local commit, exactly as it did before this block.
+  ( cd "$TOWN_CLONE" || exit 1
+    LEDGER=WHITE_PAGES/stamp-ledger.md
+    if ! node tools/stamp-verify.mjs; then
+      echo "[office-tick] mint catch-up OFF — the ledger arrived red (stamp-verify above names the line), so this tick appended nothing; the catch-up resumes on the first tick that finds it green" >&2
+      exit 0
+    fi
+    # The arrival copy lives in a directory THIS subshell owns: a stopped unit
+    # signals the whole tick, and the outer shell must not be able to take the
+    # copy away before this trap has put it back.
+    HOLD="$(mktemp -d /tmp/postmark-tick-hold.XXXXXX)" || exit 1
+    armed=0
+    restore() {
+      if [ "$armed" = 1 ]; then
+        armed=0
+        if cp "$HOLD/ledger.arrived" "$LEDGER" && git reset -q -- "$LEDGER"; then
+          git ls-files --others --exclude-standard | grep -vxF -f "$HOLD/untracked.arrived" |
+            while IFS= read -r made; do rm -f -- "$made"; done
+          echo "[office-tick] mint catch-up ROLLED BACK — the ledger is back to its arrival bytes and every path the pass created is gone; the rows re-derive on the next tick" >&2
+        else
+          echo "[office-tick] mint catch-up ROLL-BACK FAILED — the town clone may hold uncommitted rows; git -C $TOWN_CLONE status" >&2
+        fi
+      fi
+      rm -rf "$HOLD"
+    }
+    trap restore EXIT
+    trap 'exit 143' TERM
+    trap 'exit 130' INT
+    trap 'exit 129' HUP
+    cp "$LEDGER" "$HOLD/ledger.arrived" || exit 1
+    git ls-files --others --exclude-standard > "$HOLD/untracked.arrived" || exit 1
+    armed=1
+    node tools/stamp-mint.mjs --append --key /srv/postmark-office/stamp-key.pem || exit 1
+    node /srv/postmark-office/deploy/welcome-pass.mjs \
         --town "$TOWN_CLONE" --key /srv/postmark-office/stamp-key.pem \
-      || echo "[office-tick] welcome pass had refusals (non-fatal) — the lines above name each one; the household keeps its claim and the next crossing asks again" >&2; } && \
-    node tools/stamp-verify.mjs && \
-    { git diff --quiet -- WHITE_PAGES/stamp-ledger.md || { \
-        git add WHITE_PAGES/stamp-ledger.md && \
-        git commit -qm "mint: tick catch-up pass" && git push -q; }; } \
+      || echo "[office-tick] welcome pass had refusals (non-fatal) — the lines above name each one; the household keeps its claim and the next crossing asks again" >&2
+    if ! cmp -s "$LEDGER" "$HOLD/ledger.arrived"; then
+      node tools/stamp-verify.mjs || exit 1
+    fi
+    if ! git diff --quiet -- "$LEDGER"; then
+      git add "$LEDGER" && git commit -qm "mint: tick catch-up pass" || exit 1
+      armed=0
+      git push -q || exit 1
+    fi
+    armed=0
   ) || echo "[office-tick] mint catch-up FAILED (non-fatal) — run stamp-verify in the town clone" >&2
   git clone --local --quiet "$TOWN_CLONE" "$SNAP/town"
 ) 9>>"$LOCK"

@@ -258,9 +258,13 @@ test("the tick runs the welcome pass after the append and before the verify", ()
   const sh = readFileSync(new URL("../deploy/office-tick.sh", import.meta.url), "utf8");
   const append = sh.indexOf("stamp-mint.mjs --append");
   const pass = sh.indexOf("deploy/welcome-pass.mjs");
-  const verify = sh.indexOf("stamp-verify.mjs");
+  // POS-295: the tick now verifies TWICE, once on arrival (before anything is
+  // written) and once after the pass. The pin is on the one after the pass.
+  const check = sh.indexOf("stamp-verify.mjs");
+  const verify = sh.indexOf("stamp-verify.mjs", pass);
   assert.ok(append !== -1 && pass !== -1 && verify !== -1,
     "the tick must run all three: the mint append, the welcome pass, the verify");
+  assert.ok(check < append, "the arrival check comes before the first write: a red ledger gets nothing appended");
   assert.ok(append < pass, "the welcome pass onto an unsettled tail is refused by the town — the append comes first");
   assert.ok(pass < verify, "a welcome row written after the verify would sit unsealed until the next tick");
 });
