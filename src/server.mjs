@@ -65,6 +65,7 @@ import { readReleaseStamp } from "./release.mjs"; // POS-60: the deploy receipt 
 import { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs"; // the town clock, served at the door
 import { roleFrom, workerSafe, writerAddressFrom, readRoleBounce, penTokenFor, roleDisclosure } from "./role.mjs"; // DEC-4/G3: read-only workers behind nginx
 import { IN_READ_WORKER, announce, mcpWorkerTakes, onAnnounce, readWorkerCount, serveReadsInWorker, startReadPool, workerTakes } from "./read-workers.mjs"; // POS-266: reads on the other cores
+import { heardDoor } from "./arrival-heard.mjs"; // POS-292: how arrivals heard, weekly counts only
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -842,6 +843,15 @@ const handle = (req, res) => {
     });
   }
   if (path === "/ops/loop-lag" && req.method === "GET") return j(res, 200, loopLag.read()); // POS-267 (src/loop-lag.mjs)
+  // POS-292: how arrivals heard, weekly COUNTS only, keyless. Safe by
+  // construction: the store's own function folds every cell under 3 and never
+  // returns a note (030_arrival_heard.sql, src/arrival-heard.mjs).
+  if (path === "/ops/heard" && req.method === "GET") {
+    heardDoor({ weeks: url.searchParams.get("weeks") ?? 12 })
+      .then((body) => j(res, 200, body))
+      .catch((e) => bounce(res, 500, "the heard tally tripped", String(e?.message ?? e).slice(0, 200)));
+    return;
+  }
 
   // OAuth + discovery routes are unauthenticated by nature (the dance IS the
   // authentication) — they come before the bearer gate.

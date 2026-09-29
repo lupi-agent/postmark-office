@@ -13,6 +13,7 @@ import { join } from "node:path";
 import {
   CHANNELS, isoWeek, mondayOf, countOf, parseYouTube, parseBluesky, parseDiscordInvite, newHouseholds,
   weekLine, fillFromHand, upsertWeek, followersTotal, followersChange, readChannels,
+  readHeard, withHeard, render, HEARD_WORDS,
 } from "../tools/ops-awareness.mjs";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -200,4 +201,43 @@ test("the hub carries an awareness card from the twin", () => {
   assert.match(card, /chip ok">fresh/);
   const roll = JSON.parse(readFileSync(join(opsRoot, "data.json"), "utf8"));
   assert.equal(roll.dashboards.awareness.freshness, "ok");
+});
+
+// ── how arrivals heard (POS-292) ─────────────────────────────────────────────
+
+const heardFetch = (body, status = 200) => async (url) => {
+  heardFetch.last = url;
+  return { ok: status === 200, status, json: async () => body };
+};
+
+test("how arrivals heard: the office's counts, keyed by the week's Monday; a failed read is 'not read', never zeroes", async () => {
+  const got = await readHeard({ door: "http://127.0.0.1:4380/", fetchImpl: heardFetch({ since: "2026-07-08T00:00:00.000Z", weeks: [
+    { week: "2026-09-21", heard: "youtube", n: 3 }, { week: "2026-09-21", heard: "fewer-than-3", n: 2 }, { week: "2026-09-28", heard: "fewer-than-3", n: 1 },
+  ] }) });
+  assert.equal(heardFetch.last, "http://127.0.0.1:4380/ops/heard?weeks=12");
+  assert.deepEqual(got.byWeek, { "2026-09-21": { youtube: 3, "fewer-than-3": 2 }, "2026-09-28": { "fewer-than-3": 1 } });
+  assert.equal(got.since, "2026-07-08");
+  assert.deepEqual(await readHeard({ door: "x", fetchImpl: heardFetch({}, 503) }), { error: "HTTP 503" });
+  assert.deepEqual(await readHeard({ door: "x", fetchImpl: heardFetch({ weeks: null, note: "the office is not pointed at the record" }) }), { error: "the office is not pointed at the record" });
+  assert.deepEqual(await readHeard({ door: "x", fetchImpl: async () => { throw new Error("ECONNREFUSED"); } }), { error: "ECONNREFUSED" });
+});
+
+test("how arrivals heard: a week inside the door's window takes its counts; a week before it, or a failed read, keeps its own", () => {
+  const hist = [{ week: "2026-W27", from: "2026-06-29", heard: { reddit: 4 } }, { week: "2026-W39", from: "2026-09-21" }, { week: "2026-W40", from: "2026-09-28", heard: { youtube: 9 } }];
+  const heard = { byWeek: { "2026-09-21": { youtube: 3 } }, since: "2026-07-08" };
+  assert.deepEqual(withHeard(hist, heard).map((l) => l.heard), [{ reddit: 4 }, { youtube: 3 }, {}]);
+  assert.equal(withHeard(hist, { error: "HTTP 503" }), hist);
+});
+
+test("how arrivals heard: the page draws counts and the folded row in words, and says why small counts are folded", () => {
+  const line = (week, from, heard) => ({ ...weekLine({ week, from, now: NOW, read: null, hand: null, prev: null, households: 1 }), heard });
+  const history = [line("2026-W39", "2026-09-21", { youtube: 3, "fewer-than-3": 2 }), line("2026-W40", "2026-09-28", { "fewer-than-3": 1 })];
+  const html = render({ generated_at: new Date(NOW).toISOString(), history, by_hand: "none", activity_source: "the activity twin", heard_source: "the office's /ops/heard" });
+  assert.match(html, /<h2>How arrivals heard<\/h2>/);
+  assert.match(html, /YouTube/);
+  assert.ok(html.includes(HEARD_WORDS["fewer-than-3"]), "the folded row, in words");
+  assert.match(html, /no single arrival's answer can be read here/);
+  assert.doesNotMatch(html, /Reddit<\/td>/, "no Reddit row when no week has a Reddit count");
+  const unread = render({ generated_at: new Date(NOW).toISOString(), history: [weekLine({ week: "2026-W40", from: "2026-09-28", now: NOW, read: null, hand: null, prev: null, households: 0 })], by_hand: "none", activity_source: "x", heard_source: "not read (offline)" });
+  assert.match(unread, /heard: not read \(offline\)/);
 });

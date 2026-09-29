@@ -26,8 +26,9 @@
 --   * `office_api` may INSERT (the join's own pen, the only writer) and
 --     nothing else. No UPDATE, no DELETE: an answer is given once.
 --   * The one read is `arrival_heard_weekly()`, a SECURITY DEFINER function
---     owned by `world2_owner` that answers COUNTS per ISO week per choice and
---     never the note. `office_api` may EXECUTE it. The notes are read by an
+--     owned by `world2_owner` that answers COUNTS per ISO week per choice,
+--     folds every cell under 3 into one 'fewer-than-3' row per week, and
+--     never returns the note. `office_api` may EXECUTE it. The notes are read by an
 --     operator at psql as the owner, and by nothing in code.
 --
 -- `heard` is the ruled list as KEYS (the door maps the words a person picks to
@@ -79,14 +80,23 @@ END $$;
 REVOKE ALL ON arrival_heard FROM office_api, clearing_job, law_ingester, snapshot_reader;
 GRANT INSERT ON arrival_heard TO office_api;
 
--- Counts only. The owner's function reads past RLS (the owner is not subject
--- to its own table's policies without FORCE), and answers week × choice × n.
+-- Counts only, and never a small one. The owner's function reads past RLS
+-- (the owner is not subject to its own table's policies without FORCE) and
+-- answers week x choice x n, where any choice answered fewer than 3 times in a
+-- week is folded into ONE 'fewer-than-3' row for that week that names no
+-- choice (Wright's ruling C, 2026-09-28: a keyless GET is a public egress, so
+-- the protection lives here, at the source). The note is never selected.
 CREATE OR REPLACE FUNCTION arrival_heard_weekly(since timestamptz)
   RETURNS TABLE (week date, heard text, n bigint)
   LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
-    SELECT date_trunc('week', answered_at AT TIME ZONE 'UTC')::date AS week, heard, count(*) AS n
-      FROM arrival_heard
-     WHERE answered_at >= since
+    WITH cells AS (
+      SELECT date_trunc('week', answered_at AT TIME ZONE 'UTC')::date AS week, heard, count(*) AS n
+        FROM arrival_heard
+       WHERE answered_at >= since
+       GROUP BY 1, 2
+    )
+    SELECT week, CASE WHEN n >= 3 THEN heard ELSE 'fewer-than-3' END AS heard, sum(n)::bigint AS n
+      FROM cells
      GROUP BY 1, 2
      ORDER BY 1, 2
 $$;
@@ -96,7 +106,7 @@ GRANT EXECUTE ON FUNCTION arrival_heard_weekly(timestamptz) TO office_api;
 
 INSERT INTO registry (object, kind, owner_pen, consumers, ruling) VALUES
   ('arrival_heard', 'source', 'office_api', '{}',
-   'Keemin 2026-09-28 (POS-292): where a joining human heard about Postmark; one private row per declaration; office_api INSERT only, no SELECT policy; counts through arrival_heard_weekly(), never the note; in no export')
+   'Keemin 2026-09-28 (POS-292): where a joining human heard about Postmark; one private row per declaration; office_api INSERT only, no SELECT policy; counts through arrival_heard_weekly(), cells under 3 folded, never the note; in no export')
 ON CONFLICT (object) DO NOTHING;
 
 COMMIT;

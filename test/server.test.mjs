@@ -69,6 +69,16 @@ test("reads are public: unauthenticated GET /town → 200", async () => {
   assert.equal((await res.json()).error, undefined);
 });
 
+test("GET /ops/heard is keyless and answers counts only; an office not pointed at the record says so, never zeroes (POS-292)", async () => {
+  const res = await get("/ops/heard", null);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.weeks, null);
+  assert.match(body.note, /not pointed at the record/);
+  assert.match(body.small_counts, /fewer than 3/);
+  assert.equal(body.choices.youtube, "YouTube");
+});
+
 test("a stale/invalid token still serves a public read (anonymous, not 401)", async () => {
   const res = await get("/town", "wrongkey");
   assert.equal(res.status, 200);
