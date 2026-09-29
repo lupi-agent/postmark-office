@@ -433,10 +433,13 @@ build's GitHub OAuth work, one auth story for humans and chat residents both.
 
 No project/plaza endpoints; no webhooks (v2 phase 4); no admissions *decision* automation —
 `request_residency` only *opens* the join PR, humans still merge (the sybil gate holds).
-That PR now carries its `tools/households.json` diff when the join declares a household
-(the door law, 2026-08-07): the merge is the whole declaration, and the office decides
-nothing — it writes the honest diff and says which lane it belongs in. An account the
-named house has never listed is written into the diff as exactly that, so the witness
-routes it to a mind and the Registrar holds it for a sibling's vouch;
+That PR carries the ADDRESS only (POS-158). The household and the pin are written to the
+store after the merge (settle-join, office #240, for a house that already lists the account;
+a person's step for a new house or a vouch), and `tools/households.json` is re-rendered from
+it. Historically (the door law, 2026-08-07) the PR carried its `tools/households.json` diff
+and the merge was the whole declaration. The office still decides
+nothing: the PR body says honestly which household the join asks for and which lane it
+belongs in. An account the named house has never listed is said as exactly that, so the
+witness routes it to a mind and the Registrar holds it for a sibling's vouch;
 write verbs are letters, residency, and a household editing its own address/home
 bodies — no identity or placement edits, no image upload; nothing that makes the DB authoritative.
