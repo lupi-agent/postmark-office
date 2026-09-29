@@ -32,7 +32,7 @@ import { validateArgs } from "./validate-args.mjs";
 import { postAtTown, amendAtTown, closeAtTown, advanceAtTown } from "./events-store.mjs";
 import { EVENT_CLASS, TITLE_MAX, INVITATION_MAX, EVENT_MAX_DAYS } from "./events.mjs";
 import { QUEST_CLASS, QUEST_AUTHOR, QUEST_HANDS } from "./quests.mjs";
-import { BUG_CLASS, BUG_HANDS, BUG_STAGES, BUG_SIDE_EXITS, BUG_SIZES, BUG_GRADES, BODY_MAX, BUG_NO_STAKE } from "./bugs.mjs";
+import { BUG_CLASS, BUG_HANDS, BUG_STAGES, BUG_SIDE_EXITS, BUG_SIZES, BUG_GRADES, CRITTER_MAX, BODY_MAX, BUG_NO_STAKE } from "./bugs.mjs";
 
 const PLACE = { type: "object", description: "where it happens: { mark: \"<owner>/<slug>\" } (a standing mark with an extent) or { at: { x, y } } (absolute world coordinates)" };
 
@@ -144,12 +144,13 @@ export const TOWN_POST_TOOLS = [
       post: POST_REF, class: CLASS_REF, handle: ACTING_HANDLE,
     }, required: ["post"], additionalProperties: false } },
   { name: "town_advance",
-    description: `Move a post along its class's lifecycle — town { do: "advance" }'s flat charge name. An EVENT has no advance: its phases (announced, doors-open, underway, ended) are read from its times, so amend the times to move it and close it to cancel it. A QUEST has none either: it is open until the town closes it. A BUG advances, by the town's hands only (${BUG_HANDS.join(", ")}): ${BUG_STAGES.join(" → ")}, or from reported or confirmed to ${BUG_SIDE_EXITS.join(" or ")}. An advance may jump forward; a skipped stage pays nothing. Each paid stage names whom it credits (credit; at confirmed it defaults to the reporter), briefed takes a grade and fixed a size, and the stamps are paid by a reviewed pass, never by the advance itself. Each class's lifecycle is law, declared class by class.`,
+    description: `Move a post along its class's lifecycle — town { do: "advance" }'s flat charge name. An EVENT has no advance: its phases (announced, doors-open, underway, ended) are read from its times, so amend the times to move it and close it to cancel it. A QUEST has none either: it is open until the town closes it. A BUG advances, by the town's hands only (${BUG_HANDS.join(", ")}): ${BUG_STAGES.join(" → ")}, or from reported or confirmed to ${BUG_SIDE_EXITS.join(" or ")}. An advance may jump forward; a skipped stage pays nothing. Each paid stage names whom it credits (credit; at confirmed it defaults to the reporter), briefed takes a grade and fixed a size plus a critter (the name the fixer chose for the bug's critter: the resident who fixes a bug names it), and the stamps are paid by a reviewed pass, never by the advance itself. Each class's lifecycle is law, declared class by class.`,
     inputSchema: { type: "object", properties: {
       post: POST_REF, class: CLASS_REF, handle: ACTING_HANDLE,
       to: { type: "string", description: "the state to move it to, as its class's law names it" },
       credit: { type: "string", description: "class \"bug\": the resident who did the stage (a handle); at confirmed it defaults to the reporter, and from reproduced onward it is required" },
       size: { type: "string", enum: [...BUG_SIZES], description: "class \"bug\", to: \"fixed\" only — the fix's size, S, M or L (10, 25 or 50 stamps)" },
+      critter: { type: "string", description: `class "bug", to: "fixed" only, and required there — the critter's name, as the fixer chose it and told the hands in the PR or the issue: 1–${CRITTER_MAX} characters, one line, plain text` },
       grade: { type: "string", enum: [...BUG_GRADES], description: "class \"bug\", to: \"briefed\" only — the bless's revision, light (10 stamps) or heavy (5)" },
       of: { type: "string", description: "class \"bug\", to: \"duplicate\" only — the bug post it duplicates, <author>/<slug>" },
     }, required: ["post"], additionalProperties: false } },

@@ -15,6 +15,8 @@
 //   4. the pass is bound to its own plan: a count the rows do not match refuses;
 //   5. after --apply, the ledger holds exactly one signed `post:<id>/confirmed`
 //      line, and a second --apply writes nothing.
+//   6. (POS-298) the critter the fixer names on the advance to fixed changes
+//      no amount: the plan is the same with the name and without it.
 //
 // 5 runs the TOWN'S OWN verb, so it needs a town whose stamp-mint.mjs carries
 // --stage-mint. The office's pinned town-clone gains it when the town branch
@@ -226,4 +228,28 @@ test("5 · the pass refuses a town whose stamp-mint has no stage grammar, before
   assert.equal(code, 1);
   assert.match(errs.join("\n"), /has no stage grammar/);
   rmSync(repo, { recursive: true, force: true });
+});
+
+// ── 6 ───────────────────────────────────────────────────────────────────────
+
+test("6 · (POS-298) the critter changes no amount: the plan for a fixed bug is the same with and without its name", async () => {
+  setup();
+  const r = await postAtTown({ class: "bug", title: "The bell rings twice", body: "It broke." }, key("carol"), { now: NOW, roll: ROLL });
+  for (const [to, more] of [["diagnosed", {}], ["briefed", { grade: "heavy" }], ["fixed", { size: "L", critter: "Double Dinger" }]])
+    await advanceAtTown({ post: r.post.id, to, credit: "ada", ...more }, WRIGHT, { now: NOW, roll: ROLL });
+  const facts = await storeFacts();
+  const fixedAct = facts.acts.find((a) => (typeof a.payload === "string" ? JSON.parse(a.payload) : a.payload).to === "fixed");
+  assert.ok(fixedAct, "the fixed advance is in the store's acts");
+  const nameless = facts.acts.map((a) => {
+    const p = typeof a.payload === "string" ? JSON.parse(a.payload) : a.payload;
+    if (!p.fields?.critter) return a;
+    const { critter, named_by, ...rest } = p.fields;
+    assert.deepEqual([critter, named_by], ["Double Dinger", "ada"]);
+    return { ...a, payload: JSON.stringify({ ...p, fields: rest }) };
+  });
+  const houseOf = (h) => facts.houses.get(h) ?? null;
+  const withName = planStages({ acts: facts.acts, houseOf, isMeep: noMeeps });
+  const without = planStages({ acts: nameless, houseOf, isMeep: noMeeps });
+  assert.deepEqual(withName, without);
+  assert.deepEqual(withName.map((x) => [x.stage, x.n]), [["diagnosed", 5], ["briefed", 5], ["fixed", 50]]);
 });

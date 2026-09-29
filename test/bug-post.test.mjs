@@ -20,7 +20,11 @@
 //      rebuild folds the bug acts back into exactly the rows the pen wrote;
 //   7. (Wright's review of #257) `for` and `credit` must name a resident in
 //      the office's residents index, refused by name and writing nothing; an
-//      office that cannot read its index refuses rather than guessing.
+//      office that cannot read its index refuses rather than guessing;
+//   8. (POS-298, the critter) an advance to fixed carries the critter its fixer
+//      named, refused by name without it and on any other stage; the post
+//      keeps it with named_by = the fix's credit, as plain text, and the
+//      rebuild folds it.
 //
 // ⚑ THE STORE IS A JS STUB (`acts-pen-stub.mjs`), as in quest-posts.test.mjs:
 // this proves which acts and rows the pen writes and what the reads make of
@@ -28,7 +32,8 @@
 //
 // THE FLIPS (NOTES.md in the lane folder holds the red lines): make
 // judgeBugHand accept any handle and 1 goes red; drop the residents-index
-// check from judgeHandleField and 7 goes red.
+// check from judgeHandleField and 7 goes red; the critter's four flips are in
+// the bug-critter lane's NOTES.md.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -41,6 +46,7 @@ const { townPostEvent } = await import("../src/town-post.mjs");
 const { townStake } = await import("../src/town-stake.mjs");
 const { compareRebuild, dryRun } = await import("../world2/tools/events-rebuild.mjs");
 const { BUG_FINISHED } = await import("../src/bugs.mjs");
+const { foldPostActs } = await import("../src/events.mjs");
 
 // The real clock: the pen refuses a row stamped for a window older than the open one.
 const NOW = Date.now();
@@ -234,9 +240,9 @@ test("5 · the advance's law: forward only, a skip pays nothing, credit from rep
 
   const brief = await advanceAtTown({ post: ID, to: "briefed", credit: "finn", grade: "heavy" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(brief.stamps, 5, "a heavy revision pays 5");
-  const fix = await advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "M" }, WRIGHT, { now: NOW, roll: ROLL });
+  const fix = await advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "M", critter: "Hinge Nibbler" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(fix.stamps, 25);
-  assert.deepEqual(posts.get(ID).fields, { grade: "heavy", size: "M" });
+  assert.deepEqual(posts.get(ID).fields, { grade: "heavy", size: "M", critter: "Hinge Nibbler", named_by: "finn" });
   const ship = await advanceAtTown({ post: ID, to: "shipped" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(ship.stamps, 0);
   assert.match(ship.receipt, /shipped pays nothing/);
@@ -290,7 +296,7 @@ test("6 · the posts read answers class bug with its finished states; the rebuil
   await postAtTown({ ...BUG, for: "ada" }, WRIGHT, { now: NOW, roll: ROLL });
   await advanceAtTown({ post: ID, to: "confirmed" }, WRIGHT, { now: NOW, roll: ROLL });
   await amendAtTown({ post: ID, steps: "Twice." }, WRIGHT, { now: NOW, roll: ROLL });
-  await advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "S" }, WRIGHT, { now: NOW, roll: ROLL });
+  await advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "S", critter: "Stickle" }, WRIGHT, { now: NOW, roll: ROLL });
 
   const r = await postsAtOffice({ class: "bug" }, { now: NOW, roll: ROLL });
   assert.deepEqual(r.finished, [...BUG_FINISHED]);
@@ -298,7 +304,7 @@ test("6 · the posts read answers class bug with its finished states; the rebuil
   assert.equal(r.total, 2);
   const one = r.posts.find((p) => p.id === ID);
   assert.deepEqual([one.class, one.state, one.author, one.latest.act], ["bug", "fixed", "errant", "advance"]);
-  assert.deepEqual(one.fields, { steps: "Twice.", size: "S" });
+  assert.deepEqual(one.fields, { steps: "Twice.", size: "S", critter: "Stickle", named_by: "finn" });
   const single = await postsAtOffice({ class: "bug", post: "ada/the-door-sticks" }, { now: NOW, roll: ROLL });
   assert.equal(single.post.state, "reported");
 
@@ -328,4 +334,92 @@ test("7 · for and credit name a resident in the office's residents index, or ar
   // confirmed's default credit is the reporter, who posted it, so it needs no index
   const ok = await advanceAtTown({ post: ID, to: "reproduced", credit: "finn" }, WRIGHT, { now: NOW, roll: ROLL });
   assert.equal(ok.credit, "finn");
+});
+
+// ── 8 ───────────────────────────────────────────────────────────────────────
+
+/** Walk the door-sticks bug up to briefed, crediting finn; returns nothing. */
+async function toBriefed() {
+  await postAtTown(BUG, ERRANT, { now: NOW, roll: ROLL });
+  await advanceAtTown({ post: ID, to: "diagnosed", credit: "finn" }, WRIGHT, { now: NOW, roll: ROLL });
+  await advanceAtTown({ post: ID, to: "briefed", credit: "finn", grade: "light" }, WRIGHT, { now: NOW, roll: ROLL });
+}
+
+test("8 · an advance to fixed without a critter is refused by name, says who names it and how, and writes nothing", async () => {
+  const { pen, posts } = setup();
+  await toBriefed();
+  const before = pen.rows().length;
+  await refusedWith(advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "M" }, WRIGHT, { now: NOW, roll: ROLL }), 422,
+    /fixed needs a critter: the resident who fixes a bug names it .*critter: "<name>", 1–40 characters on one line — the fixer chooses it and tells the town's hands \(wright, keemin, bugcatcher\) in the PR or the issue/);
+  for (const bad of ["", "   ", 7, "Hinge\nNibbler", "x".repeat(41)])
+    await refusedWith(advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "M", critter: bad }, WRIGHT, { now: NOW, roll: ROLL }), 422, /critter is/);
+  assert.equal(pen.rows().length, before, "a refused fixed wrote an act");
+  assert.equal(posts.get(ID).state, "briefed");
+  // 40 characters is a name; the count is characters, not UTF-16 units
+  const ok = await advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "M", critter: "🐛".repeat(40) }, WRIGHT, { now: NOW, roll: ROLL });
+  assert.equal(ok.critter, "🐛".repeat(40));
+});
+
+test("8 · critter on any stage but fixed is refused by name", async () => {
+  const { pen, posts } = setup();
+  await postAtTown(BUG, ERRANT, { now: NOW, roll: ROLL });
+  await postAtTown({ ...BUG, title: "The door sticks again" }, FINN, { now: NOW, roll: ROLL });
+  const before = pen.rows().length;
+  const WHY = /critter is fixed's: the resident who fixes a bug names it .*only an advance to fixed takes critter/;
+  await refusedWith(advanceAtTown({ post: ID, to: "confirmed", critter: "Nib" }, WRIGHT, { now: NOW, roll: ROLL }), 422, WHY);
+  for (const [to, more] of [["reproduced", {}], ["diagnosed", {}], ["briefed", { grade: "light" }]])
+    await refusedWith(advanceAtTown({ post: ID, to, credit: "finn", critter: "Nib", ...more }, WRIGHT, { now: NOW, roll: ROLL }), 422, WHY);
+  await refusedWith(advanceAtTown({ post: ID, to: "not-a-bug", critter: "Nib" }, WRIGHT, { now: NOW, roll: ROLL }), 422, WHY);
+  await refusedWith(advanceAtTown({ post: "finn/the-door-sticks-again", to: "duplicate", of: ID, critter: "Nib" }, WRIGHT, { now: NOW, roll: ROLL }), 422, WHY);
+  assert.equal(pen.rows().length, before);
+  await advanceAtTown({ post: ID, to: "diagnosed", credit: "finn" }, WRIGHT, { now: NOW, roll: ROLL });
+  await advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "S", critter: "Nib" }, WRIGHT, { now: NOW, roll: ROLL });
+  await refusedWith(advanceAtTown({ post: ID, to: "shipped", critter: "Nib" }, WRIGHT, { now: NOW, roll: ROLL }), 422, WHY);
+  assert.equal(posts.get(ID).state, "fixed");
+});
+
+test("8 · a fixed bug's posts read carries critter and named_by (the fixer's credit), and the rebuild folds them", async () => {
+  const { pen, posts } = setup();
+  await toBriefed();
+  const fix = await advanceAtTown({ post: ID, to: "fixed", credit: "ada", size: "L", critter: "  Hinge Nibbler  " }, WRIGHT, { now: NOW, roll: ROLL });
+  assert.deepEqual([fix.critter, fix.credit, fix.stamps], ["Hinge Nibbler", "ada", 50]);
+  assert.match(fix.receipt, /; its critter is "Hinge Nibbler", named by ada$/);
+  assert.deepEqual(JSON.parse(pen.rows().at(-1).payload),
+    { post: ID, from: "briefed", to: "fixed", credit: "ada", fields: { size: "L", critter: "Hinge Nibbler", named_by: "ada" }, hand: "wright" });
+  assert.deepEqual([posts.get(ID).fields.critter, posts.get(ID).fields.named_by], ["Hinge Nibbler", "ada"]);
+
+  const one = (await postsAtOffice({ class: "bug", post: ID }, { now: NOW, roll: ROLL })).post;
+  assert.deepEqual([one.state, one.fields.critter, one.fields.named_by], ["fixed", "Hinge Nibbler", "ada"]);
+  const all = (await postsAtOffice({ class: "bug" }, { now: NOW, roll: ROLL })).posts.find((p) => p.id === ID);
+  assert.deepEqual([all.fields.critter, all.fields.named_by], ["Hinge Nibbler", "ada"]);
+  // shipping it keeps the name
+  await advanceAtTown({ post: ID, to: "shipped" }, WRIGHT, { now: NOW, roll: ROLL });
+  assert.deepEqual([posts.get(ID).fields.critter, posts.get(ID).fields.named_by], ["Hinge Nibbler", "ada"]);
+
+  // the rebuild: the acts alone derive the name and its namer, and the table agrees
+  const acts = pen.rows().filter((a) => a.class === "bug").map((a) => ({ ...a, payload: JSON.parse(a.payload) }));
+  const rebuilt = foldPostActs(acts).posts.get(ID);
+  assert.deepEqual([rebuilt.fields.critter, rebuilt.fields.named_by], ["Hinge Nibbler", "ada"]);
+  const out = await dryRun(pen);
+  assert.equal(out.equal, true, out.drift.join("\n"));
+  // …and a stored row that lost the name is drift
+  const lost = { ...posts.get(ID), fields: { ...posts.get(ID).fields } };
+  delete lost.fields.critter;
+  const drifted = compareRebuild({ posts: [lost], responses: [] }, acts);
+  assert.equal(drifted.equal, false);
+  assert.match(drifted.drift.join("\n"), /fields: stored .* the acts derive .*"critter":"Hinge Nibbler"/);
+});
+
+test("8 · a name with markup is stored and returned as plain text, exactly as sent", async () => {
+  const { pen, posts } = setup();
+  await toBriefed();
+  const NAME = `<b>Bitey</b> & <img src=x onerror="1">`;
+  assert.ok([...NAME].length <= 40);
+  const fix = await advanceAtTown({ post: ID, to: "fixed", credit: "finn", size: "M", critter: NAME }, WRIGHT, { now: NOW, roll: ROLL });
+  assert.equal(fix.critter, NAME);
+  assert.equal(JSON.parse(pen.rows().at(-1).payload).fields.critter, NAME, "the act keeps the characters, not an escaped or stripped copy");
+  assert.equal(posts.get(ID).fields.critter, NAME);
+  const one = (await postsAtOffice({ class: "bug", post: ID }, { now: NOW, roll: ROLL })).post;
+  assert.equal(one.fields.critter, NAME);
+  assert.equal(typeof one.fields.critter, "string");
 });
