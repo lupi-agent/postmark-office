@@ -397,11 +397,16 @@ test("F7 · the two-file profile act records BOTH commits, and a name-only call 
       KEY, db, clone, o);
     assert.ok(both.commit, "the PROFILE.md half committed");
     assert.ok(both.named?.commit, "and the ADDRESS.md half committed too");
-    assert.notEqual(both.commit, both.named.commit, "two files, two commits, one act");
+    // ONE COMMIT SINCE POS-296 (Wright's ruling, 2026-09-28): the card and the
+    // profile land together or not at all. Two commits meant a card that had
+    // landed could not be taken back when the profile half was refused.
+    assert.equal(both.commit, both.named.commit, "two files, ONE commit, one act — whole or nothing");
 
     const [row] = readTownJournal(o);
     assert.deepEqual(new Set(row.payload.commits), new Set([both.commit, both.named.commit]),
       "the row records the act's WHOLE outcome, not just the half it thinks of as its own");
+    assert.deepEqual(git(clone, "show", "--name-only", "--format=", both.commit).split(/\r?\n/).sort(),
+      ["WHITE_PAGES/postmaster/ADDRESS.md", "WHITE_PAGES/postmaster/PROFILE.md"], "both files ride the one commit");
 
     // a display-name-only call: `commit: null, unchanged: true` at the top
     // level, and a real sha underneath. It must still be logged.

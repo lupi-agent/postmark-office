@@ -32,14 +32,15 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { penCommit } from "./write.mjs";
+import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
 const KEY_PATH = process.env.STAMP_KEY ?? "/srv/postmark-office/stamp-key.pem";
 
 const answer = (obj) => { console.log(JSON.stringify(obj)); process.exit(0); };
-const err = (code, defect, hint) => answer({ error: { code, defect, hint } });
+const refusal = (code, defect, hint) => ({ error: { code, defect, hint } });
+const err = (code, defect, hint) => answer(refusal(code, defect, hint));
 
 // Translate the town CLI's FATALs into the door's vocabulary. The CLI is the
 // enforcer; this only gives the patron a sentence instead of a stack.
@@ -73,33 +74,43 @@ async function main() {
   if (!existsSync(mint) || !existsSync(close))
     return err(409, "not-yet-open", "the office has no town clone with the funding seam");
 
-  if (process.env.TOWN_PUSH === "1")
-    execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
+  // WHOLE OR NOTHING (POS-296): a refused receipt leaves no catch-up rows and
+  // no receipt line behind, and a push that cannot land leaves no commit. A
+  // receipt carries the payer's request data and cannot be re-derived, so a
+  // refused one is gone — which is what the payer was told.
+  answer(await penTransaction(CLONE, async () => {
+    if (process.env.TOWN_PUSH === "1")
+      execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
 
-  try {
-    // catch the ledger up so the receipt lands on a settled tail, then witness
-    execFileSync(process.execPath, [mint, "--append", "--key", KEY_PATH, "--repo", CLONE], { encoding: "utf8" });
-    execFileSync(process.execPath, [
-      close, "--receipt",
-      "--pot", String(pot), "--rail", String(rail), "--usd", String(usd),
-      "--from", String(from), "--ref", String(ref), "--date", String(date),
-      "--key", KEY_PATH, "--repo", CLONE,
-    ], { encoding: "utf8" });
-  } catch (e) {
-    const { code, defect, hint } = classifyFatal(e.stderr ?? e.message ?? e);
-    return err(code, defect, hint);
-  }
+    try {
+      // catch the ledger up so the receipt lands on a settled tail, then witness
+      execFileSync(process.execPath, [mint, "--append", "--key", KEY_PATH, "--repo", CLONE], { encoding: "utf8" });
+      execFileSync(process.execPath, [
+        close, "--receipt",
+        "--pot", String(pot), "--rail", String(rail), "--usd", String(usd),
+        "--from", String(from), "--ref", String(ref), "--date", String(date),
+        "--key", KEY_PATH, "--repo", CLONE,
+      ], { encoding: "utf8" });
+    } catch (e) {
+      const { code, defect, hint } = classifyFatal(e.stderr ?? e.message ?? e);
+      return refusal(code, defect, hint);
+    }
 
-  const commit = penCommit(CLONE, [
-    join(CLONE, "WHITE_PAGES", "stamp-ledger.md"),
-    join(CLONE, "WHITE_PAGES", `pot-${pot}.json`),
-  ], `fund: $${usd} witnessed for ${from} → pot ${pot} (${rail} rail, via ${via})`);
+    const commit = landOrRefuse(() => penCommit(CLONE, [
+      join(CLONE, "WHITE_PAGES", "stamp-ledger.md"),
+      join(CLONE, "WHITE_PAGES", `pot-${pot}.json`),
+    ], `fund: $${usd} witnessed for ${from} → pot ${pot} (${rail} rail, via ${via})`));
+    // A payer reads this, so it says what happened to the MONEY: nothing. The
+    // receipt was not kept, and the same transaction verifies once when retried.
+    if (commit?.error) return refusal(commit.error.code, commit.error.defect,
+      "the office lost its race with other town traffic, so this payment is not witnessed yet and nothing was recorded — your payment itself is untouched; verify the same transaction again and it is recorded once");
 
-  const { parseStampLedger } = await import(pathToFileURL(mint));
-  const entries = parseStampLedger(readFileSync(join(CLONE, "WHITE_PAGES", "stamp-ledger.md"), "utf8"));
-  const line = entries.at(-1)?.raw ?? "";
+    const { parseStampLedger } = await import(pathToFileURL(mint));
+    const entries = parseStampLedger(readFileSync(join(CLONE, "WHITE_PAGES", "stamp-ledger.md"), "utf8"));
+    const line = entries.at(-1)?.raw ?? "";
 
-  answer({ line, pot, usd, from, ref, date, rail, commit });
+    return { line, pot, usd, from, ref, date, rail, commit };
+  }));
 }
 
 main().catch((e) => { console.error(String(e?.stack ?? e)); process.exit(1); });

@@ -9,8 +9,8 @@
 // Env: TOWN_CLONE (path), TOWN_PUSH=1 to push, BOT_NAME / BOT_EMAIL.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, writeFileSync, mkdirSync, rmSync, readdirSync, rmdirSync, realpathSync } from "node:fs";
+import { dirname, join, relative, isAbsolute, resolve } from "node:path";
 
 import { nextCrossingAt, nextCrossingForReceipt } from "./crossings.mjs";
 
@@ -36,11 +36,189 @@ export function nextCrossing(now = new Date()) {
 const git = (clone, ...args) =>
   execFileSync("git", ["-C", clone, ...args], { encoding: "utf8" }).trim();
 
+// ── WHOLE OR NOTHING (POS-296) ───────────────────────────────────────────────
+//
+// A write that answers "failed" leaves nothing behind in the clone. Before this,
+// three shapes of residue were possible, and each one lied to somebody:
+//   · an appended or created file with no commit (the exec refused after the
+//     write): the next write's `pull --rebase` refused on it, so one refusal
+//     became an outage of every pen (the 2026-09-28 dirty clone, 4.5 hours);
+//   · a commit that never landed (the push lost its race three times): the
+//     resident was told no, and the next write's push carried the row anyway;
+//   · an untracked letter file: the resident's re-send bounced 409.
+//
+// `penTransaction` records HEAD and the dirt already present, runs `fn`, and
+// on a throw or an `{ error }` answer puts back every path `fn` changed:
+// tracked paths return to HEAD's bytes, created paths are removed. A commit
+// that `fn` made and that is not on the remote is unmade first. When the push
+// could not land, the clone is then rebased onto the fetched origin/main, so it
+// matches the town rather than standing behind it.
+//
+// Two limits, named. A commit that LANDED is never unmade — it is the town's
+// now, and a later failure in the same act cannot take it back. And a process
+// killed outright (SIGKILL, OOM, a reboot) runs no JS; the ferry's
+// `reset --hard` + `clean` at every crossing stays the backstop for that.
+
+/** The marker on the error a push that cannot land throws. The drain holds
+ *  its cursor on it (town-bridge.mjs); a door answers it in these words. */
+export const NOT_LANDED = "not-landed";
+
+export const notLandedError = (detail) => Object.assign(
+  new Error(`pen push did not land: ${detail}`),
+  {
+    code: 503,
+    pen: NOT_LANDED,
+    defect: "the town did not take this write",
+    hint: "the office lost its race with other town traffic three times, so nothing was recorded and nothing is left behind — the same request is safe to make again",
+  },
+);
+
+/** For an exec that answers one JSON line: run the pen, and turn a push that
+ *  could not land into the refusal the exec prints (a bounce is an answer),
+ *  not a machinery trip. Any other throw is still the machinery's. */
+export function landOrRefuse(land) {
+  try { return land(); }
+  catch (e) {
+    if (e?.pen !== NOT_LANDED) throw e;
+    return { error: { code: e.code, defect: e.defect, hint: e.hint } };
+  }
+}
+
+const pushing = () => process.env.TOWN_PUSH === "1";
+
+// Every changed path under the pathspecs, relative to the clone's root, one
+// file per entry: tracked (modified, added, deleted) and, unless asked not to,
+// untracked. Read-only (`--no-optional-locks`: a plain status rewrites the index).
+function changedPaths(clone, pathspecs = [], { untracked = true } = {}) {
+  const out = execFileSync("git", ["-C", clone, "--no-optional-locks", "status", "--porcelain=v1", "-z",
+    `--untracked-files=${untracked ? "all" : "no"}`, "--no-renames", "--", ...pathspecs], { encoding: "utf8" });
+  return out.split("\0").filter(Boolean).map((entry) => entry.slice(3));
+}
+
+// A commit is landed when the remote holds it. With no push there is no
+// remote to hold it, so every commit this office made is local.
+function landed(clone, sha) {
+  if (!pushing()) return false;
+  try { git(clone, "merge-base", "--is-ancestor", sha, "origin/main"); return true; }
+  catch { return false; }
+}
+
+// A rebase the push loop started and could not finish is aborted first, or
+// every command below would be answering about a half-applied commit.
+function abortRebase(clone) {
+  const gitDir = resolve(clone, git(clone, "rev-parse", "--git-dir"));
+  if (existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply")))
+    try { git(clone, "rebase", "--abort"); } catch { /* reported by the restore's own reads */ }
+}
+
+// Remove a file this act created, and the directories it left empty.
+function removeCreated(clone, rel) {
+  const root = resolve(clone);
+  rmSync(join(root, rel), { force: true });
+  for (let dir = dirname(join(root, rel)); dir.startsWith(root) && dir !== root; dir = dirname(dir)) {
+    try { if (readdirSync(dir).length) break; rmdirSync(dir); } catch { break; }
+  }
+}
+
+/**
+ * Put the clone back at `recorded` for exactly `paths` (pathspecs: files or
+ * directories, relative to the clone), and unmake any commit after `recorded`
+ * that the remote does not hold.
+ *
+ * Pushing, with no tracked dirt anywhere (the pull and the push loop's rebase
+ * both refuse to run over any, so this is the ordinary case): `reset --hard`
+ * to the recorded HEAD, then rebase onto the fetched origin/main, so the clone
+ * matches the town. Otherwise the commit is unmade with `--soft` and only the
+ * named paths are put back, so dirt this act did not make is never touched.
+ */
+function restore(clone, recorded, paths) {
+  abortRebase(clone);
+  const head = git(clone, "rev-parse", "HEAD");
+  if (head !== recorded && !landed(clone, head)) {
+    if (pushing() && !changedPaths(clone, [], { untracked: false }).length) {
+      git(clone, "reset", "-q", "--hard", recorded);
+      try { git(clone, "rebase", "-q", "origin/main"); }
+      catch { try { git(clone, "rebase", "--abort"); } catch { /* stands at recorded */ } }
+    } else {
+      git(clone, "reset", "-q", "--soft", recorded);
+    }
+  }
+  if (!paths.length) return;
+  const dirty = changedPaths(clone, paths);
+  if (!dirty.length) return;
+  const inHead = new Set(execFileSync("git", ["-C", clone, "ls-tree", "-r", "--name-only", "-z", "HEAD", "--", ...dirty],
+    { encoding: "utf8" }).split("\0").filter(Boolean));
+  const tracked = dirty.filter((p) => inHead.has(p));
+  const created = dirty.filter((p) => !inHead.has(p));
+  if (tracked.length) git(clone, "checkout", "-q", "HEAD", "--", ...tracked);
+  if (created.length) {
+    git(clone, "rm", "-q", "--cached", "--ignore-unmatch", "--", ...created);
+    for (const rel of created) removeCreated(clone, rel);
+  }
+}
+
+const relTo = (clone, p) => {
+  const r = isAbsolute(p) ? relative(resolve(clone), p) : p;
+  return r.replace(/\\/g, "/") || ".";
+};
+
+/**
+ * Run one write whole or not at all. `fn` may be sync or async; it answers,
+ * throws, or answers `{ error }`. On a throw or an error answer every path it
+ * changed is put back (see `restore`), then the throw is rethrown or the
+ * answer returned unchanged. Dirt present before `fn` ran is left alone.
+ */
+export function penTransaction(clone, fn) {
+  // No clone, or no git in it, is nothing a restore could protect: the write
+  // either bounces before the clone is touched (a door's own checks) or fails
+  // at the pen the way it always did. Run it as it is.
+  let recorded, before;
+  try {
+    if (!clone || !existsSync(clone)) throw new Error("no clone");
+    // …and a directory that is not the top of its OWN repository is not a
+    // clone: git would answer for whatever repository encloses it, and a
+    // restore would then put back somebody else's files.
+    const real = (d) => realpathSync.native(resolve(d)).toLowerCase();
+    if (real(git(clone, "rev-parse", "--show-toplevel")) !== real(clone))
+      throw new Error("not a clone's top");
+    recorded = git(clone, "rev-parse", "HEAD");
+    before = new Set(changedPaths(clone));
+  } catch { return fn(); }
+  const undo = () => {
+    abortRebase(clone);
+    const head = git(clone, "rev-parse", "HEAD");
+    const committed = head !== recorded && !landed(clone, head)
+      ? execFileSync("git", ["-C", clone, "diff", "--name-only", "-z", "--no-renames", recorded, head], { encoding: "utf8" }).split("\0").filter(Boolean)
+      : [];
+    const made = changedPaths(clone).filter((p) => !before.has(p));
+    restore(clone, recorded, [...new Set([...committed, ...made])]);
+  };
+  const settle = (out) => { if (out?.error) undo(); return out; };
+  let out;
+  try { out = fn(); } catch (e) { undo(); throw e; }
+  if (out && typeof out.then === "function")
+    return out.then(settle, (e) => { undo(); throw e; });
+  return settle(out);
+}
+
 // The pen's commit ceremony, shared by every write that lands a file on the
 // town clone (letters and body edits alike): stage the paths, commit as the
 // office bot (author string stable), return the sha, push when TOWN_PUSH=1.
 // One ceremony so the two write spines can never drift in author or push rule.
+//
+// WHOLE OR NOTHING OVER ITS OWN PATHS (POS-296). Any throw from here — a push
+// that cannot land, or git refusing to stage or commit — first puts `addPaths`
+// back as they stood at HEAD and unmakes the unlanded commit, so every caller,
+// in a transaction or not, is left with nothing when it is told no. A push that
+// cannot land throws `notLandedError` (code 503, `pen: NOT_LANDED`); before
+// POS-296 the commit stayed local and the next write's push carried it.
 export function penCommit(clone, addPaths, message) {
+  const base = git(clone, "rev-parse", "HEAD");
+  try { return commitAndLand(clone, addPaths, message); }
+  catch (e) { restore(clone, base, addPaths.map((p) => relTo(clone, p))); throw e; }
+}
+
+function commitAndLand(clone, addPaths, message) {
   const name = process.env.BOT_NAME ?? "postmark-office[bot]";
   const email = process.env.BOT_EMAIL ?? "office@postmark.invalid";
   for (const p of addPaths) git(clone, "add", p);
@@ -66,7 +244,7 @@ export function penCommit(clone, addPaths, message) {
         git(clone, "merge-base", "--is-ancestor", commit, "origin/main");
         break; // landed — the only exit that returns
       } catch { /* not on the remote yet */ }
-      if (attempt >= 3) throw new Error(`pen push did not land: ${commit} is not on origin/main after ${attempt} attempts — the write is local-only and this ceremony refuses to call that success`);
+      if (attempt >= 3) throw notLandedError(`${commit} is not on origin/main after ${attempt} attempts, so the ceremony unmade it rather than call a local-only write success`);
       git(clone, "rebase", "-q", "origin/main");
       commit = git(clone, "rev-parse", "HEAD");
     }
@@ -215,18 +393,22 @@ export function enqueueLetter(args, key, db, clone, acceptedIdentity = null) {
 
   // freshen the clone, then write the letter file — at the path outboxRelPath
   // spells, because the row the door writes discloses that same path to the
-  // sender, and two spellings of it would be two things that can drift.
-  if (process.env.TOWN_PUSH === "1") git(clone, "pull", "--rebase", "-q");
-  const file = join(clone, relFile);
-  const outbox = dirname(file);
-  if (!existsSync(outbox)) mkdirSync(outbox, { recursive: true });
-  if (existsSync(file)) throw bounce(409, "that letter file already exists", "change the title");
+  // sender, and two spellings of it would be two things that can drift. Whole
+  // or nothing (POS-296): a letter that is refused leaves no file behind, so a
+  // re-send is not bounced 409 by the corpse of the first try.
+  const commit = penTransaction(clone, () => {
+    if (process.env.TOWN_PUSH === "1") git(clone, "pull", "--rebase", "-q");
+    const file = join(clone, relFile);
+    const outbox = dirname(file);
+    if (existsSync(file)) throw bounce(409, "that letter file already exists", "change the title");
+    if (!existsSync(outbox)) mkdirSync(outbox, { recursive: true });
 
-  const fm = `---\nid: ${id}\nfrom: ${from}\nto: ${to}\ndate: ${date}\nthread: ${thread}\n${stakeFm}---\n\n`;
-  writeFileSync(file, fm + body.trim() + "\n");
+    const fm = `---\nid: ${id}\nfrom: ${from}\nto: ${to}\ndate: ${date}\nthread: ${thread}\n${stakeFm}---\n\n`;
+    writeFileSync(file, fm + body.trim() + "\n");
 
-  const commit = penCommit(clone, [file],
-    `${from} -> ${to}: ${slug} (via postmark-office, key household ${key.household})`);
+    return penCommit(clone, [file],
+      `${from} -> ${to}: ${slug} (via postmark-office, key household ${key.household})`);
+  });
 
   // `expected_crossing` stays — frozen consumers read it (thread-is-the-letter-id
   // pins the key) — and `next_crossing` rides beside it with the number, the

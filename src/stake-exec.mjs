@@ -17,7 +17,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { penCommit } from "./write.mjs";
+import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -32,22 +32,29 @@ async function main() {
   const keyPem = readFileSync(KEY_PATH, "utf8");
   const { clipApply } = await import(pathToFileURL(join(CLONE, "tools", "ballot.mjs")));
 
-  if (process.env.TOWN_PUSH === "1")
-    execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
+  // WHOLE OR NOTHING (POS-296): a stake the pen cannot land leaves no line and
+  // no commit behind. It carries the resident's request and cannot be
+  // re-derived, so a refused one is gone — which is what they were told.
+  const result = await penTransaction(CLONE, () => {
+    if (process.env.TOWN_PUSH === "1")
+      execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
 
-  let result;
-  try {
-    result = clipApply(CLONE, payload, keyPem);
-  } catch (e) {
-    if (e.code) { console.log(JSON.stringify({ error: { code: e.code, defect: e.defect, hint: e.hint } })); return; }
-    throw e;
-  }
+    let result;
+    try {
+      result = clipApply(CLONE, payload, keyPem);
+    } catch (e) {
+      if (e.code) return { error: { code: e.code, defect: e.defect, hint: e.hint } };
+      throw e;
+    }
 
-  if (result.applied > 0) {
-    const commit = penCommit(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
-      `stake: ${payload.handle} -> ${payload.topic}/${payload.candidate} · ${result.applied} (via ${payload.via})`);
-    result.commit = commit;
-  }
+    if (result.applied > 0) {
+      const commit = landOrRefuse(() => penCommit(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
+        `stake: ${payload.handle} -> ${payload.topic}/${payload.candidate} · ${result.applied} (via ${payload.via})`));
+      if (commit?.error) return commit;
+      result.commit = commit;
+    }
+    return result;
+  });
   console.log(JSON.stringify(result));
 }
 

@@ -17,6 +17,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { settleUnderLock } from "./settle-join.mjs";
+import { penTransaction } from "./write.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -31,16 +32,22 @@ async function main() {
   if (!existsSync(CLONE))
     return answer({ error: { code: 409, defect: "not-yet-open", hint: "the office has no town clone to settle into" } });
 
-  // Freshen first: the ADDRESS the Registrar just merged must be on this clone.
-  if (process.env.TOWN_PUSH === "1")
-    execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
+  // WHOLE OR NOTHING (POS-296): a settlement refused after the drain wrote its
+  // two files, or whose push cannot land (penCommit's NOT_LANDED, code 503),
+  // leaves neither file behind. The pin `joinHousehold` wrote is in the store,
+  // outside the clone, and stays; the next registry drain renders it.
+  answer(await penTransaction(CLONE, async () => {
+    // Freshen first: the ADDRESS the Registrar just merged must be on this clone.
+    if (process.env.TOWN_PUSH === "1")
+      execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
 
-  try {
-    answer(await settleUnderLock({ handle, ghId, ghLogin, pr, clone: CLONE, date: townDate() }));
-  } catch (e) {
-    if (!e?.code) throw e;
-    answer({ error: { code: e.code, defect: e.defect ?? String(e.message), hint: e.hint ?? null } });
-  }
+    try {
+      return await settleUnderLock({ handle, ghId, ghLogin, pr, clone: CLONE, date: townDate() });
+    } catch (e) {
+      if (!e?.code) throw e;
+      return { error: { code: e.code, defect: e.defect ?? String(e.message), hint: e.hint ?? null } };
+    }
+  }));
 }
 
 main().catch((e) => { console.error(String(e?.stack ?? e)); process.exit(1); });

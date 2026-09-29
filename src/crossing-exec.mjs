@@ -203,4 +203,9 @@ async function main() {
            ledger_lines: acts.length, ledger_unrecognized: unrecognized.length });
 }
 
-main().catch((e) => err(500, "the crossing pen tripped", String(e?.message ?? e).slice(0, 300)));
+// A push that cannot land (penCommit's NOT_LANDED, POS-296) is answered in its own
+// words: penCommit has already taken the line back out of the ledger and unmade
+// the commit, so the resident is exactly where they were and may declare again.
+main().catch((e) => e?.pen
+  ? err(e.code, e.defect, e.hint)
+  : err(500, "the crossing pen tripped", String(e?.message ?? e).slice(0, 300)));

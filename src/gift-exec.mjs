@@ -20,14 +20,15 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { penCommit } from "./write.mjs";
+import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
 const KEY_PATH = process.env.STAMP_KEY ?? "/srv/postmark-office/stamp-key.pem";
 
 const answer = (obj) => { console.log(JSON.stringify(obj)); process.exit(0); };
-const err = (code, defect, hint) => answer({ error: { code, defect, hint } });
+const refusal = (code, defect, hint) => ({ error: { code, defect, hint } });
+const err = (code, defect, hint) => answer(refusal(code, defect, hint));
 
 // Map a stamp-mint FATAL (stderr) to a bounce code + a clean, warm hint. The CLI
 // is the enforcer; this only translates its refusals into the door's vocabulary.
@@ -50,34 +51,41 @@ async function main() {
   if (!existsSync(mint))
     return err(409, "not-yet-open", "the office has no town clone with the mint engine");
 
-  if (process.env.TOWN_PUSH === "1")
-    execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
+  // WHOLE OR NOTHING (POS-296): a refused gift leaves no catch-up rows and no
+  // gift line behind, and a push that cannot land leaves no commit. A gift
+  // carries the giver's request and cannot be re-derived, so a refused one is
+  // gone — which is what the giver was told.
+  answer(await penTransaction(CLONE, async () => {
+    if (process.env.TOWN_PUSH === "1")
+      execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
 
-  // Catch the ledger up so the gift lands on a settled tail (idempotent — the
-  // ferry --appends each crossing, so between crossings this is a no-op), then
-  // mint the gift. Both are the town's own CLI; nothing here reimplements minting.
-  const run = (args) => execFileSync(process.execPath, [mint, ...args, "--key", KEY_PATH, "--repo", CLONE], { encoding: "utf8" });
-  try {
-    run(["--append"]);
-    run(["--gift", handle, "--amount", String(amount), "--slug", slug, "--by", by, "--date", date]);
-  } catch (e) {
-    const { code, defect, hint } = classifyFatal(e.stderr ?? e.message ?? e);
-    return err(code, defect, hint);
-  }
+    // Catch the ledger up so the gift lands on a settled tail (idempotent — the
+    // ferry --appends each crossing, so between crossings this is a no-op), then
+    // mint the gift. Both are the town's own CLI; nothing here reimplements minting.
+    const run = (args) => execFileSync(process.execPath, [mint, ...args, "--key", KEY_PATH, "--repo", CLONE], { encoding: "utf8" });
+    try {
+      run(["--append"]);
+      run(["--gift", handle, "--amount", String(amount), "--slug", slug, "--by", by, "--date", date]);
+    } catch (e) {
+      const { code, defect, hint } = classifyFatal(e.stderr ?? e.message ?? e);
+      return refusal(code, defect, hint);
+    }
 
-  // Commit + push the sealed ledger (the pen's ceremony — same push path letters
-  // and stakes use). The gift line is the tail; any catch-up mints ride along.
-  const commit = penCommit(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
-    `gift: ${by} → ${handle} · ${amount} · gift:${slug} (via postmark-office ops desk)`);
+    // Commit + push the sealed ledger (the pen's ceremony — same push path letters
+    // and stakes use). The gift line is the tail; any catch-up mints ride along.
+    const commit = landOrRefuse(() => penCommit(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
+      `gift: ${by} → ${handle} · ${amount} · gift:${slug} (via postmark-office ops desk)`));
+    if (commit?.error) return commit;
 
-  // Read back the signed gift line + the recipient's new balance from the town's
-  // own fold (one source of truth — never a hand-rolled parse).
-  const { parseStampLedger, foldBalances } = await import(pathToFileURL(mint));
-  const entries = parseStampLedger(readFileSync(join(CLONE, "WHITE_PAGES", "stamp-ledger.md"), "utf8"));
-  const line = entries.at(-1)?.raw ?? "";
-  const balance = foldBalances(entries).get(handle) ?? 0;
+    // Read back the signed gift line + the recipient's new balance from the town's
+    // own fold (one source of truth — never a hand-rolled parse).
+    const { parseStampLedger, foldBalances } = await import(pathToFileURL(mint));
+    const entries = parseStampLedger(readFileSync(join(CLONE, "WHITE_PAGES", "stamp-ledger.md"), "utf8"));
+    const line = entries.at(-1)?.raw ?? "";
+    const balance = foldBalances(entries).get(handle) ?? 0;
 
-  answer({ line, handle, amount, slug, by, date, balance, commit });
+    return { line, handle, amount, slug, by, date, balance, commit };
+  }));
 }
 
 main().catch((e) => { console.error(String(e?.stack ?? e)); process.exit(1); });
