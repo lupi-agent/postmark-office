@@ -79,16 +79,25 @@ export async function bindUnderLock({ args, key, clone, db, env = process.env, d
   const pins = pinsFromRows(rows);
 
   const { handle } = validateResidencyRequest(args, db);
-  const where = handleTaken(handle, { db, registry, clone }) ?? (pins[handle] ? "the pin register" : null);
-  if (where)
-    throw Object.assign(new Error(`the handle "${handle}" is taken`), {
-      code: 409, defect: `the handle "${handle}" is taken`, hint: `it is already spoken for in ${where}; pick a free handle`,
-    });
 
   const coSign = { ghId: key.ghId, ghLogin: key.ghLogin };
   const plan = planRegistryJoin(registry, {
     handle, household: args.household, ...coSign, siblings: [...(key.handles ?? [])], date,
   });
+
+  // A RETRY RESUMES. The store rows land before the commit, so a push that
+  // could not land leaves this handle pinned and in its house while the clone
+  // is put back without its card. The same account asking again finishes the
+  // act (`joinHousehold` is idempotent, and the commit lands the card); a pin
+  // at any other id is somebody else's handle.
+  const resuming = Boolean(pins[handle]) && Number(pins[handle].id) === Number(key.ghId)
+    && Boolean(plan?.vouched) && (registry.households?.[plan.slug]?.residents ?? []).includes(handle);
+  const where = handleTaken(handle, { db, registry: resuming ? null : registry, clone })
+    ?? (pins[handle] && !resuming ? "the pin register" : null);
+  if (where)
+    throw Object.assign(new Error(`the handle "${handle}" is taken`), {
+      code: 409, defect: `the handle "${handle}" is taken`, hint: `it is already spoken for in ${where}; pick a free handle`,
+    });
   if (!plan?.vouched) throw bounce(BIND_REFUSALS.MOVED);
 
   // The card and its mailboxes go down first, as declare-exec's berth does, so

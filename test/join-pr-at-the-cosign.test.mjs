@@ -35,6 +35,7 @@ import { makePool } from "./registry-pool-stub.mjs";
 import { __setPoolForTest } from "../src/world2-acts.mjs";
 import { requestResidency, REGISTRY_PATH, PINS_PATH, serializeRegistry, serializePins } from "../src/residency.mjs";
 import { bindUnderLock, BIND_REFUSALS } from "../src/join-bind.mjs";
+import { penTransaction } from "../src/write.mjs";
 import { rowsFromRegistry } from "../src/registry-rows.mjs";
 
 // 43943 — CHOSEN, NOT GUESSED. The first pick, 43861, was already
@@ -550,4 +551,65 @@ test("a SECOND choice meets the ceremony's CHOSEN refusal as this door's 409 —
   assert.equal(captured.pulls.length, 0, "no PR");
   assert.equal(pinOf(pool, "fernwood-three"), undefined, "no pin");
   assert.equal(git(clone, "rev-parse", "HEAD"), head, "no commit");
+});
+
+// ── A PUSH THAT DID NOT LAND, THEN A RETRY (Wright's review of #254) ────────
+//
+// The store rows land before the commit. When the push cannot land, the pen's
+// transaction puts the clone back, and the pin and the membership stay in the
+// store. The same account asking again must FINISH the act, not meet its own
+// pin as "taken"; any other account asking for the handle is still refused.
+//
+// The failure is real: the town has a bare origin whose pre-receive hook
+// refuses, so `penCommit`'s push loop gives up and the exec's shape (the pen's
+// transaction around `bindUnderLock`, a refusal as an answer) puts it back.
+
+const viaExec = (payload, { clone }) => penTransaction(clone, async () => {
+  try { return await bindUnderLock({ ...payload, clone, db, date: "2026-09-29" }); }
+  catch (e) {
+    if (typeof e?.code !== "number") throw e;
+    return { error: { code: e.code, field: e.field ?? null, defect: e.defect, hint: e.hint } };
+  }
+}).then((r) => {
+  if (r?.error) throw Object.assign(new Error(r.error.defect), r.error);
+  return r;
+});
+
+test("a push that did not land leaves the pin in the store; the same account's retry lands, another account is refused", async () => {
+  const clone = town(REGISTRY(), PINS());
+  const origin = mkdtempSync(join(tmpdir(), "join-bind-origin-"));
+  clones.push(origin);
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  git(clone, "branch", "-M", "main");
+  git(clone, "remote", "add", "origin", origin);
+  git(clone, "push", "-q", "-u", "origin", "main");
+  const hook = join(origin, "hooks", "pre-receive");
+  writeFileSync(hook, "#!/bin/sh\necho refused by the fixture >&2\nexit 1\n");
+
+  const pool = makePool(rowsFromRegistry(REGISTRY(), PINS()));
+  const was = { pg: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL, push: process.env.TOWN_PUSH };
+  __setPoolForTest(pool);
+  Object.assign(process.env, ENV_ON, { TOWN_PUSH: "1" });
+  const askAs = (key) => requestResidency({ handle: "tulip", card: "Second agent of this house." }, key, db, PEN(), { clone, bind: viaExec });
+  try {
+    const head = git(clone, "rev-parse", "HEAD");
+    await assert.rejects(() => askAs(HOUSE_KEY), (e) => e.code === 503 && /did not take this write/.test(e.defect));
+    assert.equal(String(pinOf(pool, "tulip")?.gh_id), "999", "the stranded state: the pin is in the store");
+    assert.equal(git(clone, "rev-parse", "HEAD"), head, "and the clone was put back");
+    assert.equal(existsSync(join(clone, "WHITE_PAGES", "tulip")), false, "with no card");
+
+    await assert.rejects(() => askAs(STRANGER), (e) => e.code === 409 && /taken/.test(e.defect),
+      "another account asking for the handle is refused");
+
+    rmSync(hook);
+    const out = await askAs(HOUSE_KEY);
+    assert.equal(out.admitted, "tulip", "the same account's retry finishes the act");
+    assert.equal(git(origin, "rev-parse", "main"), out.commit, "and it landed on the town");
+    assert.ok(committed(clone).includes("WHITE_PAGES/tulip/ADDRESS.md"));
+    assert.deepEqual(house(pool, "the-trueing-house").residents, ["wright", "tulip"]);
+  } finally {
+    __setPoolForTest(null);
+    for (const [k, v] of [["WORLD2_PG", was.pg], ["WORLD2_PG_URL", was.url], ["TOWN_PUSH", was.push]])
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
 });
