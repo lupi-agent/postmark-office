@@ -93,9 +93,20 @@ async function storedDigests(client, name) {
 
 // ── writing the store ────────────────────────────────────────────────────────
 
-async function insertRows(client, name, rows, tally) {
-  if (!rows.length) return;
-  const cols = [...TOWN_TABLES[name].cols, ...(hasDigest(name) ? ["digest"] : [])];
+/**
+ * repo_log's rows with `n`, each file's place in its own commit. A commit's
+ * rows arrive contiguous (git log's name-status block), so the count restarts at
+ * each new sha; the store keeps the order sqlite gave by rowid.
+ */
+function withOrdinal(rows) {
+  let sha = null, n = 0;
+  return rows.map((r) => { if (r[0] !== sha) { sha = r[0]; n = 0; } return [...r, ++n]; });
+}
+
+async function insertRows(client, name, rowsIn, tally) {
+  if (!rowsIn.length) return;
+  const rows = name === "repo_log" ? withOrdinal(rowsIn) : rowsIn;
+  const cols = [...TOWN_TABLES[name].cols, ...(hasDigest(name) ? ["digest"] : []), ...(name === "repo_log" ? ["n"] : [])];
   for (let i = 0; i < rows.length; i += CHUNK) {
     const chunk = rows.slice(i, i + CHUNK);
     const params = [];
@@ -106,7 +117,7 @@ async function insertRows(client, name, rows, tally) {
     await client.query(`INSERT INTO ${tableOf(name)} (${cols.join(", ")}) VALUES ${tuples.join(", ")}`, params);
   }
   tally[name] ??= { inserted: 0, deleted: 0 };
-  tally[name].inserted += rows.length;
+  tally[name].inserted += rowsIn.length;
 }
 
 async function deleteKeys(client, name, keys, tally) {

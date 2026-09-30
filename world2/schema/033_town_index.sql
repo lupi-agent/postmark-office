@@ -36,7 +36,7 @@
 -- the md5 of the row's other columns as the ingest wrote them. It is how a
 -- delta writes only what changed: the ingest reads (key, digest), never the
 -- rows, and replaces a row only when its digest moved. Readers never select it.
--- town_repo_log is append-only and needs none.
+-- town_repo_log is append-only and needs none (it carries `n` instead, below).
 --
 -- ── ORDER ────────────────────────────────────────────────────────────────────
 --
@@ -102,10 +102,14 @@ CREATE TABLE IF NOT EXISTS town_quest_progress (
 );
 CREATE TABLE IF NOT EXISTS town_quest_standing (handle text PRIMARY KEY, json text NOT NULL, digest text NOT NULL);
 -- One row per commit x file, append-only: a delta appends `git log head..sha`.
+-- `n` is the file's place in its commit's own list (git's name-status order).
+-- office.db has no such column because sqlite hands a commit's files back in
+-- insert order (rowid); Postgres promises no order, so the store says it.
 CREATE TABLE IF NOT EXISTS town_repo_log (
-  sha text NOT NULL, committed_at text, author text, subject text, op text, path text
+  sha text NOT NULL, committed_at text, author text, subject text, op text, path text,
+  n integer NOT NULL
 );
-CREATE INDEX IF NOT EXISTS town_repo_log_sha ON town_repo_log (sha);
+CREATE INDEX IF NOT EXISTS town_repo_log_sha ON town_repo_log (sha, n);
 CREATE INDEX IF NOT EXISTS town_repo_log_path ON town_repo_log (path);
 CREATE INDEX IF NOT EXISTS town_repo_log_time ON town_repo_log (committed_at);
 CREATE TABLE IF NOT EXISTS town_regions (id text PRIMARY KEY, name text, json text NOT NULL, digest text NOT NULL);

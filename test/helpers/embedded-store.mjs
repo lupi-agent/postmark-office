@@ -73,8 +73,16 @@ export async function startStore({ db = "town_index_test" } = {}) {
   await owner.end();
   return {
     connect,
+    /** A connection string for a role, for a child process (a spawned office) to dial. */
+    url: (user, database = db) => `postgres://${user}:${PW}@127.0.0.1:${port}/${database}`,
     async stop() {
-      try { await server.stop(); } finally { rmSync(scratch, { recursive: true, force: true }); }
+      // Windows can hold the data directory for a moment after the server has
+      // gone; a scratch directory left in tmp is not a test failure.
+      try { await server.stop(); }
+      finally {
+        try { rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }
+        catch (e) { console.error(`[embedded-store] left ${scratch} behind (${e.code ?? e.message})`); }
+      }
     },
   };
 }

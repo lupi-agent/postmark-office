@@ -725,8 +725,13 @@ export function repoLog(db, opts = {}) {
     where.push("committed_at <= ?"); params.push(u.length === 10 ? `${u}T23:59:59.999Z` : u);
   }
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  // `, sha` NAMES THE TIEBREAK (POS-268). Two commits in the same second (the
+  // live index holds 47 such ties) used to come back in whatever order the query
+  // plan grouped them: by sha with no filter, by insert order under a since or
+  // until. The store's twin (town-index-store.mjs) has no insert order to copy,
+  // so both now say sha, and a page boundary between tied commits is stable.
   const commits = db.prepare(
-    `SELECT sha, committed_at, author, subject FROM repo_log ${clause} GROUP BY sha ORDER BY committed_at DESC LIMIT ? OFFSET ?`,
+    `SELECT sha, committed_at, author, subject FROM repo_log ${clause} GROUP BY sha ORDER BY committed_at DESC, sha LIMIT ? OFFSET ?`,
   ).all(...params, limit, offset);
   // THE HONEST TOTAL (2026-08-25). Counted as DISTINCT sha, not as rows: this
   // table holds one row per (sha, path), so a plain COUNT(*) here would report

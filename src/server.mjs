@@ -38,6 +38,8 @@ import { openRolesDb, roleGate, roleGatesOn, ROLE_SUBSCRIBER } from "./roles.mjs
 import { arrivalPage } from "./arrival.mjs";
 import { townSummary, residentList, residentPage, resident, mailList, letter, search, bulletinList, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, regionOne, home, identityOf, repoLog } from "./queries.mjs";
 import { householdOf } from "./households.mjs";
+import * as townIndexStore from "./town-index-store.mjs"; // the office.db readers moved to the store (POS-268)
+const { townIndexReads } = townIndexStore;
 import { votesAvailable, voteList, voteView, stakeViaOffice } from "./votes.mjs";
 import { doorstepBundle } from "./doorstep-bundle.mjs"; // the doorstep, finished — one implementation, three doors
 import { giftViaOffice, isPrincipal } from "./ops.mjs";
@@ -592,6 +594,19 @@ const j = (res, code, obj) => {
 // because every other door's body is something a person reads in a terminal; the
 // window's is 700 nodes and 850 edges, where the indent is a third of the bytes
 // on the wire and nobody was going to read it by eye anyway.
+// A door switched to the store's town index (TOWN_INDEX_READS=store, POS-268):
+// the answer from the store, a header naming the store's own as-of (the
+// X-Postmark-As-Of beside it is still office.db's, which the unmoved doors
+// answer from), `onNull` for a reader that found nothing, and the 503 when the
+// store cannot be read. Never a fallback to office.db.
+async function fromTownIndex(res, fn, onNull = null) {
+  const r = await townIndexStore.storeAnswer(fn);
+  if (r.refused) return bounce(res, 503, r.refused.defect, r.refused.hint);
+  if (r.asOf) res.setHeader("x-postmark-town-index-as-of", r.asOf);
+  if (r.out == null && onNull) return onNull();
+  return j(res, 200, r.out);
+}
+
 const jCompact = (res, code, obj) => {
   const headers = { "content-type": "application/json; charset=utf-8", "x-postmark-as-of": AS_OF };
   const worldStoreAsOf = storeEngaged() ? storeSnapshot().asOfWorld : null;
@@ -1658,19 +1673,25 @@ const handle = (req, res) => {
       // follow-up): the repo IS the town, so panes never need GitHub for it.
       if (path === "/repo/log") {
         const p = url.searchParams;
-        return j(res, 200, repoLog(db, {
+        const opts = {
           path: p.get("path") ?? undefined,
           author: p.get("author") ?? undefined,
           since: p.get("since") ?? undefined,
           until: p.get("until") ?? undefined,
           limit: p.get("limit") ?? undefined,
-        }));
+        };
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.repoLog(c, opts));
+        return j(res, 200, repoLog(db, opts));
       }
 
-      if (path === "/regions") return j(res, 200, regionList(db, {
-        limit: url.searchParams.get("limit") ?? undefined,
-        offset: url.searchParams.get("offset") ?? undefined,
-      }));
+      if (path === "/regions") {
+        const opts = {
+          limit: url.searchParams.get("limit") ?? undefined,
+          offset: url.searchParams.get("offset") ?? undefined,
+        };
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.regionList(c, opts));
+        return j(res, 200, regionList(db, opts));
+      }
 
       // GET /regions/{slug} — ONE region, whole and uncapped (queries.mjs §
       // regionOne). It sits after the exact `/regions` match above, so the list
@@ -1678,8 +1699,11 @@ const handle = (req, res) => {
       // A region whose founder never wrote a page answers 200 with an empty
       // description — it exists, and saying 404 would deny the ground itself.
       if ((m = /^\/regions\/([a-z0-9-]+)$/.exec(path))) {
-        const r = regionOne(db, m[1]);
-        if (!r) return bounce(res, 404, `no region "${m[1]}"`, "regions are named by their atlas slug; see GET /regions for the roll");
+        const slug = m[1];
+        const missing = () => bounce(res, 404, `no region "${slug}"`, "regions are named by their atlas slug; see GET /regions for the roll");
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.regionOne(c, slug), missing);
+        const r = regionOne(db, slug);
+        if (!r) return missing();
         return j(res, 200, r);
       }
 
