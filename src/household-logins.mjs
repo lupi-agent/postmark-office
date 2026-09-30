@@ -215,6 +215,55 @@ export function sketchbookKeys(households, logins) {
   return { additions, collisions, unnameable };
 }
 
+// ── ONE KEY PER DECLARED HOUSE (the Starling House, 2026-09-30) ─────────────
+//
+// `householdsOf` answers the stamp ledger's key for each handle, and the ledger
+// spells one house several ways: a resident the office declared carries its
+// sealed `hh:<house>` line, while residents who joined by PR under the same
+// account carry their pin's `gh:<id>`. House of Many Doors was `hh:` for
+// kinofire and `gh:334016343` for wayward-archivist, seasiren and wildcat, so
+// the world's authorship wall read the Starling House (wayward-archivist's, in
+// the `draft/house-of-many-doors` sketchbook) as another household's and left
+// it drafted at every settlement. Eight of 134 declared houses were split.
+//
+// So the WORLD's copy keys every handle by the house the store declares it in
+// (tools/households.json, printed from the store): `hh:<slug>`. Every spelling
+// of that house resolves to it — each account's `gh:<id>`, the current key, and
+// every `formerly` key. A handle no declared house lists keeps its ledger key.
+// This composes onto the EXPORTED map only; `householdsOf` and `loginKeys` do not
+// move, because the card rail and the Stripe attribution read them.
+
+/**
+ * `{ households, logins, names }`: the export's maps with every spelling of a
+ * declared house resolved to its one key, and `names` — each declared house's
+ * sketchbook name (its slug, and each former slug) bound to that key. A house's
+ * own sketchbook must stay bindable even when a login already binds its key,
+ * since the store writes its marks under the house's name.
+ */
+export function oneKeyPerHouse(households, logins, declared) {
+  const byKey = new Map();
+  const byHand = new Map();
+  const names = {};
+  for (const [slug, rec] of Object.entries(declared?.households ?? {})) {
+    const key = `hh:${slug}`;
+    byKey.set(key, key);
+    names[slug.toLowerCase()] = key;
+    for (const f of rec?.formerly ?? []) {
+      if (!f) continue;
+      byKey.set(`hh:${f}`, key);
+      names[String(f).toLowerCase()] = key;
+    }
+    for (const a of rec?.accounts ?? []) if (a?.id != null) byKey.set(`gh:${a.id}`, key);
+    for (const h of rec?.residents ?? []) byHand.set(h, key);
+  }
+  const canon = (k) => byKey.get(k) ?? k;
+  const outHouseholds = {};
+  for (const [handle, key] of Object.entries(households ?? {})) outHouseholds[handle] = byHand.get(handle) ?? canon(key);
+  const outLogins = {};
+  for (const [login, key] of Object.entries(logins ?? {})) outLogins[login] = canon(key);
+  return { households: outHouseholds, logins: outLogins, names };
+}
+
 /** household key → its current resident handles, sorted. */
 export function handsByKey(households) {
   const byKey = new Map();
