@@ -52,15 +52,26 @@ Every table states three things: what writes the **snapshot** (at the crossing's
 
 Behind `TOWN_INDEX_READS=store` (unset means office.db, as today). Rolling back means unsetting it; office.db and the rehydrate stay until the last reader has moved and a clean week has passed. Every store read is async, so each moved reader changes its signature at its callers, and those callers are named in the commit. The order goes from least entangled to most:
 
-1. **Moved (2026-09-30):** `repoLog` (GET /repo/log, `list_commits`), `regionList` (GET /regions, `list_regions`), `regionOne` (GET /regions/{slug}). One change to the office.db twin, named: `repoLog` now breaks a tie in commit time by sha. Tied commits (47 on the live index) came back in the query plan's order, which differed with and without a date filter. **Next:** `home` (GET /homes/:h, `read_home`), which also reads the freshness ladder (`withFresh`).
-2. bulletin (`bulletinList`/`Entry`/`Teaser`, `psaFold`), then stamps (`stampsRoster`/`For`/`Detail`), pots and quests.
+1. **Moved (2026-09-30), at their own doors:**
+   - `repoLog` (GET /repo/log, `list_commits`).
+   - `regionList` and `regionOne` (GET /regions, GET /regions/{slug}, `list_regions`).
+   - `bulletinList`, `bulletinTeaser` and `bulletinEntry` (GET /bulletin, GET /bulletin/{slug}, `read_bulletin`).
+   - `home` (GET /homes/{h}, `read_home`). Its freshness ladder is dated by the store's head, never a caller's `asOf`.
+   - `stampsRoster` and `stampsDetail` (GET /stamps, GET /stamps/{h}, `read_stamps`).
+
+   Each reader's row shape is an exported function in queries.mjs that both twins call; only the SQL is written twice. Two clauses changed in the office.db readers, both named:
+   - `repoLog` breaks a tie in commit time by sha. Tied commits (47 on the live index) came back in the query plan's order, which differed with and without a date filter.
+   - The holo join orders by `, r.seq`. This is the order sqlite already gave.
+
+   The doorstep, the house bundle and household-stamps still read office.db's bulletin teaser, psaFold and stampsDetail. They move with the doorstep.
+2. Pots and quests: `potBoard`, `questBoardFor` (already async), `standingFor` and `townQuestBoard`.
 3. letters and mail (`letter`, `letterList`, `mailList`, `mailCorrespondents`, `mailAwaiting`, `search`, `metricsMail`).
 4. residents and the doorstep last: `residentList` feeds the position doors' roll memo, and `doorstep` gathers six of the reads above.
 5. The out-of-process readers (`declare-exec`, `join-bind-exec`, `earpiece-mail`, `write.mjs`'s recipient checks) open office.db themselves; they move with the residents.
 
 Each door's gate is equality: the store is seeded from the fixture's office.db, and both answers are compared as the bytes the door sends (`test/town-index-reads.test.mjs`). At the door, three offices share one office.db, with the switch off, on, and on with the store gone. They must answer byte-equal, the switched office must name the store's as-of, and the cut-off one must return a 503, never office.db's answer (`test/town-index-doors.test.mjs`).
 
-**Retiring hydrate.mjs, the rehydrate unit and the swap path waits for the last reader.** Everything in groups 2–5 above still reads office.db.
+**Retiring hydrate.mjs, the rehydrate unit and the swap path waits for the last reader.** Everything in groups 2–5 above still reads office.db, and so does every doorstep segment.
 
 ## Gates
 
