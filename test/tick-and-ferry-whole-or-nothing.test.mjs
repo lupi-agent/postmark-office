@@ -15,7 +15,7 @@
 //
 // ── WHAT RUNS HERE ──────────────────────────────────────────────────────────
 //
-// The SHIPPED TEXT of both, not a copy of their logic: `deploy/office-tick.sh`
+// The SHIPPED TEXT of both, not a copy of their logic: `deploy/office-keep.sh` (the keeping half of the tick since POS-268's split)
 // read from disk and run whole, and the ferry's `ExecStart` script lifted out of
 // `deploy/postmark-ferry.service` the way systemd joins it. The one edit is the
 // path: `/srv/postmark-office` becomes a fixture office root (and the ferry's
@@ -165,7 +165,13 @@ writeFileSync(process.argv[process.argv.indexOf("--db") + 1], "hydrated\\n");
 import { writeFileSync } from "node:fs";
 writeFileSync(process.argv[process.argv.indexOf("--db") + 1], "hydrated\\n");
 `,
-  "deploy/publish-windows.mjs": "\n",
+  // The keeping tick's last step and the witness that it ran past the lock: the
+  // hydrates moved to the rehydrate unit in POS-268's split, so office.db is no
+  // longer this script's to write.
+  "deploy/publish-windows.mjs": `
+import { writeFileSync } from "node:fs";
+writeFileSync("panes-published", "yes\\n");
+`,
 };
 
 const BIN = {
@@ -226,10 +232,10 @@ function envFor(fx, extra) {
 
 /** The shipped tick, with its office root moved into the fixture. */
 function tickScript(fx) {
-  const text = readFileSync(join(OFFICE, "deploy", "office-tick.sh"), "utf8");
+  const text = readFileSync(join(OFFICE, "deploy", "office-keep.sh"), "utf8");
   const hits = text.split("/srv/postmark-office").length - 1;
   assert.ok(hits >= 4, `the tick names /srv/postmark-office ${hits} time(s); the key (x2), the welcome pass and the lock were expected`);
-  const out = join(fx.root, "office-tick.sh");
+  const out = join(fx.root, "office-keep.sh");
   writeFileSync(out, text.replaceAll("/srv/postmark-office", fwd(fx.office)));
   return out;
 }
@@ -290,7 +296,7 @@ test("tick · control: a green ledger gets the pass's rows committed and pushed,
   assert.match(shown, /mint row 3\nwelcome row 4\n$/, "both rows reached origin");
   assert.deepEqual(calls(fx), ["settle", "verify", "mint --append", "welcome", "verify"], "the joins settle first; a verify before the write and one after it");
   assert.doesNotMatch(r.stderr, /ROLLED BACK|catch-up OFF|FAILED/);
-  assert.ok(existsSync(join(fx.office, "office.db")), "the tick went on to hydrate");
+  assert.ok(existsSync(join(fx.office, "panes-published")), "the tick went on to publish the panes");
 });
 
 test("tick · a ledger that arrives red gets nothing appended, and the journal says the catch-up is off", { skip }, () => {
@@ -304,7 +310,7 @@ test("tick · a ledger that arrives red gets nothing appended, and the journal s
   assert.equal(status(fx), "", "the clone is as clean as it arrived");
   assert.equal(head(fx), at);
   assert.match(r.stderr, /mint catch-up OFF — the ledger arrived red/, "the journal names why the catch-up is off");
-  assert.ok(existsSync(join(fx.office, "office.db")), "the tick's real work still ran");
+  assert.ok(existsSync(join(fx.office, "panes-published")), "the tick's real work still ran");
 });
 
 test("tick · a verify that fails after the write restores the ledger and removes what the pass created, and nothing else", { skip }, () => {

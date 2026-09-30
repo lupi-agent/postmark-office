@@ -1,0 +1,25 @@
+[Unit]
+# THE TOWN INDEX'S PEN (POS-268): office.db's tables kept in the store, a
+# snapshot at each crossing's seal and the commits since as the delta.
+# deploy/town-index-ingest.sh carries the whole of it; docs/town-index-store.md
+# carries the shape. PARKED until its migration (033) is applied and the seed
+# has been run by hand (the script's header).
+Description=The town index — office.db's tables in the store (town repo -> town_*)
+Documentation=file:///srv/world2-lab/ops/town-index-ingest.sh
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=meepo
+# The same credential file the law pen reads, read by systemd and handed in.
+EnvironmentFile=/etc/postmark-world2-dev.env
+# Exit 0 ingested · 1 the pen refused or failed (the reason is in
+# /srv/world2-lab/state/town-index.json) · 2 the lane could not run · 3 no head
+# yet (seed by hand).
+ExecStart=/bin/bash /srv/world2-lab/ops/town-index-ingest.sh
+TimeoutStartSec=600
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

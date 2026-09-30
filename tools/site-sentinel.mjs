@@ -180,7 +180,8 @@ export const CONFIG = {
   //   site code : the release train is roughly weekly, but a cut tag should
   //               reach prod within an hour of being cut.
   //   town data : sync-atlas runs every ~30 min and Deploy follows it.
-  //   office    : the rehydrate timer fires at *:07,22,37,52 — every 15 min.
+  //   office    : the rehydrate timer fires every 15 min (*:09,24,39,54 since
+  //               the POS-268 split; *:07,22,37,52 on a pre-split box).
   //               30m under the divergence anchor is TWO DEAD TICKS behind a
   //               known-newer tip (Keemin-tightened 2026-08-31, the same
   //               night the anchor was fixed). History of the number: 45m

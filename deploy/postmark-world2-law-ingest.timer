@@ -4,8 +4,8 @@ Description=World 2.0 law projection poll, every 15 minutes — the rulebook's o
 [Timer]
 # :04/:19/:34/:49 — the SAME marks postmark-world2-ingest.timer carries, kept
 # deliberately rather than chosen fresh. Two reasons. The first is the one that
-# put them there: these are off the :07/:22/:37/:52 that office-rehydrate and
-# stripe-watch occupy, so four lanes are not contending at once. The second is
+# put them there: these are off the :07/:22/:37/:52 that the office tick (office-keep since
+# the 2026-09-27 split) and stripe-watch occupy, so four lanes are not contending at once. The second is
 # that this unit is the parked one's law half and nothing else — a different
 # cadence here would be a second decision riding along with the split, and the
 # founder ruled the split, not a new schedule.

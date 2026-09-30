@@ -1,0 +1,12 @@
+[Unit]
+Description=The office's keeping tick — the clones, the mint, the settlements row, the panes
+
+[Timer]
+# :07/:22/:37/:52, the clock the whole office tick ran on before the split, so
+# everything this does is exactly as fresh as it was. The world2 pens'
+# :04/:19/:34/:49 and :12/:27/:42/:57 were placed around these marks.
+OnCalendar=*:07,22,37,52
+Persistent=true
+
+[Install]
+WantedBy=timers.target

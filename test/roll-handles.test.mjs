@@ -78,11 +78,13 @@ test("R4: the index refuses it at the door too, so the row never exists after a 
   // is ALREADY hydrated on the box. This one is the durable half: the office
   // should not be indexing a folder as a person in the first place. Asserted on
   // the source because hydration needs a real town clone and a real git history.
+  // The derivation moved to src/town-index.mjs (POS-268), which both office.db
+  // and the store's town-index ingest are written from, so that is the source read.
   const fs = await import("node:fs");
   const { fileURLToPath } = await import("node:url");
   const { dirname, join } = await import("node:path");
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-  const hydrate = fs.readFileSync(join(root, "src", "hydrate.mjs"), "utf8");
+  const hydrate = fs.readFileSync(join(root, "src", "town-index.mjs"), "utf8");
 
   assert.match(hydrate, /isResidentHandle/,
     "hydrate must use the office's own admission grammar, not a second name-list");

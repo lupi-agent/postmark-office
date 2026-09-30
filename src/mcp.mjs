@@ -9,6 +9,7 @@
 // arrive with no CONTRIBUTING.md in context, so the contract IS the etiquette.
 
 import { townSummary, residentList, residentPage, resident, mailList, letterAnswer, LETTER_READING_LAW_LINE, search, bulletinList, bulletinTeaser, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, home, identityOf, repoLog, DOORSTEP_SEGMENTS } from "./queries.mjs";
+import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore, stampsRoster as stampsRosterFromStore, stampsDetail as stampsDetailFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
 import { READ_FIELDS } from "./one-contract.mjs"; // the one field list a read shares with its twin at another door (POS-70 row 39)
 
 /** One line per doorstep segment, for `read_doorstep`'s description. Keyed by
@@ -568,6 +569,13 @@ const flatRequiredMap = () => {
 /** The office's residents index as a set of handles, or null when this door has no readable index. */
 const rollOf = (db) => { try { return db ? new Set(residentList(db).map((r) => r.handle)) : null; } catch { return null; } };
 
+// A read switched to the store's town index: its answer, or the store's fixed
+// refusal (the MCP door has no status code, so the sentence is the signal).
+async function fromStore(fn) {
+  const r = await storeAnswer(fn);
+  return r.refused ?? r.out;
+}
+
 export async function callTool(name, args, ctx) {
   const { db, key, meta, asOf, canWrite, clone, pen, odb, dbPath, rdb, worldWriteBudget } = ctx;
   const notFound = (what, hint) => ({ error: "bounce", defect: what, hint });
@@ -679,20 +687,29 @@ export async function callTool(name, args, ctx) {
       if (gated) return { error: "bounce", defect: gated.defect, hint: gated.hint };
       return metricsMail(db, { days: args?.days });
     }
-    case "list_commits": return repoLog(db, args ?? {});
+    case "list_commits": return townIndexReads() ? fromStore((c) => repoLogFromStore(c, args ?? {})) : repoLog(db, args ?? {});
     case "list_letters": return letterList(db, {
       resident: args.resident, region: args.region, since: args.since, until: args.until,
       excludeOffice: args.exclude_office === true, full: args.full === true,
       limit: args.limit, offset: args.offset,
     });
-    case "list_regions": return regionList(db, args ?? {});
+    case "list_regions": return townIndexReads() ? fromStore((c) => regionListFromStore(c, args ?? {})) : regionList(db, args ?? {});
     case "read_home": {
-      const h = home(db, args.handle, await freshFor(args.handle, { odb, clone, asOf }));
+      const fresh = await freshFor(args.handle, { odb, clone, asOf });
+      if (townIndexReads()) {
+        const r = await storeAnswer((c) => homeFromStore(c, args.handle, fresh));
+        if (r.refused) return r.refused;
+        if (!r.out) return notFound(`no home for "${args.handle}"`, "the resident may have no HOME/ yet; try list_residents");
+        return { ...r.out, world: await worldBlockForHandle(args.handle, key) };
+      }
+      const h = home(db, args.handle, fresh);
       if (!h) return notFound(`no home for "${args.handle}"`, "the resident may have no HOME/ yet; try list_residents");
       return { ...h, world: await worldBlockForHandle(args.handle, key) };
     }
     case "read_bulletin": {
-      if (args.slug) return bulletinEntry(db, args.slug) ?? notFound(`no bulletin entry "${args.slug}"`, "omit slug for the list");
+      const missing = () => notFound(`no bulletin entry "${args.slug}"`, "omit slug for the list");
+      if (args.slug && townIndexReads()) return (await fromStore((c) => bulletinEntryFromStore(c, args.slug))) ?? missing();
+      if (args.slug) return bulletinEntry(db, args.slug) ?? missing();
       // BOUNDED ONLY WHEN ASKED (2026-08-25). A bare read_bulletin answers the
       // whole listing exactly as it always has — this door's own bound is a
       // Tier-2 row on the weight audit and not this wave's call to make. What
@@ -700,6 +717,7 @@ export async function callTool(name, args, ctx) {
       // segment can BE this read at three entries rather than a private teaser
       // beside it, and so the read-more the note names can actually be walked.
       const asked = args.limit != null || args.offset != null;
+      if (townIndexReads()) return fromStore((c) => (asked ? bulletinTeaserFromStore(c, { limit: args.limit, offset: args.offset }) : bulletinListFromStore(c)));
       return asked ? bulletinTeaser(db, { limit: args.limit, offset: args.offset }) : bulletinList(db);
     }
     case "send_letter": {
@@ -728,9 +746,13 @@ export async function callTool(name, args, ctx) {
       }
       catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
     }
-    case "read_stamps": return args.handle
-      ? { handle: args.handle, ...stampsDetail(db, args.handle) }
-      : stampsRoster(db, meta, { limit: args?.limit, offset: args?.offset });
+    case "read_stamps":
+      if (townIndexReads()) return fromStore(async (c) => (args.handle
+        ? { handle: args.handle, ...(await stampsDetailFromStore(c, args.handle)) }
+        : stampsRosterFromStore(c, { limit: args?.limit, offset: args?.offset })));
+      return args.handle
+        ? { handle: args.handle, ...stampsDetail(db, args.handle) }
+        : stampsRoster(db, meta, { limit: args?.limit, offset: args?.offset });
     case "read_quests": return questBoardFor(db, meta, args.handle, clone);
     case "read_bounties": return bountyBoard();
     // The Civic Quarter, read whole. No args: the quarter is five buildings and
