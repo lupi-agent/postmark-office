@@ -30,7 +30,6 @@ import {
   blessedRef,
   draftBranch,
   draftRefForKey,
-  freshestMainRef,
   mainRef,
   materializeAtRef,
   publishedSkeleton,
@@ -2975,16 +2974,8 @@ async function groundMinimumStake(clean, canon) {
   }
   const { marksContain } = await foldConstants();
   if (typeof marksContain !== "function") return commons; // no geometry engine → the safe read
-  // PUBLISHED MAIN, NOT THE PEN'S LOCAL BRANCH (the Starling House,
-  // 2026-09-30). `mainRef` prefers `refs/heads/main`, which on the box only
-  // the crossing-save's 00:02/12:02Z pull advances — so for up to twelve hours
-  // after a settlement re-derived the registry, this read the one before it,
-  // and a house the settlement had joined was still two households here:
-  // kinofire building on wayward-archivist's parcel was told the commons law.
-  // Whose ground this is is a READ, and `freshestMainRef` is the read tiers'
-  // published main.
   let registry = null;
-  try { registry = readJsonAtRef(WORLD_CLONE, freshestMainRef(WORLD_CLONE), "WORLD/households.json")?.households ?? null; }
+  try { registry = readJsonAtRef(WORLD_CLONE, mainRef(WORLD_CLONE), "WORLD/households.json")?.households ?? null; }
   catch { /* no registry → solo grain, same as everywhere else */ }
   const credOf = (h) => registry?.[h] ?? `solo:${h}`;
   const mine = credOf(clean.by);
