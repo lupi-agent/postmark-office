@@ -100,6 +100,15 @@ test("bulletinList, bulletinTeaser and bulletinEntry answer as office.db does", 
     await same(`bulletinEntry ${slug}`, office.bulletinEntry(db, slug), store.bulletinEntry(api, slug));
 });
 
+test("home answers as office.db does, its freshness dated by the store's own as-of", async (t) => {
+  if (skip) return t.skip(skip);
+  for (const h of ["wright", "limen", "postmaster", "nobody"])
+    await same(`home ${h}`, office.home(db, h), store.home(api, h));
+  // A caller's asOf is the OTHER index's clock: the store's reader dates its row
+  // by its own head, so a stray asOf changes nothing it answers.
+  await same("home wright, a caller's asOf ignored", office.home(db, "wright"), store.home(api, "wright", { asOf: "someothersha" }));
+});
+
 test("the store's as-of is the index's own", async (t) => {
   if (skip) return t.skip(skip);
   assert.equal(await store.townIndexAsOf(api), office.indexAsOf(db));

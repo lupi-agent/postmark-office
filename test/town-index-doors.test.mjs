@@ -69,7 +69,7 @@ after(async () => {
 
 const DOORS = ["/repo/log", "/repo/log?limit=1", "/repo/log?path=WHITE_PAGES/", "/repo/log?author=keemin", "/repo/log?since=2026-07-05&until=2026-07-12",
   "/regions", "/regions?limit=1&offset=0", "/regions/the-terrace", "/regions/nowhere",
-  "/bulletin", "/bulletin/settling-in", "/bulletin/nope"];
+  "/bulletin", "/bulletin/settling-in", "/bulletin/nope", "/homes/wright", "/homes/limen", "/homes/nobody"];
 
 test("every moved door answers the switched office exactly as the unswitched one, and names the store's as-of", async (t) => {
   if (skip) return t.skip(skip);
@@ -85,7 +85,7 @@ test("every moved door answers the switched office exactly as the unswitched one
 
 test("a switched door whose store cannot be read refuses with a 503, and never answers from office.db", async (t) => {
   if (skip) return t.skip(skip);
-  for (const door of ["/repo/log", "/regions", "/regions/the-terrace", "/bulletin", "/bulletin/settling-in"]) {
+  for (const door of ["/repo/log", "/regions", "/regions/the-terrace", "/bulletin", "/bulletin/settling-in", "/homes/wright"]) {
     const r = await fetch(offices["cut-off"].base + door);
     assert.equal(r.status, 503, door);
     const body = await r.json();
@@ -95,7 +95,7 @@ test("a switched door whose store cannot be read refuses with a 503, and never a
   assert.equal((await fetch(offices["cut-off"].base + "/stamps")).status, 200);
 });
 
-test("the MCP twins (list_commits, list_regions, read_bulletin) answer through the store when switched", async (t) => {
+test("the MCP twins (list_commits, list_regions, read_bulletin, read_home) answer through the store when switched", async (t) => {
   if (skip) return t.skip(skip);
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(dbPath, { readOnly: true });
@@ -103,7 +103,8 @@ test("the MCP twins (list_commits, list_regions, read_bulletin) answer through t
   const keep = { TOWN_INDEX_READS: process.env.TOWN_INDEX_READS, WORLD2_PG: process.env.WORLD2_PG, WORLD2_PG_URL: process.env.WORLD2_PG_URL };
   try {
     const asks = [["list_commits", {}], ["list_commits", { path: "WHITE_PAGES/", limit: 1 }], ["list_regions", {}],
-      ["read_bulletin", {}], ["read_bulletin", { limit: 1 }], ["read_bulletin", { slug: "settling-in" }], ["read_bulletin", { slug: "nope" }]];
+      ["read_bulletin", {}], ["read_bulletin", { limit: 1 }], ["read_bulletin", { slug: "settling-in" }], ["read_bulletin", { slug: "nope" }],
+      ["read_home", { handle: "wright" }], ["read_home", { handle: "nobody" }]];
     const plain = [];
     for (const [tool, args] of asks) plain.push(JSON.stringify(await callTool(tool, args, { db })));
     Object.assign(process.env, { TOWN_INDEX_READS: "store", WORLD2_PG: "1", WORLD2_PG_URL: store.url("office_api") });

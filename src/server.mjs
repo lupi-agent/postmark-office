@@ -1732,10 +1732,20 @@ const handle = (req, res) => {
       }
 
       if ((m = /^\/homes\/([a-z0-9-]+)$/.exec(path))) {
-        const h = home(db, m[1], { odb, clone: TOWN_CLONE, asOf: AS_OF });
-        if (!h) return bounce(res, 404, `no home for "${m[1]}"`, "the resident may have no HOME/ yet; see GET /residents");
-        return worldBlockForHandle(m[1], key).then((world) => j(res, 200, { ...h, world }))
-          .catch((e) => bounce(res, 500, "the world door tripped", String(e?.message ?? e).slice(0, 200)));
+        const handle = m[1];
+        const answer = (h) => {
+          if (!h) return bounce(res, 404, `no home for "${handle}"`, "the resident may have no HOME/ yet; see GET /residents");
+          return worldBlockForHandle(handle, key).then((world) => j(res, 200, { ...h, world }))
+            .catch((e) => bounce(res, 500, "the world door tripped", String(e?.message ?? e).slice(0, 200)));
+        };
+        if (townIndexReads()) {
+          return townIndexStore.storeAnswer((c) => townIndexStore.home(c, handle, { odb, clone: TOWN_CLONE })).then((r) => {
+            if (r.refused) return bounce(res, 503, r.refused.defect, r.refused.hint);
+            if (r.asOf) res.setHeader("x-postmark-town-index-as-of", r.asOf);
+            return answer(r.out);
+          });
+        }
+        return answer(home(db, handle, { odb, clone: TOWN_CLONE, asOf: AS_OF }));
       }
 
       // GET /letters — the filtered list (before /letters/{id}, which needs a slug)

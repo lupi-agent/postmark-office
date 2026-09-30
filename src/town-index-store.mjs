@@ -35,7 +35,9 @@ import {
 // The row SHAPES are queries.mjs's own exported functions, the ones its office.db
 // readers call; only the SQL is written twice. A port that restated the shape
 // would be the private copy that drifts.
-export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry"]);
+import { freshnessFor, composeHome } from "./paper-fresh.mjs"; // the freshness ladder, as queries.home uses it
+
+export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home"]);
 
 /** Is the switch on? Only the exact value `store` turns it on. */
 export const townIndexReads = (env = process.env) => env.TOWN_INDEX_READS === "store";
@@ -123,6 +125,21 @@ export async function bulletinTeaser(q, opts = {}) {
 export async function bulletinEntry(q, slug) {
   const row = (await q.query("SELECT json FROM town_bulletin WHERE slug = $1", [slug])).rows[0];
   return row ? bulletinEntryOf(row.json) : null;
+}
+
+/**
+ * queries.home, from the store. The freshness ladder composes over the row
+ * exactly as it does for office.db's, with ONE deliberate difference: its
+ * `asOf` is the STORE's head, never a caller's. The ladder asks "has the pen
+ * written this since the index this row came from", and the row came from the
+ * store; a caller passing office.db's as-of would date a store row by the other
+ * index's clock. (`fresh.asOf` is ignored here for that reason.)
+ */
+export async function home(q, handle, fresh = null) {
+  const row = (await q.query("SELECT json FROM town_homes WHERE handle = $1", [handle])).rows[0];
+  if (!row) return null;
+  const asOf = await townIndexAsOf(q);
+  return composeHome(JSON.parse(row.json), freshnessFor(handle, { ...fresh, asOf }));
 }
 
 /**

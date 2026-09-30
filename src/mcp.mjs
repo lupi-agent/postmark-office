@@ -9,7 +9,7 @@
 // arrive with no CONTRIBUTING.md in context, so the contract IS the etiquette.
 
 import { townSummary, residentList, residentPage, resident, mailList, letterAnswer, LETTER_READING_LAW_LINE, search, bulletinList, bulletinTeaser, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, home, identityOf, repoLog, DOORSTEP_SEGMENTS } from "./queries.mjs";
-import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
+import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
 import { READ_FIELDS } from "./one-contract.mjs"; // the one field list a read shares with its twin at another door (POS-70 row 39)
 
 /** One line per doorstep segment, for `read_doorstep`'s description. Keyed by
@@ -694,6 +694,12 @@ export async function callTool(name, args, ctx) {
     });
     case "list_regions": return townIndexReads() ? fromStore((c) => regionListFromStore(c, args ?? {})) : regionList(db, args ?? {});
     case "read_home": {
+      if (townIndexReads()) {
+        const r = await storeAnswer((c) => homeFromStore(c, args.handle, { odb, clone }));
+        if (r.refused) return r.refused;
+        if (!r.out) return notFound(`no home for "${args.handle}"`, "the resident may have no HOME/ yet; try list_residents");
+        return { ...r.out, world: await worldBlockForHandle(args.handle, key) };
+      }
       const h = home(db, args.handle, { odb, clone, asOf });
       if (!h) return notFound(`no home for "${args.handle}"`, "the resident may have no HOME/ yet; try list_residents");
       return { ...h, world: await worldBlockForHandle(args.handle, key) };
