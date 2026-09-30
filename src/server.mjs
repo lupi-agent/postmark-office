@@ -2470,6 +2470,14 @@ import("./law-snapshot.mjs").then((m) => {
   if (IN_READ_WORKER) { onAnnounce("law", () => m.reloadLawSnapshot()); m.reloadLawSnapshot(); }
   else m.startLawRefresher({ onChange: () => announce("law") });
 });
+// POS-270 (option A): the world graph from the store's snapshot per settlement.
+// The main thread polls and announces a move; a read worker loads once at boot
+// and again on each announcement. The readers key their caches on the published
+// snapshot, so a new one is picked up by the next read with no drop list here.
+import("./world-graph-snapshot.mjs").then((m) => {
+  if (IN_READ_WORKER) { onAnnounce("world-graph", () => m.reloadWorldGraph()); m.reloadWorldGraph(); }
+  else m.startWorldGraphRefresher({ onChange: () => announce("world-graph") });
+});
 // POS-269: who holds what, from the holding acts once the hold pen is flipped.
 // Loaded once here; the hold door reloads the main thread's copy after each act
 // and announces "holding", and a read worker reloads its own on that.

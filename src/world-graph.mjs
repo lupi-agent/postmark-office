@@ -37,6 +37,7 @@ import { join } from "node:path";
 
 import { loadWorldGraph, OFFICE_ROOT } from "./world-store.mjs";
 import { storeDbPath } from "./world-serve.mjs";
+import { worldGraphSnapshot } from "./world-graph-snapshot.mjs";
 
 // ── the zero-build lane ──────────────────────────────────────────────────────
 //
@@ -91,7 +92,7 @@ export const CONVERGENCE_KINDS = ["class", "code", "doctrine"];
 let _cached = null;
 
 /** Drop the cached payload — for tests that rewrite world.db in place. */
-export function resetGraphCache() { _cached = null; }
+export function resetGraphCache() { _cached = null; _fromSnap = null; }
 
 /**
  * The window's payload for a store file, or an honest error.
@@ -100,7 +101,16 @@ export function resetGraphCache() { _cached = null; }
  * route must be able to SAY, and an operator opening the window on a box that
  * has not hydrated yet is the most likely first visit there will ever be.
  */
-export function worldGraphPayload(dbPath = storeDbPath()) {
+export function worldGraphPayload(dbPath = null) {
+  // THE STORE FIRST (POS-270, option A). With no file named, the window answers
+  // from the world graph snapshot once it has loaded; a caller that names a
+  // file (a test, a tool) gets that file, and before the snapshot lands the
+  // office's own world.db is the floor.
+  if (dbPath == null) {
+    const snap = worldGraphSnapshot();
+    if (snap) return payloadFromSnapshot(snap);
+    dbPath = storeDbPath();
+  }
   let st;
   try { st = statSync(dbPath); }
   catch { return { error: "no world store", detail: `nothing at ${dbPath}`, dbPath }; }
@@ -115,7 +125,29 @@ export function worldGraphPayload(dbPath = storeDbPath()) {
 const parse = (s, fallback = null) => { try { return JSON.parse(s ?? ""); } catch { return fallback; } };
 
 function buildPayload(dbPath, st) {
-  const { graph, meta, counts, edgeTypes, lintFindings, placeholders } = loadWorldGraph(dbPath);
+  return worldGraphPayloadFrom(loadWorldGraph(dbPath), { bytes: st.size, mtime: new Date(st.mtimeMs).toISOString() });
+}
+
+let _fromSnap = null; // { snap, payload } — the snapshot object is the key: a new one is a new publish
+
+function payloadFromSnapshot(snap) {
+  if (_fromSnap?.snap === snap) return _fromSnap.payload;
+  const payload = worldGraphPayloadFrom(snap);
+  _fromSnap = { snap, payload };
+  return payload;
+}
+
+/**
+ * The window's payload from a loaded graph (`loadWorldGraph`'s shape, or the
+ * store's snapshot of it). `store` describes where the graph came from: the
+ * file's bytes and mtime, or the snapshot's settlement and key. It is the one
+ * field that differs by source; nothing reads it but a person.
+ */
+export function worldGraphPayloadFrom(loaded, store = null) {
+  const { graph, meta, counts, edgeTypes, lintFindings, placeholders } = loaded;
+  store ??= loaded.pin
+    ? { source: "store", settlement: loaded.pin.settlement ?? null, tag_sha: loaded.pin.tag_sha, office_sha: loaded.pin.office_sha }
+    : null;
 
   const nodes = [];
   const byKind = {};
@@ -200,7 +232,7 @@ function buildPayload(dbPath, st) {
       hydrated_at: meta.hydrated_at ?? null,
       hydration_status: meta.hydration_status ?? null,
     },
-    store: { bytes: st.size, mtime: new Date(st.mtimeMs).toISOString() },
+    store,
     counts: {
       nodes: nodes.length,
       edges: edges.length,
@@ -478,7 +510,7 @@ export function filterPayload(payload, { kinds = null, types = null, dropUnresol
  * The route's whole answer: the payload, filtered, with `elements` in the shape
  * `cytoscape({ elements })` takes directly.
  */
-export function worldGraphView({ dbPath = storeDbPath(), kinds = null, types = null, dropUnresolved = false } = {}) {
+export function worldGraphView({ dbPath = null, kinds = null, types = null, dropUnresolved = false } = {}) {
   const base = worldGraphPayload(dbPath);
   if (base.error) return base;
   // The filter's output SHARES the cached element objects rather than cloning
