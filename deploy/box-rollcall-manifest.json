@@ -123,6 +123,17 @@
    "stale_means": "not judged while parked. Once live: the town clone stops pulling (the write pen and declare read a stale town), the mint catch-up and welcome pass stop, the settlements row stops following the keeper's tag, and the panes freeze."
   },
   {
+   "unit": "postmark-town-index.timer",
+   "label": "the town index (office.db's tables in the store)",
+   "stage": "parked",
+   "activation_owner": "Not yet adopted — the law_ingester pen's town index, POS-268 (lane retire-sqlite-index, 2026-09-30). Adopted by whoever applies 033_town_index.sql and runs the seed by hand (deploy/town-index-ingest.sh's header).",
+   "parked_because": "Its migration (033) is not applied and the index has no seed. No office door reads these tables until TOWN_INDEX_READS=store is set, so nothing waits on it.",
+   "adopt_command": "apply world2/schema/033_town_index.sql as world2_owner; copy deploy/town-index-ingest.sh to /srv/world2-lab/ops/; run the seed by hand (the script's header); sudo cp deploy/postmark-town-index.{service,timer} /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now postmark-town-index.timer — then flip this row to live",
+   "cadence": "none while parked (the unit file carries :05/:20/:35/:50)",
+   "cadence_source": "the unit file — disabled with no next fire is this row's healthy state until adoption",
+   "stale_means": "not judged while parked. Once live: the store's town_* tables stop following the town, and every door that reads them serves the town as of the last ingest (state file /srv/world2-lab/state/town-index.json names the sha and why)."
+  },
+  {
    "unit": "postmark-harbor-watch.timer",
    "label": "the harbor watch",
    "stage": "live",

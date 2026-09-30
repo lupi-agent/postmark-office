@@ -278,6 +278,14 @@ curl -s -H "Authorization: Bearer <key>" https://postmark.town/api/town
   adopt: step 3's copy, `daemon-reload`, `enable --now
   postmark-office-keep.timer`, restart the rehydrate timer, then delete
   `office-tick.sh`.
+- **The town index (POS-268, 2026-09-30), PARKED.** office.db's tables have
+  twins in the store (`world2/schema/033_town_index.sql`), kept by
+  `postmark-town-index.timer` (:05/:20/:35/:50, `deploy/town-index-ingest.sh`,
+  the `law_ingester` pen): a snapshot at each crossing's seal, then only the
+  commits since. Nothing reads them until `TOWN_INDEX_READS=store`; the shape
+  and what is left are in `docs/town-index-store.md`. To adopt, in order: apply
+  033 as `world2_owner`; copy the script to `/srv/world2-lab/ops/`; run the seed
+  by hand (the script's header has the line); install and enable the timer.
 - The rehydrate timer rebuilds the index every 15 min. It **builds `office.db.new` and renames it
   over `office.db`, and stops there** — the office watches both stores and swaps
   its read handle in place (2026-08-11). **A restart is now for code deploys
