@@ -104,9 +104,14 @@ test("THE OUTPUTS: --no-db writes no world.db, and its counts are the file's", (
   // lesson), which moved the code counts and reddened this leg (2026-09-30).
   const office = join(dir, "office");
   mkdirSync(office);
+  // A PRIVATE WORLD CACHE. The materialised tree lives under tmpdir() and is
+  // pruned to five shas by whichever hydration runs next; under a full suite
+  // another test pruned this one mid-read (tools/ and the walk ledger vanished
+  // from the first run, 2026-09-30). Its own tmp root, its own cache.
+  const privateTmp = { TMP: dir, TEMP: dir, TMPDIR: dir };
   try {
     const run = (args) => JSON.parse(execFileSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"), "--world", CLONE, "--office", office, "--no-gexf", "--no-lints", "--json", ...args],
-      { encoding: "utf8", env: { ...process.env, WORLD_STORE_DB: join(dir, "unused.db") }, stdio: ["ignore", "pipe", "ignore"] }));
+      { encoding: "utf8", env: { ...process.env, ...privateTmp, WORLD_STORE_DB: join(dir, "unused.db") }, stdio: ["ignore", "pipe", "ignore"] }));
     const withFile = run(["--db", join(dir, "world.db")]);
     const without = run(["--no-db", "--db", join(dir, "absent.db")]);
     assert.equal(existsSync(join(dir, "world.db")), true);

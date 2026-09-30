@@ -32,6 +32,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { OFFICE_ROOT, WORLD_CLONE } from "./world-store.mjs";
+import { metaIn, openWorldStore, registerTwin } from "./world-graph-db.mjs";
 import { freshestMainRef, materializeAtRef } from "./world-branches.mjs";
 import { servedCanonSha } from "./world-serve.mjs";
 
@@ -199,21 +200,37 @@ export function worldDbPath() {
   return process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db");
 }
 
+// The walk ledger's statements, named so the store's graph snapshot can answer
+// them too (POS-270 lane W 2c; 038 carries the events, and each twin is held
+// equal to its SQL by world-graph-db.test).
+const LEDGER_META_SQL = "SELECT key, value FROM meta WHERE key IN ('as_of_world','hydrated_at','hydration_status','gates')";
+const DEPARTURES_SQL = "SELECT seq, at, actor, type, payload FROM events WHERE type = 'departure' ORDER BY seq";
+registerTwin(LEDGER_META_SQL, (g) => metaIn(g, ["as_of_world", "hydrated_at", "hydration_status", "gates"]));
+registerTwin(DEPARTURES_SQL, (g) => g.events.filter((e) => e.type === "departure").slice().sort((a, b) => a.seq - b.seq)
+  .map((e) => ({ seq: e.seq, at: e.at, actor: e.actor, type: e.type, payload: e.payload })));
+
 export function readDepartureEvents({ worldDb = null, repo = WORLD_CLONE } = {}) {
-  const path = worldDb ?? worldDbPath();
-  if (!existsSync(path))
-    return { refused: { gate: "world-store", detail: `no world store at ${path} — run: npm run hydrate:world` } };
+  // THE STORE FIRST: with no file named, the world graph snapshot's handle.
   let db;
-  try { db = new DatabaseSync(path, { readOnly: true }); }
-  catch (e) { return { refused: { gate: "world-store", detail: `unreadable (${String(e?.message ?? e).slice(0, 160)})` } }; }
+  const w = worldDb == null ? openWorldStore() : null;
+  // `path` names what answered: the file, or the store's graph snapshot.
+  let path = "the store's graph snapshot";
+  if (w) db = w.db;
+  else {
+    path = worldDb ?? worldDbPath();
+    if (!existsSync(path))
+      return { refused: { gate: "world-store", detail: `no world store at ${path} — run: npm run hydrate:world` } };
+    try { db = new DatabaseSync(path, { readOnly: true }); }
+    catch (e) { return { refused: { gate: "world-store", detail: `unreadable (${String(e?.message ?? e).slice(0, 160)})` } }; }
+  }
   let meta, rows;
   try {
     meta = Object.fromEntries(
-      db.prepare("SELECT key, value FROM meta WHERE key IN ('as_of_world','hydrated_at','hydration_status','gates')").all()
+      db.prepare(LEDGER_META_SQL).all()
         .map((r) => [r.key, r.value]));
     if (String(meta.hydration_status ?? "").startsWith("FAILED"))
       { db.close(); return { refused: { gate: "world-store", detail: `stamped ${meta.hydration_status}` } }; }
-    rows = db.prepare("SELECT seq, at, actor, type, payload FROM events WHERE type = 'departure' ORDER BY seq").all();
+    rows = db.prepare(DEPARTURES_SQL).all();
   } catch (e) {
     db.close();
     return { refused: { gate: "world-store", detail: `events unreadable (${String(e?.message ?? e).slice(0, 160)})` } };
@@ -406,4 +423,3 @@ export function mergedDepartureEvents(ledgerEvents = [], storeEvents = []) {
       return (a.seq ?? 0) - (b.seq ?? 0);
     });
 }
-

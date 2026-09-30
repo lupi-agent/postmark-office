@@ -43,7 +43,7 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { OFFICE_ROOT, WORLD_CLONE } from "./world-store.mjs";
-import { graphDb, registerTwin } from "./world-graph-db.mjs";
+import { graphDb, HYDRATION_STATUS, registerTwin } from "./world-graph-db.mjs";
 import { worldGraphSnapshot } from "./world-graph-snapshot.mjs";
 
 /** The world itself — the default frame, and the only one with no carrier. */
@@ -82,8 +82,6 @@ let _classSnap = null;
 
 // The two statements this read asks, named so the store's snapshot can answer
 // them too (POS-270 lane W 2b; world-graph-db.mjs holds each twin equal to its SQL).
-const HYDRATION_STATUS = registerTwin("SELECT value FROM meta WHERE key='hydration_status'",
-  (g) => g.meta.filter((r) => r.key === "hydration_status").map((r) => ({ value: r.value })));
 const MARK_PROPS = registerTwin("SELECT id, props FROM nodes WHERE kind='mark'",
   // Answered off the (kind, subkind) index: subkind order (nulls first), then table order.
   (g) => g.nodes.filter((n) => n.kind === "mark")
