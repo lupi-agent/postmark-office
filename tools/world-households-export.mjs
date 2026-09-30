@@ -37,7 +37,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-import { householdsOf, loginKeys, readPins, sketchbookKeys } from "../src/household-logins.mjs";
+import { householdsOf, loginKeys, readPins, sketchbookKeys, oneKeyPerHouse } from "../src/household-logins.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -64,9 +64,20 @@ const map = currentHouseholds(TOWN);
 // authorship wall both resolve through this — same pins, same resolver, one
 // more projection of the ONE vocabulary. Pinned handles contribute their pin's
 // login; login-keyed households bind their own name by construction.
-const households = householdsOf(map);
+const ledgerHouseholds = householdsOf(map);
 const pins = readPins(TOWN);
-const { logins } = loginKeys(pins, households);
+const { logins: ledgerLogins } = loginKeys(pins, ledgerHouseholds);
+
+// ONE KEY PER DECLARED HOUSE (src/household-logins.mjs § oneKeyPerHouse, which
+// carries the reasoning): the ledger spells a house by who joined how, and the
+// wall needs the house. tools/households.json is printed from the store; a
+// town with none keeps the ledger's keys exactly.
+const declared = (() => {
+  try { return JSON.parse(readFileSync(join(TOWN, "tools", "households.json"), "utf8")); } catch { return null; }
+})();
+const one = oneKeyPerHouse(ledgerHouseholds, ledgerLogins, declared);
+const households = one.households;
+const logins = one.logins;
 
 // THE SECOND KEY — every household key no login binds, bound by the sketchbook
 // name it will actually carry (src/household-logins.mjs § THE SECOND KEY, which
@@ -79,7 +90,23 @@ const { logins } = loginKeys(pins, households);
 // wrote down under review, and this projection may add to the map but must never
 // answer a question the pins already answered.
 const second = sketchbookKeys(households, logins);
-const allLogins = { ...second.additions, ...logins };
+
+// Each declared house's own sketchbook name (and each former one) binds its key,
+// under the real logins: the store writes a house's marks to `draft/<slug>`
+// even when a login already binds the house's key.
+const houseNames = {};
+const carried = new Set(Object.values(households));
+for (const [name, key] of Object.entries(one.names)) {
+  if (!carried.has(key)) continue;                 // a house no handle here wears binds nothing
+
+  if (Object.prototype.hasOwnProperty.call(logins, name)) {
+    if (logins[name] !== key)
+      console.error(`[households-export] NOT BOUND — house name "${name}" is already the login of ${logins[name]}, not ${key}`);
+    continue;
+  }
+  houseNames[name] = key;
+}
+const allLogins = { ...second.additions, ...houseNames, ...logins };
 
 for (const c of second.collisions) {
   console.error(`[households-export] NOT BOUND — "${c.name}" is wanted by ${c.keys.join(", ")}`
@@ -125,7 +152,7 @@ const town_sha = (() => {
 const out = {
   generated_at: new Date().toISOString(),
   town_sha,
-  source: "town pins (tools/github-ids.json) + ADDRESS logins, via the town's own resolver: postmark tools/stamp-mint.mjs householdKeys() — the ONE household vocabulary (ruling 9's lesson: never a second resolver)",
+  source: "town pins (tools/github-ids.json) + ADDRESS logins, via the town's own resolver: postmark tools/stamp-mint.mjs householdKeys() — the ONE household vocabulary (ruling 9's lesson: never a second resolver); a handle a declared house lists (tools/households.json, printed from the store) is keyed hh:<that house>, and every spelling of the house resolves to it",
   note: "DERIVED registry, refreshed by postmark-office/tools/world-households-export.mjs. Handles absent here fold as their own household (solo:<handle>) — a new resident is never blocked by registry lag, only grouped once the pins know them. Consumed by marks-fold.mjs § parcel admissibility (the claim cap, ruled 2026-07-30); logins consumed by the PR lane (lane-wall, settlement-sweep authorship wall).",
   logins_note: "logins is NOT only GitHub logins. It is the map the authorship wall reads a sketchbook's NAME through, and it binds every household key this registry holds: a pinned handle under its pin's login, and any other key (hh:<house>, solo:<handle>) under the sketchbook name that key carries — the part after its colon. Before 2026-09-09 only gh:/login: keys were bound, so a household of any other shape was invisible to the wall, and invisible SILENTLY: the sweep leaves a branch it cannot bind alone rather than refusing it, so those marks published with their authorship unchecked. A key this file does not bind is a key the export could not name honestly, and it says so on stderr when it happens.",
   households,
