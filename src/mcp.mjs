@@ -9,7 +9,7 @@
 // arrive with no CONTRIBUTING.md in context, so the contract IS the etiquette.
 
 import { townSummary, residentList, residentPage, resident, mailList, letterAnswer, LETTER_READING_LAW_LINE, search, bulletinList, bulletinTeaser, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, home, identityOf, repoLog, DOORSTEP_SEGMENTS } from "./queries.mjs";
-import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore, stampsRoster as stampsRosterFromStore, stampsDetail as stampsDetailFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
+import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore, stampsRoster as stampsRosterFromStore, stampsDetail as stampsDetailFromStore, questBoardFor as questBoardFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
 import { READ_FIELDS } from "./one-contract.mjs"; // the one field list a read shares with its twin at another door (POS-70 row 39)
 
 /** One line per doorstep segment, for `read_doorstep`'s description. Keyed by
@@ -753,7 +753,7 @@ export async function callTool(name, args, ctx) {
       return args.handle
         ? { handle: args.handle, ...stampsDetail(db, args.handle) }
         : stampsRoster(db, meta, { limit: args?.limit, offset: args?.offset });
-    case "read_quests": return questBoardFor(db, meta, args.handle, clone);
+    case "read_quests": return townIndexReads() ? fromStore((c) => questBoardFromStore(c, args.handle, clone)) : questBoardFor(db, meta, args.handle, clone);
     case "read_bounties": return bountyBoard();
     // The Civic Quarter, read whole. No args: the quarter is five buildings and
     // the answer is all five — a caller who has to name one has to already know

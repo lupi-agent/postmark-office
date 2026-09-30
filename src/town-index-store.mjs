@@ -31,6 +31,7 @@ import {
   repoLogPage, repoLogCommit, regionListing, regionPage, regionWhole,
   bulletinListing, bulletinTeaserOf, bulletinEntryOf,
   stampsRosterPage, stampsDetailOf, stampParties,
+  potBoardOf, questBoardWith,
 } from "./queries.mjs";
 
 // The row SHAPES are queries.mjs's own exported functions, the ones its office.db
@@ -38,7 +39,7 @@ import {
 // would be the private copy that drifts.
 import { freshnessFor, composeHome } from "./paper-fresh.mjs"; // the freshness ladder, as queries.home uses it
 
-export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home", "stampsRoster", "stampsDetail"]);
+export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home", "stampsRoster", "stampsDetail", "potBoard", "questBoardFor", "standingFor", "townQuestBoard"]);
 
 /** Is the switch on? Only the exact value `store` turns it on. */
 export const townIndexReads = (env = process.env) => env.TOWN_INDEX_READS === "store";
@@ -154,6 +155,101 @@ export async function stampsDetail(q, handle) {
   return stampsDetailOf(row, { holoRows, keepingRows });
 }
 
+/** queries.potBoardRows, from the store: the same rows, the same order (bytewise where sqlite compared text). */
+export async function potBoardRows(q) {
+  const pots = (await q.query(`SELECT id, json FROM town_pots ORDER BY id COLLATE "C"`)).rows;
+  const out = [];
+  for (const r of pots) {
+    out.push({
+      id: r.id, json: r.json,
+      roll: (await q.query(`SELECT patron, usd, date, receipt, holo FROM town_funding_roll WHERE pot = $1 ORDER BY date COLLATE "C", seq`, [r.id])).rows,
+      receipts: (await q.query(`SELECT rail, usd, date, receipt, payer FROM town_pot_receipts WHERE pot = $1 ORDER BY date COLLATE "C", seq`, [r.id])).rows,
+      staked: (await q.query("SELECT staked FROM town_pot_escrow WHERE pot = $1", [r.id])).rows[0]?.staked ?? 0,
+      stakers: (await q.query(`SELECT handle, staked FROM town_pot_stakers WHERE pot = $1 ORDER BY staked DESC, handle COLLATE "C"`, [r.id])).rows,
+    });
+  }
+  return { pots: out, invalid: (await q.query("SELECT row_kind, line, reason FROM town_funding_invalid ORDER BY seq")).rows };
+}
+
+/** queries.potBoard, from the store. */
+export async function potBoard(q, extraInvalid = []) {
+  return potBoardOf(await potBoardRows(q), extraInvalid);
+}
+
+/** queries.standingFor, from the store: the standing row, or null. */
+export async function standingFor(q, handle) {
+  const row = (await q.query("SELECT json FROM town_quest_standing WHERE handle = $1", [handle])).rows[0];
+  return row?.json ? JSON.parse(row.json) : null;
+}
+
+/** The index meta a quest board reads (quest_registry, quest_day), from the store's own town_meta. */
+async function questMeta(q) {
+  const rows = (await q.query("SELECT key, value FROM town_meta WHERE key IN ('quest_registry', 'quest_day')")).rows;
+  return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+}
+
+/** questBoardWith's reads, from the store. */
+const storeQuestSource = (q) => ({
+  progressRow: async (handle) => (await q.query(
+    "SELECT handle, send, receive, house_size, house_send, house_receive, sent_to, heard_from FROM town_quest_progress WHERE handle = $1", [handle])).rows[0],
+  standing: (handle) => standingFor(q, handle),
+  pots: (extraInvalid) => potBoard(q, extraInvalid),
+  potIds: async () => (await q.query("SELECT id FROM town_pots")).rows.map((r) => r.id),
+});
+
+/**
+ * queries.questBoardFor, from the store. Its meta (the registry and the day the
+ * progress was folded on) is the store's own, never a caller's office.db meta:
+ * the progress rows and the day they are good for come from one index.
+ */
+export async function questBoardFor(q, handle, clone, opts = {}) {
+  return questBoardWith(storeQuestSource(q), await questMeta(q), handle, clone, opts);
+}
+
+/** queries.townQuestBoard's answer, from the store: the board with no resident named. */
+export async function townQuestBoard(q, clone) {
+  return questBoardFor(q, null, clone);
+}
+
+/**
+ * The reads household-stamps makes, from the store: queries.officeIndex's
+ * methods, over one client (the door's one READ ONLY transaction).
+ */
+export const storeIndex = (q, clone) => ({
+  stampsDetail: (handle) => stampsDetail(q, handle),
+  questBoard: (handle, opts) => questBoardFor(q, handle, clone, opts),
+  potBoard: (extraInvalid) => potBoard(q, extraInvalid),
+});
+
+/** Thrown by a pooled index method when the store cannot be reached; a door turns it into its 503. */
+export class TownIndexUnreachable extends Error {
+  constructor(refused = UNREACHABLE) { super(refused.defect); this.name = "TownIndexUnreachable"; this.refused = refused; }
+}
+
+/**
+ * The same methods as storeIndex, each in its OWN short READ ONLY transaction.
+ *
+ * THIS IS THE ONE A DOOR USES. A composed read (the estate, a doorstep) does
+ * more than read the index between its reads: the world's siting, the quest
+ * tools, a household's store writes. Holding one pooled connection across all
+ * of that while other work asks the same small pool (max 3) for another is how
+ * three concurrent readers each hold one connection and wait forever for a
+ * second. So each method takes a connection, reads, and gives it back. A store
+ * that cannot be reached throws TownIndexUnreachable, never an empty answer.
+ */
+export function storeIndexPooled(clone, { env = process.env } = {}) {
+  const via = (fn) => async (...args) => {
+    const r = await storeAnswer((c) => fn(c, ...args), { env });
+    if (r.refused) throw new TownIndexUnreachable(r.refused);
+    return r.out;
+  };
+  return {
+    stampsDetail: via((c, handle) => stampsDetail(c, handle)),
+    questBoard: via((c, handle, opts) => questBoardFor(c, handle, clone, opts)),
+    potBoard: via((c, extraInvalid) => potBoard(c, extraInvalid)),
+  };
+}
+
 /**
  * queries.home, from the store. The freshness ladder composes over the row
  * exactly as it does for office.db's, with ONE deliberate difference: its
@@ -193,6 +289,11 @@ export const UNREACHABLE = Object.freeze({
  * (UNREACHABLE) when it cannot be read. Doors turn the refusal into their 503.
  */
 export async function storeAnswer(fn, { env = process.env } = {}) {
-  try { return await readTownIndex(fn, { env }); }
-  catch { return { refused: UNREACHABLE }; }
+  // Only a store that cannot be reached is the refusal. An error the reader
+  // itself throws (a clone with no quest tools, say) is that reader's own, and
+  // goes to the door's own catch exactly as it does on office.db's path: calling
+  // it "the store cannot be reached" would name the wrong thing.
+  let own = null;
+  try { return await readTownIndex(async (c) => { try { return await fn(c); } catch (e) { own = e; throw e; } }, { env }); }
+  catch (e) { if (own && e === own) throw e; return { refused: UNREACHABLE }; }
 }

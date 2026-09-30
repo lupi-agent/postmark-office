@@ -613,12 +613,24 @@ const j = (res, code, obj) => {
 // X-Postmark-As-Of beside it is still office.db's, which the unmoved doors
 // answer from), `onNull` for a reader that found nothing, and the 503 when the
 // store cannot be read. Never a fallback to office.db.
-async function fromTownIndex(res, fn, onNull = null) {
-  const r = await townIndexStore.storeAnswer(fn);
-  if (r.refused) return bounce(res, 503, r.refused.defect, r.refused.hint);
-  if (r.asOf) res.setHeader("x-postmark-town-index-as-of", r.asOf);
-  if (r.out == null && onNull) return onNull();
-  return j(res, 200, r.out);
+//
+// AND A READER THAT THROWS IS ANSWERED, NEVER LEFT TO REJECT. storeAnswer hands
+// a reader's own error back (it is not the store's absence), and a route here
+// returns this promise without awaiting it: an unanswered rejection took the
+// whole office down in the first run of the mail group's tests. `onError` lets a door
+// keep its own sentence for a failed read (GET /quests/{h}'s "quest board
+// unavailable"); otherwise it is the 500 every other tripped read answers.
+async function fromTownIndex(res, fn, onNull = null, onError = null) {
+  try {
+    const r = await townIndexStore.storeAnswer(fn);
+    if (r.refused) return bounce(res, 503, r.refused.defect, r.refused.hint);
+    if (r.asOf) res.setHeader("x-postmark-town-index-as-of", r.asOf);
+    if (r.out == null && onNull) return onNull();
+    return j(res, 200, r.out);
+  } catch (e) {
+    if (onError) return onError(e);
+    return bounce(res, 500, "the office tripped reading the town index", String(e?.message ?? e).slice(0, 200));
+  }
 }
 
 const jCompact = (res, code, obj) => {
@@ -1898,10 +1910,14 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
 
       // quest board for one resident (registry × today's progress). The handle
       // regex IS the arg validation; the board zeroes on a rolled TOWN_TZ day.
-      if ((m = /^\/quests\/([a-z0-9-]+)$/.exec(path)))
-        return questBoardFor(db, meta, m[1], TOWN_CLONE)
+      if ((m = /^\/quests\/([a-z0-9-]+)$/.exec(path))) {
+        const handle = m[1];
+        const unavailable = () => bounce(res, 503, "quest board unavailable", "the office couldn't read the quest registry from its clone — retry shortly");
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.questBoardFor(c, handle, TOWN_CLONE), null, unavailable);
+        return questBoardFor(db, meta, handle, TOWN_CLONE)
           .then((b) => j(res, 200, b))
-          .catch(() => bounce(res, 503, "quest board unavailable", "the office couldn't read the quest registry from its clone — retry shortly"));
+          .catch(unavailable);
+      }
 
       if (path === "/bulletin") {
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.bulletinList(c));
