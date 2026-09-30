@@ -50,6 +50,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
 import { DEFAULT_DB, OFFICE_ROOT, loadWorldGraph, containmentSpine } from "./world-store.mjs";
+import { worldGraphSnapshot } from "./world-graph-snapshot.mjs";
 import { blessed, draftRefForKey, refExists } from "./world-branches.mjs";
 import { nextSettlementAttemptAt } from "./settlements.mjs";
 
@@ -116,6 +117,26 @@ export function storeEpoch() {
 }
 
 export function storeSnapshot() {
+  // THE STORE FIRST (POS-270, option A): once the world graph snapshot has
+  // loaded, the served snapshot is built from it, and world.db is not opened.
+  // Keyed on the published snapshot object, so a new publish is a new
+  // generation exactly as a rewritten file was. Before it loads, the file is
+  // the floor, as below.
+  const g = worldGraphSnapshot();
+  if (g) {
+    if (_snap && _snap.from === g) return _snap;
+    _snap = {
+      from: g, dbPath: null,
+      source: { source: "store", settlement: g.pin.settlement ?? null, tag_sha: g.pin.tag_sha, office_sha: g.pin.office_sha },
+      graph: g.graph, meta: g.meta, counts: g.counts,
+      asOfWorld: g.meta.as_of_world ?? null,
+      marks: markRecords(g.graph),
+      loadedAt: new Date().toISOString(),
+    };
+    _snap.irregular = _snap.marks.filter((m) => m._ring_vertices != null && m.at);
+    _generation++;
+    return _snap;
+  }
   const dbPath = storeDbPath();
   let st;
   try { st = statSync(dbPath); }
@@ -492,6 +513,7 @@ export function worldStoreHealth({ repo = null } = {}) {
     ? { path: snap.dbPath, present: false, error: snap.error }
     : {
       path: snap.dbPath, present: true,
+      ...(snap.source ? { source: snap.source } : {}),
       as_of_world: snap.meta.as_of_world ?? null,
       as_of_office: snap.meta.as_of_office || null,
       hydrated_at: snap.meta.hydrated_at ?? null,

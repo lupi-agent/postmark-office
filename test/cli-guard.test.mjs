@@ -189,6 +189,7 @@ const ROSTER = {
   // reads a plan, spawns a mint or touches a key. The needle is that refusal.
   "deploy/welcome-pass.mjs": { args: [], code: 1, needle: "--town <town-clone> is required" },
   "deploy/settle-pass.mjs": { args: [], code: 1, needle: "--town <town-clone> is required" },
+  "tools/rekey-household.mjs": { args: [], code: 1, needle: "--from <slug> --to <slug> --name" },
   // world2/tools/
   // No --world-repo: stops on usage before any git read or Postgres connect (POS-212).
   "world2/tools/adopt-solo.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: adopt-solo.mjs" },
@@ -203,6 +204,7 @@ const ROSTER = {
   "world2/tools/falsifier-projection-equality.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: falsifier-projection-equality.mjs" },
   "world2/tools/falsifier-review-closure.mjs": { args: [], env: NO_PG, code: 2, needle: "WORLD2_PG_URL missing" },
   "world2/tools/law-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: law-ingest.mjs" },
+  "world2/tools/graph-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: graph-ingest.mjs" },
   "world2/tools/ledger-backfill.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: WORLD2_PG_URL=" },
   // No --world-repo: stops on usage before any git or Postgres (POS-142).
   "world2/tools/marks-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: marks-ingest.mjs" },

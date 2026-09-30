@@ -173,8 +173,10 @@ export function readLawPairing(treePath, law = LAW) {
  * and DISCLOSE if a path has gone (the materialised tree lives in a temp cache
  * and a machine may have swept it).
  */
-export async function runLints({ dbPath = DEFAULT_DB, sources = null, engineText = null, treePath = null } = {}) {
-  const store = loadWorldGraph(dbPath);
+export async function runLints({ dbPath = DEFAULT_DB, store: loaded = null, sources = null, engineText = null, treePath = null } = {}) {
+  // `store`: a graph already loaded, from world.db or from the store's snapshot
+  // of it (src/world-graph-snapshot.mjs, POS-270); the lints read it the same way.
+  const store = loaded ?? loadWorldGraph(dbPath);
   const { graph, meta, events, geometryVersions } = store;
   // The world's OWN pointInRect, imported live from the tree the store was
   // hydrated from, so "inside a stop" can never drift from how the world itself

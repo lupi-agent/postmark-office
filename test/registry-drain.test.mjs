@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { __setPoolForTest } from "../src/world2-acts.mjs";
 import { rowsFromRegistry, renderRegistry } from "../src/registry-rows.mjs";
 import { loadRegistryRows } from "../src/registry-store.mjs";
-import { checkRegistry, drainRegistry } from "../tools/registry-drain.mjs";
+import { checkRegistry, drainRegistry, missingFromStore } from "../tools/registry-drain.mjs";
 import { REGISTRY_PATH, PINS_PATH } from "../src/residency.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -238,5 +238,51 @@ test("the meta pair renders in the FILE's order, not the table's", async () => {
     assert.equal(r.ok, true);
     assert.deepEqual(Object.keys(r.rows.meta), ["schema_version", "note"]);
     assert.equal(renderRegistry(r.rows).households, HOUSEHOLDS_RAW);
+  } finally { __setPoolForTest(null); }
+});
+
+// ── A RENAME IS NOT A DELETION (#256) ───────────────────────────────────────
+//
+// A house the store renamed carries its old key in `formerly`. The file still
+// holds the old key until the drain prints, so the shrink guard must read the
+// old key as renamed, or every drain after a rename refuses and the printed
+// registers stall (the choose-once path; the POS-299 re-key).
+test("the shrink guard reads a renamed house as renamed, not missing — and a real deletion is still refused", () => {
+  const rows = { households: [{ slug: "fern-hollow", formerly: ["fernwood"] }, { slug: "starforge", formerly: [] }], pins: [] };
+  const file = { households: { fernwood: {}, starforge: {} } };
+  assert.deepEqual(missingFromStore(rows, file, {}), { households: [], pins: [] }, "the old key is the renamed house");
+  const gone = { households: { fernwood: {}, starforge: {}, "a-house-the-store-lost": {} } };
+  assert.deepEqual(missingFromStore(rows, gone, {}).households, ["a-house-the-store-lost"], "a house the store does not hold under any key still stops the drain");
+});
+
+test("#256: a rename, then a drain that PRINTS — the file's old key is the renamed house, and the new key lands", async () => {
+  // The store renamed one house (the old key kept in `formerly`); the town's
+  // file still holds the old key. Before #256 the shrink guard read that as a
+  // deletion and every drain refused.
+  const first = ROWS.households.find((r) => Number(r.ord) === 0);
+  const renamed = { ...ROWS, households: ROWS.households.map((r) => (r === first
+    ? { ...r, slug: `${first.slug}-renamed`, formerly: [...(r.formerly ?? []), first.slug] } : r)) };
+  __setPoolForTest(stubPool(renamed));
+  try {
+    const clone = cloneWith(HOUSEHOLDS_RAW, PINS_RAW);
+    const r = await drainRegistry({ clone, env: ENV_ON, commit: () => "deadbeef" });
+    assert.equal(r.refused, undefined, r.refused);
+    assert.equal(r.ran, true);
+    const printed = JSON.parse(readFileSync(join(clone, REGISTRY_PATH), "utf8")).households;
+    assert.ok(printed[`${first.slug}-renamed`], "the new key is printed");
+    assert.equal(printed[first.slug], undefined, "and the old key is not printed twice");
+  } finally { __setPoolForTest(null); }
+});
+
+test("#256: a slug the store holds under NO key still refuses, exactly as before", async () => {
+  const first = ROWS.households.find((r) => Number(r.ord) === 0);
+  const lost = { ...ROWS, households: ROWS.households.filter((r) => r !== first) };
+  __setPoolForTest(stubPool(lost));
+  try {
+    const clone = cloneWith(HOUSEHOLDS_RAW, PINS_RAW);
+    const r = await drainRegistry({ clone, env: ENV_ON, commit: () => "deadbeef" });
+    assert.equal(r.ran, false);
+    assert.match(r.refused, new RegExp(`household \`${first.slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\``));
+    assert.equal(readFileSync(join(clone, REGISTRY_PATH), "utf8"), HOUSEHOLDS_RAW, "nothing was written");
   } finally { __setPoolForTest(null); }
 });

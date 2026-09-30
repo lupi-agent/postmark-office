@@ -77,7 +77,7 @@ import { createHash } from "node:crypto";
 import { foldEncounter, pendingHostileTurns, hostileAct, timedOut, TURN_ENDING, WHEEL_GATED } from "./encounter.mjs";
 import { appendArenaRow, readJournal, CLASS_ARENA_ACT } from "./world-journal.mjs";
 import { openDynamic, openDynamicReadOnly, singleLogEnabled } from "./dynamic-store.mjs";
-import { readAttachments } from "./dynamic-entities.mjs";
+import { attachmentRows } from "./holdings-snapshot.mjs"; // POS-269: who holds what, from acts once the hold pen is flipped
 import { holdingsOf } from "./world-hold.mjs";
 import { worldFreezeBounce } from "./freeze.mjs";
 import { heldEntries } from "./world-grants.mjs";
@@ -739,7 +739,7 @@ export function weaponInHand(db, handle) {
   try {
     // Read-only: `weaponInHand` only asks what the record says is held.
     dyn = openDynamicReadOnly();
-    const held = dyn ? holdingsOf(readAttachments(dyn), handle) : [];
+    const held = holdingsOf(attachmentRows(dyn), handle);
     if (!held.length) return null;
     const rows = db.prepare(LOOSE_IN).all().filter((r) => held.includes(r.id));
     for (const r of rows) {
@@ -783,7 +783,7 @@ export function encounterOn(db, dyn, place) {
   const thingRows = new Map();
   try { for (const r of db.prepare(LOOSE_IN).all()) thingRows.set(r.id, r); } catch { /* none readable */ }
   let attachments = [];
-  try { attachments = readAttachments(dyn); } catch { attachments = []; }
+  try { attachments = attachmentRows(dyn); } catch { attachments = []; }
   const weaponOf = weaponReader(db, rows, {
     holdingsNow: (who) => { try { return holdingsOf(attachments, who); } catch { return []; } },
     thingRow: (id) => { const r = thingRows.get(id); return r ? { ...r, held_grant: parseJson(r.held_grant, null) } : null; },
