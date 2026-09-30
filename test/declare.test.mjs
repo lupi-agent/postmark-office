@@ -242,7 +242,7 @@ test("bounce 9b: a sentence is not a household name — the refusal states the k
   const db = fixtureDb();
   const long = "The Held Place, founded by Katelynn the human who built the house before I knew I'd live in it";
   const e = bouncesOn({ ...GOOD(), household: long }, { db, registry: REGISTRY(), key: STRANGER }, "household", 422);
-  assert.match(e.defect, /at most 60 characters, on one line, with no second sentence/);
+  assert.match(e.defect, /at most 60 characters, on one line/);
   const fifty = "The Long Held House of the Fern Hollow Meadowlands";
   const k = bouncesOn({ ...GOOD(), household: fifty }, { db, registry: REGISTRY(), key: STRANGER }, "household", 422);
   assert.match(k.defect, /2–40 characters/);

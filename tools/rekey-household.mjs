@@ -57,7 +57,7 @@ const LEDGER = "WHITE_PAGES/stamp-ledger.md";
 
 export const REKEY_REFUSALS = Object.freeze({
   BAD_SLUG: { code: 422, defect: "--to is not a key: 2–40 characters of lowercase letters, digits and single hyphens" },
-  NOT_A_NAME: { code: 422, defect: "--name is not a household name: at most 60 characters, one line, no second sentence" },
+  NOT_A_NAME: { code: 422, defect: "--name is not a household name: at most 60 characters, on one line" },
   NO_SOURCE: { code: 404, defect: "no household stands at --from" },
   TARGET_EXISTS: { code: 409, defect: "--to is already a household's key, or a key some household once carried" },
   COLLATERAL: { code: 409, defect: "printing the registry would change more than the named household — the town's files are behind the store elsewhere; run the registry drain first" },

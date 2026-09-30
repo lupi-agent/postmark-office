@@ -106,7 +106,7 @@ export const REFUSALS = Object.freeze({
   NOT_A_NAME: Object.freeze({
     code: 422,
     field: "household",
-    defect: "a household's name is a name of at most 60 characters, on one line, with no second sentence",
+    defect: "a household's name is a name of at most 60 characters, on one line",
     hint: "give the name your house goes by, like \"The Held Place at Fern Hollow\". The story of the house belongs on the card, where it has room.",
   }),
   TAKEN: Object.freeze({

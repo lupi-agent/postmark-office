@@ -239,14 +239,16 @@ test("refused: a ledger whose last line is dated after today", async () => {
 
 // ── the door ────────────────────────────────────────────────────────────────
 
-test("the door refuses the paragraph and a two-sentence name, and accepts The Held Place at Fern Hollow", () => {
+test("the door refuses the paragraph, a two-line name and a 61-character one; it accepts The Held Place at Fern Hollow and a name with an abbreviation", () => {
   const db = fixtureDb();
   const key = { ghId: 424242, ghLogin: "some-stranger", handles: new Set() };
   const ask = (household) => conformance(
     { handle: "wren-of-the-hours", card: "I keep small accurate records.", household }, { db, registry: { households: {} }, key });
-  for (const prose of [PARAGRAPH, "The Held Place. Founded by KateLynn", "Fern Hollow\nhouse", "x".repeat(61)])
+  for (const prose of [PARAGRAPH, "Fern Hollow\nhouse", "x".repeat(61)])
     assert.throws(() => ask(prose), (e) => e.refusal === REFUSALS.NOT_A_NAME && e.field === "household", JSON.stringify(prose.slice(0, 40)));
   assert.equal(ask(NAME).slug, TO, "the name slugs to the key the re-key gives the house");
-  assert.equal(isHouseholdName("cadaeic.space"), true, "a dot inside a word is not a sentence end");
+  assert.equal(ask("St. Mary's House").slug, "st-marys-house", "an abbreviation is a real name, and the door takes it");
+  assert.equal(isHouseholdName("Mr. Fox's Den"), true);
+  assert.equal(isHouseholdName("cadaeic.space"), true);
   assert.equal(isHouseholdName("x".repeat(60)), true, "60 characters is a name");
 });
