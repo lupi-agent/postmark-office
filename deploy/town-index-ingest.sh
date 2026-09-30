@@ -42,36 +42,43 @@ fi
 git -C "$DIR" fetch --quiet origin main || { w2_state "$STATE" '"status":"cannot-run","detail":"fetch failed"'; exit 2; }
 TARGET="$(git -C "$DIR" rev-parse origin/main)"
 
-seals="$(cd "$WORLD2_OFFICE" && node "$TOOL" --town-repo "$DIR" --seals-to "$TARGET" 2>&1)"
+# stdout is the tool's answer and nothing else; stderr (node's own warnings, a
+# stack) goes to its own file and only into a failure's detail. A seal list read
+# from 2>&1 once took node's "(node:NNNN) ExperimentalWarning" line for a sha.
+ERR="$(mktemp)"
+trap 'rm -f "$ERR"' EXIT
+detail() { { printf '%s\n' "$1"; tail -n 20 "$ERR"; } | w2_json_escape; }   # a quoted JSON string
+
+seals="$(cd "$WORLD2_OFFICE" && node "$TOOL" --town-repo "$DIR" --seals-to "$TARGET" 2>"$ERR")"
 rc=$?
 if [ "$rc" -eq 3 ]; then
   echo "[town-index] no head yet — seed it by hand first (this script's header)" >&2
   w2_state "$STATE" '"status":"no-head","detail":"seed by hand first"'
   exit 3
 elif [ "$rc" -ne 0 ]; then
-  echo "[town-index] could not list the seals: $seals" >&2
-  w2_state "$STATE" "\"status\":\"failed\",\"detail\":\"$(w2_json_escape "$seals")\""
+  echo "[town-index] could not list the seals (exit $rc): $(tail -n 5 "$ERR")" >&2
+  w2_state "$STATE" "\"status\":\"failed\",\"detail\":$(detail "$seals")"
   exit 1
 fi
 
 run() {                          # run <sha> [--snapshot]
   git -C "$DIR" checkout --quiet --detach "$1" && git -C "$DIR" clean -qfdx || return 2
-  (cd "$WORLD2_OFFICE" && node "$TOOL" --town-repo "$DIR" --sha "$1" "${@:2}")
+  (cd "$WORLD2_OFFICE" && node "$TOOL" --town-repo "$DIR" --sha "$1" "${@:2}" 2>"$ERR")
 }
 
 for seal in $seals; do
-  if ! out="$(run "$seal" --snapshot 2>&1)"; then
-    echo "[town-index] the crossing at $seal did not ingest: $out" >&2
-    w2_state "$STATE" "\"status\":\"failed\",\"at_sha\":\"$seal\",\"detail\":\"$(w2_json_escape "$out")\""
+  if ! out="$(run "$seal" --snapshot)"; then
+    echo "[town-index] the crossing at $seal did not ingest: $(tail -n 5 "$ERR")" >&2
+    w2_state "$STATE" "\"status\":\"failed\",\"at_sha\":\"$seal\",\"detail\":$(detail "$out")"
     exit 1
   fi
   echo "[town-index] $out"
 done
 
-if ! out="$(run "$TARGET" 2>&1)"; then
-  echo "[town-index] the delta to $TARGET did not ingest: $out" >&2
-  w2_state "$STATE" "\"status\":\"failed\",\"at_sha\":\"$TARGET\",\"detail\":\"$(w2_json_escape "$out")\""
+if ! out="$(run "$TARGET")"; then
+  echo "[town-index] the delta to $TARGET did not ingest: $(tail -n 5 "$ERR")" >&2
+  w2_state "$STATE" "\"status\":\"failed\",\"at_sha\":\"$TARGET\",\"detail\":$(detail "$out")"
   exit 1
 fi
 echo "[town-index] $out"
-w2_state "$STATE" "\"status\":\"ok\",\"sha\":\"$TARGET\",\"detail\":\"$(w2_json_escape "$out")\""
+w2_state "$STATE" "\"status\":\"ok\",\"sha\":\"$TARGET\",\"detail\":$(printf '%s' "$out" | w2_json_escape)"
