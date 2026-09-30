@@ -115,7 +115,7 @@ import { openDynamic, openDynamicReadOnly } from "./dynamic-store.mjs";
 // falsifier could not have passed, and they are read-only now for the writer
 // too, because they were always readers.
 const openDynamicRead = () => openDynamicReadOnly();
-import { readAttachments } from "./dynamic-entities.mjs";
+import { attachmentRows } from "./holdings-snapshot.mjs"; // POS-269: who holds what, from acts once the hold pen is flipped
 // The stride a placement is stamped with — read off the record like every other
 // departure's, never a constant here (decision 008b).
 import { departurePace } from "./world-classes.mjs";
@@ -1016,7 +1016,7 @@ export function portalBlockAt(db, spineIds = []) {
     // store is.
     const phase = state?.phase ?? null;
     let held = [];
-    try { held = dyn ? readAttachments(dyn) : []; } catch { held = []; }
+    try { held = attachmentRows(dyn); } catch { held = []; }
     const floor = looseIn(db, place.row, { phase })
       .filter((t) => liveHolder(held, String(t.thing)) == null);
     return { place, state, shrouded: lootShroudedIn(db, place.row, phase), floor };

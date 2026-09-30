@@ -61,6 +61,8 @@
 import { worldFreezeBounce } from "./freeze.mjs";
 import { readAttachments, declareAttachment } from "./dynamic-entities.mjs";
 import { openDynamic, openDynamicReadOnly } from "./dynamic-store.mjs";
+import { holdEdgeOnActs, reloadHoldings } from "./holdings-snapshot.mjs";
+import { announce } from "./read-workers.mjs";
 import { classDials } from "./world-classes.mjs";
 
 /** The thing class's own params, read from the record every time (never cached here). */
@@ -144,7 +146,7 @@ export const faceOf = (holder, to) => (holder == null ? "take" : (to == null ? "
 // given, and falls back to `readAttachments(db)` when nobody hands it any, so
 // every existing caller and every hand-built-store test is byte for byte what it
 // was.
-export function declareHolding({ db, thing, to = null, actor, roster = null, groundOwner = null, dials = {}, rows: injected = null }) {
+export function declareHolding({ db, thing, to = null, actor, roster = null, groundOwner = null, dials = {}, rows: injected = null, writeEdge = true }) {
   if (!thing || !String(thing).includes("/"))
     throw bounce(422, "which thing?", "a thing's mark id, <by>/<slug> — the id as it appears in the telling");
   if (!actor) throw bounce(422, "which resident acts?", "a multi-resident key must name one with handle:");
@@ -224,7 +226,13 @@ export function declareHolding({ db, thing, to = null, actor, roster = null, gro
   const now = Date.now();
   const bornAt = new Date(Number.isFinite(newest) && newest >= now ? newest + 1 : now).toISOString();
 
-  const row = declareAttachment(db, { entity, target: thing, policy, declaredBy: actor, bornAt });
+  // `writeEdge: false` is the flipped pen's call (POS-269): the holding act in
+  // `acts` IS the edge, so nothing is written to sqlite. The row is the edge as
+  // the act will carry it, and the adjudication above is unchanged.
+  const edge = { entity, target: thing, policy, declaredBy: actor, bornAt };
+  const row = writeEdge
+    ? declareAttachment(db, edge)
+    : { entity, target: thing, policy, declared_by: actor, born_at: bornAt, inserted: true };
   if (row.inserted === false)
     throw bounce(409, "that declaration did not land", `an identical holding edge for ${entity} on ${thing} already exists at ${bornAt} — nothing was written, and this door will not report a write it did not make`);
 
@@ -1098,7 +1106,10 @@ export async function callHoldTool(name, args = {}, key = null) {
   // write-mode default produced, minus the write." So the read's ANSWER is
   // unchanged on every store, present or absent; what changed is that it no
   // longer creates one to find out.
-  const db = name === "world_holdings" ? openDynamicReadOnly() : openDynamic();
+  // A flipped hold writes nothing to sqlite (POS-269), so it holds no writable
+  // handle: its rows come from `acts`, and the handle below is only the floor
+  // an unflipped office reads.
+  const db = name === "world_holdings" || holdEdgeOnActs() ? openDynamicReadOnly() : openDynamic();
   try {
     if (name === "world_holdings") {
       // B1: give/drop/take's own holder fold, read from `acts` under W2_GUARDS=1.
@@ -1326,22 +1337,26 @@ export function holdingEntry(did, { crossing, at, witnesses, cls, household }) {
 
 // ── THE FLIPPED HOLD (W2_PEN=hold) ───────────────────────────────────────────
 //
-// R2's ordering, in sqlite's own terms. `declareHolding` adjudicates AND
-// writes the attachments edge in one call, and the pen must commit before
-// that edge may stand — so the edge is written inside a sqlite transaction
-// that COMMITs only after `appendActFlipped` returns (Postgres committed; the
-// reverse-mirror journal row is in the same sqlite transaction) and ROLLs BACK
-// on any refusal. The three outcomes, each with one truth:
+// R2's ordering. Where the holder check reads `acts` too (W2_GUARDS=1, prod),
+// the holding act IS the edge (POS-269): the door writes nothing to dynamic.db,
+// and `declareHolding` is called with `writeEdge: false`, so it only
+// adjudicates. Where the guards still read sqlite, the edge is still written
+// there, inside a `BEGIN IMMEDIATE` that commits only after the pen has, as
+// before. The three outcomes, each with one truth:
 //
-//   the door refuses (403/409/422)  → nothing in either store
-//   the pen is unreachable          → 503, the ruled sentence, nothing in either store
-//   the pen commits                 → acts holds the record; attachments + journal commit together
+//   the door refuses (403/409/422)  → nothing written
+//   the pen is unreachable          → 503, the ruled sentence, nothing written
+//   the pen commits                 → acts holds the record
 //
-// A sqlite write transaction held across the pen's round-trip is deliberate
-// and short (one INSERT-sized window); it is exactly the property that makes
-// "nothing was written" true rather than asserted. `deps` exist so the ordering
-// can be proven on a hand-built store with no world db and no Postgres — the
-// door injects the real ones.
+// WHAT SERIALIZES IT. This used to be a sqlite `BEGIN IMMEDIATE` held across
+// the pen's round trip: the file's write lock was the thing that kept a second
+// hold from reading the holder between this one's check and its commit, and it
+// was also a "database is locked" waiting to happen on every give/drop/take.
+// Only this process's main thread writes holding acts (a read worker refuses
+// every unsafe door), so an in-process queue gives the same guarantee with no
+// file under it: `holdingQueue` runs one flipped hold at a time, the check read
+// inside it. The sqlite arm keeps its transaction for its own edge's sake. `deps` exist so the ordering can be proven with no world db and no
+// Postgres; the door injects the real ones.
 export async function declareHoldingFlipped({ db, thing, to = null, actor, dials = {}, key = null, deps = {}, reached = null, stood = null }) {
   const journal = await import("./world-journal.mjs");
   const appendActFlipped = deps.appendActFlipped ?? journal.appendActFlipped;
@@ -1351,27 +1366,37 @@ export async function declareHoldingFlipped({ db, thing, to = null, actor, dials
   const currentCrossing = deps.currentCrossing ?? (await import("./crossings.mjs")).currentCrossing;
 
   const { guardedAttachments } = await import("./world2-guards.mjs");
+  const onActs = deps.onActs ?? holdEdgeOnActs();
 
-  db.exec("BEGIN IMMEDIATE");
+  const turn = holdingQueue.then(() => holdOnce());
+  holdingQueue = turn.catch(() => {});
+  return turn;
+
+  async function holdOnce() {
+  if (!onActs) db.exec("BEGIN IMMEDIATE");
   try {
     // ── B1: THE HOLDER CHECK, INSIDE THE TRANSACTION SHAPE ─────────────────
-    // Read AFTER `BEGIN IMMEDIATE`, never before it. The sqlite write lock is
-    // already held here, so the state this guard adjudicates against is the
-    // state the edge commits against; a read taken before the BEGIN would open
-    // exactly the window where another writer hands the thing on between the
-    // check and the write, and "current state before history" (the three faces
-    // above) would be answering about a past. Flipped, the rows come from
-    // `acts`, both eras, latest-wins; unflipped, `readAttachments(db)`.
+    // Read INSIDE the queue's turn, never before it. No other flipped hold runs
+    // until this one has committed or refused, so the state this guard
+    // adjudicates against is the state the act commits against; a read taken
+    // before the turn would open exactly the window where another hand passes
+    // the thing on between the check and the write, and "current state before
+    // history" (the three faces above) would be answering about a past. The
+    // rows come from `acts`, both eras, latest-wins.
     const rows = await guardedAttachments(db);
     // The reach was already asked at the door, above the flip branch, and its
     // answer rides in as `reached`. It is NOT re-asked here: this function's
     // contract is that it can be driven on a hand-built store with no world db
     // and no Postgres, and a world read inside the transaction would take that
     // away from the three tests that exist to prove the pen's ordering.
-    const did = declareHolding({ db, thing, to, actor, roster: null, groundOwner: null, dials, rows }); // throws the door's own bounce on refusal
+    const did = declareHolding({ db, thing, to, actor, roster: null, groundOwner: null, dials, rows, writeEdge: !onActs }); // throws the door's own bounce on refusal
     const { at, witnesses } = await witnessStamp(did.declared_by);
     const row = await appendActFlipped(db, holdingEntry(did, { crossing: currentCrossing(), at, witnesses, cls: CLASS_HOLDING, household: resolvedWorldHousehold(key) }));
-    db.exec("COMMIT");
+    if (!onActs) db.exec("COMMIT");
+    // The act committed, so the holdings snapshot the synchronous readers fold
+    // (the arena, the portal block) is behind by exactly this act. Reloaded off
+    // this answer's path; the read workers are told to reload theirs.
+    (deps.holdingsMoved ?? holdingsMoved)();
     // Which store is the RECORD for this act — said in the answer, as the stance
     // door says it (the journal row behind it is the reverse-mirror copy).
     // `seq` IS THE ACT'S ID (G1): `appendActFlipped` answers `seq: null` and
@@ -1380,10 +1405,21 @@ export async function declareHoldingFlipped({ db, thing, to = null, actor, dials
     // which needs the drop act's id to attribute the amend to.
     return { ...dressReceipt(did, { reached, stood }), log: "acts", seq: row.actId ?? row.seq ?? null };
   } catch (err) {
-    try { db.exec("ROLLBACK"); } catch { /* no transaction to roll back — the BEGIN itself failed */ }
+    if (!onActs) { try { db.exec("ROLLBACK"); } catch { /* no transaction to roll back — the BEGIN itself failed */ } }
     if (err?.name === "PenUnreachableError")
       throw bounce(503, err.message,
         "this lane's pen is the office's record (W2_PEN=hold); when it cannot be reached the door refuses rather than writing anywhere else — the thing is exactly where it was, and your act is safe to make again");
     throw err;
   }
+  }
+}
+
+// One flipped hold at a time, in this process (see THE FLIPPED HOLD above).
+// A turn that refuses or throws still hands the queue on.
+let holdingQueue = Promise.resolve();
+
+/** After a holding act commits: reload this thread's snapshot and tell the read workers. */
+function holdingsMoved() {
+  reloadHoldings();
+  announce("holding");
 }
