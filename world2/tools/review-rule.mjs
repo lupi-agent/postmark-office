@@ -131,7 +131,7 @@
 
 import { realpathSync } from "node:fs";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { materializeClaims, recomputeStanding, slugOf, ownerHouseholdFor } from "./materialize.mjs";
+import { materializeClaims, recomputeStanding, slugOf, ownerHouseholdFor, liveHouseOfVia } from "./materialize.mjs";
 import { fractionalCrossing } from "./live-reads.mjs";
 // The #2594 predicate, for NAMING only — this door is deliberately not gated by
 // it. See § THE SECOND DOOR below.
@@ -235,7 +235,7 @@ export async function reCheckGrant(q, winner, { townSha = null } = {}) {
       household: await ownerHouseholdFor(q, winner.claimant),
       geometry: winner.geometry, parent: winner.parent, data: winner.data,
     };
-    const tiers = computeStanding([...standingRows, candidate]);
+    const tiers = computeStanding([...standingRows, candidate], { houseOf: await liveHouseOfVia(q) });
     const escrowByMark = await escrowPresenceAt(q, { townSha });
     const verdict = escrowAbsentAmong([{ id: winner.id, slug }], { tiers, escrowByMark, townSha });
     if (verdict.refused.length)

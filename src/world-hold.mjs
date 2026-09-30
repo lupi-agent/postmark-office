@@ -371,7 +371,10 @@ export function sameHousehold(a, b, householdOf = null) {
   let ha = null, hb = null;
   try { ha = householdOf(A); hb = householdOf(B); } catch { return { same: false, how: "handle-only", slug: null }; }
   if (!ha?.key || !hb?.key) return { same: false, how: "handle-only", slug: null };
-  return { same: ha.key === hb.key, how: "household", slug: ha.slug ?? null };
+  // The HOUSE, not the ledger key: one house can wear two keys at once
+  // (households.mjs § build, the Starling House), and two housemates are one
+  // household whichever key each wears.
+  return { same: (ha.house ?? ha.key) === (hb.house ?? hb.key), how: "household", slug: ha.slug ?? null };
 }
 
 /** How a refusal names the test that actually answered — never a test it did not run. */

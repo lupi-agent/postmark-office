@@ -38,6 +38,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { renamedRow } from "./one-contract.mjs"; // POS-70: the one rename shape
 import { existsSync, readFileSync } from "node:fs";
+import { freshestMainRef, readAtRef } from "./world-branches.mjs";
 import { join } from "node:path";
 
 import {
@@ -1731,14 +1732,27 @@ const HELD_ROWS = `SELECT id, by,
 // UNREADABLE IS NULL, NOT A GUESS. `scopeAdmits` refuses on a null household
 // rather than admitting, so a missing registry closes the relation-scoped doors
 // instead of opening them to everyone. That direction is the whole point.
-let _hh = null;
+//
+// READ AT PUBLISHED MAIN, CACHED PER TEXT (the Starling House, 2026-09-30). This
+// used to parse the working tree's copy ONCE for the life of the process, and
+// nothing in production ever reset it: a settlement that re-derived the
+// registry reached this door only at the office's next restart, so a house
+// split across two keys stayed split here after the world had joined it. It
+// now reads the file at `freshestMainRef`, the published-main reader every
+// READ tier uses, and re-parses only when the text at that ref changed
+// (`readAtRef` caches the text per sha, so an unchanged ref hands back the
+// same string).
+let _hh = null; // { text, map }
 export function worldHouseholdOf(handle, { repo = WORLD_CLONE } = {}) {
   if (!handle) return null;
-  if (_hh === null) {
-    try { _hh = JSON.parse(readFileSync(join(repo, "WORLD", "households.json"), "utf8")).households ?? {}; }
-    catch { _hh = {}; }
+  let text = null;
+  try { text = readAtRef(repo, freshestMainRef(repo), "WORLD/households.json"); } catch { text = null; }
+  if (_hh === null || _hh.text !== text) {
+    let map = {};
+    try { map = text == null ? {} : JSON.parse(text).households ?? {}; } catch { map = {}; }
+    _hh = { text, map };
   }
-  return _hh[handle] ?? `solo:${handle}`;
+  return _hh.map[handle] ?? `solo:${handle}`;
 }
 export const resetHouseholdCache = () => { _hh = null; };
 
