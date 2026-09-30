@@ -8,10 +8,14 @@
 // anywhere else.
 //
 // WHAT WENT WITH IT: the encounter fold (encounter.mjs), the wheel's join and
-// leave on a crossing, the portal block and the cockpit on the apex's read,
-// the phase read that `loot`'s precondition asked, the loot shroud at the hold
-// door, the walk desk's placement and stride inside a portal ground, and the
-// arena's sqlite journal writer. Its rows were archived once
+// leave on a crossing, the encounter, acting_blocked and loose floor on the
+// apex's read, the phase read that `loot`'s precondition asked, the loot shroud
+// at the hold door, the walk desk's placement clear of an adversary, and the
+// arena's sqlite journal writer.
+//
+// WHAT DID NOT: the PORTAL GROUND's own law (the room you stand in, its stride,
+// its spawn, `standpoint.portal`). The rooms are walked with no fight in them,
+// so that lives on in src/portal-ground.mjs. Its rows were archived once
 // (tools/arena-archive.mjs) before the door closed. The implementation lives in
 // git history (office train/2026-w41 before this commit) for whoever builds the
 // arena again, and the brief says to build it, not port it.

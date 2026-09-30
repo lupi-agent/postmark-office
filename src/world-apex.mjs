@@ -111,9 +111,13 @@ import {
 import { exitAllowed, fenceGroundFor, walkAllowed } from "./embodiment.mjs";
 // THE ARENA IS CLOSED (Keemin, 2026-09-30). Its five verbs are still granted
 // by the class marks, so they still dispatch, and every one answers the same
-// refusal (src/arena.mjs). The portal block, the wheel on a crossing, the
-// phase read and the loose floor went with the fold.
+// refusal (src/arena.mjs). The encounter on the read, the wheel on a
+// crossing, the phase read and the loose floor went with the fold; the portal
+// ground's own law did not (below).
 import { ARENA_TOOLS, ARENA_VERBS, arenaActViaOffice, arenaClosed } from "./arena.mjs";
+// THE PORTAL GROUND'S OWN LAW outlived the arena: which room you stand in, its
+// stride and its spawn (src/portal-ground.mjs). Rides and vehicles are not this.
+import { cockpitPortal, groundAt, spawnPointFor } from "./portal-ground.mjs";
 
 export const apexEnabled = () => process.env.WORLD_APEX === "1";
 
@@ -1949,6 +1953,7 @@ async function apexRead(args, key, ctx = {}) {
   let refusedGrants = [];
   let seatedAt = null;
   let handoffSeat = null;
+  let portal = null;
   let actors = [];
   try {
     // ── THE THREE CHANNELS (2026-08-26) ──────────────────────────────────────
@@ -1983,6 +1988,11 @@ async function apexRead(args, key, ctx = {}) {
     refusedGrants = resolved.refused;
     seatedAt = resolved.seated;
     handoffSeat = resolved.handoff;
+    // ── THE PORTAL, inside the one store handle the read already holds ─────
+    // Null everywhere except inside a portal ground, so the ordinary standpoint
+    // is byte-identical to what it was. The arena's half (the encounter, the
+    // wheel, the loose floor) closed with the arena on 2026-09-30.
+    portal = groundAt(store.db, spineIds);
     // ── THE ACT-AS ROSTER ────────────────────────────────────────────────────
     //
     // "Abilities live at the CLASS level ('Act As' a class), and 'Human' is one
@@ -2091,6 +2101,9 @@ async function apexRead(args, key, ctx = {}) {
   return {
     standpoint: {
       ...oriented.standpoint,
+      // ⚠ `standpoint.portal` and `id`, never a top-level `portal` or `ground`:
+      // the site's cockpit contract (world-cockpit.mjs § portalOf).
+      ...(portal ? { portal: cockpitPortal(portal) } : {}),
       // ── THE SEAT, SAID BEFORE IT IS USED (founder-ruled 2026-08-29) ────────
       //
       // LOGOS § The three channels: "Any act needing a record WRITES THROUGH THE
@@ -2525,8 +2538,52 @@ async function apexDo(args, key, ctx = {}) {
       return { ...bounce(e.code, e.defect, e.hint,
         { ...(e.choices ? { choices: e.choices } : {}), ...(e.walk ? { walk: e.walk } : {}) }), ...done };
     }
+    // ── THE GROUND SETS ITS ENTRANT DOWN (LOGOS § The portal ground) ────────
+    // AFTER the enter and only when it succeeded. The receipt keeps the shape
+    // it had while the arena's wheel rode here too: `joined: { placed }`.
+    if (action === "enter" && !result?.error) {
+      const placed = await spawnOnEnter(args, key, hand || standingHandle(args, key));
+      if (placed) return { ...done, result, joined: { placed } };
+    }
     return result?.error === "bounce" ? { ...result, ...done } : { ...done, result };
   } finally { store.db?.close(); }
+}
+
+/**
+ * Where a portal ground with a `spawn` dial sets an entrant down, written as a
+ * walk: entry writes occupancy and moves nobody, so a hand entering from
+ * outside the fence would be inside by the record and outside by geometry.
+ * Null for every ground that declares no spawn.
+ */
+async function spawnOnEnter(args, key, who) {
+  const target = String(args.mark ?? args.mark_id ?? parseEnvelope(args)?.mark ?? parseEnvelope(args)?.mark_id ?? "").trim();
+  if (!target || !who) return null;
+  const store = openStore();
+  try {
+    if (!store.db) return null;
+    const place = groundAt(store.db, [target]);
+    if (!place) return null;
+    const spawn = spawnPointFor(store.db, place, { who, crossing: currentCrossing() });
+    if (!spawn) return null;
+    if (spawn.refused) return { ground: place.ground, refused: spawn.refused };
+    const { walkEntry } = await import("./world.mjs");
+    const { appendJournal } = await import("./world-journal.mjs");
+    const declaredAt = new Date().toISOString();
+    await appendJournal(null, walkEntry({
+      crossing: currentCrossing(), who, targetMarkId: place.ground,
+      stampAt: null, witnesses: null,
+      from: spawn.at, toward: spawn.at, pace: departurePace(), targetExtent: null,
+      household: null, writtenAt: declaredAt, declaredBy: who,
+    }));
+    return {
+      ground: place.ground, at: spawn.at,
+      ...(spawn.jitter ? { jitter_m: spawn.jitter, from_spawn: spawn.from } : {}),
+      note: `${place.ground} sets its entrants down at its own spawn point — you did not walk here, the ground placed you`,
+    };
+  } catch { return null; }
+  finally {
+    try { store.db?.close(); } catch { /* a writer that cannot close still wrote */ }
+  }
 }
 
 // ── the read mode · every action's shadow (ruled 2026-08-15) ────────────────

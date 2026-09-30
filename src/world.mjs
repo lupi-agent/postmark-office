@@ -19,6 +19,7 @@
 
 import { worldFreezeBounce } from "./freeze.mjs";
 import { existsSync, readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isPrincipal } from "./ops.mjs";
@@ -52,7 +53,10 @@ import { createHearingWindow } from "./hearing-window.mjs"; // earshot: speech a
 import { createSayPush, waitMsOf, serveSayStream } from "./say-push.mjs"; // POS-265: the waiters — a listen that waits, and the page's stream
 import { householdOf, humanHandFor, pinnedLoginOf } from "./households.mjs"; // the human speaker's label wears the town's name, never the login
 import { householdLockPath, poolEnabled, pushDraftBranch, withDraftLease } from "./world-pool.mjs";
-import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabled } from "./world-serve.mjs"; // stage 1: published-main reads from world.db, behind a flag
+import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabled, storeDbPath } from "./world-serve.mjs";
+// The portal ground's own stride (src/portal-ground.mjs): a walk that ends on a
+// ground declaring `walk_min_step` is snapped to it. Not the arena's.
+import { groundAt, groundAtPoint, strideOnGround } from "./portal-ground.mjs"; // stage 1: published-main reads from world.db, behind a flag
 // `openDynamicReadOnly` IS GONE FROM THIS IMPORT (POS-154): the walkers door's
 // frame map was its last caller here, and it opened the store for the departure
 // read alone.
@@ -4558,10 +4562,28 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
     }
   }
 
-  // THE ARENA IS CLOSED (Keemin, 2026-09-30): a walk no longer asks the record
-  // for a portal ground to be placed on or a stride to snap to. The placement
-  // and the `walk_min_step` dial went with the arena (src/arena.mjs); a walk
-  // into those rooms is an ordinary walk, at the town's whole-metre step.
+  // ── THE PORTAL GROUND'S STRIDE (LOGOS § The portal ground) ─────────────────
+  // "`walk_min_step` is a dial on the ground's own mark, in metres: within
+  // that ground a walk is validated and snapped at that granularity instead of
+  // the town's whole-metre step. Absent … the town-wide step governs and
+  // nothing anywhere changes." The named mark first, the destination point
+  // second. A store that will not open answers null and the walk is untouched.
+  // (The arena's placement beside an adversary closed with it, 2026-09-30.)
+  const groundHere = (markId, aim) => {
+    const path = storeDbPath();
+    if (!existsSync(path)) return null;
+    let db = null;
+    try {
+      db = new DatabaseSync(path, { readOnly: true });
+      return (markId ? groundAt(db, [markId]) : null) ?? groundAtPoint(db, aim);
+    } catch { return null; }
+    finally { try { db?.close(); } catch { /* a reader that cannot close still read */ } }
+  };
+  const onGround = strideOnGround({ toward, targetFrom }, groundHere(targetMarkId, toward));
+  if (onGround) {
+    toward = onGround.toward;
+    targetFrom = onGround.targetFrom;
+  }
 
   // THE WATER GATE IS OFF FOR v0 — Keemin's ruling: "walking on water is fine for
   // v0 lol". A leg across the channel is permitted, and no bounce is raised.

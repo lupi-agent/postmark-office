@@ -56,11 +56,14 @@ test("NO STORE, BY CONSTRUCTION: arena.mjs imports nothing and names no store op
     assert.equal(code.includes(word), false, `arena.mjs names ${word}`);
 });
 
-test("NOTHING LEFT: the fold, the wheel, the portal, the shroud, the walk's ground lookup and the journal writer are gone from src", () => {
+test("NOTHING LEFT OF THE FIGHT: the fold, the wheel, the adversary, the encounter on the read, the shroud and the journal writer are gone from src", () => {
   assert.equal(existsSync(join(SRC, "encounter.mjs")), false, "the encounter fold is back");
-  const gone = ["encounterOn", "arenaGroundAt", "groundAtPoint", "arrivalOnGround", "adversaryIn", "joinOnCrossing", "leaveOnCrossing",
-    "portalBlockAt", "withLoose", "actingBlocked", "cockpitEncounter", "cockpitPortal", "lootHiddenReason", "lootShroudedIn",
-    "refuseShroudedLoot", "weaponInHand", "spawnPointFor", "wheelOnCrossing", "spawnOnEnter", "appendArenaRow", "foldEncounter"];
+  // The portal ground's own law is NOT on this list, and must not be: the
+  // ground lookup, its stride, its spawn and `standpoint.portal` outlived the
+  // arena (src/portal-ground.mjs; the rooms are walked with no fight in them).
+  const gone = ["encounterOn", "arenaGroundAt", "arrivalOnGround", "entryPointInto", "adversaryIn", "joinOnCrossing", "leaveOnCrossing",
+    "portalBlockAt", "withLoose", "actingBlocked", "cockpitEncounter", "lootHiddenReason", "lootShroudedIn",
+    "refuseShroudedLoot", "weaponInHand", "wheelOnCrossing", "appendArenaRow", "foldEncounter"];
   const hits = [];
   for (const f of readdirSync(SRC).filter((n) => n.endsWith(".mjs"))) {
     const code = readFileSync(join(SRC, f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
