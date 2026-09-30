@@ -169,6 +169,9 @@ const ROSTER = {
   "tools/suite-baseline.mjs": { args: ["--tip", "0000000"], code: 2, needle: "cannot resolve 0000000 to a full sha here" },
   "tools/settle-anchored-berths.mjs": { args: ["--clone", NOWHERE], code: 1, needle: "not a town checkout" },
   "tools/site-sentinel.mjs": { args: ["--now", "not-a-date", "--dry-run", "--state", NOWHERE_OUT, "--out", NOWHERE_OUT], env: { SENTINEL_DISCORD_WEBHOOK: undefined }, code: 1, needle: "site-sentinel" },
+  // The PayPal rail (POS-183 part 2): no PAYPAL_ENV, so it refuses before it reads
+  // a credential, a clone, PayPal or the ledger.
+  "tools/paypal-watch.mjs": { args: [], env: { ...NO_PG, PAYPAL_ENV: undefined, PAYPAL_CLIENT_ID: undefined, PAYPAL_SECRET: undefined }, code: 1, needle: "PAYPAL_ENV must be live or sandbox" },
   "tools/stripe-watch.mjs": { args: ["--clone", NOWHERE], code: 1, needle: "no town clone with the funding seam" },
   "tools/thread-parity.mjs": { args: ["--log", NOWHERE, "--db", NOWHERE_DB, "--json"], code: 2, needle: "voices-log" },
   "tools/train-week-check.mjs": { args: [], code: 2, needle: "usage: node tools/train-week-check.mjs" },

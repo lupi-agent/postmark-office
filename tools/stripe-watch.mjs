@@ -573,14 +573,15 @@ export function resolveSession(s, { engine, entries, clone, households, loginHan
  * reviewable — so an attribution through the pin says, on the row itself, which
  * string was typed, which hand it became, and on what authority.
  */
-export function resolveHand(typed, households, loginHands = null) {
-  const gift = (why) => ({ attributed: false, from: OUTSIDE_FROM, via: null, gift_note: why });
+export function resolveHand(typed, households, loginHands = null, outside = OUTSIDE_FROM) {
+  // `outside` is the rail's own unattached-gift spelling (paypal-watch passes outside:paypal); the rule is one copy.
+  const gift = (why) => ({ attributed: false, from: outside, via: null, gift_note: why });
 
   if (typed != null && households?.has(typed))
     return { attributed: true, from: typed, via: "handle" };
 
   if (typed == null)
-    return gift(`no handle was given, so these dollars are witnessed as a gift under ${OUTSIDE_FROM} and mint no holo.`);
+    return gift(`no handle was given, so these dollars are witnessed as a gift under ${outside} and mint no holo.`);
 
   const pin = loginHands?.get?.(typed.toLowerCase()) ?? null;
 
@@ -595,14 +596,15 @@ export function resolveHand(typed, households, loginHands = null) {
   }
 
   if (pin && pin.hands.length > 1)
-    return gift(`"${typed}" is a GitHub login the town has pinned, but it names the household ${pin.key}, which holds ${pin.hands.length} hands (${pin.hands.join(", ")}) — a pin names a household and cannot say which of them paid. These dollars are witnessed as a gift under ${OUTSIDE_FROM} and mint no holo; a hand among them can be credited by the founder, by hand, while the ref is unspent. A payment the office cannot attach to a hand can still be a gift, but it cannot mint your holo.`);
+    return gift(`"${typed}" is a GitHub login the town has pinned, but it names the household ${pin.key}, which holds ${pin.hands.length} hands (${pin.hands.join(", ")}) — a pin names a household and cannot say which of them paid. These dollars are witnessed as a gift under ${outside} and mint no holo; a hand among them can be credited by the founder, by hand, while the ref is unspent. A payment the office cannot attach to a hand can still be a gift, but it cannot mint your holo.`);
 
-  return gift(`"${typed}" is not a household the town knows, so these dollars are witnessed as a gift under ${OUTSIDE_FROM} and mint no holo. A payment the office cannot attach to a hand can still be a gift, but it cannot mint your holo.`);
+  return gift(`"${typed}" is not a household the town knows, so these dollars are witnessed as a gift under ${outside} and mint no holo. A payment the office cannot attach to a hand can still be a gift, but it cannot mint your holo.`);
 }
 
 // potGate lives in fund.mjs and takes the engine; wrapped here only so a
-// falsifier can hand in an engine whose potFile is a fixture.
-function potGateOf(engine, clone, pot) {
+// falsifier can hand in an engine whose potFile is a fixture. Exported for
+// paypal-watch, which gates its pot the same way.
+export function potGateOf(engine, clone, pot) {
   const meta = engine.potFile(clone, pot);
   if (!meta) return { ok: false, defect: `no pot named "${pot}"` };
   if (meta.status && meta.status !== "open") return { ok: false, defect: `pot "${pot}" is ${meta.status}, not open` };
