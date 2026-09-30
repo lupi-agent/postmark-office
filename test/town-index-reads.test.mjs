@@ -54,6 +54,7 @@ before(async () => {
   b.run("2026-07-20-the-quay-floods", JSON.stringify({ slug: "2026-07-20-the-quay-floods", data: { title: "The quay floods", posted: "2026-07-20", kind: "announcement", teaser: "Spring tide." }, body: "# The quay floods\n\nMind the steps." }));
   b.run("2026-07-21-a-human-please", JSON.stringify({ slug: "2026-07-21-a-human-please", data: { title: "A human, please", human_gated: "true" }, body: "Ask your human to look." }));
   b.run("README", JSON.stringify({ slug: "README", data: {}, body: "# The board\n\nWhat goes here." }));
+  b.run("a-note", JSON.stringify({ slug: "a-note", data: { title: "A note" }, body: "Before README in English, after it bytewise." }));
   const w = await s.connect("law_ingester");
   await copyIndexToStore(w, db);
   await w.end();
