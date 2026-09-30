@@ -61,8 +61,8 @@
 import { worldFreezeBounce } from "./freeze.mjs";
 import { readAttachments, declareAttachment } from "./dynamic-entities.mjs";
 import { openDynamic, openDynamicReadOnly } from "./dynamic-store.mjs";
-import { holdEdgeOnActs, reloadHoldings } from "./holdings-snapshot.mjs";
-import { announce, IN_READ_WORKER } from "./read-workers.mjs";
+import { holdEdgeOnActs } from "./hold-edge.mjs";
+import { IN_READ_WORKER } from "./read-workers.mjs";
 import { classDials } from "./world-classes.mjs";
 
 /** The thing class's own params, read from the record every time (never cached here). */
@@ -282,50 +282,6 @@ function actingHandle(args, key) {
   return who;
 }
 
-/**
- * Refuses a take/give aimed at loot the room has not opened yet, or returns.
- *
- * ⚑ THE IMPORTS ARE LAZY AND THAT IS THE POINT, not a shortcut — the same
- * reason `mirrorHoldingAct` reaches for `world.mjs` this way, one screen down.
- * `arena.mjs` imports THIS file (for `holdingsOf`), so a static import back
- * would close a cycle; and a store with no arena anywhere in it never loads
- * either module.
- *
- * ⚑ IT REFUSES ONLY WHAT IT CAN PROVE. Every failure to read — no world store,
- * a store that will not open, a dynamic store that throws — falls through to
- * the ordinary door. A shroud that turned an unreadable room into a refusal
- * would make an unrelated outage look like the cake was still standing, and a
- * resident would have no way to tell those two apart.
- */
-async function refuseShroudedLoot(thingId) {
-  if (!thingId) return;
-  let store = null, dyn = null;
-  try {
-    const [{ openStore }, { lootHiddenReason }] = await Promise.all([
-      import("./world-apex.mjs"), import("./arena.mjs"),
-    ]);
-    store = openStore();
-    if (!store?.db) return;
-    // Read-only: this guard only READS to decide whether to refuse. It sits on
-    // a write path, which is why it is not a worker breach, but a reader that
-    // holds a writable handle is the class this lane is closing everywhere.
-    dyn = openDynamicReadOnly();
-    if (!dyn) return; // nothing journalled means nothing is shrouded
-    const hidden = lootHiddenReason(store.db, dyn, String(thingId));
-    if (!hidden) return;
-    throw bounce(409, `${thingId} is not in this room yet`,
-      `it is the loot of ${hidden.ground}, and the loot is not in the room until the room is spent${
-        hidden.adversary ? ` — ${hidden.adversary} is still standing${hidden.standing ? ` (${hidden.standing})` : ""}` : ""
-      }. Put down what stands here and it will be lying where you can reach it; until then it is not something anyone can take or hand over.`);
-  } catch (e) {
-    // Our own refusal travels; anything else is a reader's trouble and is not
-    // the resident's to be punished for.
-    if (e?.code === 409 && /is not in this room yet/.test(String(e.defect ?? ""))) throw e;
-  } finally {
-    try { dyn?.close(); } catch { /* a reader that cannot close still read */ }
-    try { store?.db?.close(); } catch { /* same */ }
-  }
-}
 
 // ── THE REACH OF A HOLD (the-town/the-reach, founder-ruled 2026-09-07) ───────
 //
@@ -341,8 +297,7 @@ async function refuseShroudedLoot(thingId) {
 // already is. What `declareHolding` keeps is the part that needs no geometry:
 // who holds what, and which of the three faces this act is.
 //
-// ⚑ IT REFUSES ONLY WHAT IT CAN PROVE — `refuseShroudedLoot`'s discipline, one
-// screen up, and for the same reason. Every failure to READ (no world engine,
+// ⚑ IT REFUSES ONLY WHAT IT CAN PROVE. Every failure to READ (no world engine,
 // a clone that will not answer, a standpoint derivation that throws) falls
 // through to the ordinary door. A door that turned an unreadable world into
 // "you are not standing there" would make an outage look like a refusal, and a
@@ -1106,10 +1061,12 @@ export async function callHoldTool(name, args = {}, key = null) {
   // write-mode default produced, minus the write." So the read's ANSWER is
   // unchanged on every store, present or absent; what changed is that it no
   // longer creates one to find out.
-  // A flipped hold writes nothing to sqlite (POS-269), so it holds no writable
-  // handle: its rows come from `acts`, and the handle below is only the floor
-  // an unflipped office reads.
-  const db = name === "world_holdings" || holdEdgeOnActs() ? openDynamicReadOnly() : openDynamic();
+  // Where the holding edge is on `acts` (POS-269) this door opens NO sqlite
+  // handle at all: the holder check and the holdings read come from the
+  // record, and the flipped pen writes nothing to dynamic.db. Elsewhere sqlite
+  // is that office's record: a read-only handle to read it, a writable one to
+  // write the edge.
+  const db = holdEdgeOnActs() ? null : (name === "world_holdings" ? openDynamicReadOnly() : openDynamic());
   try {
     if (name === "world_holdings") {
       // B1: give/drop/take's own holder fold, read from `acts` under W2_GUARDS=1.
@@ -1174,24 +1131,6 @@ export async function callHoldTool(name, args = {}, key = null) {
     // — a door that promised enforcement it does not perform would be the exact
     // schema-vs-runtime defect this branch flagged on `leave_mark`'s `tier:`, and
     // it is not better for being mine.
-    // ── THE LOOT SHROUD, AT THE HOLD DOOR (founder-ruled 2026-08-29) ─────────
-    //
-    // LOGOS § The portal ground: "A thing whose mark declares `loot` is NEITHER
-    // VISIBLE NOR TAKEABLE while the encounter on its ground is afoot: … a
-    // `take` or a `give` aimed at it is refused with a sentence that explains
-    // itself rather than a bounce that reads like a fault."
-    //
-    // HERE RATHER THAN IN `declareHolding`, for the reason the mirror is at this
-    // door too: `declareHolding` is the pure adjudicator, tested on hand-built
-    // stores with no world db and no journal anywhere near it, and a shroud
-    // inside it would hand every one of those tests two dependencies it has no
-    // business having. This door is where the stores already are.
-    //
-    // BOTH VERBS, ONE CHECK. give/drop/take are one primitive here, and the
-    // shroud is a fact about the OBJECT, so a hand that somehow has the wick end
-    // cannot pass it on either — which is the honest reading of "neither
-    // visible nor takeable" and costs nothing to hold.
-    await refuseShroudedLoot(args.thing);
     const dials = thingDials();
     // ── LANE TWO OF THE PEN FLIP (W2_PEN=hold; runbook C2, 2026-09-03) ────────
     // Flipped, the record is Postgres `acts`, committed and awaited BEFORE the
@@ -1400,10 +1339,6 @@ export async function declareHoldingFlipped({ db, thing, to = null, actor, dials
     const { at, witnesses } = await witnessStamp(did.declared_by);
     const row = await appendActFlipped(db, holdingEntry(did, { crossing: currentCrossing(), at, witnesses, cls: CLASS_HOLDING, household: resolvedWorldHousehold(key) }));
     if (!onActs) db.exec("COMMIT");
-    // The act committed, so the holdings snapshot the synchronous readers fold
-    // (the arena, the portal block) is behind by exactly this act. Reloaded off
-    // this answer's path; the read workers are told to reload theirs.
-    (deps.holdingsMoved ?? holdingsMoved)();
     // Which store is the RECORD for this act — said in the answer, as the stance
     // door says it (the journal row behind it is the reverse-mirror copy).
     // `seq` IS THE ACT'S ID (G1): `appendActFlipped` answers `seq: null` and
@@ -1424,9 +1359,3 @@ export async function declareHoldingFlipped({ db, thing, to = null, actor, dials
 // One flipped hold at a time, in this process (see THE FLIPPED HOLD above).
 // A turn that refuses or throws still hands the queue on.
 let holdingQueue = Promise.resolve();
-
-/** After a holding act commits: reload this thread's snapshot and tell the read workers. */
-function holdingsMoved() {
-  reloadHoldings();
-  announce("holding");
-}

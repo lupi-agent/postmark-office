@@ -152,12 +152,10 @@ export const CLASS_MOVE = "move";
 // not have to be read twice to tell the two apart. Machinery: world-ride.mjs.
 export const CLASS_RIDE = "ride";
 
-// The arena's beats. DECLARED HERE rather than in `arena.mjs` since G1
-// (POS-156): `appendArenaRow` below is the one sqlite INSERT the deletion
-// leaves standing, and it refuses any other class by name — so the constant it
-// checks against has to live beside the write it guards, not in the module that
-// calls it. `arena.mjs` re-exports it, so nothing that imported it from there
-// moved. It is a row class like the six above and it always was.
+// The arena's beats. The arena closed on 2026-09-30 (Keemin) and writes none;
+// its old rows stay in dynamic.db's journal until they are archived
+// (tools/arena-archive.mjs reads them by this class). `appendArenaRow`, the
+// one sqlite INSERT G1 had left standing, closed with it.
 export const CLASS_ARENA_ACT = "arena-act";
 
 // ── THE LEDGER CONTRACT (POS-5 §3's finisher) ───────────────────────────────
@@ -401,53 +399,6 @@ export async function appendJournal(db, entry = {}) {
   return { seq: null, actId, record: draft ? "claims" : "acts", ...row };
 }
 
-// ── THE ARENA'S OWN ROW, NARROW AND NAMED (DEC-1 / P-143) ───────────────────
-//
-// The arena is the one lane that keeps writing sqlite, and it is an exception
-// BY RULING, carrying the ruling's own words — Keemin, 2026-08-29, the party's
-// own night: "we can just keep the arena on sqlite for now". P-143: "Keep
-// `dynamic.db` and the arena's journal path as a NAMED, manifested exception
-// carrying its own registry row and its own death condition."
-//
-// It has its own function rather than a flag on `appendJournal`, and that is
-// the whole shape of the exemption: G1 deletes the GENERAL insert, and what
-// survives is a narrow path with the arena's name on it that nothing else can
-// reach by passing an option. An exception you can opt into is not an
-// exception, it is a switch.
-//
-// WHY IT CANNOT SIMPLY MOVE TO `acts` WITH EVERYTHING ELSE: the beat's `seq` is
-// its IDENTITY inside the fold, not a receipt. `arena.mjs` keys the wheel, the
-// queue, the rolls and every driven beat on it (`bySeq`, `drivenRows`,
-// `mine.seq`), and `readJournal(db, { cls: arena-act })` reads the same rows
-// back. The hardened rebuild lands 2.0-native instead of porting this; until
-// then the rows stay where the fold reads them.
-//
-// IT STILL REACHES `acts` THE JOURNALLED WAY. The lane census is explicit that
-// the flip refusal "is a fact about `W2_PEN`, not about the mirror — a beat
-// still reaches `acts` the journalled way", so the mirror stays on this path
-// and stays fire-and-forget: here the sqlite row above genuinely IS the SoT,
-// which is the condition `shadowWrite`'s header names and the only place in
-// the office where it is still true.
-export function appendArenaRow(db, entry = {}) {
-  const row = normalizeRow(entry);
-  if (row.class !== CLASS_ARENA_ACT) {
-    throw new Error(
-      `appendArenaRow is the arena's exemption (DEC-1/P-143) and takes ${CLASS_ARENA_ACT} rows only — got "${row.class}". `
-      + "Every other class writes the record through appendJournal; the sqlite journal is not a store any other lane may reach.");
-  }
-
-  const stmt = db.prepare(
-    `INSERT INTO journal (${ROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  const res = stmt.run(
-    row.crossing, row.actor, row.action, row.object,
-    row.at_anchor, row.at_dx, row.at_dy,
-    row.witnesses, row.class, row.payload, row.effect,
-    row.household, row.written_at);
-
-  const seq = Number(res.lastInsertRowid);
-  mirrorAct(row, seq);
-  return { seq, ...row };
-}
 
 /**
  * THE FLIPPED WRITE — the pen-flip design's §3 ordering, per lane (D1).
@@ -500,7 +451,7 @@ export function appendArenaRow(db, entry = {}) {
  * words (src/world2-acts.mjs). `mark` keeps its ordinary expiry.
  */
 const FLIP_REFUSED = Object.freeze({
-  arena: "the arena stays sqlite-first by founder ruling (2026-08-29) — the hardened rebuild lands 2.0-native instead; unset it from W2_PEN",
+  arena: "the arena is closed (Keemin, 2026-09-30) and writes nothing; unset it from W2_PEN",
 });
 
 export async function appendActFlipped(db, entry = {}) {

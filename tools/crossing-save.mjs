@@ -76,7 +76,7 @@ import {
 } from "../src/dynamic-entities.mjs";
 import { DEPARTURE_GAPS, RECORD_READ_FIELDS, storedDepartureEvents } from "../src/world-movement.mjs";
 import { emissionsBetween, pruneEmissions } from "../src/dynamic-emissions.mjs";
-import { holdEdgeOnActs } from "../src/holdings-snapshot.mjs";
+import { holdEdgeOnActs } from "../src/hold-edge.mjs";
 import { storeAttachmentRows } from "../src/world2-guards.mjs";
 
 const argOf = (name, fallback = null) => { const i = process.argv.indexOf(name); return i !== -1 ? process.argv[i + 1] : fallback; };

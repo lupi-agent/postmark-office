@@ -67,14 +67,12 @@ test("THE REFUSAL IS UNCHANGED — an unreachable record is the ruled bounce, an
   assert.equal(existsSync(NOWHERE), false);
 });
 
-test("THE SOURCE OPENS NOTHING — no dynamic.db open in the six doors' files but the arena's wheel", () => {
+test("THE SOURCE OPENS NOTHING — no dynamic.db open in the six doors' files, the apex's included", () => {
   const opens = (file) => readFileSync(join(HERE, "..", "src", file), "utf8")
     .split("\n").filter((l) => /\bopenDynamic\(/.test(l) && !/^\s*(\/\/|\*)/.test(l));
   for (const file of ["world.mjs", "walk-exec.mjs", "crossing-exec.mjs", "world-stance.mjs"])
     assert.deepEqual(opens(file), [], `${file} opens the dynamic store again`);
-  // The one left in the apex is the arena's enter/leave wheel (P-143), which
-  // reads and writes the arena journal by ruling.
-  const apex = opens("world-apex.mjs");
-  assert.equal(apex.length, 1, `world-apex.mjs opens the store ${apex.length} times, expected only the arena wheel's`);
-  assert.match(apex[0], /dyn = openDynamic\(\);/);
+  // The apex's last one was the arena's enter/leave wheel (P-143). The arena
+  // closed on 2026-09-30 (Keemin) and took it with it.
+  assert.deepEqual(opens("world-apex.mjs"), [], "world-apex.mjs opens the dynamic store again");
 });

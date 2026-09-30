@@ -35,7 +35,7 @@ import test, { after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1690,4 +1690,39 @@ test("POS-70 · GET /world/apex carries every field the apex declares — `read:
     const bare = await fetch(`${BASE}/world/apex?x=-900&y=-760`);
     assert.equal(bare.status, 200);
   });
+});
+
+// THE ARENA IS CLOSED (Keemin, 2026-09-30). A store whose resident class grants
+// the arena's verbs, and the apex's own door: every arena verb answers the one
+// refusal, BEFORE any guard (loot's phase precondition would otherwise refuse
+// it as "not performed here", which is true and is not the reason), and the
+// door never creates dynamic.db on the way.
+test("THE ARENA IS CLOSED: do: strike and do: loot answer \"the arena is closed\" at the apex door, and dynamic.db is not touched", async () => {
+  on();
+  const arenaLaw = [
+    { id: "the-town/resident", by: "the-town", kind: "sited", tier: "constitution", at: { x: 2200, y: 2200 }, extent: { w: 10, h: 10 },
+      body: "A household's living voice.",
+      props: { class: "resident", class_version: 5, ambient: true,
+        actions: [{ action: "strike", residue: "the-town/sound" }, { action: "loot", residue: "the-town/sound" }] } },
+  ];
+  const path = join(repo, "apex-world-arena-closed.db");
+  buildStore([...MARKS, ...arenaLaw], path);
+  const dyn = join(repo, "arena-closed-no-such", "dynamic.db");
+  const was = process.env.WORLD_DYNAMIC_DB;
+  process.env.WORLD_DYNAMIC_DB = dyn;
+  try {
+    await withStore(path, async () => {
+      for (const verb of ["strike", "loot"]) {
+        const r = await worldApex({ do: verb, args: {} }, KEY_ALPHA);
+        assert.equal(r.error, "bounce", `${verb}: ${JSON.stringify(r).slice(0, 200)}`);
+        assert.equal(r.code, 501);
+        assert.equal(r.defect, "the arena is closed");
+        assert.match(r.hint, /the arena is closed while it is rebuilt/);
+        assert.equal(r.action, verb);
+      }
+    });
+  } finally {
+    if (was === undefined) delete process.env.WORLD_DYNAMIC_DB; else process.env.WORLD_DYNAMIC_DB = was;
+  }
+  assert.equal(existsSync(dyn), false, "an arena verb at the apex created dynamic.db");
 });

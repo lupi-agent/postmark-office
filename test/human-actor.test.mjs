@@ -273,16 +273,10 @@ test("the seam routes and never re-derives the hand", () => {
   // PASSED, IN THE HAND'S POSITION, and a call that also carries a context is
   // still that property. `\b` keeps it honest — it still reds if the argument is
   // dropped, renamed, or moved, and the falsifier below runs both.
-  assert.match(apex, /wheelOnCrossing\(action, args, key, spineIds, hand\b/,
-    "so the wheel counts whoever actually crossed — the hand where there is one");
-
-  const WHEEL_HAND = /wheelOnCrossing\(action, args, key, spineIds, hand\b/;
-  assert.equal(WHEEL_HAND.test("await wheelOnCrossing(action, args, key, spineIds, hand, ctx);"), true,
-    "a call that grew another argument still carries the hand");
-  assert.equal(WHEEL_HAND.test("await wheelOnCrossing(action, args, key, spineIds);"), false,
-    "…and a call that dropped the hand is still caught");
-  assert.equal(WHEEL_HAND.test("await wheelOnCrossing(action, args, key, spineIds, handler);"), false,
-    "…and so is one that passes something merely named like it");
+  // RETIRED 2026-09-30: the pin that the crossing's wheel was handed the HAND.
+  // The arena closed (Keemin) and the wheel with it, so no crossing counts
+  // anyone; the hand's one derivation, pinned above, is what remains.
+  assert.equal(/wheelOnCrossing\(/.test(apex), false, "the arena's wheel is back on the crossing");
 });
 
 // ── THE OWN HAND, at the two doors that answer for it ───────────────────────
