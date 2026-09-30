@@ -227,6 +227,14 @@ test("the join pen reads the store under the lock when switched, and refuses whe
   assert.equal(gone.error?.defect, UNREACHABLE_DEFECT);
 });
 
+test("the drain stops before a row when the store cannot answer, and never opens office.db", async (t) => {
+  if (skip) return t.skip(skip);
+  const r = spawnSync(process.execPath, [join(ROOT, "tools", "town-drain-run.mjs"), "--clone", clone, "--db", dbPath, "--oauth-db", join(tmp, "drain-oauth.db"), "--dry-run"], {
+    env: { ...process.env, TOWN_INDEX_READS: "store", WORLD2_PG: "1", WORLD2_PG_URL: "postgres://office_api:x@127.0.0.1:9/none" }, encoding: "utf8", timeout: 30_000 });
+  assert.equal(r.status, 1, r.stderr);
+  assert.ok(r.stderr.includes(UNREACHABLE_DEFECT), r.stderr);
+});
+
 const ASKS = [
   ["/berth", { slug: "wright" }],
   ["/berth", { slug: "zed-two" }],
