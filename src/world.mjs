@@ -56,7 +56,9 @@ import { householdLockPath, poolEnabled, pushDraftBranch, withDraftLease } from 
 import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabled, storeDbPath } from "./world-serve.mjs";
 // The portal ground's own stride (src/portal-ground.mjs): a walk that ends on a
 // ground declaring `walk_min_step` is snapped to it. Not the arena's.
-import { groundAt, groundAtPoint, strideOnGround } from "./portal-ground.mjs"; // stage 1: published-main reads from world.db, behind a flag
+import { groundAt, groundAtPoint, strideOnGround } from "./portal-ground.mjs";
+import { graphDb } from "./world-graph-db.mjs";
+import { worldGraphSnapshot } from "./world-graph-snapshot.mjs"; // stage 1: published-main reads from world.db, behind a flag
 // `openDynamicReadOnly` IS GONE FROM THIS IMPORT (POS-154): the walkers door's
 // frame map was its last caller here, and it opened the store for the departure
 // read alone.
@@ -4579,11 +4581,14 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
   // second. A store that will not open answers null and the walk is untouched.
   // (The arena's placement beside an adversary closed with it, 2026-09-30.)
   const groundHere = (markId, aim) => {
+    // The store first (POS-270 lane W 2b): the snapshot's handle answers
+    // portal-ground's questions through their twins; world.db is the floor.
+    const snap = worldGraphSnapshot();
     const path = storeDbPath();
-    if (!existsSync(path)) return null;
+    if (!snap?.tables && !existsSync(path)) return null;
     let db = null;
     try {
-      db = new DatabaseSync(path, { readOnly: true });
+      db = snap?.tables ? graphDb(snap.tables) : new DatabaseSync(path, { readOnly: true });
       return (markId ? groundAt(db, [markId]) : null) ?? groundAtPoint(db, aim);
     } catch { return null; }
     finally { try { db?.close(); } catch { /* a reader that cannot close still read */ } }

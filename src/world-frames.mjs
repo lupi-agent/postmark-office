@@ -43,6 +43,8 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { OFFICE_ROOT, WORLD_CLONE } from "./world-store.mjs";
+import { graphDb, registerTwin } from "./world-graph-db.mjs";
+import { worldGraphSnapshot } from "./world-graph-snapshot.mjs";
 
 /** The world itself — the default frame, and the only one with no carrier. */
 export const WORLD_FRAME = Object.freeze({ carrier: null, at: { x: 0, y: 0 } });
@@ -78,8 +80,31 @@ export const MECHANIC_BODY = Object.freeze({
 
 let _classSnap = null;
 
-/** `mark id -> { class, mobility }` for every mark the store knows, cached on the file. */
+// The two statements this read asks, named so the store's snapshot can answer
+// them too (POS-270 lane W 2b; world-graph-db.mjs holds each twin equal to its SQL).
+const HYDRATION_STATUS = registerTwin("SELECT value FROM meta WHERE key='hydration_status'",
+  (g) => g.meta.filter((r) => r.key === "hydration_status").map((r) => ({ value: r.value })));
+const MARK_PROPS = registerTwin("SELECT id, props FROM nodes WHERE kind='mark'",
+  // Answered off the (kind, subkind) index: subkind order (nulls first), then table order.
+  (g) => g.nodes.filter((n) => n.kind === "mark")
+    .map((n, i) => [n, i]).sort(([a, i], [b, j]) => subkindOrder(a.subkind, b.subkind) || i - j)
+    .map(([n]) => ({ id: n.id, props: n.props })));
+function subkindOrder(a, b) { return a === b ? 0 : a == null ? -1 : b == null ? 1 : a < b ? -1 : 1; }
+
+/**
+ * `mark id -> { class, mobility }` for every mark the store knows. THE STORE
+ * FIRST: with no file named, once the world graph snapshot has loaded, it is
+ * read through the snapshot's handle and cached on the published snapshot;
+ * otherwise world.db, cached on the file, as before.
+ */
 export function classFieldsFromStore({ worldDb = null } = {}) {
+  const snap = worldDb == null ? worldGraphSnapshot() : null;
+  if (snap?.tables) {
+    if (_classSnap?.from === snap) return _classSnap.out;
+    const out = classFieldsOf(graphDb(snap.tables), `the store's graph snapshot (S${snap.pin?.settlement ?? "?"} ${String(snap.pin?.tag_sha ?? "").slice(0, 12)})`);
+    _classSnap = { from: snap, out };
+    return out;
+  }
   const path = worldDb ?? process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db");
   let st;
   try { st = statSync(path); }
@@ -87,29 +112,30 @@ export function classFieldsFromStore({ worldDb = null } = {}) {
   if (_classSnap && _classSnap.path === path && _classSnap.mtimeMs === st.mtimeMs && _classSnap.size === st.size) return _classSnap.out;
 
   let out;
+  let db = null;
   try {
-    const db = new DatabaseSync(path, { readOnly: true });
-    const status = db.prepare("SELECT value FROM meta WHERE key='hydration_status'").get()?.value ?? null;
-    if (String(status ?? "").startsWith("FAILED")) {
-      db.close();
-      out = { fields: null, gate: { status: "ABSENT", reason: "store-failed", detail: String(status) } };
-    } else {
-      const rows = db.prepare("SELECT id, props FROM nodes WHERE kind='mark'").all();
-      db.close();
-      const fields = new Map();
-      for (const r of rows) {
-        try {
-          const p = JSON.parse(r.props ?? "{}");
-          if (p.class || p.mobility) fields.set(r.id, { class: p.class ?? null, mobility: p.mobility ?? null });
-        } catch { /* a bent props blob is one mark, not the whole read */ }
-      }
-      out = { fields, gate: { status: "PRESENT", reason: null, detail: `${fields.size} class-bearing marks from ${path}` } };
-    }
+    db = new DatabaseSync(path, { readOnly: true });
+    out = classFieldsOf(db, path);
   } catch (e) {
     out = { fields: null, gate: { status: "ABSENT", reason: "store-unreadable", detail: String(e?.message ?? e).slice(0, 200) } };
-  }
+  } finally { try { db?.close(); } catch { /* a reader that cannot close still read */ } }
   _classSnap = { path, mtimeMs: st.mtimeMs, size: st.size, out };
   return out;
+}
+
+/** The read itself, over either handle (the file's, or the snapshot's). */
+function classFieldsOf(db, source) {
+  const status = db.prepare(HYDRATION_STATUS).get()?.value ?? null;
+  if (String(status ?? "").startsWith("FAILED"))
+    return { fields: null, gate: { status: "ABSENT", reason: "store-failed", detail: String(status) } };
+  const fields = new Map();
+  for (const r of db.prepare(MARK_PROPS).all()) {
+    try {
+      const p = JSON.parse(r.props ?? "{}");
+      if (p.class || p.mobility) fields.set(r.id, { class: p.class ?? null, mobility: p.mobility ?? null });
+    } catch { /* a bent props blob is one mark, not the whole read */ }
+  }
+  return { fields, gate: { status: "PRESENT", reason: null, detail: `${fields.size} class-bearing marks from ${source}` } };
 }
 
 /** Drop the cached class read — for tests that rewrite world.db in place. */

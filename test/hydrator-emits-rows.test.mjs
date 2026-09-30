@@ -18,7 +18,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -98,8 +98,14 @@ const CLONE = NO_WORLD ? null : worldClone();
 test("THE OUTPUTS: --no-db writes no world.db, and its counts are the file's", (t) => {
   if (NO_WORLD) return t.skip(NO_WORLD);
   const dir = mkdtempSync(join(tmpdir(), "hydrator-rows-"));
+  // A FIXED, EMPTY OFFICE, so the two hydrations read the same office. The
+  // graph's code half is parsed from the office tree, and under a full suite
+  // other tests write files into this tree between two runs (the cli-guard
+  // lesson), which moved the code counts and reddened this leg (2026-09-30).
+  const office = join(dir, "office");
+  mkdirSync(office);
   try {
-    const run = (args) => JSON.parse(execFileSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"), "--world", CLONE, "--no-gexf", "--no-lints", "--json", ...args],
+    const run = (args) => JSON.parse(execFileSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"), "--world", CLONE, "--office", office, "--no-gexf", "--no-lints", "--json", ...args],
       { encoding: "utf8", env: { ...process.env, WORLD_STORE_DB: join(dir, "unused.db") }, stdio: ["ignore", "pipe", "ignore"] }));
     const withFile = run(["--db", join(dir, "world.db")]);
     const without = run(["--no-db", "--db", join(dir, "absent.db")]);

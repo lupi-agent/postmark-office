@@ -31,6 +31,7 @@
 // layer; moving them onto the store's graph snapshot is a part on POS-270.
 
 import { createHash } from "node:crypto";
+import { byId, jx, registerTwin } from "./world-graph-db.mjs";
 
 /** The ground classes, innermost first. An arena IS a portal ground (`extends:
  *  portal-ground`); with the arena closed its floor keeps only the ground's law. */
@@ -65,6 +66,20 @@ const CLASS_DIALS = `SELECT id,
          json_extract(props, '$.dials') AS dials
        FROM nodes WHERE json_extract(props, '$.class') IN (SELECT value FROM json_each(?))
          AND subkind = 'class'`;
+
+// The store's snapshot answers these three too (world-graph-db.mjs), held equal
+// to the SQL by test/world-graph-db.test.mjs.
+const groundRow = (n) => ({ id: n.id, by: n.by, class: jx(n.p, "class"), dials: jx(n.p, "dials"), body: jx(n.p, "body"),
+  at_x: n.at_x, at_y: n.at_y, extent_w: n.extent_w, extent_h: n.extent_h });
+registerTwin(GROUND_ROWS, (g, idsJson) => [...new Set(JSON.parse(idsJson ?? "[]"))]
+  .map((id) => g.byId.get(id)).filter(Boolean).sort(byId).map(groundRow));
+registerTwin(GROUNDS_ALL, (g) => g.nodes
+  .filter((n) => ["arena", "portal-ground"].includes(jx(n.p, "class")) && n.at_x != null && n.at_y != null).map(groundRow));
+registerTwin(CLASS_DIALS, (g, namesJson) => {
+  const names = new Set(JSON.parse(namesJson ?? "[]"));
+  return g.nodes.filter((n) => names.has(jx(n.p, "class")) && n.subkind === "class")
+    .map((n) => ({ id: n.id, class: jx(n.p, "class"), dials: jx(n.p, "dials") }));
+});
 
 const within = (row, g) => {
   const x = Number(row?.at_x), y = Number(row?.at_y);
