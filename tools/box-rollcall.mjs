@@ -183,6 +183,14 @@ export const ALARM_TREE = "ALARM-tree";
 // 2026-09-28: a failed stamp-verify stranded one signed ledger line in the town
 // clone and every pulling write refused for four and a half hours.
 export const ALARM_DIRTY_CLONE = "ALARM-dirty-clone";
+// The newest `settlement/S<n>` tag on the world is older than its allowance:
+// crossings are publishing and the keeper has blessed none of them. Its own
+// class because the repair is the KEEPER'S JUDGMENT — a person reading the
+// crossing and cutting (or refusing) the tag — not systemctl, chown, a drop-in
+// or a commit. It is not ALARM-outcome either: that verdict reads what a RAIL
+// produced, and no rail blesses. 2026-09-27 → 09-29: the box published three
+// crossings, nothing was blessed, and nothing rang (smalls-0930 D).
+export const ALARM_UNBLESSED = "ALARM-unblessed";
 
 export function isAlarm(verdict) {
   return String(verdict).startsWith("ALARM");
@@ -229,6 +237,15 @@ export function loadManifest(path = DEFAULT_MANIFEST) {
     if (!row.path) throw new Error(`clone row ${row.id} names no path`);
     if (!row.activation_owner) throw new Error(`clone row ${row.id} names no activation_owner`);
     if (!row.why) throw new Error(`clone row ${row.id} does not say what breaks when the clone is dirty`);
+  }
+  // §2e, the blessing rows. Same discipline, and the allowance is required: a
+  // staleness check with no number in it is ALARM-unbounded by another name.
+  for (const row of m.blessings ?? []) {
+    if (!row.id) throw new Error(`blessing row with no id: ${JSON.stringify(row)}`);
+    if (!row.path) throw new Error(`blessing row ${row.id} names no path`);
+    if (!row.activation_owner) throw new Error(`blessing row ${row.id} names no activation_owner`);
+    if (!row.why) throw new Error(`blessing row ${row.id} does not say what goes wrong while nothing is blessed`);
+    if (!(Number(row.max_age_hours) > 0)) throw new Error(`blessing row ${row.id} names no max_age_hours — an age check needs its allowance`);
   }
   // §2c, the tree rows. Same discipline again, and one clause of its own: a row
   // that permits a tree OTHER than the deployed release must say why in a
@@ -699,6 +716,13 @@ export function collect(manifest, { now = Date.now() } = {}) {
   const clones = Object.create(null);
   for (const row of manifest.clones ?? []) clones[row.id] = readCloneState(row.path);
 
+  // §3e — the newest blessing each world clone carries, and when the clone last
+  // fetched. Local only, like §3d: the tick fetches the world clone every
+  // fifteen minutes, and the fetch's own age rides along so a stale reading can
+  // say whether it is the keeper's or the fetch's.
+  const blessings = Object.create(null);
+  for (const row of manifest.blessings ?? []) blessings[row.id] = readBlessing(row.path);
+
   return {
     schema: 1,
     collected_at: new Date(now).toISOString(),
@@ -709,6 +733,7 @@ export function collect(manifest, { now = Date.now() } = {}) {
     files,
     custody,
     clones,
+    blessings,
     ...collectTrees(manifest),
   };
 }
@@ -1356,6 +1381,65 @@ export function classifyDirtyClone(row, snapshot, now) {
   };
 }
 
+// ── §3e / §5e the keeper's newest blessing ──────────────────────────────────
+//
+// THE NEWEST TAG IS THE HIGHEST NUMBER, NOT THE LATEST STRING OR DATE. S10 sorts
+// before S9 as text, and a re-cut tag can be younger than a newer settlement's;
+// the settlement's number is the keeper's own order (world-refresh-clone.sh
+// resolves "the newest blessing" the same way). The age is the TAG's: an
+// annotated tag's tagger date is the instant the keeper blessed, which is the
+// thing this row is about; a lightweight tag falls back to its commit's date.
+
+/** Collector (impure): the newest settlement tag in a clone, and when it last fetched. */
+export function readBlessing(path, { git = (args) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) } = {}) {
+  if (!existsSync(path)) return { exists: false, path };
+  try {
+    const lines = git(["for-each-ref", "refs/tags/settlement/", "--format=%(refname:short)%09%(taggerdate:unix)%09%(creatordate:unix)"])
+      .split("\n").filter(Boolean);
+    let newest = null;
+    for (const l of lines) {
+      const [tag, tagger, creator] = l.split("\t");
+      const n = Number(/^settlement\/S(\d+)$/.exec(tag)?.[1]);
+      if (!Number.isFinite(n)) continue;
+      const at = Number(tagger) || Number(creator) || null;
+      if (!newest || n > newest.n) newest = { tag, n, tagged_at: at == null ? null : new Date(at * 1000).toISOString() };
+    }
+    let fetched_at = null;
+    try {
+      const fh = git(["rev-parse", "--git-path", "FETCH_HEAD"]).trim();
+      const abs = resolve(path, fh);
+      if (existsSync(abs)) fetched_at = new Date(statSync(abs).mtimeMs).toISOString();
+    } catch { /* never fetched: said by the null */ }
+    return { exists: true, readable: true, path, tags: lines.length, newest, fetched_at };
+  } catch (e) {
+    return { exists: true, readable: false, path, error: String(e?.stderr || e?.message || e).trim().slice(0, 160) };
+  }
+}
+
+/** Judge (pure): is the newest blessing within its allowance? */
+export function classifyBlessing(row, snapshot, now) {
+  const seen = (snapshot.blessings || {})[row.id];
+  const label = row.label || row.id;
+  const unit = `blessing:${row.id}`;
+  const allowance = Number(row.max_age_hours);
+  const alarm = (what) => ({ unit, label, verdict: ALARM_UNBLESSED, reason: `${label} — ${what}. ${row.why}` });
+
+  if (!seen || seen.exists === false) return alarm(`${row.path} is not on the box, so nothing can say when the world was last blessed`);
+  if (!seen.readable) return alarm(`git could not read the tags in ${row.path} (${seen.error ?? "no reason given"}), and an unread blessing is not a fresh one`);
+  if (!seen.newest) return alarm(`${row.path} carries no settlement/S<n> tag at all`);
+  if (!seen.newest.tagged_at) return alarm(`${seen.newest.tag} carries no date, so its age cannot be read`);
+
+  const age = now - Date.parse(seen.newest.tagged_at);
+  const fetchAge = seen.fetched_at ? now - Date.parse(seen.fetched_at) : null;
+  const fetchNote = fetchAge == null
+    ? " (this clone has never fetched, so the age may be the clone's rather than the keeper's)"
+    : fetchAge > HOUR ? ` (the clone last fetched ${humanAge(fetchAge)}, so part of this age may be the fetch's — check the rehydrate tick's fetch first)` : "";
+  if (age > allowance * HOUR) {
+    return alarm(`the newest blessing is ${seen.newest.tag}, tagged ${humanAge(age)} (${seen.newest.tagged_at}); the allowance is ${allowance} h${fetchNote}${row.repair ? `. Repair: ${row.repair}` : ""}`);
+  }
+  return { unit, label, verdict: OK, reason: `${label} — ${seen.newest.tag}, tagged ${humanAge(age)} (allowance ${allowance} h)` };
+}
+
 // ── §5d judging THE TREE A UNIT WILL RUN ────────────────────────────────────
 //
 // Pure, like every other judgment here, and derived from `tree_sources` rather
@@ -1540,6 +1624,7 @@ export function rollcall(manifest, snapshot, now = Date.now()) {
   const rows = manifest.units.map((row) => classifyRow(row, snapshot, now));
   for (const row of manifest.custody ?? []) rows.push(classifyCustody(row, snapshot));
   for (const row of manifest.clones ?? []) rows.push(classifyDirtyClone(row, snapshot, now));
+  for (const row of manifest.blessings ?? []) rows.push(classifyBlessing(row, snapshot, now));
   for (const row of manifest.trees?.rows ?? []) rows.push(classifyTree(row, manifest, snapshot));
   rows.push(...unrowedTrees(manifest, snapshot));
 
