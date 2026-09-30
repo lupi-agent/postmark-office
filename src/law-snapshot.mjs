@@ -114,11 +114,21 @@ export function reloadLawSnapshot({ query = defaultQuery, force = false } = {}) 
 /**
  * Start the refresher: one load now, then a tick every `intervalMs`. The timer
  * is unref'd — it never holds a process open. Idempotent.
+ *
+ * `onChange(standing)` runs after a tick that PUBLISHED a new snapshot, and
+ * only then. The office's main thread hands in `announce("law")`, so its read
+ * workers (POS-266) reload the moment the tag moves rather than a tick later.
+ * A worker runs no timer of its own: it loads once at boot
+ * (`reloadLawSnapshot()`), then on each announcement.
  */
-export function startLawRefresher({ intervalMs = Number(process.env.LAW_REFRESH_MS ?? 60_000), query } = {}) {
+export function startLawRefresher({ intervalMs = Number(process.env.LAW_REFRESH_MS ?? 60_000), query, onChange = null } = {}) {
   if (state.timer) return;
-  reloadLawSnapshot({ query });
-  state.timer = setInterval(() => { reloadLawSnapshot({ query }); }, intervalMs);
+  const tick = async () => {
+    const r = await reloadLawSnapshot({ query });
+    if (r.changed && onChange) { try { onChange(r.standing); } catch { /* a listener that throws does not stop the timer */ } }
+  };
+  tick();
+  state.timer = setInterval(tick, intervalMs);
   state.timer.unref?.();
 }
 

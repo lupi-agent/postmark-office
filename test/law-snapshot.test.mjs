@@ -185,3 +185,25 @@ test("a caller naming a world.db still reads THAT file, snapshot or not", async 
   assert.equal(r.source, "floor", "an explicit worldDb is the fixture seam; the snapshot must not answer for it");
   await db.close();
 });
+
+test("THE HOOK REACHES THE WORKERS: the refresher calls onChange once per published move, never on an unmoved tick", async (t) => {
+  if (pglite.reason) return t.skip(pglite.reason);
+  const { startLawRefresher } = await import("../src/law-snapshot.mjs");
+  const db = await storeFloor(pglite);
+  await bless(db, 1, S1, lawAt(60, 12));
+  const told = [];
+  let ticks = 0;
+  const query = (sql, p) => { if (sql === LAW_REFRESH_SQLS.pin) ticks++; return db.query(sql, p); };
+  startLawRefresher({ intervalMs: 20, query, onChange: (standing) => told.push(standing.settlement) });
+  const until = async (pred) => { for (let i = 0; i < 200 && !pred(); i++) await new Promise((r) => setTimeout(r, 10)); };
+  await until(() => told.length === 1);
+  assert.deepEqual(told, [1], "the first publish announces");
+  const at = ticks;
+  await until(() => ticks >= at + 3);
+  assert.deepEqual(told, [1], "an unmoved tag announces nothing");
+  await bless(db, 2, S2, lawAt(90, 12));
+  await until(() => told.length === 2);
+  assert.deepEqual(told, [1, 2], "the blessing moved, so the workers are told");
+  resetLawSnapshot();
+  await db.close();
+});
