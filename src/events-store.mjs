@@ -41,10 +41,10 @@ import {
 } from "./quests.mjs";
 import {
   BUG_CLASS, BUG_FINISHED, BUG_LADDER, BUG_STAGES, BUG_HANDS, STATE_REPORTED, stageAmount,
-  judgeBugText, judgeBugHand, judgeHandleField, judgeAdvance, BUG_NO_STAKE, BUG_NO_CLOSE,
+  judgeBugText, judgeBugHand, judgeHandleField, judgeAdvance, judgeReveal, REVEAL_CANDIDATES, BUG_NO_STAKE, BUG_NO_CLOSE,
 } from "./bugs.mjs";
 import {
-  EVENT_CLASS, ACT_POST, ACT_AMEND_POST, ACT_CLOSE, ACT_ADVANCE, ACT_RSVP, ACT_ANNOUNCE, ENDED_LIST_DAYS,
+  EVENT_CLASS, ACT_POST, ACT_AMEND_POST, ACT_CLOSE, ACT_ADVANCE, ACT_REVEAL, ACT_RSVP, ACT_ANNOUNCE, ENDED_LIST_DAYS,
   STATE_CANCELLED, RESPONSE_RSVP, RESPONSE_STANDING,
   BUDGET_DEFAULT, BUDGET_MAX, FELL_BACK_NO_ECHO, SECRET_BYTES, SECRET_NOTE, HARNESS_REUSED_NOTE,
   refuse, mintEventId, judgeInterval, judgePlaceShape, placeFromMarkRow, anchorForPlace,
@@ -640,6 +640,35 @@ async function advanceBug(fields, key, id, { now, env, roll }) {
     return { post: bugAnswer(row), act_id: actId, hand, stage: j.to, ...(j.credit ? { credit: j.credit } : {}), stamps: n,
       ...(j.critter ? { critter: j.critter } : {}),
       receipt: `advanced: ${id} ${prev.state} → ${j.to} by ${hand}'s hand; ${pays}${skipped.length ? `; skipped ${skipped.join(", ")}, and a skipped stage pays nothing` : ""}${j.critter ? `; its critter is "${j.critter}", named by ${j.credit}` : ""}`,
+      read: bugReadHint(id) };
+  }, env);
+}
+
+/**
+ * The reveal at ship (POS-236): a town hand sets the three candidates Iris
+ * painted, or the fixer picks one. One `reveal` act, carrying the post's whole
+ * reveal after it; it mints nothing and moves no stage.
+ */
+export async function revealAtTown(fields, key, { now = Date.now(), env = process.env } = {}) {
+  const id = String(fields?.post ?? "").trim();
+  if (!id) throw refuse(422, "which bug?", 'post: "<author>/<slug>" — town { read: "posts", args: { class: "bug" } } lists them', { field: "post" });
+  if (fields.class !== undefined && fields.class !== BUG_CLASS)
+    throw refuse(422, "a reveal is a bug's", 'only a bug post reveals a critter; send class "bug" or leave class off', { field: "class" });
+  const { mediaUrlOk } = await import("./media.mjs");
+  return write(async (client) => {
+    const prev = await bugRow(client, id);
+    if (!prev) throw refuse(404, `no bug "${id}"`, 'town { read: "posts", args: { class: "bug" } } lists them');
+    const { actor, reveal } = judgeReveal(fields, prev, key, { urlOk: mediaUrlOk });
+    const payload = { post: id, reveal, hand: actor };
+    const actId = await insertAct(client, bugActRow({ action: ACT_REVEAL, actor, object: id, payload, now }));
+    const row = applyPostAct({ posts: new Map([[id, prev]]), responses: new Map() },
+      { id: actId, action: ACT_REVEAL, actor, object: id, payload, household: prev.household });
+    await updatePost(client, row);
+    const critter = prev.fields?.critter ? `"${prev.fields.critter}"` : "its critter";
+    return { post: bugAnswer(row), act_id: actId, hand: actor, reveal,
+      receipt: reveal.pick
+        ? `revealed: ${id}'s critter ${critter} is candidate ${reveal.pick}, chosen by ${actor}; the jar shows it from now on`
+        : `candidates set on ${id} by ${actor}'s hand: ${REVEAL_CANDIDATES} images for ${critter}; ${prev.fields?.named_by ?? "its fixer"} picks one with { post, pick }`,
       read: bugReadHint(id) };
   }, env);
 }
