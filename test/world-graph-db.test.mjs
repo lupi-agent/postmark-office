@@ -53,7 +53,7 @@ before(() => {
   dir = mkdtempSync(join(tmpdir(), "graph-db-"));
   file = join(dir, "world.db");
   execFileSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"), "--world", CLONE, "--ref", newestBlessing(CLONE).sha, "--db", file, "--no-gexf"],
-    { stdio: "ignore", env: { ...process.env, WORLD_STORE_DB: file } });
+    { stdio: "ignore", env: { ...process.env, TMP: dir, TEMP: dir, TMPDIR: dir, WORLD_STORE_DB: file } });   // its own tmp root: the shared world cache is pruned by other hydrations
   tables = readWorldDbTables(file);
 });
 after(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
