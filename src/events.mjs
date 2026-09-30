@@ -49,6 +49,9 @@ export const ACT_CLOSE = "close";
 // The bug class's one move along its lifecycle (Posts phase 2): the state it
 // moves to, and the class's own fields that stage sets.
 export const ACT_ADVANCE = "advance";
+// The bug's critter image, revealed at ship (POS-236): the post's whole reveal,
+// as the act left it, and nothing else.
+export const ACT_REVEAL = "reveal";
 // A post's stored state is what its acts made it. An event's clock phases
 // (announced · doors-open · underway · ended) are `phaseAt`'s, never stored.
 export const STATE_ANNOUNCED = "announced";
@@ -429,6 +432,12 @@ export function applyPostAct(state, act) {
   if (act.action === ACT_ADVANCE) {
     if (!prev) return null;
     const row = { ...prev, fields: { ...prev.fields, ...(p.fields ?? {}) }, state: p.to, last_act: actId };
+    state.posts.set(id, row);
+    return row;
+  }
+  if (act.action === ACT_REVEAL) {
+    if (!prev) return null;
+    const row = { ...prev, fields: { ...prev.fields, reveal: p.reveal ?? null }, last_act: actId };
     state.posts.set(id, row);
     return row;
   }

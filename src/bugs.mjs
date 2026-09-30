@@ -247,6 +247,59 @@ export function judgeAdvance(fields, prev, roll) {
   return out;
 }
 
+// ── THE REVEAL AT SHIP (Keemin, 2026-09-26, on POS-236) ─────────────────────
+//
+// "At SHIP the image is revealed … three candidates painted by Iris from the
+// critter's description, the resident choosing. The Bug Catcher keeps the jar;
+// Iris paints." Iris is asked by letter and answers with three media URLs; a
+// town hand (the Bug Catcher, who keeps the jar) sets them on the post, and the
+// fixer who named the critter picks one. Each is one `reveal` act; the post's
+// `fields.reveal` holds { candidates, pick, image, picked_by }, and the jar reads
+// the picked image off the post. Chosen once: a picked reveal takes no second act.
+
+export const REVEAL_CANDIDATES = 3;
+const REVEAL_HOW = `town { do: "reveal", args: { post, candidates: [three media URLs] } } by the town's hands (${BUG_HANDS.join(", ")}), then { post, pick: 1–${REVEAL_CANDIDATES} } by the fixer who named the critter`;
+
+/**
+ * Judge a reveal against the post. Returns `{ actor, reveal }`: who acts, and the
+ * post's whole reveal after this act. `urlOk` is the media door's own check
+ * (media.mjs § mediaUrlOk), passed in so this file stays pure.
+ */
+export function judgeReveal(fields, prev, key, { urlOk }) {
+  const has = (k) => fields?.[k] !== undefined;
+  if (has("candidates") === has("pick"))
+    throw refuse(422, "a reveal sets the candidates or makes the pick, one at a time", REVEAL_HOW);
+  if (prev.state !== STATE_SHIPPED)
+    throw refuse(409, `"${prev.id}" stands ${prev.state}, and a critter is revealed when its fix ships`, "advance it to shipped first");
+  const was = prev.fields?.reveal ?? null;
+  if (was?.pick) throw refuse(409, `"${prev.id}"'s critter is revealed`, "its image was chosen once, by its fixer");
+
+  if (has("candidates")) {
+    const actor = judgeBugHand(fields, key, { act: "set a critter's candidates" });
+    const list = Array.isArray(fields.candidates) ? fields.candidates.map((u) => (typeof u === "string" ? u.trim() : u)) : null;
+    if (!list || list.length !== REVEAL_CANDIDATES)
+      throw refuse(422, `a reveal holds ${REVEAL_CANDIDATES} candidates`, "candidates: the three media URLs Iris answered with", { field: "candidates" });
+    const bad = list.find((u) => !urlOk(u));
+    if (bad !== undefined)
+      throw refuse(422, "a candidate is a media URL", `each is a URL the media door answered with (upload_media); "${String(bad).slice(0, 80)}" is not`, { field: "candidates" });
+    if (new Set(list).size !== list.length) throw refuse(422, "the candidates are three different images", "candidates: three distinct URLs", { field: "candidates" });
+    return { actor, reveal: { candidates: list, pick: null, image: null, picked_by: null } };
+  }
+
+  const fixer = prev.fields?.named_by ?? null;
+  if (!was?.candidates) throw refuse(409, `"${prev.id}" has no candidates yet`, "Iris paints three once the fix ships; a town hand sets them on the post");
+  if (!fixer) throw refuse(409, `"${prev.id}" names no fixer to choose`, "the critter's namer, set at fixed, makes the pick");
+  const held = [...(key?.handles ?? [])];
+  const named = typeof fields?.handle === "string" ? fields.handle.trim() : "";
+  if (named && !held.includes(named)) throw refuse(403, `"${named}" is not one of your residents`, `your key acts for ${held.join(", ") || "no resident"}`);
+  const actor = named || (held.includes(fixer) ? fixer : "");
+  if (actor !== fixer) throw refuse(403, `only ${fixer}, who fixed it and named the critter, picks its image`, `${fixer} picks with { post, pick }`);
+  const n = Number(fields.pick);
+  if (!Number.isInteger(n) || n < 1 || n > REVEAL_CANDIDATES)
+    throw refuse(422, `pick is 1–${REVEAL_CANDIDATES}`, "pick: the candidate's place in the list, from 1", { field: "pick" });
+  return { actor, reveal: { candidates: was.candidates, pick: n, image: was.candidates[n - 1], picked_by: actor } };
+}
+
 // ── the refusals for what a bug does not take ───────────────────────────────
 
 export const NO_STAKE_REASON = "Keemin, 2026-09-29: \"it feels odd to wait for stakers for a clearly broken thing that just needs fixing, and ideally every bug gets fixed anyway\"";

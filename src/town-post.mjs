@@ -29,10 +29,10 @@
 // closed (it finishes by advance).
 
 import { validateArgs } from "./validate-args.mjs";
-import { postAtTown, amendAtTown, closeAtTown, advanceAtTown } from "./events-store.mjs";
+import { postAtTown, amendAtTown, closeAtTown, advanceAtTown, revealAtTown } from "./events-store.mjs";
 import { EVENT_CLASS, TITLE_MAX, INVITATION_MAX, EVENT_MAX_DAYS } from "./events.mjs";
 import { QUEST_CLASS, QUEST_AUTHOR, QUEST_HANDS } from "./quests.mjs";
-import { BUG_CLASS, BUG_HANDS, BUG_STAGES, BUG_SIDE_EXITS, BUG_SIZES, BUG_GRADES, CRITTER_MAX, BODY_MAX, BUG_NO_STAKE } from "./bugs.mjs";
+import { BUG_CLASS, BUG_HANDS, BUG_STAGES, BUG_SIDE_EXITS, BUG_SIZES, BUG_GRADES, CRITTER_MAX, BODY_MAX, BUG_NO_STAKE, REVEAL_CANDIDATES } from "./bugs.mjs";
 
 const PLACE = { type: "object", description: "where it happens: { mark: \"<owner>/<slug>\" } (a standing mark with an extent) or { at: { x, y } } (absolute world coordinates)" };
 
@@ -154,6 +154,13 @@ export const TOWN_POST_TOOLS = [
       grade: { type: "string", enum: [...BUG_GRADES], description: "class \"bug\", to: \"briefed\" only — the bless's revision, light (10 stamps) or heavy (5)" },
       of: { type: "string", description: "class \"bug\", to: \"duplicate\" only — the bug post it duplicates, <author>/<slug>" },
     }, required: ["post"], additionalProperties: false } },
+  { name: "town_reveal",
+    description: `Reveal a shipped bug's critter — town { do: "reveal" }'s flat charge name (POS-236: "at ship the image is revealed … three candidates painted by Iris, the resident choosing"). Two acts, one at a time. The town's hands (${BUG_HANDS.join(", ")}) set candidates: the ${REVEAL_CANDIDATES} media URLs Iris answered with (each a URL the media door gave, upload_media). Then the fixer who named the critter picks one: pick, 1–${REVEAL_CANDIDATES}. The jar shows the picked image; it is chosen once. Only a bug that stands shipped reveals.`,
+    inputSchema: { type: "object", properties: {
+      post: POST_REF, class: CLASS_REF, handle: ACTING_HANDLE,
+      candidates: { type: "array", items: { type: "string" }, minItems: REVEAL_CANDIDATES, maxItems: REVEAL_CANDIDATES, description: `the town's hands only: the ${REVEAL_CANDIDATES} media URLs Iris painted` },
+      pick: { type: "integer", minimum: 1, maximum: REVEAL_CANDIDATES, description: "the fixer only: which candidate is the critter's image, from 1" },
+    }, required: ["post"], additionalProperties: false } },
 ];
 
 /** `roll` is the office's residents index (handles), which a bug's `for` and `credit` must stand in. */
@@ -162,6 +169,7 @@ export async function callTownPostTool(name, args = {}, key = null, { roll = nul
     case "town_amend": return answer(() => amendAtTown(args, key));
     case "town_close": return answer(() => closeAtTown(args, key));
     case "town_advance": return answer(() => advanceAtTown(args, key, { roll }));
+    case "town_reveal": return answer(() => revealAtTown(args, key));
     default: return null;
   }
 }

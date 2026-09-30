@@ -423,3 +423,82 @@ test("8 · a name with markup is stored and returned as plain text, exactly as s
   assert.equal(one.fields.critter, NAME);
   assert.equal(typeof one.fields.critter, "string");
 });
+
+// ── 9 · the reveal at ship (POS-236) ───────────────────────────────────────
+
+const { revealAtTown } = await import("../src/events-store.mjs");
+const PAINTED = ["https://media.postmark.town/media/iris/hinge-nibbler-1.png",
+  "https://media.postmark.town/media/iris/hinge-nibbler-2.png",
+  "https://media.postmark.town/media/iris/hinge-nibbler-3.png"];
+const ADA = { household: "the-harbor", handles: new Set(["ada"]) };
+
+async function toShipped() {
+  await toBriefed();
+  await advanceAtTown({ post: ID, to: "fixed", credit: "ada", size: "M", critter: "Hinge Nibbler" }, WRIGHT, { now: NOW, roll: ROLL });
+  await advanceAtTown({ post: ID, to: "shipped" }, WRIGHT, { now: NOW, roll: ROLL });
+}
+
+test("9 · the reveal: a hand sets Iris's three candidates, the fixer picks one, the jar reads the picked image, and the rebuild folds it", async () => {
+  const { pen, posts } = setup();
+  await toShipped();
+
+  const set = await revealAtTown({ post: ID, candidates: PAINTED }, WRIGHT, { now: NOW });
+  assert.deepEqual(set.reveal, { candidates: PAINTED, pick: null, image: null, picked_by: null });
+  assert.match(set.receipt, /candidates set on errant\/the-door-sticks by wright's hand: 3 images for "Hinge Nibbler"; ada picks one/);
+  const setAct = pen.rows().at(-1);
+  assert.deepEqual([setAct.class, setAct.action, setAct.actor, setAct.object], ["bug", "reveal", "wright", ID]);
+  assert.equal(posts.get(ID).state, "shipped", "a reveal moves no stage");
+
+  const before = (await postsAtOffice({ class: "bug", post: ID }, { now: NOW, roll: ROLL })).post;
+  assert.equal(before.fields.reveal.image, null, "until the pick, the jar has no image to show");
+
+  const pick = await revealAtTown({ post: ID, pick: 2 }, ADA, { now: NOW });
+  assert.deepEqual(pick.reveal, { candidates: PAINTED, pick: 2, image: PAINTED[1], picked_by: "ada" });
+  assert.match(pick.receipt, /revealed: errant\/the-door-sticks's critter "Hinge Nibbler" is candidate 2, chosen by ada/);
+  assert.deepEqual(JSON.parse(pen.rows().at(-1).payload), { post: ID, reveal: pick.reveal, hand: "ada" });
+
+  // the jar: the posts read carries the picked image beside the name and its namer
+  const one = (await postsAtOffice({ class: "bug", post: ID }, { now: NOW, roll: ROLL })).post;
+  assert.deepEqual([one.fields.critter, one.fields.named_by, one.fields.reveal.image], ["Hinge Nibbler", "ada", PAINTED[1]]);
+  const all = (await postsAtOffice({ class: "bug" }, { now: NOW, roll: ROLL })).posts.find((p) => p.id === ID);
+  assert.equal(all.fields.reveal.image, PAINTED[1]);
+
+  // the rebuild: the acts alone derive the reveal, and the table agrees
+  const acts = pen.rows().filter((a) => a.class === "bug").map((a) => ({ ...a, payload: JSON.parse(a.payload) }));
+  assert.deepEqual(foldPostActs(acts).posts.get(ID).fields.reveal, pick.reveal);
+  const out = await dryRun(pen);
+  assert.equal(out.equal, true, out.drift.join("\n"));
+});
+
+test("9 · the reveal's refusals each write nothing: not shipped, not a hand, not three media URLs, no candidates, not the fixer, a pick out of range, both at once, and after the pick", async () => {
+  const { pen, posts } = setup();
+  await toBriefed();
+  await advanceAtTown({ post: ID, to: "fixed", credit: "ada", size: "M", critter: "Hinge Nibbler" }, WRIGHT, { now: NOW, roll: ROLL });
+  const refusedNothingWritten = async (p, code, re) => {
+    const n = pen.rows().length;
+    const had = JSON.stringify(posts.get(ID));
+    await refusedWith(p, code, re);
+    assert.equal(pen.rows().length, n, "a refused reveal wrote an act");
+    assert.equal(JSON.stringify(posts.get(ID)), had, "a refused reveal changed the post");
+  };
+  await refusedNothingWritten(revealAtTown({ post: ID, candidates: PAINTED }, WRIGHT, { now: NOW }), 409, /stands fixed, and a critter is revealed when its fix ships/);
+  await advanceAtTown({ post: ID, to: "shipped" }, WRIGHT, { now: NOW, roll: ROLL });
+
+  await refusedNothingWritten(revealAtTown({ post: ID, candidates: PAINTED }, FINN, { now: NOW }), 403, /only the town's hands set a critter's candidates/);
+  await refusedNothingWritten(revealAtTown({ post: ID, candidates: PAINTED.slice(0, 2) }, WRIGHT, { now: NOW }), 422, /a reveal holds 3 candidates/);
+  await refusedNothingWritten(revealAtTown({ post: ID, candidates: [...PAINTED.slice(0, 2), "https://example.com/x.png"] }, WRIGHT, { now: NOW }), 422, /a candidate is a media URL/);
+  await refusedNothingWritten(revealAtTown({ post: ID, candidates: [PAINTED[0], PAINTED[0], PAINTED[1]] }, WRIGHT, { now: NOW }), 422, /three different images/);
+  await refusedNothingWritten(revealAtTown({ post: ID, pick: 1 }, ADA, { now: NOW }), 409, /has no candidates yet/);
+  await refusedNothingWritten(revealAtTown({ post: ID, candidates: PAINTED, pick: 1 }, WRIGHT, { now: NOW }), 422, /one at a time/);
+  await refusedNothingWritten(revealAtTown({ post: ID }, WRIGHT, { now: NOW }), 422, /one at a time/);
+
+  await revealAtTown({ post: ID, candidates: PAINTED }, WRIGHT, { now: NOW });
+  await refusedNothingWritten(revealAtTown({ post: ID, pick: 1 }, FINN, { now: NOW }), 403, /only ada, who fixed it and named the critter, picks its image/);
+  await refusedNothingWritten(revealAtTown({ post: ID, pick: 1 }, WRIGHT, { now: NOW }), 403, /only ada/);
+  await refusedNothingWritten(revealAtTown({ post: ID, pick: 4 }, ADA, { now: NOW }), 422, /pick is 1–3/);
+
+  await revealAtTown({ post: ID, pick: 3 }, ADA, { now: NOW });
+  await refusedNothingWritten(revealAtTown({ post: ID, pick: 1 }, ADA, { now: NOW }), 409, /critter is revealed/);
+  await refusedNothingWritten(revealAtTown({ post: ID, candidates: PAINTED }, WRIGHT, { now: NOW }), 409, /critter is revealed/);
+  await refusedWith(revealAtTown({ post: "errant/no-such-bug", pick: 1 }, ADA, { now: NOW }), 404, /no bug/);
+});
