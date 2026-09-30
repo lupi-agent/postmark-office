@@ -147,6 +147,8 @@ function stubStore(rows) {
     if (/FROM marks WHERE status = 'standing'/.test(sql)) return { rows };
     if (/^\s*UPDATE marks/.test(sql)) { updates.push(args); return { rows: [], rowCount: 1 }; }
     if (/to_regclass\('public\.escrow_projection'\)/.test(sql)) return { rows: [{ ok: true }] };
+    // the projection answers at this sha (someone else staked something), and nothing is behind the ear
+    if (/FROM escrow_projection/.test(sql)) return { rows: [{ mark: "someone/else", n: 1 }] };
     return { rows: [] }; // the GiST probes: no index here, so the walk scans
   };
   return { q, updates };
