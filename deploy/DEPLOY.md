@@ -275,9 +275,9 @@ curl -s -H "Authorization: Bearer <key>" https://postmark.town/api/town
   (:09/:24/:39/:54, `deploy/office-rehydrate.sh`) only rebuilds `office.db` and
   `world.db` from those clones. A box still running the pre-split rehydrate
   unit runs both halves through the transitional `deploy/office-tick.sh`. To
-  adopt: step 3's copy, `daemon-reload`, `enable --now
-  postmark-office-keep.timer`, restart the rehydrate timer, then delete
-  `office-tick.sh`.
+  adopt: § Sunday: adopting the tick split, below (the exact commands, the
+  receipts, the manifest rows and the rollback). `office-tick.sh` stays until
+  a clean week has passed.
 - **The town index (POS-268, 2026-09-30), PARKED.** office.db's tables have
   twins in the store (`world2/schema/033_town_index.sql`), kept by
   `postmark-town-index.timer` (:05/:20/:35/:50, `deploy/town-index-ingest.sh`,
@@ -307,6 +307,85 @@ curl -s -H "Authorization: Bearer <key>" https://postmark.town/api/town
   rebuild to a nightly constitution check — never remove it entirely.
 - Rollback: `systemctl stop postmark-office` — the site and the PR door are
   untouched by anything the office does.
+
+### Sunday: adopting the tick split (POS-268)
+
+The split's unit files ride the w41 release, but a code deploy never installs a unit. Until someone copies the units, the box's installed `postmark-office-rehydrate` unit still runs `deploy/office-tick.sh`. After the split, that file is a wrapper that runs `office-keep.sh` and then `office-rehydrate.sh`, so the box does exactly what it did before. Adoption moves the keeping work onto its own timer and gives the rehydrate its new clock. Run it once, by hand, after the w41 release is live. Every step is on the box, as root unless it says meepo.
+
+**0. Preconditions** (all must hold, or stop):
+
+```sh
+curl -s https://postmark.town/api/release                      # names release/2026-w41 (or later)
+ls /srv/postmark-office/deploy/office-keep.sh /srv/postmark-office/deploy/office-rehydrate.sh \
+   /srv/postmark-office/deploy/office-tick.sh                   # all three exist (the tree is the release)
+systemctl show postmark-office-rehydrate.service -p ExecStart   # still names office-tick.sh (pre-split)
+systemctl is-active postmark-office-rehydrate.service           # "inactive": no tick in flight
+```
+
+Pick a quiet minute between :10 and :20 (or :25–:35, :40–:50, :55–:05). The :07 tick and its two-minute tail have finished by then, and the next one is five or more minutes away.
+
+**1. Keep the units you are replacing** (the rollback reads these):
+
+```sh
+sudo mkdir -p /var/backups/postmark-tick-split
+sudo cp -p /etc/systemd/system/postmark-office-rehydrate.service /etc/systemd/system/postmark-office-rehydrate.timer \
+        /var/backups/postmark-tick-split/
+```
+
+**2. Install all four and switch in one step.** The keep timer takes over :07/:22/:37/:52 and the rehydrate moves to :09/:24/:39/:54. Both switch at the same daemon-reload, so no tick runs the keeping work twice or not at all:
+
+```sh
+cd /srv/postmark-office
+sudo cp deploy/postmark-office-keep.service deploy/postmark-office-keep.timer \
+        deploy/postmark-office-rehydrate.service deploy/postmark-office-rehydrate.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now postmark-office-keep.timer
+sudo systemctl restart postmark-office-rehydrate.timer
+```
+
+**3. Receipts, before walking away:**
+
+```sh
+systemctl list-timers postmark-office-keep.timer postmark-office-rehydrate.timer   # next fires at :x7 and :x9
+systemctl show postmark-office-keep.service -p ExecStart        # office-keep.sh
+systemctl show postmark-office-rehydrate.service -p ExecStart   # office-rehydrate.sh
+# after the next :x7 and :x9 have fired:
+journalctl -u postmark-office-keep -n 30 --no-pager             # "[office-keep] settlements: …", no FAILED
+journalctl -u postmark-office-rehydrate -n 30 --no-pager        # "door is serving <sha> — hot reload confirmed", no STALE DOOR
+curl -sI https://postmark.town/api/town | grep -i x-postmark-as-of   # the town's newest sha
+```
+
+**4. The roll-call manifest, in the repo right after** (one commit on the train, Wright's). The `postmark-office-keep.timer` row changes from parked to live:
+
+```json
+{
+ "unit": "postmark-office-keep.timer",
+ "label": "the office's keeping tick (clones, mint, settlements row, panes)",
+ "stage": "live",
+ "activation_owner": "<who> — adopted <date> by DEPLOY.md § Sunday: adopting the tick split (POS-268)",
+ "cadence": "every 15 minutes at :07, :22, :37, :52",
+ "cadence_source": "systemctl show postmark-office-keep.timer -p TimersCalendar",
+ "heartbeat": { "kind": "unit_trigger", "stale_after_minutes": 45 },
+ "stale_means": "the town clone stops pulling (the write pen and declare read a stale town), the mint catch-up and welcome pass stop, the settlements row stops following the keeper's tag, and the panes freeze. Three missed ticks is a stuck keeper, one is noise."
+}
+```
+
+In the `postmark-office-rehydrate.timer` row, `cadence` becomes `"every 15 minutes at :09, :24, :39, :54, two minutes after postmark-office-keep.timer"`. Its label, heartbeat and `stale_means` are unchanged. The tree rows (`office-keep`, `office-rehydrate`) already exist.
+
+**5. office-tick.sh stays** until a clean week has passed. The rollback below depends on it. Delete it in a later train, with the keep row's adopt note.
+
+**Rollback** (anything in step 3 wrong, or a stuck keep row):
+
+```sh
+sudo systemctl disable --now postmark-office-keep.timer
+sudo cp -p /var/backups/postmark-tick-split/postmark-office-rehydrate.service \
+           /var/backups/postmark-tick-split/postmark-office-rehydrate.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart postmark-office-rehydrate.timer
+systemctl show postmark-office-rehydrate.service -p ExecStart   # office-tick.sh again: both halves, the old clock
+```
+
+After that the box runs exactly what it ran before step 2, and the manifest rows go back to what they said (keep parked).
 
 ### The world write pool (tier 1, 2026-08-05)
 
