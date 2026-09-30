@@ -21,6 +21,13 @@
 // No sqlite is involved: the SQL text is the question's NAME here, nothing
 // runs it.
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+import { OFFICE_ROOT } from "./world-store.mjs";
+import { worldGraphSnapshot } from "./world-graph-snapshot.mjs";
+
 const TWINS = new Map();
 const norm = (sql) => String(sql).replace(/\s+/g, " ").trim();
 
@@ -53,6 +60,22 @@ export function jx(p, key) {
 /** `json_type(props, '$.<key>') = 'true'`. */
 export const jtypeTrue = (p, key) => p?.[key] === true;
 
+/**
+ * sqlite's ORDER BY comparison: NULL first, then numbers, then text (BINARY).
+ * For the twins whose statements sort, so a tie-break or a mixed column sorts
+ * the way the file did.
+ */
+export function sqlCompare(a, b) {
+  if (a === b) return 0;
+  if (a === null || a === undefined) return -1;
+  if (b === null || b === undefined) return 1;
+  const na = typeof a === "number", nb = typeof b === "number";
+  if (na && nb) return a - b;
+  if (na) return -1;
+  if (nb) return 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** sqlite's BINARY text order, for the questions answered off the id index. */
 export const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
@@ -84,6 +107,19 @@ export const classMarkGate = (n) => n.kind === "mark" && n.by === "the-town" && 
 /** `CLASS_ROSTER_GATE_SQL`: the wider roster gate. */
 export const classRosterGate = (n) => n.kind === "mark" && n.by === "the-town" && n.tier === "constitution"
   && jx(n.p, "class") !== null && inWorks(n.p);
+
+/**
+ * `CLASS_ROSTER_GATE_SQL` SELECTed as a column: sqlite's three-valued AND over
+ * its terms (a NULL column makes its comparison NULL; any false term makes 0).
+ */
+export function classRosterGateValue(n) {
+  const eq = (v, want) => (v === null || v === undefined ? null : (v === want ? 1 : 0));
+  const terms = [eq(n.kind, "mark"), eq(n.by, "the-town"), eq(n.tier, "constitution"),
+    jx(n.p, "class") !== null ? 1 : 0, worksValue(n.p)];
+  if (terms.includes(0)) return 0;
+  if (terms.includes(null)) return null;
+  return 1;
+}
 
 // ── the handle ──────────────────────────────────────────────────────────────
 
@@ -124,5 +160,36 @@ export function graphDb(tables) {
   };
 }
 
-// The one statement every opener asks, registered here.
+// The statements every opener asks, registered here once.
 registerTwin("SELECT key, value FROM meta", (g) => g.meta.map((r) => ({ key: r.key, value: r.value })));
+export const HYDRATION_STATUS = registerTwin("SELECT value FROM meta WHERE key='hydration_status'",
+  (g) => g.meta.filter((r) => r.key === "hydration_status").map((r) => ({ value: r.value })));
+
+/** `meta WHERE key IN (…)` is answered off meta's key index: key order. */
+export const metaIn = (g, keys) => g.meta.filter((r) => keys.includes(r.key))
+  .map((r) => ({ key: r.key, value: r.value })).sort((a, b) => sqlCompare(a.key, b.key));
+
+/**
+ * The store's handle alone, or null — for a reader that keeps its own file path
+ * and only wants to know whether the snapshot can answer first. It never opens
+ * the file, so it cannot leave one open.
+ */
+export function openWorldStore() {
+  const snap = worldGraphSnapshot();
+  return snap?.tables ? { db: graphDb(snap.tables), path: null, source: "store", snap } : null;
+}
+
+/**
+ * THE ONE OPENER for a world.db reader (POS-270 lane W 2c). With no file named
+ * and the world graph snapshot loaded, the snapshot's handle; otherwise the
+ * file, read-only, or null when there is no file. `path` names what answered.
+ */
+export function openWorldRead({ worldDb = null } = {}) {
+  if (worldDb == null) {
+    const snap = worldGraphSnapshot();
+    if (snap?.tables) return { db: graphDb(snap.tables), path: null, source: "store", snap };
+  }
+  const path = worldDb ?? process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db");
+  if (!existsSync(path)) return null;
+  return { db: new DatabaseSync(path, { readOnly: true }), path, source: "file" };
+}

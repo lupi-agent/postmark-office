@@ -46,6 +46,7 @@ import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { OFFICE_ROOT, WORLD_CLONE } from "./world-store.mjs";
+import { metaIn, openWorldStore, registerTwin } from "./world-graph-db.mjs";
 import { servedCanonSha } from "./world-serve.mjs";
 // THE CODE FALLBACK IS AN EDGE, NOT A COPY. The no-literals law says a class
 // constant has exactly one home; until every reader edges to the class mark,
@@ -346,7 +347,38 @@ const DIAL_NAMES = Object.keys(CODE_SOUND_DIALS);
 // nobody can invalidate is worse than no cache.
 let _classSnap = null;
 
+// Its two statements, named so the store's graph snapshot can answer them too
+// (POS-270 lane W 2c; each twin held equal to its SQL by world-graph-db.test).
+const SOUND_META_SQL = "SELECT key, value FROM meta WHERE key IN ('as_of_world','hydrated_at','hydration_status')";
+const NODE_PROPS_SQL = "SELECT props FROM nodes WHERE id = ?";
+registerTwin(SOUND_META_SQL, (g) => metaIn(g, ["as_of_world", "hydrated_at", "hydration_status"]));
+registerTwin(NODE_PROPS_SQL, (g, id) => { const n = g.byId.get(String(id)); return n ? [{ props: n.props }] : []; });
+
+/** The sound class mark, read through a handle (the file's or the snapshot's). */
+function classMarkRead(db) {
+  const meta = Object.fromEntries(db.prepare(SOUND_META_SQL).all().map((r) => [r.key, r.value]));
+  const row = db.prepare(NODE_PROPS_SQL).get(SOUND_CLASS_MARK);
+  if (String(meta.hydration_status ?? "").startsWith("FAILED"))
+    return { error: "store-failed", detail: meta.hydration_status };
+  let props = null;
+  try { props = row?.props ? JSON.parse(row.props) : null; } catch { props = null; }
+  return { asOfWorld: meta.as_of_world ?? null, hydratedAt: meta.hydrated_at ?? null, present: Boolean(row), props };
+}
+
 function classMarkSnapshot(worldDbPath) {
+  // THE STORE FIRST: with no file named, once the world graph snapshot has
+  // loaded, read through its handle and cache on the published snapshot.
+  if (worldDbPath == null) {
+    const w = openWorldStore();
+    if (w) {
+      if (_classSnap?.from === w.snap) return _classSnap;
+      const read = classMarkRead(w.db);
+      if (read.error) return read;
+      _classSnap = { from: w.snap, ...read };
+      return _classSnap;
+    }
+    worldDbPath = process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db");
+  }
   let st;
   try { st = statSync(worldDbPath); }
   catch { return { error: "store-absent", detail: `no world store at ${worldDbPath}` }; }
@@ -354,20 +386,10 @@ function classMarkSnapshot(worldDbPath) {
     return _classSnap;
   try {
     const db = new DatabaseSync(worldDbPath, { readOnly: true });
-    const meta = Object.fromEntries(
-      db.prepare("SELECT key, value FROM meta WHERE key IN ('as_of_world','hydrated_at','hydration_status')").all()
-        .map((r) => [r.key, r.value]));
-    const row = db.prepare("SELECT props FROM nodes WHERE id = ?").get(SOUND_CLASS_MARK);
-    db.close();
-    if (String(meta.hydration_status ?? "").startsWith("FAILED"))
-      return { error: "store-failed", detail: meta.hydration_status };
-    let props = null;
-    try { props = row?.props ? JSON.parse(row.props) : null; } catch { props = null; }
-    _classSnap = {
-      path: worldDbPath, mtimeMs: st.mtimeMs, size: st.size,
-      asOfWorld: meta.as_of_world ?? null, hydratedAt: meta.hydrated_at ?? null,
-      present: Boolean(row), props,
-    };
+    let read;
+    try { read = classMarkRead(db); } finally { db.close(); }
+    if (read.error) return read;
+    _classSnap = { path: worldDbPath, mtimeMs: st.mtimeMs, size: st.size, ...read };
     return _classSnap;
   } catch (e) {
     return { error: "store-unreadable", detail: String(e?.message ?? e).slice(0, 200) };
@@ -385,8 +407,8 @@ export function resetClassCache() { _classSnap = null; }
  * fragile than the code it replaced.
  */
 export function soundClass({ worldDb = null, repo = WORLD_CLONE } = {}) {
-  const worldDbPath = worldDb ?? process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db");
-  const snap = classMarkSnapshot(worldDbPath);
+  // No file named: the store's snapshot first, the file as the floor (classMarkSnapshot).
+  const snap = classMarkSnapshot(worldDb ?? null);
 
   const dials = { ...CODE_SOUND_DIALS };
   const sources = Object.fromEntries(DIAL_NAMES.map((d) => [d, "code-fallback"]));
@@ -431,7 +453,8 @@ export function soundClass({ worldDb = null, repo = WORLD_CLONE } = {}) {
     dials, sources, disclosed, drift,
     version, gate,
     mark: SOUND_CLASS_MARK,
-    store: { path: worldDbPath, as_of_world: asOfWorld, hydrated_at: snap.hydratedAt ?? null, fresh },
+    // `path` names what answered: the file, or the store's graph snapshot.
+    store: { path: snap.from ? "the store's graph snapshot" : (worldDb ?? process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db")), as_of_world: asOfWorld, hydrated_at: snap.hydratedAt ?? null, fresh },
   };
 }
 
