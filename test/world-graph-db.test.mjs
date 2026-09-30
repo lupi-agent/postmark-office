@@ -19,7 +19,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -31,6 +31,7 @@ import { graphDb, twinnedStatements } from "../src/world-graph-db.mjs";
 // The modules that register twins, loaded so their statements are in the census.
 import "../src/world-apex.mjs";
 import "../src/portal-ground.mjs";
+import "../src/world-frames.mjs";
 
 const pglite = await loadPglite();
 const CLONE = NO_WORLD ? null : worldClone();
@@ -123,9 +124,25 @@ test("THE DOOR: with the snapshot loaded and world.db absent, openStore() answer
         assert.deepStrictEqual(JSON.stringify(gatherGroundActions(store.db, { spineIds })), JSON.stringify(gatherGroundActions(fileDb, { spineIds })), "the ground channel differs");
       }
     } finally { fileDb.close(); }
+    // 2(b): the frame law's class read, from the store, equal to the file's.
+    const { classFieldsFromStore, resetClassFieldsCache } = await import("../src/world-frames.mjs");
+    resetClassFieldsCache();
+    const fromStore = classFieldsFromStore();
+    resetClassFieldsCache();
+    const fromFile = classFieldsFromStore({ worldDb: file });
+    assert.equal(fromStore.gate.status, "PRESENT");
+    assert.match(fromStore.gate.detail, /the store's graph snapshot/, "the class read did not come from the store");
+    assert.deepStrictEqual([...fromStore.fields], [...fromFile.fields], "the class fields from the store differ from the file's");
+    assert.ok(fromStore.fields.size > 0);
   } finally {
     if (was === undefined) delete process.env.WORLD_STORE_DB; else process.env.WORLD_STORE_DB = was;
     resetWorldGraph();
     await db.close();
   }
+});
+
+test("THE WALK'S GROUND LOOKUP asks the snapshot's handle first (2b), world.db only as the floor", () => {
+  const code = readFileSync(join(OFFICE_ROOT, "src", "world.mjs"), "utf8");
+  assert.match(code, /db = snap\?\.tables \? graphDb\(snap\.tables\) : new DatabaseSync\(path, \{ readOnly: true \}\);/,
+    "the walk desk opens world.db for its portal-ground lookup even when the snapshot has loaded");
 });
