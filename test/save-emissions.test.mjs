@@ -104,3 +104,22 @@ test("THE SOURCE FOLLOWS THE SAY LANE: flipped, the acts; not flipped, dynamic.d
   assert.deepEqual(await emissionsForSave(fakeDb, { ...opts, onActs: true, enabled: false }), []);
   assert.deepEqual((await emissionsForSave(fakeDb, { ...opts, onActs: true, enabled: true })).map((r) => r.id), [`sound:${T0 + 1000}:neth`]);
 });
+
+test("WHERE THE SAY LANE IS THE RECORD, dynamic.db takes no second copy of the voice (and flag-on elsewhere it still does)", async () => {
+  const { emissionFromVoice } = await import("../src/dynamic-emissions.mjs");
+  const { existsSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "save-emissions-dual-"));
+  const saved = { db: process.env.WORLD_DYNAMIC_DB, em: process.env.WORLD_EMISSIONS };
+  process.env.WORLD_DYNAMIC_DB = join(dir, "dynamic.db");
+  process.env.WORLD_EMISSIONS = "1";
+  try {
+    const voice = { handle: "neth", text: "hello", at: T0, x: 1329, y: 2083, place: null, aboard: false };
+    assert.equal(emissionFromVoice(voice, { sayOnActs: true }), null);
+    assert.equal(existsSync(process.env.WORLD_DYNAMIC_DB), false, "the store is not even created");
+    const row = emissionFromVoice(voice, { sayOnActs: false });
+    assert.equal(row?.id, `sound:${T0}:neth`, "off the flipped lane the dual-write is exactly what it was");
+  } finally {
+    for (const [k, v] of [["WORLD_DYNAMIC_DB", saved.db], ["WORLD_EMISSIONS", saved.em]]) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
