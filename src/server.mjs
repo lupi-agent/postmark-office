@@ -298,6 +298,10 @@ function townRoll() {
   // only when the open succeeded. It names the index the roll is actually read
   // from, which is the only thing this memo may be keyed on.
   const stamp = indexStamp;
+  // With the switch on (POS-268) the roll is the store's, as the reload poll
+  // last loaded it (town-index-store.mjs § storeRollHandles): null until the
+  // first load, which the position doors disclose as an absent roll.
+  if (townIndexReads()) return townIndexStore.storeRollHandles();
   if (stamp !== null && stamp === _roll.stamp) return _roll.out;
   try {
     const out = residentList(db).map((r) => r.handle);
@@ -434,7 +438,12 @@ function reloadWorldCaches() {
 onAnnounce("index", reloadIndex);
 onAnnounce("world-store", reloadWorldCaches);
 
-setInterval(() => { reloadIndex(); sweepRetired(); reloadWorldCaches(); }, RELOAD_POLL_MS).unref();
+setInterval(() => {
+  reloadIndex(); sweepRetired(); reloadWorldCaches();
+  // the store's roll, on the same clock the index reload keeps (POS-268)
+  if (townIndexReads()) townIndexStore.refreshStoreRoll().catch(() => {});
+}, RELOAD_POLL_MS).unref();
+if (townIndexReads()) townIndexStore.refreshStoreRoll().catch(() => {});
 
 // Keep the deterministic clock seam at the process boundary. Bouncer stays
 // environment-agnostic, while the HTTP integration test can pin only its clock.
@@ -1249,7 +1258,10 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       // first read: it is the one door an agent finds before it has anything,
       // and it must answer with no key, no sign-in and no prior knowledge.
       if (path === "/join") return j(res, 200, arrivalPage(TOWN_CLONE));
-      if (path === "/town") return j(res, 200, townSummary(db, meta));
+      if (path === "/town") {
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.townSummary(c));
+        return j(res, 200, townSummary(db, meta));
+      }
 
       // ── the world door (published anonymous reads; household-scoped signed
       // reads). Async by nature: the engine is imported from the world clone.
@@ -1652,19 +1664,29 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       // failure, and the site half of this lane teaches that fetch to accept
       // both shapes and walk the pages — the same capability-detected seam
       // `fetchLetterCorpus` already uses there, so either repo may ship first.
-      if (path === "/residents") return j(res, 200, residentPage(db, {
-        limit: url.searchParams.get("limit") ?? undefined,
-        offset: url.searchParams.get("offset") ?? undefined,
-        since: url.searchParams.get("since") ?? undefined,
-        office: url.searchParams.has("office") ? url.searchParams.get("office") === "true" : undefined,
-      }));
+      if (path === "/residents") {
+        const opts = {
+          limit: url.searchParams.get("limit") ?? undefined,
+          offset: url.searchParams.get("offset") ?? undefined,
+          since: url.searchParams.get("since") ?? undefined,
+          office: url.searchParams.has("office") ? url.searchParams.get("office") === "true" : undefined,
+        };
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.residentPage(c, opts));
+        return j(res, 200, residentPage(db, opts));
+      }
 
       if ((m = /^\/residents\/([a-z0-9-]+)$/.exec(path))) {
         // The pending paper rows are read first (paper-fresh.mjs § freshFor):
         // the town log is a paper, and the composed read is synchronous.
         const who = m[1];
-        freshFor(who, { odb, clone: TOWN_CLONE, asOf: AS_OF }).then((fresh) => {
-        const r = resident(db, who, fresh);
+        freshFor(who, { odb, clone: TOWN_CLONE, asOf: AS_OF }).then(async (fresh) => {
+        let r;
+        if (townIndexReads()) {
+          const got = await townIndexStore.storeAnswer((c) => townIndexStore.resident(c, who, fresh));
+          if (got.refused) return bounce(res, 503, got.refused.defect, got.refused.hint);
+          if (got.asOf) res.setHeader("x-postmark-town-index-as-of", got.asOf);
+          r = got.out;
+        } else r = resident(db, who, fresh);
         if (!r) return bounce(res, 404, `no resident "${who}"`, "handles are lowercase-hyphenated, as in WHITE_PAGES/");
         // ── WHAT THIS RESIDENT MADE, on the REST skin too ────────────────────
         //
@@ -1868,12 +1890,15 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
         // the disclosure exists for. Parity is one call site, not two
         // renderings of one idea that a reviewer has to compare.
         const handle = m[1];
-        return doorstepBundle(handle, { db, key, meta, asOf: AS_OF, clone: TOWN_CLONE, odb, canWrite,
+        const ix = townIndexReads() ? townIndexStore.storeIndexPooled(TOWN_CLONE) : null;
+        return doorstepBundle(handle, { db, key, meta, asOf: AS_OF, clone: TOWN_CLONE, odb, canWrite, ix,
           conversationsOffset: url.searchParams.get("correspondence-offset") ?? 0 })
           .then((d) => d
             ? j(res, 200, d)
             : bounce(res, 404, `no resident "${handle}"`, "handles are lowercase-hyphenated, as in WHITE_PAGES/"))
-          .catch((e) => bounce(res, 500, "the doorstep tripped", String(e?.message ?? e).slice(0, 200)));
+          .catch((e) => e instanceof townIndexStore.TownIndexUnreachable
+            ? bounce(res, 503, e.refused.defect, e.refused.hint)
+            : bounce(res, 500, "the doorstep tripped", String(e?.message ?? e).slice(0, 200)));
       }
 
       // GET /household — the third door's bare read (or ?read=address|home|standing):

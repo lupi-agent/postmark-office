@@ -364,7 +364,10 @@ const ROSTER_PAGE = 50;
 
 // The town's office handles — used by the exclude-office letter filter.
 export function officeHandles(db) {
-  return db.prepare("SELECT handle, json FROM residents").all()
+  // `ORDER BY handle` names the order (POS-268): it was the table's insert
+  // order, which the store's twin has no way to copy. The one caller
+  // (letterList's exclude-office filter) reads it as a set.
+  return db.prepare("SELECT handle, json FROM residents ORDER BY handle").all()
     .filter((r) => isOffice(JSON.parse(r.json))).map((r) => r.handle);
 }
 
@@ -1640,7 +1643,8 @@ export function doorstep(db, handle, asOf, opts = {}) {
   const offset = Math.max(Number(conversationsOffset) || 0, 0);
   const mailLimit = slim ? DOORSTEP_INBOX_SLIM : DOORSTEP_INBOX;
   return doorstepOf({
-    arrivals: db.prepare("SELECT handle, json FROM residents").all().map((r) => ({ handle: r.handle, d: JSON.parse(r.json) })),
+    arrivals: db.prepare("SELECT handle, json FROM residents").all()
+      .map((r) => { const d = JSON.parse(r.json); return { handle: r.handle, joined: d.address?.data?.joined ?? null, is_office: isOffice(d) }; }),
     awaiting: mailAwaiting(db, handle, { offset }),
     mail: mailList(db, handle, "inbox", { limit: mailLimit }),
     stamps: stampsDetail(db, handle),
@@ -1666,14 +1670,13 @@ export const DOORSTEP_SIZES = Object.freeze({ get inbox() { return DOORSTEP_INBO
 
 /**
  * The doorstep bundle from its segments' answers, each read by its own reader:
- * every resident's card (for the arrivals), the awaiting view, the inbox page,
+ * every resident's handle, joined date and office flag (the arrivals), the awaiting view, the inbox page,
  * the stamps detail, the bulletin teaser, the town pulse, the window read, the
  * PSA fold, the settled outbox, and the ledger's counts. Shared with the
  * store's twin; the slim skin is applied here, to both.
  */
 export function doorstepOf(parts, handle, asOf, { conversationsOffset = 0, slim = false } = {}) {
   const latestArrivals = parts.arrivals
-    .map(({ handle: h, d }) => ({ handle: h, joined: d.address?.data?.joined ?? null, is_office: isOffice(d) }))
     .filter((a) => a.joined)
     .sort((a, b) => b.joined.localeCompare(a.joined) || a.handle.localeCompare(b.handle))
     .slice(0, 5);
@@ -1810,7 +1813,7 @@ export function doorstepOf(parts, handle, asOf, { conversationsOffset = 0, slim 
  * Degrades rather than throws: a checkout too old to carry the onboarding fold
  * yields a null, and the doorstep simply carries no next-steps block.
  */
-export async function nextStepsFor(db, meta, handle, clone, { own = false, worldBlock: injected, key = null } = {}) {
+export async function nextStepsFor(db, meta, handle, clone, { own = false, worldBlock: injected, key = null, ix = null } = {}) {
   try {
     const tools = await questTools(clone);
     if (typeof tools.composeNextSteps !== "function") return null; // older checkout
@@ -1854,7 +1857,7 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // Absent means ASK, exactly as before, at exactly the old cost, for exactly
     // that case. (Measured on a fresh index of the live town: 182 of 182 rows
     // carry all six, so this is the deploy window and not the common path.)
-    const facts = onboardingFactsFromStanding(standingFor(db, handle))
+    const facts = onboardingFactsFromStanding(ix ? await ix.standing(handle) : standingFor(db, handle))
       ?? tools.onboardingFactsFor(clone, handle);
     // THE 08-15 GATE. Keemin's ruling, verbatim: "the gaps are yours to see, not
     // theirs to be seen by." A stranger's read of your doorstep gets exactly
@@ -1869,7 +1872,7 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // and the saved world read is the expensive half of this call besides.
     const worldSited = own ? await worldSitedFor(handle, { worldBlock }) : null;
     const onboarding = tools.onboardingBoard(registry, facts, handle, { worldSited });
-    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key }) : null;
+    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key, ix }) : null;
     // THE VERDICT RIDES DOWN, NOT THE READER (#2773, and the 08-15 gate is why).
     // `worldSited` above is already this doorstep's decision: the world read for
     // an own door, and a deliberate NON-read — null, nobody looked — for a
@@ -1877,7 +1880,7 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // the very question the gate skipped, one layer down where the skip is
     // invisible; handing it the verdict keeps the gate whole and keeps the whole
     // doorstep to one world open.
-    const questBoard = await questBoardFor(db, meta, handle, clone, { worldSited });
+    const questBoard = ix ? await ix.questBoard(handle, { worldSited }) : await questBoardFor(db, meta, handle, clone, { worldSited });
     // ── WHAT THE COMPOSER IS HANDED, AND WHY IT IS NOT THE BOARD VERBATIM ────
     //
     // `composeNextSteps` writes a step's tail as `(${q.progress}/${q.target}
@@ -2656,6 +2659,19 @@ export const officeIndex = (db, meta, clone) => ({
   stampsDetail: async (handle) => stampsDetail(db, handle),
   questBoard: async (handle, opts) => questBoardFor(db, meta, handle, clone, opts),
   potBoard: async (extraInvalid) => potBoard(db, extraInvalid),
+  // the doorstep's and the house's reads (group 3)
+  asOf: async () => indexAsOf(db),
+  doorstep: async (handle, asOf, opts) => doorstep(db, handle, asOf, opts),
+  residentSegments: async (handle, fresh) => (await import("./house-bundle.mjs")).residentSegments(db, handle, fresh),
+  hasResident: async (handle) => { try { return Boolean(db.prepare("SELECT 1 FROM residents WHERE handle = ?").get(handle)); } catch { return false; } },
+  lastActive: async (handle) => {
+    try { const row = db.prepare("SELECT json FROM residents WHERE handle = ?").get(handle); return row ? (JSON.parse(row.json).last_active ?? null) : null; }
+    catch { return null; }
+  },
+  mailAwaiting: async (handle, opts) => mailAwaiting(db, handle, opts),
+  standing: async (handle) => standingFor(db, handle),
+  home: async (handle, fresh) => home(db, handle, fresh),
+  deliveredTo: async (handle) => (await import("./unread-store.mjs")).deliveredTo(db, handle),
 });
 
 /** questBoardWith's reads, from office.db. */

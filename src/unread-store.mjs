@@ -81,13 +81,13 @@ async function openedIn(client, handles) {
  * this answers it, one household transaction at a time. Throws when the store
  * cannot be read: an unknown count is never a zero.
  */
-export async function unreadFor(db, handles, { env = process.env } = {}) {
+export async function unreadFor(db, handles, { env = process.env, ix = null } = {}) {
   const out = new Map();
   if (!handles.length) return out;
   for (const [household, group] of await byHousehold(handles, env)) {
     const opened = await officeWrite((c) => openedIn(c, group), { env, household });
     const seen = new Set(opened.map((r) => `${r.handle}\n${r.letter}`));
-    for (const h of group) out.set(h, deliveredTo(db, h).filter((d) => !seen.has(`${h}\n${d.id}`)));
+    for (const h of group) out.set(h, (ix ? await ix.deliveredTo(h) : deliveredTo(db, h)).filter((d) => !seen.has(`${h}\n${d.id}`)));
   }
   return out;
 }
