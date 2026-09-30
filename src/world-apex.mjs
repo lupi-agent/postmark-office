@@ -100,6 +100,12 @@ import { callHoldTool, holdingsOf, liveHolder } from "./world-hold.mjs";
 import { departurePace } from "./world-classes.mjs";
 import { storeDbPath } from "./world-serve.mjs";
 import { AMBIENT_REACH_SQL, CLASS_MARK_GATE_SQL, WORKS_PATH_SQL } from "./world-store.mjs";
+// POS-270 lane W 2(a): the questions below are answered from the store's graph
+// snapshot once it has loaded. Each SQL statement has a TWIN registered beside
+// it, a function over the snapshot's rows, held equal to the SQL by
+// test/world-graph-db.test.mjs. `openStore` hands out that handle.
+import { byId, classMarkGate, graphDb, jtypeTrue, jx, registerTwin, worksValue } from "./world-graph-db.mjs";
+import { worldGraphSnapshot, worldGraphStanding } from "./world-graph-snapshot.mjs";
 import { actorRoster, resolveHumanActor } from "./human-actor.mjs";
 // The hand an embodied act is recorded under. Imported rather than derived here:
 // `worldSayHuman` has owned this label since 2026-08-08 and `humanHandFor` is
@@ -494,6 +500,21 @@ export const ACTION_QUERY = `SELECT ${GATE_COLUMNS} FROM nodes WHERE ${CLASS_MAR
 // Gate, unrestricted — used only to answer "then where IS this available?".
 const ACTION_QUERY_ALL = `SELECT ${GATE_COLUMNS} FROM nodes WHERE ${CLASS_MARK_GATE_SQL}`;
 
+// The twins. `ambient` is a SELECTed comparison: 1, 0, or NULL where the key
+// is absent (json_type answers NULL). The gate rows come in the table's own
+// order (sqlite walks the `by` index, one value, rowid order).
+const gateRow = (n) => ({
+  id: n.id, tier: n.tier, by: n.by,
+  class: jx(n.p, "class"), class_version: jx(n.p, "class_version"), actions: jx(n.p, "actions"),
+  affordances: jx(n.p, "affordances"), dials: jx(n.p, "dials"), timetable: jx(n.p, "timetable"), body: jx(n.p, "body"),
+  ambient: n.p?.ambient === undefined ? null : (jtypeTrue(n.p, "ambient") ? 1 : 0),
+});
+registerTwin(ACTION_QUERY, (g, idsJson) => {
+  const ids = new Set(JSON.parse(idsJson ?? "[]"));
+  return g.nodes.filter((n) => classMarkGate(n) && (ids.has(n.id) || jtypeTrue(n.p, "ambient"))).map(gateRow);
+});
+registerTwin(ACTION_QUERY_ALL, (g) => g.nodes.filter(classMarkGate).map(gateRow));
+
 // ── the residue lookup · what an action MEANS (Stage ②) ─────────────────────
 //
 // A grant entry may carry `residue:` — the class of the node the action
@@ -513,6 +534,14 @@ const RESIDUE_QUERY = `SELECT id,
        FROM nodes
       WHERE id = ? AND by = 'the-town' AND tier = 'constitution'
         AND json_extract(props, '$.class') IS NOT NULL`;
+const townLawRow = (g, id, need) => {
+  const n = g.byId.get(String(id));
+  return n && n.by === "the-town" && n.tier === "constitution" && jx(n.p, need) !== null ? n : null;
+};
+registerTwin(RESIDUE_QUERY, (g, id) => {
+  const n = townLawRow(g, id, "class");
+  return n ? [{ id: n.id, class: jx(n.p, "class"), dials: jx(n.p, "dials"), body: jx(n.p, "body") }] : [];
+});
 
 export function residueOf(db, id) {
   if (!db || !id) return null;
@@ -543,6 +572,10 @@ const LAW_QUERY = `SELECT id,
        FROM nodes
       WHERE id = ? AND by = 'the-town' AND tier = 'constitution'
         AND json_extract(props, '$.slot') IS NOT NULL`;
+registerTwin(LAW_QUERY, (g, id) => {
+  const n = townLawRow(g, id, "slot");
+  return n ? [{ id: n.id, slot: jx(n.p, "slot"), value: jx(n.p, "value"), body: jx(n.p, "body") }] : [];
+});
 
 /**
  * One predicated constitution mark, quoted. Null when the store cannot answer
@@ -570,6 +603,10 @@ const REQUIRES_QUERY = `SELECT id, json_extract(props, '$.requires') AS requires
        FROM nodes
       WHERE id = ? AND by = 'the-town' AND tier = 'constitution'
         AND json_extract(props, '$.class') IS NOT NULL`;
+registerTwin(REQUIRES_QUERY, (g, id) => {
+  const n = townLawRow(g, id, "class");
+  return n ? [{ id: n.id, requires: jx(n.p, "requires") }] : [];
+});
 
 export function requiresOf(db, id) {
   if (!db || !id) return null;
@@ -1023,6 +1060,16 @@ export function parseEnvelope(args) {
 // ── reading the store ───────────────────────────────────────────────────────
 
 export function openStore() {
+  // THE STORE FIRST (POS-270 lane W 2a). Once the world graph snapshot has
+  // loaded, every reader of this handle is answered from it, through the twins
+  // (world-graph-db.mjs), and world.db is not opened. Before it loads, the
+  // file is the floor, exactly as it always was.
+  const snap = worldGraphSnapshot();
+  if (snap?.tables) {
+    const meta = Object.fromEntries(snap.tables.meta.map((r) => [r.key, r.value]));
+    if (!String(meta.hydration_status ?? "").startsWith("FAILED"))
+      return { db: graphDb(snap.tables), path: null, meta, source: worldGraphStanding() };
+  }
   const path = storeDbPath();
   if (!existsSync(path)) return { db: null, path, unavailable: `no world store at ${path}` };
   try {
@@ -1159,6 +1206,10 @@ export function gatherActions(db, { spineIds = [], reachIds = [] } = {}) {
 const CLASS_BY_NAME = `SELECT ${GATE_COLUMNS} FROM nodes
                         WHERE ${CLASS_MARK_GATE_SQL}
                           AND json_extract(props, '$.class') IN (SELECT value FROM json_each(?))`;
+registerTwin(CLASS_BY_NAME, (g, namesJson) => {
+  const names = new Set(JSON.parse(namesJson ?? "[]"));
+  return g.nodes.filter((n) => classMarkGate(n) && names.has(jx(n.p, "class"))).map(gateRow);
+});
 
 // ⚠ THE DECLARATION TEST ASKS THE WORKS CLAUSE, NOT THE `declares` STAMP, and
 // the difference bit within the hour. `declares` is a convenience the hydrator
@@ -1174,6 +1225,10 @@ const INSTANCE_ROWS = `SELECT id, by,
          ${WORKS_PATH_SQL}              AS declares,
          subkind
        FROM nodes WHERE id IN (SELECT value FROM json_each(?))`;
+// `id IN (…)` is answered off the primary-key index, so the rows come in id order.
+const nodesIn = (g, idsJson) => [...new Set(JSON.parse(idsJson ?? "[]"))].map((id) => g.byId.get(id)).filter(Boolean).sort(byId);
+registerTwin(INSTANCE_ROWS, (g, idsJson) => nodesIn(g, idsJson)
+  .map((n) => ({ id: n.id, by: n.by, class: jx(n.p, "class"), declares: worksValue(n.p), subkind: n.subkind })));
 
 /**
  * The classes a caller is standing in or within reach of, and which mark each
@@ -1280,6 +1335,8 @@ const HELD_ROWS = `SELECT id, by,
          json_extract(props, '$.held_grant') AS held_grant,
          json_extract(props, '$.body')       AS body
        FROM nodes WHERE id IN (SELECT value FROM json_each(?))`;
+registerTwin(HELD_ROWS, (g, idsJson) => nodesIn(g, idsJson)
+  .map((n) => ({ id: n.id, by: n.by, class: jx(n.p, "class"), held_grant: jx(n.p, "held_grant"), body: jx(n.p, "body") })));
 
 // ── the household grain, read from the world's own registry ─────────────────
 //
@@ -1382,6 +1439,9 @@ const GROUND_THINGS = `SELECT id, by, tier,
        FROM nodes
        WHERE json_extract(props, '$.class') = 'thing'
          AND at_x IS NOT NULL AND at_y IS NOT NULL`;
+registerTwin(GROUND_THINGS, (g) => g.nodes
+  .filter((n) => jx(n.p, "class") === "thing" && n.at_x != null && n.at_y != null)
+  .map((n) => ({ id: n.id, by: n.by, tier: n.tier, class: jx(n.p, "class"), body: jx(n.p, "body"), at_x: n.at_x, at_y: n.at_y, extent_w: n.extent_w, extent_h: n.extent_h })));
 
 export async function groundWithinReach(oriented, key = null) {
   const here = oriented?.standpoint;
@@ -1536,12 +1596,19 @@ export function gatherHeldActions(db, holding = []) {
  * branch is a branch no test can hold honest. Scoped ambience (by region, say)
  * is what would make it real; it can be written then, with a test that fails.
  */
+const NODE_AT = registerTwin("SELECT at_x, at_y FROM nodes WHERE id = ?", (g, id) => {
+  const n = g.byId.get(String(id)); return n ? [{ at_x: n.at_x, at_y: n.at_y }] : [];
+});
+const NODE_RECT = registerTwin("SELECT id, at_x, at_y, extent_w, extent_h FROM nodes WHERE id = ?", (g, id) => {
+  const n = g.byId.get(String(id)); return n ? [{ id: n.id, at_x: n.at_x, at_y: n.at_y, extent_w: n.extent_w, extent_h: n.extent_h }] : [];
+});
+
 function affordableAt(db, action) {
   if (!db) return [];
   const where = [];
   for (const row of db.prepare(ACTION_QUERY_ALL).all()) {
     if (!entriesFrom(row, db).some((e) => e.action === action)) continue;
-    const node = db.prepare("SELECT at_x, at_y FROM nodes WHERE id = ?").get(row.id);
+    const node = db.prepare(NODE_AT).get(row.id);
     where.push({ mark: row.id, class: row.class, at: { x: node?.at_x ?? null, y: node?.at_y ?? null } });
   }
   return where;
@@ -2310,7 +2377,7 @@ async function apexDo(args, key, ctx = {}) {
       // it chooses between, it is a function a test can reach.
       const fenceGround = fenceGroundFor({ kind, handoff: handoffSeat, seated: seatedAt, matchGround: match.ground });
       if (kind === "human" && fenceGround) {
-        const groundRow = store.db.prepare("SELECT id, at_x, at_y, extent_w, extent_h FROM nodes WHERE id = ?").get(fenceGround);
+        const groundRow = store.db.prepare(NODE_RECT).get(fenceGround);
         if (action === "exit") {
           const target = String(args.mark ?? parseEnvelope(args)?.mark ?? "").trim() || fenceGround;
           // `seated` repeals the refusal — see exitAllowed's own note. Leaving
