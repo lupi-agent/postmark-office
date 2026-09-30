@@ -115,7 +115,7 @@ test("questBoardFor answers as office.db does, for a resident and for the town",
 
 test("household-stamps' estate, quests and fund reads answer the same through either index", async (t) => {
   if (skip) return t.skip(skip);
-  const ix = store.storeIndex(api, TOWN);
+  const ix = store.storeIndex(api, TOWN); // one client, the reader-level twin; the door itself uses storeIndexPooled (the last test)
   const key = { household: "keemin", handles: new Set(["wright", "limen"]) };
   await same("estateRead", estateRead(key, { db, meta, clone: TOWN }), estateRead(key, { db, meta, clone: TOWN, ix }));
   for (const h of ["wright", null]) await same(`questsRead ${h}`, questsRead(h, { db, meta, clone: TOWN }), questsRead(h, { db, meta, clone: TOWN, ix }));
