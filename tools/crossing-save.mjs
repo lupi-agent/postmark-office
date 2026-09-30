@@ -76,6 +76,8 @@ import {
 } from "../src/dynamic-entities.mjs";
 import { DEPARTURE_GAPS, RECORD_READ_FIELDS, storedDepartureEvents } from "../src/world-movement.mjs";
 import { emissionsBetween, pruneEmissions } from "../src/dynamic-emissions.mjs";
+import { holdEdgeOnActs } from "../src/holdings-snapshot.mjs";
+import { storeAttachmentRows } from "../src/world2-guards.mjs";
 
 const argOf = (name, fallback = null) => { const i = process.argv.indexOf(name); return i !== -1 ? process.argv[i + 1] : fallback; };
 const flag = (name) => process.argv.includes(name);
@@ -87,6 +89,17 @@ const JSON_OUT = flag("--json");
 
 /** Stable bytes: two-space JSON, arrays already ordered by their builders, one trailing newline. */
 export const stableJson = (v) => `${JSON.stringify(v, null, 2)}\n`;
+
+/**
+ * The attachments a save carries (POS-269). Where the holding edge is on
+ * `acts` (W2_PEN has hold and W2_GUARDS=1), the door no longer writes
+ * dynamic.db's copy, so the save reads the record; elsewhere sqlite is still
+ * the record. A record that will not answer throws, and `main` refuses by
+ * name, never falling back to the stale file.
+ */
+export async function attachmentsForSave(db, { onActs = holdEdgeOnActs(), read = storeAttachmentRows } = {}) {
+  return onActs ? read() : readAttachments(db);
+}
 
 const die = (code, gate, detail) => {
   console.error(`\nGATE REFUSED ${gate} — ${detail}`);
@@ -491,7 +504,12 @@ async function main() {
   }
   const departureEvents = storeMovements.length ? mergedDepartureEvents(read.events, storeMovements) : read.events;
 
-  const attachments = readAttachments(db);
+  // POS-269: once the hold pen is flipped, the holding acts ARE the edge and
+  // dynamic.db's copy stops at the switch, so the save reads the record. An
+  // unreadable record is a refusal, never the stale file passed off as now.
+  let attachments;
+  try { attachments = await attachmentsForSave(db); }
+  catch (e) { db.close(); return die(4, "holdings", `the holding record could not be read: ${String(e?.message ?? e).slice(0, 160)}`); }
   const allEmissions = emissionsBetween(db, new Date(0).toISOString(), new Date(saveMs).toISOString());
 
   const written = [];

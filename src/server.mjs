@@ -2463,6 +2463,21 @@ const handle = (req, res) => {
 };
 
 import("./world-refresher.mjs").then((m) => m.startWorldRefresher(WORLD_CLONE)); // POS-263: the world clone's git answered off the request path
+// POS-270: the class layer from law_projection at the newest blessing, off the
+// request path. The main thread polls and announces a move; a read worker loads
+// once at boot and again on each announcement, so every process serves one law.
+import("./law-snapshot.mjs").then((m) => {
+  if (IN_READ_WORKER) { onAnnounce("law", () => m.reloadLawSnapshot()); m.reloadLawSnapshot(); }
+  else m.startLawRefresher({ onChange: () => announce("law") });
+});
+// POS-269: who holds what, from the holding acts once the hold pen is flipped.
+// Loaded once here; the hold door reloads the main thread's copy after each act
+// and announces "holding", and a read worker reloads its own on that.
+import("./holdings-snapshot.mjs").then((m) => {
+  if (!m.holdEdgeOnActs()) return;
+  if (IN_READ_WORKER) onAnnounce("holding", () => m.reloadHoldings());
+  m.reloadHoldings();
+});
 
 // The role rides the boot line because it is the one fact about a worker that
 // an operator reading `journalctl` cannot otherwise see — four processes on four

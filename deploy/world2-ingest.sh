@@ -74,9 +74,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # this script and one DEPLOY.md sentence). The law file's first reader is the
 # roll-call row this change adds.
 case "${1:-both}" in
-  law)    MODE=law;    RUN_LAW=1; RUN_STAMPS=0; STATE=ingest-law.json ;;
-  stamps) MODE=stamps; RUN_LAW=0; RUN_STAMPS=1; STATE=ingest-stamps.json ;;
-  both)   MODE=both;   RUN_LAW=1; RUN_STAMPS=1; STATE=ingest.json ;;
+  law)    MODE=law;    RUN_LAW=1; RUN_STAMPS=0; RUN_BLESSED=1; STATE=ingest-law.json ;;
+  stamps) MODE=stamps; RUN_LAW=0; RUN_STAMPS=1; RUN_BLESSED=0; STATE=ingest-stamps.json ;;
+  both)   MODE=both;   RUN_LAW=1; RUN_STAMPS=1; RUN_BLESSED=0; STATE=ingest.json ;;
   *)      echo "usage: world2-ingest.sh [law|stamps|both]   (no argument = both)" >&2; exit 2 ;;
 esac
 
@@ -88,15 +88,15 @@ if ! w2_pgenv law_ingester PG_LAW_INGESTER_PASSWORD; then
   exit 2
 fi
 
-run_pen() {                     # run_pen <world|town> <tool> <repo-flag>
-  local which="$1" tool="$2" flag="$3" dir="$WORLD2_LAB/ingest-clones/$1" sha out rc
+run_pen() {                     # run_pen <world|town|world-blessed> <tool> <repo-flag> [extra flag]
+  local which="$1" tool="$2" flag="$3" extra="${4:-}" dir="$WORLD2_LAB/ingest-clones/$1" sha out rc
   sha="$("$HERE/world2-refresh-clone.sh" "$which" 2>&1 | tail -n1)"
   if [ "${#sha}" -ne 40 ]; then
     echo "[world2-ingest] $which: checkout refresh failed — $sha" >&2
     PEN_RC=2; PEN_SHA=""; PEN_OUT="checkout refresh failed: $sha"
     return
   fi
-  out="$(cd "$WORLD2_OFFICE" && node "world2/tools/$tool" "$flag" "$dir" --sha "$sha" 2>&1)"
+  out="$(cd "$WORLD2_OFFICE" && node "world2/tools/$tool" "$flag" "$dir" --sha "$sha" ${extra:+"$extra"} 2>&1)"
   rc=$?                         # captured BEFORE anything pipes it
   echo "$out"
   PEN_RC=$rc; PEN_SHA=$sha; PEN_OUT=$out
@@ -105,6 +105,7 @@ run_pen() {                     # run_pen <world|town> <tool> <repo-flag>
 # A pen that does not run in this mode contributes exit 0 and no line, so the
 # STATUS ladder and the unit's exit code keep exactly the shape they had.
 LAW_RC=0;  LAW_SHA="";  LAW_LINE="";  LAW_OUT=""
+BLESSED_RC=0; BLESSED_SHA=""; BLESSED_LINE=""; BLESSED_OUT=""
 TOWN_RC=0; TOWN_SHA=""; TOWN_LINE=""; TOWN_OUT=""
 
 if [ "$RUN_LAW" -eq 1 ]; then
@@ -112,6 +113,21 @@ if [ "$RUN_LAW" -eq 1 ]; then
   LAW_RC=$PEN_RC; LAW_SHA=$PEN_SHA; LAW_OUT=$PEN_OUT
   LAW_LINE="$(printf ',"law":{"exit":%d,"sha":"%s"}' "$LAW_RC" "$LAW_SHA")"
   [ "$LAW_RC" -ne 0 ] && echo "[world2-ingest] LAW INGEST FAILED (exit $LAW_RC)" >&2
+fi
+
+# ── THE BLESSED LAW (POS-270, 2026-09-27) ────────────────────────────────────
+# The law mode ALSO ingests the rulebook at the newest blessing. The office's
+# class reads ask law_projection at the newest settlements.tag_sha — "the bless
+# overrides the tick" (Keemin, 2026-09-18, postmark#2934) — and main runs ahead
+# of the tag between a crossing and its blessing. `--blessed` writes only that
+# sha's law_projection rows: identities and projection_heads['world-law'] stay
+# the main run's, so the clearing's pin never moves backwards. After the main
+# run, so a failure here can never hold the clearing's rulebook hostage.
+if [ "$RUN_BLESSED" -eq 1 ]; then
+  run_pen world-blessed law-ingest.mjs --law-repo --blessed
+  BLESSED_RC=$PEN_RC; BLESSED_SHA=$PEN_SHA; BLESSED_OUT=$PEN_OUT
+  BLESSED_LINE="$(printf ',"law_blessed":{"exit":%d,"sha":"%s"}' "$BLESSED_RC" "$BLESSED_SHA")"
+  [ "$BLESSED_RC" -ne 0 ] && echo "[world2-ingest] BLESSED LAW INGEST FAILED (exit $BLESSED_RC) — the office's class reads stay at the last blessed sha that was ingested" >&2
 fi
 
 if [ "$RUN_STAMPS" -eq 1 ]; then
@@ -124,23 +140,25 @@ fi
 if   [ "$LAW_RC" -ne 0 ] && [ "$TOWN_RC" -ne 0 ]; then STATUS=both-failed
 elif [ "$LAW_RC" -ne 0 ];                        then STATUS=law-failed
 elif [ "$TOWN_RC" -ne 0 ];                       then STATUS=stamp-failed
+elif [ "$BLESSED_RC" -ne 0 ];                    then STATUS=law-blessed-failed
 else                                                  STATUS=ok
 fi
 
 DETAIL=""
 if [ "$RUN_LAW" -eq 1 ]; then DETAIL="$(printf 'law: %s' "$LAW_OUT")"; fi
+if [ "$RUN_BLESSED" -eq 1 ]; then DETAIL="$(printf '%s\nlaw_blessed: %s' "$DETAIL" "$BLESSED_OUT")"; fi
 if [ "$RUN_STAMPS" -eq 1 ]; then
   if [ -n "$DETAIL" ]; then DETAIL="$(printf '%s\nstamp: %s' "$DETAIL" "$TOWN_OUT")"
   else                      DETAIL="$(printf 'stamp: %s' "$TOWN_OUT")"; fi
 fi
 
 w2_state "$STATE" "$(printf '"mode":"%s","status":"%s"%s%s,"detail":%s' \
-  "$MODE" "$STATUS" "$LAW_LINE" "$TOWN_LINE" \
+  "$MODE" "$STATUS" "$LAW_LINE$BLESSED_LINE" "$TOWN_LINE" \
   "$(printf '%s' "$DETAIL" | w2_json_escape)")"
 
-if [ "$LAW_RC" -ne 0 ] || [ "$TOWN_RC" -ne 0 ]; then exit 1; fi
+if [ "$LAW_RC" -ne 0 ] || [ "$TOWN_RC" -ne 0 ] || [ "$BLESSED_RC" -ne 0 ]; then exit 1; fi
 case "$MODE" in
-  law)    echo "[world2-ingest] ok — law $LAW_SHA" ;;
+  law)    echo "[world2-ingest] ok — law $LAW_SHA / blessed $BLESSED_SHA" ;;
   stamps) echo "[world2-ingest] ok — town $TOWN_SHA" ;;
   both)   echo "[world2-ingest] ok — law $LAW_SHA / town $TOWN_SHA" ;;
 esac
