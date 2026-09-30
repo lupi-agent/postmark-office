@@ -41,6 +41,12 @@ for (const p of town.problems) console.warn(`WARN (town): ${p}`);
 if (existsSync(DB_PATH)) rmSync(DB_PATH);
 const db = new DatabaseSync(DB_PATH);
 db.exec(SCHEMA);
+// ONE TRANSACTION (hotfix, 2026-09-30). Every INSERT below used to autocommit,
+// one fsync per row across ~70k rows (repo_log, letters, the ledger): 10m45s at
+// 213 residents, against 16s for the same file in one transaction, with all 21
+// tables hash-identical. The tick builds office.db.new and renames it over
+// office.db, so this transaction locks only the new file, never the live index.
+db.exec("BEGIN");
 
 const put = db.prepare("INSERT INTO meta VALUES (?, ?)");
 put.run("as_of", asOf);
@@ -377,6 +383,7 @@ if (existsSync(placementsPath)) {
 
 function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; }
 
+db.exec("COMMIT");
 db.close();
 console.log(`hydrated ${DB_PATH}`);
 console.log(`  as_of ${asOf.slice(0, 12)} — ${town.residents.length} residents, ${town.letters.length} letters, ${town.threads.length} threads, ${town.ledger.length} ledger entries`);
