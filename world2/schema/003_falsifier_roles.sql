@@ -136,7 +136,24 @@ lawful AS (
     ('law_ingester', 'projection_heads', 'DELETE'),
     ('law_ingester', 'identities',       'INSERT'),
     ('law_ingester', 'identities',       'UPDATE'),
-    ('law_ingester', 'identities',       'DELETE')
+    ('law_ingester', 'identities',       'DELETE'),
+    -- 037_world_graph.sql + 038_world_graph_events.sql (POS-270): the world
+    -- graph's snapshot per settlement. The law pen copies it from the blessed
+    -- hydration; INSERT + DELETE and no UPDATE, replaced, never edited.
+    ('law_ingester', 'world_graphs', 'INSERT'),
+    ('law_ingester', 'world_graphs', 'DELETE'),
+    ('law_ingester', 'world_graph_meta', 'INSERT'),
+    ('law_ingester', 'world_graph_meta', 'DELETE'),
+    ('law_ingester', 'world_graph_nodes', 'INSERT'),
+    ('law_ingester', 'world_graph_nodes', 'DELETE'),
+    ('law_ingester', 'world_graph_edges', 'INSERT'),
+    ('law_ingester', 'world_graph_edges', 'DELETE'),
+    ('law_ingester', 'world_graph_geometry', 'INSERT'),
+    ('law_ingester', 'world_graph_geometry', 'DELETE'),
+    ('law_ingester', 'world_graph_lints', 'INSERT'),
+    ('law_ingester', 'world_graph_lints', 'DELETE'),
+    ('law_ingester', 'world_graph_events', 'INSERT'),
+    ('law_ingester', 'world_graph_events', 'DELETE')
   ) AS t(grantee, table_name, privilege_type)
 )
 SELECT w.* FROM writers w

@@ -1,7 +1,15 @@
 #!/bin/bash
 # world2-refresh-clone.sh — put a repo checkout at origin's tip, cheaply.
 #
-#   world2-refresh-clone.sh world|town
+#   world2-refresh-clone.sh world|town|world-blessed
+#
+# `world-blessed` (POS-270, 2026-09-27) puts the world checkout at the NEWEST
+# BLESSING instead of main: the highest-numbered `settlement/S<n>` tag on
+# origin, peeled to its commit — the same tag `src/world-branches.mjs § blessed`
+# serves the fold from and world.db was hydrated at. The office's class reads
+# answer from law_projection at that sha ("the bless overrides the tick",
+# Keemin 2026-09-18, postmark#2934), so the law pen ingests it too. Its own
+# directory, so the main checkout never moves off main.
 #
 # ── THE MEASUREMENT THAT SHAPED THIS ────────────────────────────────────────
 # world2/tools/README.md § Running them shows the pens' intended call:
@@ -57,7 +65,19 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 case "${1:-}" in
   world) URL="https://github.com/postmark-town/postmark-world.git"; BRANCH="${W2_WORLD_BRANCH:-main}" ;;
   town)  URL="https://github.com/postmark-town/postmark.git";   BRANCH="${W2_TOWN_BRANCH:-main}" ;;
-  *) echo "usage: world2-refresh-clone.sh world|town" >&2; exit 2 ;;
+  world-blessed)
+    URL="https://github.com/postmark-town/postmark-world.git"
+    # The newest blessing by NUMBER, never by date: S10 sorts before S9 as text.
+    # A peeled line (`^{}`) and its tag line name the same S<n>, so the sort -u
+    # leaves one number per tag. No tag at all is a refusal, not a fall back to
+    # main — a blessed read that is secretly main is the thing this mode exists
+    # to prevent.
+    N="$(git ls-remote --tags "$URL" 'refs/tags/settlement/S*' 2>/dev/null \
+      | sed -n 's#^[0-9a-f]*[[:space:]]*refs/tags/settlement/S\([0-9][0-9]*\)\(^{}\)\{0,1\}$#\1#p' \
+      | sort -un | tail -n1)"
+    if [ -z "$N" ]; then echo "no settlement/S<n> tag on $URL — nothing is blessed" >&2; exit 2; fi
+    BRANCH="settlement/S$N" ;;   # a tag NAME: clone --branch and fetch both take it, and reset peels it
+  *) echo "usage: world2-refresh-clone.sh world|town|world-blessed" >&2; exit 2 ;;
 esac
 
 DIR="$WORLD2_LAB/ingest-clones/$1"

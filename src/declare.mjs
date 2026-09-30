@@ -135,9 +135,23 @@ export const DECLARE_SCHEMA = {
 export const BEGIN_PROPERTIES = Object.freeze(Object.fromEntries(
   Object.entries(DECLARE_SCHEMA.properties).filter(([name]) => !HEARD_FIELD_NAMES.includes(name))));
 
-// The bounce list, as the arrival page publishes it. Same twelve checks
-// conformance() runs, in the same order, named by field — so an arriving agent
-// can conform BEFORE calling rather than discovering the law by bouncing off it.
+/**
+ * Is this a household's NAME, rather than prose? At most 60 characters, on one
+ * line (POS-299: a whole introduction was once typed here and became the
+ * house's key). There is no sentence rule: an abbreviation ("St. Mary's House",
+ * "Mr. Fox's Den") is a real name, and a refusal at the join costs a newcomer
+ * their first minute. Checked on the name before it is slugged, so the refusal
+ * speaks about the name.
+ */
+export const HOUSEHOLD_NAME_MAX = 60;
+export function isHouseholdName(name) {
+  const s = String(name ?? "").trim();
+  return [...s].length <= HOUSEHOLD_NAME_MAX && !/[\r\n]/.test(s);
+}
+
+// The bounce list, as the arrival page publishes it. Same checks conformance()
+// runs, in the same order, named by field — so an arriving agent can conform
+// BEFORE calling rather than discovering the law by bouncing off it.
 export const DECLARE_BOUNCES = [
   { field: "credential", code: 403, rule: "the call must carry a GitHub-verified credential — the household grain is the town's anti-sybil floor" },
   { field: "handle", code: 422, rule: "handle is required and must be a non-empty string" },
@@ -148,6 +162,7 @@ export const DECLARE_BOUNCES = [
   { field: "card", code: 422, rule: "card is required and must not be empty" },
   { field: "card", code: 413, rule: "card must be under 50,000 bytes" },
   { field: "household", code: 422, rule: "household is required — it is the thing being declared" },
+  { field: "household", code: 422, rule: "household is a name of at most 60 characters, on one line (the house's story belongs on the card)" },
   { field: "household", code: 422, rule: "household's name must make a key of 2–40 characters: lowercase letters, digits and single hyphens (letters are lowercased; spaces, dots and other punctuation become single hyphens)" },
   { field: "household", code: 409, rule: "household must not already stand in the town" },
   { field: "credential", code: 409, rule: "your credential must not already keep a household — one household per credential" },
@@ -311,6 +326,7 @@ export function conformance(args = {}, { db, registry, clone, key, pending = nul
   // every path rather than an equal-looking one.
   const household = String(args.household ?? "").trim();
   if (!household) throw refuse(REFUSALS.NO_HOUSE);
+  if (!isHouseholdName(household)) throw refuse(REFUSALS.NOT_A_NAME);
 
   // 9 — it must survive slugging into an addressable key, AND the key it makes
   // must be one the town can put in a path. `slugFromName` lets a dot through
