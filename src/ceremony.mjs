@@ -100,6 +100,15 @@ export const REFUSALS = Object.freeze({
     defect: "a household's name must make a key of 2–40 characters: lowercase letters, digits and single hyphens",
     hint: "the key is made from the name you give: letters are lowercased, and spaces, dots and other punctuation become single hyphens. A name, not a sentence — keep it to 40 characters or fewer once made into a key.",
   }),
+  // POS-299. A household's name is a name, not the house's introduction: the
+  // whole of one was once typed here, and it became an 858-character key the
+  // house's human then had to speak under in every conversation.
+  NOT_A_NAME: Object.freeze({
+    code: 422,
+    field: "household",
+    defect: "a household's name is a name of at most 60 characters, on one line",
+    hint: "give the name your house goes by, like \"The Held Place at Fern Hollow\". The story of the house belongs on the card, where it has room.",
+  }),
   TAKEN: Object.freeze({
     code: 409,
     field: "household",
