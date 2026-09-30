@@ -512,7 +512,7 @@ export function resident(db, handle, fresh = null) {
 // hard `LIMIT 100` this read has always carried — the defect was never the
 // number, it was that the number lived in SQL where no caller could see it,
 // widen it, or walk past it, and that a full page and a full box looked alike.
-const MAIL_PAGE = 100;
+export const MAIL_PAGE = 100;
 
 // One page of a resident's mailbox, and the true size of the box behind it.
 // The slice and the count are drawn from the SAME WHERE — that is what makes
@@ -595,7 +595,11 @@ function mailPage(db, handle, box, { since, until, limit, offset } = {}) {
 // whether there is more rather than leaving a short page to be interpreted
 // (stanceShadow's shape — a cap must be visible).
 export function mailList(db, handle, box = "inbox", { since, until, limit, offset } = {}) {
-  const page = mailPage(db, handle, box, { since, until, limit, offset });
+  return mailListOf(handle, box, mailPage(db, handle, box, { since, until, limit, offset }));
+}
+
+/** mailList's answer from one page ({ total, limit, offset, letters }). Shared with the store's twin. */
+export function mailListOf(handle, box, page) {
   const next = page.offset + page.letters.length;
   const complete = next >= page.total;
   return {
@@ -647,7 +651,7 @@ export function letterList(db, opts = {}) {
   if (opts.resident) { where.push("(from_h = ? OR to_h = ?)"); params.push(opts.resident, opts.resident); }
   if (opts.region) {
     const handles = regionResidents(db, opts.region);
-    if (!handles.length) return { total: 0, shown: 0, count: 0, limit, offset, complete: true, as_of: asOf, note: `no region "${opts.region}" — see GET /regions`, letters: [] };
+    if (!handles.length) return letterListNoRegion({ limit, offset, asOf, region: opts.region });
     const ph = handles.map(() => "?").join(",");
     where.push(`(from_h IN (${ph}) OR to_h IN (${ph}))`);
     params.push(...handles, ...handles);
@@ -677,7 +681,7 @@ export function letterList(db, opts = {}) {
   //
   // Opt-in on purpose: a caller who wants bodies asks for them, and pays the
   // page for them. The default answer is unchanged — excerpts, as always.
-  const shape = opts.full ? (r) => ({ ...JSON.parse(r.json), ...excerpt(r) }) : excerpt;
+
   // THE HONEST TOTAL (2026-08-25). `count` used to be `rows.length` — the page
   // size wearing a total's name, so a caller could not tell "50 letters match"
   // from "50 was the page". `total` is COUNT(*) over the SAME WHERE and the
@@ -688,13 +692,27 @@ export function letterList(db, opts = {}) {
   // in hand — because cached readers read it. It is renamed in meaning by the
   // arrival of `shown` beside it, not silently redefined underneath them.
   const total = Object.values(db.prepare(`SELECT COUNT(*) AS n FROM letters ${clause}`).get(...params))[0];
+  return letterListPage({ total, rows, limit, offset, full: opts.full, asOf });
+}
+
+/** letterList's answer for a region that names nobody. Shared with the store's twin. */
+export const letterListNoRegion = ({ limit, offset, asOf, region }) =>
+  ({ total: 0, shown: 0, count: 0, limit, offset, complete: true, as_of: asOf, note: `no region "${region}" — see GET /regions`, letters: [] });
+
+/**
+ * letterList's answer from its page of letter rows (each with id, from_h, to_h,
+ * date, thread, delivered_at, json) and the filter's total. Shared with the
+ * store's twin.
+ */
+export function letterListPage({ total, rows, limit, offset, full, asOf }) {
+  const shape = full ? (r) => ({ ...JSON.parse(r.json), ...excerpt(r) }) : excerpt;
   const next = offset + rows.length;
   const complete = next >= total;
   return {
     total, shown: rows.length, count: rows.length, limit, offset, complete,
     ...(complete ? {} : { next_offset: next,
       more_note: `${total - next} further letter${total - next === 1 ? "" : "s"} match this filter — call again with offset: ${next} (limit up to 200)` }),
-    ...(opts.full ? { full: true } : {}),
+    ...(full ? { full: true } : {}),
     as_of: asOf, letters: rows.map(shape),
   };
 }
@@ -879,13 +897,22 @@ export const townClock = () => {
 
 const CORRESPONDENTS_PAGE = 50;
 
-export function mailCorrespondents(db, handle, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || CORRESPONDENTS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+export function mailCorrespondents(db, handle, opts = {}) {
 
   const rows = db.prepare(`SELECT id, from_h, to_h, date, delivered_at,
       CASE WHEN json LIKE '%"toList"%' THEN json ELSE NULL END AS multi
     FROM letters`).all();
+  return correspondentsOf(rows, handle, opts);
+}
+
+/**
+ * mailCorrespondents' answer from every letter's (id, from_h, to_h, date,
+ * delivered_at, multi) row, where `multi` is the letter's json when it may
+ * carry a toList and null otherwise. Shared with the store's twin.
+ */
+export function correspondentsOf(rows, handle, { limit, offset } = {}) {
+  const n = Math.min(Math.max(Number(limit) || CORRESPONDENTS_PAGE, 1), 200);
+  const start = Math.max(Number(offset) || 0, 0);
 
   // handle -> { count, last: { id, at, from } }
   const byOther = new Map();
@@ -994,7 +1021,7 @@ export const NEW_INBOUND_NOTE = "not new mail: whose letter came last, however o
  * parent of `new_inbound` + `they_spoke_again`), and a total a reader has to
  * derive by guessing at an overlap is not a total.
  */
-export function mailAwaiting(db, handle, { limit = LEDGER_PAGE, offset = 0, hide_bounces_older_than_days = null } = {}) {
+export function mailAwaiting(db, handle, opts = {}) {
   // Guarded for the TABLE too, not just the row: the office opens the last
   // built index at boot, and an index hydrated before this schema has no
   // mail_state — that window answers honestly rather than guessing with a
@@ -1005,6 +1032,18 @@ export function mailAwaiting(db, handle, { limit = LEDGER_PAGE, offset = 0, hide
       return row ? JSON.parse(row.json) : null;
     } catch { return null; }
   })();
+  const asOfDay = (() => {
+    try { return db.prepare("SELECT MAX(date) AS d FROM ledger WHERE date IS NOT NULL").get().d ?? null; }
+    catch { return null; }
+  })();
+  return mailAwaitingOf(law, asOfDay, handle, opts);
+}
+
+/**
+ * mailAwaiting's view from the resident's mail_state (the town's law, or null)
+ * and the newest day the mail ledger holds. Shared with the store's twin.
+ */
+export function mailAwaitingOf(law, asOfDay, handle, { limit = LEDGER_PAGE, offset = 0, hide_bounces_older_than_days = null } = {}) {
   const ledgerOrder = law?.conversations ?? [];
   const n = Math.min(Math.max(Number(limit) || LEDGER_PAGE, 1), 200);
   // ── YOURS FIRST, AND THE SUMMARY STAYS WHOLE (walk #1, 2026-09-05) ─────────
@@ -1083,10 +1122,6 @@ export function mailAwaiting(db, handle, { limit = LEDGER_PAGE, offset = 0, hide
   // The age is measured against the newest DELIVERY the ledger holds, not the
   // wall clock — the same tense `metricsMail` calls "today" and for the same
   // reason: the answer must not change while the index does not.
-  const asOfDay = (() => {
-    try { return db.prepare("SELECT MAX(date) AS d FROM ledger WHERE date IS NOT NULL").get().d ?? null; }
-    catch { return null; }
-  })();
   const ageDays = (date) => {
     if (!date || !asOfDay) return null;
     const ms = Date.parse(`${asOfDay}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`);
@@ -2944,8 +2979,8 @@ export function bulletinEntryOf(json) {
 
 // A search that silently truncates at 25 and says nothing is the `capped`
 // lesson unlearned. ✎ Proposals, unchanged from the numbers already in the SQL.
-const SEARCH_LETTERS = 25;
-const SEARCH_RESIDENTS = 10;
+export const SEARCH_LETTERS = 25;
+export const SEARCH_RESIDENTS = 10;
 
 export function search(db, q, { limit, offset } = {}) {
   const like = `%${q}%`;
@@ -2982,6 +3017,11 @@ export function search(db, q, { limit, offset } = {}) {
     .all(like, like, q, `${q}%`, like, SEARCH_RESIDENTS).map((r) => r.handle);
   const letters = db.prepare(`SELECT * FROM letters WHERE id LIKE ? OR json LIKE ? ORDER BY ${NEWEST} LIMIT ? OFFSET ?`)
     .all(like, like, n, start).map(excerpt);
+  return searchPage({ q, n, start, lettersTotal, residentsTotal, residents, letters });
+}
+
+/** search's answer from its counts and its two lists. Shared with the store's twin. */
+export function searchPage({ q, n, start, lettersTotal, residentsTotal, residents, letters }) {
   const next = start + letters.length;
   const complete = next >= lettersTotal;
   return {
@@ -3004,7 +3044,28 @@ export function search(db, q, { limit, offset } = {}) {
 
 // The town's mail pulse. Deterministic per checkout: "today" is the newest
 // ledger date, never the wall clock, so the same index always answers the same.
-export function metricsMail(db, { days: windowDays } = {}) {
+export function metricsMail(db, opts = {}) {
+  const one = (sql) => Object.values(db.prepare(sql).get())[0];
+  return metricsMailOf({
+    newest: db.prepare("SELECT MAX(date) AS d FROM ledger WHERE date IS NOT NULL").get().d ?? null,
+    dayCounts: db.prepare("SELECT date, kind, COUNT(*) AS n FROM ledger WHERE date IS NOT NULL GROUP BY date, kind").all(),
+    totals: {
+      deliveries: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery'"),
+      bounces: one("SELECT COUNT(*) FROM ledger WHERE kind = 'bounce'"),
+      letters: one("SELECT COUNT(*) FROM letters"),
+      threads: one("SELECT COUNT(*) FROM threads"),
+      residents: one("SELECT COUNT(*) FROM residents"),
+    },
+    threadJsons: () => db.prepare("SELECT json FROM threads").all().map((t) => t.json),
+  }, opts);
+}
+
+/**
+ * metricsMail's answer from the ledger's newest day, its (date, kind, n) counts,
+ * the five totals and the threads' json (a thunk: only read when there is a
+ * newest day). Shared with the store's twin.
+ */
+export function metricsMailOf({ newest, dayCounts, totals: counted, threadJsons }, { days: windowDays } = {}) {
   // The window is an ARGUMENT now (2026-08-25), defaulting to the 60 this read
   // has always answered — so `read_metrics` with no args is byte-identical to
   // what it served yesterday, and the doorstep's `town_pulse` segment can ask
@@ -3012,10 +3073,9 @@ export function metricsMail(db, { days: windowDays } = {}) {
   // and `active_threads` are whole-ledger either way: the window decides how
   // much of the series gets said, never what is true of the town.
   const span = Math.min(Math.max(Number(windowDays) || 60, 1), 365);
-  const newest = db.prepare("SELECT MAX(date) AS d FROM ledger WHERE date IS NOT NULL").get().d ?? null;
 
   const byDate = new Map();
-  for (const r of db.prepare("SELECT date, kind, COUNT(*) AS n FROM ledger WHERE date IS NOT NULL GROUP BY date, kind").all()) {
+  for (const r of dayCounts) {
     const e = byDate.get(r.date) ?? { deliveries: 0, bounces: 0 };
     if (r.kind === "delivery") e.deliveries += r.n;
     else if (r.kind === "bounce") e.bounces += r.n;
@@ -3034,21 +3094,14 @@ export function metricsMail(db, { days: windowDays } = {}) {
     }
   }
 
-  const one = (sql) => Object.values(db.prepare(sql).get())[0];
-  const totals = {
-    deliveries: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery'"),
-    bounces: one("SELECT COUNT(*) FROM ledger WHERE kind = 'bounce'"),
-    letters: one("SELECT COUNT(*) FROM letters"),
-    threads: one("SELECT COUNT(*) FROM threads"),
-    residents: one("SELECT COUNT(*) FROM residents"),
-  };
+  const totals = { ...counted };
 
   // A thread is active if its last letter landed within 14 days of "today".
   let active_threads = 0;
   if (newest) {
     const newestMs = Date.parse(newest);
-    for (const t of db.prepare("SELECT json FROM threads").all()) {
-      const j = JSON.parse(t.json);
+    for (const json of threadJsons()) {
+      const j = JSON.parse(json);
       const dates = (j.letters ?? []).map((l) => l.date).filter(Boolean).sort();
       const last = j.lastDate ?? (dates.length ? dates[dates.length - 1] : null);
       if (!last) continue;

@@ -1703,6 +1703,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       if (path === "/metrics/mail") {
         roleGate(rdb, key, ROLE_SUBSCRIBER).then((gated) => {
           if (gated) return bounce(res, gated.code, gated.defect, gated.hint);
+          if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.metricsMail(c));
           return j(res, 200, metricsMail(db));
         }).catch((e) => bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200)));
         return;
@@ -1789,7 +1790,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       // GET /letters — the filtered list (before /letters/{id}, which needs a slug)
       if (path === "/letters") {
         const p = url.searchParams;
-        return j(res, 200, letterList(db, {
+        const opts = {
           resident: p.get("resident") ?? undefined,
           region: p.get("region") ?? undefined,
           since: p.get("since") ?? undefined,
@@ -1798,7 +1799,9 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
           full: p.get("full") === "1",
           limit: p.get("limit") ?? undefined,
           offset: p.get("offset") ?? undefined,
-        }));
+        };
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.letterList(c, opts));
+        return j(res, 200, letterList(db, opts));
       }
 
       if ((m = /^\/mail\/([a-z0-9-]+)$/.exec(path))) {
@@ -1828,20 +1831,33 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
         // ?limit/?offset/?since/?until are untouched: they still shape the
         // page, exactly as they did. The response is that page, rather than a
         // report about it.
-        return j(res, 200, mailList(db, m[1], box, {
+        const handle = m[1];
+        const opts = {
           since: url.searchParams.get("since") ?? undefined,
           until: url.searchParams.get("until") ?? undefined,
           limit: url.searchParams.get("limit") ?? undefined,
           offset: url.searchParams.get("offset") ?? undefined,
-        }).letters);
+        };
+        if (townIndexReads()) return fromTownIndex(res, async (c) => (await townIndexStore.mailList(c, handle, box, opts)).letters);
+        return j(res, 200, mailList(db, handle, box, opts).letters);
       }
 
       if ((m = /^\/letters\/(.+)$/.exec(path))) {
-        const l = letter(db, decodeURIComponent(m[1]));
-        if (!l) return bounce(res, 404, "no letter by that id", "ids come from /mail/{handle} or the ledger");
-        // Opening clears it (POS-286); a keyed GET stays on this thread for it
-        // (read-workers.mjs § opensALetter).
-        return import("./unread-store.mjs").then(({ answerOpening }) => answerOpening(l, key)).then((a) => j(res, 200, a));
+        const id = decodeURIComponent(m[1]);
+        const open = (l) => {
+          if (!l) return bounce(res, 404, "no letter by that id", "ids come from /mail/{handle} or the ledger");
+          // Opening clears it (POS-286); a keyed GET stays on this thread for it
+          // (read-workers.mjs § opensALetter).
+          return import("./unread-store.mjs").then(({ answerOpening }) => answerOpening(l, key)).then((a) => j(res, 200, a));
+        };
+        if (townIndexReads()) {
+          return townIndexStore.storeAnswer((c) => townIndexStore.letter(c, id)).then((r) => {
+            if (r.refused) return bounce(res, 503, r.refused.defect, r.refused.hint);
+            if (r.asOf) res.setHeader("x-postmark-town-index-as-of", r.asOf);
+            return open(r.out);
+          }).catch((e) => bounce(res, 500, "the office tripped reading the town index", String(e?.message ?? e).slice(0, 200)));
+        }
+        return open(letter(db, id));
       }
 
       if ((m = /^\/doorstep\/([a-z0-9-]+)$/.exec(path))) {
@@ -1938,10 +1954,12 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       if (path === "/search") {
         const q = (url.searchParams.get("q") ?? "").trim();
         if (!q) return bounce(res, 400, "empty query", "GET /search?q=...");
-        return j(res, 200, search(db, q, {
+        const opts = {
           limit: url.searchParams.get("limit") ?? undefined,
           offset: url.searchParams.get("offset") ?? undefined,
-        }));
+        };
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.search(c, q, opts));
+        return j(res, 200, search(db, q, opts));
       }
 
     // GET /fund/intake — the published address, and the disclosures that must
