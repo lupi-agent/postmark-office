@@ -254,3 +254,35 @@ test("the shrink guard reads a renamed house as renamed, not missing — and a r
   const gone = { households: { fernwood: {}, starforge: {}, "a-house-the-store-lost": {} } };
   assert.deepEqual(missingFromStore(rows, gone, {}).households, ["a-house-the-store-lost"], "a house the store does not hold under any key still stops the drain");
 });
+
+test("#256: a rename, then a drain that PRINTS — the file's old key is the renamed house, and the new key lands", async () => {
+  // The store renamed one house (the old key kept in `formerly`); the town's
+  // file still holds the old key. Before #256 the shrink guard read that as a
+  // deletion and every drain refused.
+  const first = ROWS.households.find((r) => Number(r.ord) === 0);
+  const renamed = { ...ROWS, households: ROWS.households.map((r) => (r === first
+    ? { ...r, slug: `${first.slug}-renamed`, formerly: [...(r.formerly ?? []), first.slug] } : r)) };
+  __setPoolForTest(stubPool(renamed));
+  try {
+    const clone = cloneWith(HOUSEHOLDS_RAW, PINS_RAW);
+    const r = await drainRegistry({ clone, env: ENV_ON, commit: () => "deadbeef" });
+    assert.equal(r.refused, undefined, r.refused);
+    assert.equal(r.ran, true);
+    const printed = JSON.parse(readFileSync(join(clone, REGISTRY_PATH), "utf8")).households;
+    assert.ok(printed[`${first.slug}-renamed`], "the new key is printed");
+    assert.equal(printed[first.slug], undefined, "and the old key is not printed twice");
+  } finally { __setPoolForTest(null); }
+});
+
+test("#256: a slug the store holds under NO key still refuses, exactly as before", async () => {
+  const first = ROWS.households.find((r) => Number(r.ord) === 0);
+  const lost = { ...ROWS, households: ROWS.households.filter((r) => r !== first) };
+  __setPoolForTest(stubPool(lost));
+  try {
+    const clone = cloneWith(HOUSEHOLDS_RAW, PINS_RAW);
+    const r = await drainRegistry({ clone, env: ENV_ON, commit: () => "deadbeef" });
+    assert.equal(r.ran, false);
+    assert.match(r.refused, new RegExp(`household \`${first.slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\``));
+    assert.equal(readFileSync(join(clone, REGISTRY_PATH), "utf8"), HOUSEHOLDS_RAW, "nothing was written");
+  } finally { __setPoolForTest(null); }
+});
