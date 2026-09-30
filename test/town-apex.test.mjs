@@ -38,9 +38,10 @@ const spy = () => { const calls = []; return { calls, call: async (tool, fields)
 const ctx = (extra = {}) => ({ schemas, schemaRequired, ...extra });
 
 // ── THE REGISTER LAW ────────────────────────────────────────────────────────
-test("THE REGISTER, 2026-09-28: the lanes' pen, the post machine's life, and the stake gesture — post, amend, close, advance, stake, unstake", () => {
-  assert.deepEqual([...TOWN_DISPATCHABLE], ["post", "amend", "close", "advance", "stake", "unstake"],
-    "put something up, carry it through its life (POS-288), put stamps behind one — and take them back");
+test("THE REGISTER, 2026-09-30: the lanes' pen, the post machine's life, the reveal, and the stake gesture — post, amend, close, advance, reveal, stake, unstake", () => {
+  assert.deepEqual([...TOWN_DISPATCHABLE], ["post", "amend", "close", "advance", "reveal", "stake", "unstake"],
+    "put something up, carry it through its life (POS-288), reveal a shipped bug's critter (POS-236), put stamps behind one — and take them back");
+  assert.equal(townDispatchToolFor("reveal"), "town_reveal", "the reveal charges as its own flat verb, never as `town`");
   assert.equal(townDispatchToolFor("amend"), "town_amend");
   assert.equal(townDispatchToolFor("close"), "town_close");
   assert.equal(townDispatchToolFor("advance"), "town_advance",
@@ -227,7 +228,7 @@ test("THE GRAMMAR: the bare call speaks the acts shape the household apex speaks
 
 test("the bare read carries every act's card and the named-not-built ledger", async () => {
   const answer = await townApex({}, key(), ctx({ call: spy().call }));
-  assert.equal(answer.acts.length, 6, "six cards — post, the post machine's amend / close / advance, and the stake pair");
+  assert.equal(answer.acts.length, 7, "seven cards — post, the post machine's amend / close / advance, the reveal, and the stake pair");
   const byAct = Object.fromEntries(answer.acts.map((a) => [a.act, a]));
   assert.equal(byAct.post.dispatches_to, "town_post");
   for (const f of ["class", "slug", "body"])
