@@ -1898,10 +1898,14 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
 
       // quest board for one resident (registry × today's progress). The handle
       // regex IS the arg validation; the board zeroes on a rolled TOWN_TZ day.
-      if ((m = /^\/quests\/([a-z0-9-]+)$/.exec(path)))
-        return questBoardFor(db, meta, m[1], TOWN_CLONE)
+      if ((m = /^\/quests\/([a-z0-9-]+)$/.exec(path))) {
+        const handle = m[1];
+        const unavailable = () => bounce(res, 503, "quest board unavailable", "the office couldn't read the quest registry from its clone — retry shortly");
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.questBoardFor(c, handle, TOWN_CLONE)).catch(unavailable);
+        return questBoardFor(db, meta, handle, TOWN_CLONE)
           .then((b) => j(res, 200, b))
-          .catch(() => bounce(res, 503, "quest board unavailable", "the office couldn't read the quest registry from its clone — retry shortly"));
+          .catch(unavailable);
+      }
 
       if (path === "/bulletin") {
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.bulletinList(c));

@@ -65,7 +65,7 @@ Behind `TOWN_INDEX_READS=store` (unset means office.db, as today). Rolling back 
    - The holo join orders by `, r.seq`. This is the order sqlite already gave.
 
    The doorstep, the house bundle and household-stamps still read office.db's bulletin teaser, psaFold and stampsDetail. They move with the doorstep.
-2. Pots and quests: `potBoard`, `questBoardFor` (already async), `standingFor` and `townQuestBoard`.
+2. **Moved (2026-09-30), pots and quests:** `potBoard`, `questBoardFor` (a resident's board and the town's), `standingFor` and `townQuestBoard`, at GET /quests/{h}, `read_quests`, and household { read: "stamps" | "quests" | "fund" }. The row reads are split from the shapes (`potBoardRows`/`potBoardOf`; `questBoardWith` over a source that answers progressRow, standing, pots and potIds). household-stamps reads through an index (`officeIndex` or the store's `storeIndex`) that the door picks once, and a household read that is switched runs inside one READ ONLY transaction. The store's quest board reads its own `quest_registry` and `quest_day`, never a caller's office.db meta. The doorstep's next steps still call office.db's board; they move with the doorstep.
 3. letters and mail (`letter`, `letterList`, `mailList`, `mailCorrespondents`, `mailAwaiting`, `search`, `metricsMail`).
 4. residents and the doorstep last: `residentList` feeds the position doors' roll memo, and `doorstep` gathers six of the reads above.
 5. The out-of-process readers (`declare-exec`, `join-bind-exec`, `earpiece-mail`, `write.mjs`'s recipient checks) open office.db themselves; they move with the residents.

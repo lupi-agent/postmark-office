@@ -25,7 +25,7 @@
 // all, it computes only the things no existing read computes: the estate roll-up
 // and the escrow split.
 
-import { stampsDetail, questBoardFor, potBoard } from "./queries.mjs";
+import { potBoard, officeIndex } from "./queries.mjs";
 import { intakeDisclosure } from "./fund.mjs";
 import { readIntakeMap } from "./intake-map.mjs";
 import { heldFor, stampsBlock, toConfirm, NOTHING_MOVED } from "./stamps-preview.mjs"; // POS-83: one grammar for every act that moves stamps
@@ -103,7 +103,11 @@ export function escrowDetail({ total, byHandle, handle }) {
 }
 
 // ── tenant 1 · the estate ────────────────────────────────────────────────────
-export async function estateRead(key, { db, meta, clone }) {
+//
+// `ix` is the index the reads answer from: office.db's by default
+// (queries.officeIndex), or the store's (town-index-store.mjs § storeIndex) when
+// the door is switched to TOWN_INDEX_READS=store. The same three methods either way.
+export async function estateRead(key, { db, meta, clone, ix = officeIndex(db, meta, clone) }) {
   const handles = ownHandles(key);
   if (!handles.length) {
     return bounce(403, "the estate is your household's own books",
@@ -123,10 +127,10 @@ export async function estateRead(key, { db, meta, clone }) {
 
   const residents = [];
   for (const handle of handles) {
-    const detail = stampsDetail(db, handle);
+    const detail = await ix.stampsDetail(handle);
     let quests = null;
     try {
-      const board = await questBoardFor(db, meta, handle, clone);
+      const board = await ix.questBoard(handle);
       // What is LEFT today, not what has been done — the public board carries
       // progress, and headroom is the number a resident actually acts on.
       quests = (board?.quests ?? []).map((q) => ({
@@ -193,12 +197,12 @@ export async function estateRead(key, { db, meta, clone }) {
 //
 // SO IT TAKES A HANDLE, not a key. The type change is the guard: there is no
 // longer a key here to pick a resident out of, so the guess cannot grow back.
-export async function questsRead(handle, { db, meta, clone }) {
+export async function questsRead(handle, { db, meta, clone, ix = officeIndex(db, meta, clone) }) {
   let board = null;
-  if (handle) { try { board = await questBoardFor(db, meta, handle, clone); } catch { board = null; } }
+  if (handle) { try { board = await ix.questBoard(handle); } catch { board = null; } }
   // The pots are the town's, not yours, so they answer with or without a key.
   let pots = null;
-  try { pots = potBoard(db); } catch { pots = null; }
+  try { pots = await ix.potBoard(); } catch { pots = null; }
   return {
     read: "quests",
     ...(handle ? { of: handle } : {}),
@@ -362,6 +366,11 @@ export function publishedClose(p) {
 export function fundRead(_key, { db, stripeUrl = process.env.FUND_STRIPE_URL ?? null } = {}) {
   let list = [];
   try { list = potBoard(db)?.list ?? []; } catch { list = []; }
+  return fundReadOf(list, { stripeUrl });
+}
+
+/** fundRead's answer from the pot board's list (office.db's, or the store's). */
+export function fundReadOf(list, { stripeUrl = process.env.FUND_STRIPE_URL ?? null } = {}) {
   // THE MAP IS READ ONCE, THE DISCLOSURE PER POT. Since 2026-08-25 the address
   // is no longer one string for the whole answer: a pot with its own mapped
   // intake publishes ITS address here, so the money moment a caller reads
