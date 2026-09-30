@@ -138,7 +138,8 @@ export function planRekey({ from, to, name, rows, clone, date }) {
     if (k === from || k === to) continue;
     if (JSON.stringify(filesHouses[k]) !== JSON.stringify(printedHouses[k])) moved.push(k);
   }
-  if ((read(clone, PINS_PATH) ?? "") !== printed.pins) moved.push("tools/github-ids.json");
+  const pinsFile = read(clone, PINS_PATH) ?? "";
+  if (pinsFile !== printed.pins) moved.push("tools/github-ids.json");
   if (moved.length) throw refuse(REKEY_REFUSALS.COLLATERAL, moved.slice(0, 8).join(", ") + (moved.length > 8 ? `, +${moved.length - 8} more` : ""));
 
   // The residents' cards and berths, where they carried the old name or key.
@@ -221,7 +222,8 @@ function describe(plan, { dryRun }) {
     ? `store: households — 1 row: slug and name change; formerly becomes [${plan.formerly.map((f) => (f.length > 40 ? f.slice(0, 40) + "…" : f)).join(", ")}]`
     : "store: no change (already re-keyed)");
   out.push("store: rows spelled hh:<old key> (acts, claims, marks, events, opens) keep that spelling; the house's spelling set carries it through formerly");
-  out.push(`town files: ${REGISTRY_PATH} (the one household), ${plan.cards.map((c) => c.path).join(", ") || "no card line to change"}`);
+  const files = `town files: ${REGISTRY_PATH} (the one household), ${plan.cards.map((c) => c.path).join(", ") || "no card line to change"}`;
+  out.push(files);
   out.push(plan.ledger.length ? `ledger: append ${plan.ledger.length} signed line(s):` : "ledger: no line (no resident's latest sealed key is the old one)");
   for (const l of plan.ledger) out.push(`  ${l} · sig: <the office pen>`);
   return out.join("\n");
