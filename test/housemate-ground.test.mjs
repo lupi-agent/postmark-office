@@ -80,6 +80,7 @@ const { publishNoteFor, markStandsOnOwnGround } = await import(pathToFileURL(joi
 const { worldHouseholdOf } = await import(pathToFileURL(join(OFFICE, "src", "world-apex.mjs")).href);
 const { computeStanding } = await import(pathToFileURL(join(OFFICE, "world2", "tools", "standing.mjs")).href);
 const { liveHouseOfVia, recomputeStanding } = await import(pathToFileURL(join(OFFICE, "world2", "tools", "materialize.mjs")).href);
+const { reCheckGrant } = await import(pathToFileURL(join(OFFICE, "world2", "tools", "review-rule.mjs")).href);
 
 const PARCEL = { id: `${LYRA}/the-starling-house`, kind: "parcel", by: LYRA, household: LYRA,
   at: { x: 900, y: 1250 }, extent: { w: 25, h: 25 } };
@@ -145,6 +146,7 @@ function stubStore(rows) {
     if (/FROM registry_meta/.test(sql)) return { rows: REGISTRY.meta };
     if (/FROM marks WHERE status = 'standing'/.test(sql)) return { rows };
     if (/^\s*UPDATE marks/.test(sql)) { updates.push(args); return { rows: [], rowCount: 1 }; }
+    if (/to_regclass\('public\.escrow_projection'\)/.test(sql)) return { rows: [{ ok: true }] };
     return { rows: [] }; // the GiST probes: no index here, so the walk scans
   };
   return { q, updates };
@@ -165,4 +167,12 @@ test("recomputeStanding rules with the live house (the crossing's all-marks walk
   const { moved } = await recomputeStanding(q);
   assert.deepEqual(moved.find((m) => m.slug === earRow.slug), { slug: earRow.slug, from: "market", to: "home" });
   assert.ok(updates.some(([id, tier]) => id === "c1" && tier === "home"));
+});
+
+test("the review door's escrow re-check rules with the live house too", async () => {
+  const { q } = stubStore([parcelRow("solo:errant")]);
+  const winner = { id: "c1", class: "sited", claimant: "errant", parent: null, data: {},
+    geometry: { slug: earRow.slug, at: earRow.geometry.at, extent: earRow.geometry.extent } };
+  const { blockers } = await reCheckGrant(q, winner, { townSha: "abcdef1234" });
+  assert.deepEqual(blockers, [], "a ✦0 mark inside its own house's parcel is not a commons mark");
 });
