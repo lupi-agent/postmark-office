@@ -184,6 +184,26 @@ test(`THE SWITCH on a real store: G1–G5 ${SKIP ? `(${SKIP})` : ""}`, { skip: S
       const checked = await importPaperwork(owner, { oauth: oauthPath, roles: rolesPath }, { check: true });
       assert.ok(checked.equal, JSON.stringify(checked.tables.filter((x) => x.differ.length).map((x) => x.differ.slice(0, 3))));
     });
+
+    // Wright's condition on the mirror (2026-09-30): "a failed mirror write is
+    // logged loudly and counted … never silently dropped". Forced here by taking
+    // the file's media table away under a switched paper: the store takes the
+    // row, the mirror cannot, and the office must SAY so.
+    await t.test("G6 · a FORCED mirror failure is counted and logged on the roll-call's line, and the store still took the write", async () => {
+      o.file.exec("DROP TABLE media");
+      const failedBefore = paperStatus().mirrorFailed;
+      const lines = [];
+      const real = console.error;
+      console.error = (...a) => { lines.push(a.join(" ")); };
+      try {
+        await asPaper(o).run("INSERT INTO media (household, sha, ext, bytes, by_handle, created) VALUES (?, ?, ?, ?, ?, ?)",
+          "keeminlee", "b".repeat(64), "png", 1, "wright", Date.now());
+      } finally { console.error = real; }
+      assert.equal(paperStatus().mirrorFailed, failedBefore + 1, "the failure is counted");
+      assert.ok(lines.some((l) => l.startsWith("[paperwork] MIRROR FAILED") && /no such table: media/.test(l)),
+        `the failure is on the greppable line, with its cause: ${JSON.stringify(lines)}`);
+      assert.equal((await mediaLedgerRows(o, "keeminlee")).length, 2, "the store took the write the file could not");
+    });
   } finally {
     delete process.env.TOWN_SINGLE_LOG;
     for (const p of papers) p.close();

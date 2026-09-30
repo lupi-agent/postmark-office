@@ -29,9 +29,15 @@
 // is counted and logged loudly (`paperStatus()`), and the file is then behind
 // the store by that row; the import's `--check` names exactly which.
 //
-// The mirror dies with the files: when Wright deletes oauth.db and roles.db
-// after a clean week, the office boots with the flag on and no file, and a
-// paper with no file simply has nothing to mirror to.
+// ⚑ THE MIRROR IS TEMPORARY (Wright, 2026-09-30). It is the rollback's bridge
+// and nothing else, and it is DELETED — `#mirror`, `withIdColumn`, the `file`
+// on a switched paper and `paperStatus` — in the same change that deletes
+// oauth.db and roles.db after a clean week on the store. Until then a failed
+// mirror write is never dropped silently: it is counted (`paperStatus()`) and
+// logged on one greppable line, `[paperwork] MIRROR FAILED`, for the
+// roll-call, because a file that drifted makes the rollback sign people out.
+// With no file (after the deletion, or on a read worker) a paper simply has
+// nothing to mirror to.
 //
 // ── ONE SPELLING OF THE SQL ─────────────────────────────────────────────────
 //
@@ -131,6 +137,7 @@ class Paper {
   #refuseWrite() { if (this.readOnly) throw new Error("paperwork: this handle is read-only (a read worker holds no pen)"); }
 
   // The writes the mirror replays, in order, after the store committed them.
+  // TEMPORARY: deleted with the files (see ⚑ THE MIRROR IS TEMPORARY, above).
   #mirror(steps) {
     if (!this.file || !steps.length) return;
     try {
