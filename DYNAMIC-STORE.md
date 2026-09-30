@@ -43,7 +43,7 @@ node --test test/settle-at-save.test.mjs
 | `tools/crossing-replay-check.mjs` | rebuild from `STATE/` alone; EQUAL or the save does not save the world |
 | `tools/thread-parity.mjs` | store threads vs `voices.mjs`'s shipped `clusterVoices`, as a partition |
 | `tools/dynamic-rebuild.mjs` | the covenant, executable |
-| `deploy/postmark-crossing-save.{service,timer}` | crossing-aligned, **delivered but not installed** |
+| `deploy/postmark-crossing-save.{service,timer}` | crossing-aligned, and **running on the box**: the world repo carries a `crossing-save <N>` commit a few minutes after each crossing (save 220 at 2026-09-30 00:04Z) |
 
 ## The covenant, which is narrower than the other two
 
@@ -245,6 +245,13 @@ STATE/snapshot/<N>/entities.json   state AT THE BOUNDARY of crossing N
 STATE/log/<N>.jsonl                events DURING crossing N
 STATE/log/<N>.meta.json            the window that file actually covers
 ```
+
+**`seq` on an `attachment` log line is null for the acts era.** Where the hold
+edge is on `acts` (W2_PEN has hold and W2_GUARDS=1, POS-269), the save reads
+holdings from the record, and a holding act has no sqlite rowid to carry, so
+its line writes `"seq": null`. Earlier lines keep the rowid they were written
+with. No reader keys on it: the replay check keys on actor, target and `at`,
+and `attachmentsFromState` drops it (Wright-ruled 2026-09-30).
 
 Snapshot-at-the-boundary is the only reading under which snapshot and log
 compose: a snapshot of save-instant state would have the crossing's own events
