@@ -2372,6 +2372,15 @@ export async function pointWithinMarkFn() {
 
 export async function worldStateRaw() { return (await world())._raw.worldState; }
 
+// WHERE EACH MARK'S CENTRE IS, in the fold the witness stamp reads (witnessStampAt
+// § centreOf): the inverse every reader of an act's anchor needs. The save's
+// emission lines compose a voice act's anchor and offset back into x,y with it
+// (POS-269), so they read the same centres the stamp wrote against.
+export async function markCentreOf() {
+  const byId = new Map(((await world()).marks ?? []).map((m) => [m.id, m.at ?? null]));
+  return (id) => byId.get(id) ?? null;
+}
+
 // THE WORLD READ'S HEADER (postmark#2934): which settlement this answer stands
 // on, whether main holds a candidate the keeper has not accepted, and when the
 // next attempt is — the viewer's chip already counts down to that instant.

@@ -33,6 +33,7 @@
 
 import { clusterVoices } from "./voices.mjs";
 import { emissionsEnabled, openDynamic, getMeta, putMeta, soundClass, soundMs } from "./dynamic-store.mjs";
+import { laneFlipped } from "./world2-pen.mjs";
 
 export const SOUND = "sound";
 
@@ -120,8 +121,14 @@ export function recordEmission(db, voice, cls) {
  * a box that cannot write the emission still lets the town talk, loudly on the
  * operator's console.
  */
-export function emissionFromVoice(voice, { standAs = null, repo = undefined } = {}) {
+export function emissionFromVoice(voice, { standAs = null, repo = undefined, sayOnActs = laneFlipped("say") } = {}) {
   if (!emissionsEnabled()) return null;
+  // WHERE THE SAY LANE'S PEN IS THE RECORD, THE ACT IS THE EMISSION (POS-269).
+  // Every voice is then an act carrying all the line says, and the crossing-save
+  // writes its emission lines from those acts (tools/crossing-save.mjs §
+  // emissionsForSave, src/save-emissions.mjs). A second copy here would be a row
+  // nothing reads, in the store being retired, so it is not written.
+  if (sayOnActs) return null;
   let db = null;
   try {
     const cls = soundClass(repo ? { repo } : {});

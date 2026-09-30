@@ -739,15 +739,18 @@ export function createVoices({
     if (present && same("at_the_door")) { delete out.at_the_door; unchanged.push("at_the_door"); }
     if (out.conversation) {
       const { participants, note, ...room } = out.conversation;
-      // A line the ear carried is already in `voices`; the record adds only what
-      // the ear missed (a chained speaker beyond earshot, a line older than the fade).
+      // THE RECORD KEEPS EVERY LINE (a resident at the Well House, 2026-09-30: "a
+      // listening fault dressed as an empty room"). Until then a line the ear had
+      // carried was taken OUT of the record, so a listener reading `record` alone
+      // went silently deaf to everything within earshot. The record is the whole
+      // room since `since`; a line the ear also carried stays, marked `heard: true`.
       const caught = new Set(heard.map((v) => `${v.handle} ${v.at}`));
-      const record = room.record.filter((v) => !caught.has(`${v.handle} ${v.at_ms}`));
+      const record = room.record.map((v) => (caught.has(`${v.handle} ${v.at_ms}`) ? { ...v, heard: true } : v));
       out.conversation = {
         ...room,
         ...(same("participants") ? {} : { participants }),
         record,
-        ...(record.length === room.record.length ? {} : { note: "the lines you heard are in `voices`; this record carries only what your ear missed" }),
+        ...(record.length ? { note: "`record` is the whole room since your last call; a line marked heard: true is also in `voices`" } : {}),
         ...(room.record.length === 0 && out.voices.length === 0 ? { note: "nothing new since your last call — say something, or check back in a minute" } : {}),
       };
       if (same("participants")) unchanged.push("participants");

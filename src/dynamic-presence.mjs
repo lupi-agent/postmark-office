@@ -71,9 +71,10 @@ export const PRESENCE_DIALS = Object.freeze({
   near_cap: 10,         // ✎ a crowd you can read, not a census
 });
 
-/** The governing departure per resident, from the store. Store-canon; latest-wins already settled. */
+/** The governing departure per resident, from the store. Store-canon; latest-wins already settled. No store, no rows. */
 export function governingDepartures(db) {
   const out = new Map();
+  if (!db) return out;
   for (const e of readEntities(db)) {
     const dep = e.provenance?.departure;
     if (dep?.from && dep?.toward) out.set(e.handle, dep);
@@ -254,7 +255,25 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
  * Never throws: a presence read that could take down `orient` would be a worse
  * bargain than not knowing who is nearby.
  */
+/**
+ * THE VESSEL'S SAILING LINE, FROM THE PROJECTION (POS-269). Her departures are
+ * walk records like anyone's, so the projection keeps her governing one beside
+ * everybody else's (`positionsAt` then drops her from the resident list, as it
+ * always did). It is the line the entities table's `meta.vessel_departure`
+ * held, read from the record instead of from a crystallization of it.
+ */
+export const vesselFromProjection = (departures) =>
+  [...(departures ?? [])].reverse().find((d) => d?.handle === VESSEL_HANDLE) ?? null;
+
 async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now(), walk = null, engine = null, world = null, where = null, roll = [], projected = null, placed = null } = {}) {
+  // ── A READ HANDED THE PROJECTION READS ONLY THE PROJECTION (POS-269) ───────
+  // The doors hand one over exactly when this office keeps positions
+  // (WORLD_POSITIONS=1, world.mjs § keptPresence and § worldPresent). Every
+  // departure and the vessel's sailing line are in it, so dynamic.db is not
+  // opened at all: no entities table, no meta. The answer's `as_of` is the
+  // projection's build instant, and the entities table's staleness disclosures
+  // do not apply to it.
+  if (projected) return projectedPresence({ repo, atMs, walk, engine, world, where, roll, projected, placed });
   const path = dbPath ?? dynamicDbPath();
   if (!existsSync(path))
     return { error: "store-absent", detail: `no dynamic store at ${path} — run: npm run dynamic:rebuild` };
@@ -336,6 +355,38 @@ async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now
     };
   } catch (e) {
     try { db.close(); } catch { /* already gone */ }
+    return { error: "presence-derivation-failed", detail: String(e?.message ?? e).slice(0, 200) };
+  }
+}
+
+/** The projection-only read: `readPresence`'s own derivation with no store behind it. */
+async function projectedPresence({ repo, atMs, walk, engine, world, where, roll, projected, placed }) {
+  try {
+    const w = walk ?? await walkModule({ repo });
+    const eng = engine ?? await worldToolModule("world-engine.mjs", { repo });
+    let whereMod = where;
+    if (!whereMod) {
+      try { whereMod = await worldToolModule("where-is.mjs", { repo }); } catch { whereMod = null; }
+    }
+    let frames = null;
+    if (world && (await import("./world-movement.mjs")).worldHasVehicle(world)) {
+      try { frames = await withVehicleRiders(frames, { world, repo, atMs }); }
+      catch { /* the riders read as ashore for this call, and nobody loses presence */ }
+    }
+    const departures = projected.departures ?? [];
+    const rows = positionsAt(null, atMs, w, vesselFromProjection(departures),
+      { world, where: whereMod, frames, stored: null, roll, projected: departures, placed });
+    return {
+      rows, engine: eng,
+      as_of: projected.built_at ?? null,
+      evaluated_at: new Date(atMs).toISOString(),
+      ledger_moved: false,
+      disclosed: [
+        ...(world && whereMod ? [] : [`ground-not-read: only residents with a walk on record are in this answer — ${world ? "the world's position join could not be read" : "no world fold was handed to the presence read"}, so anyone who has never walked is missing`]),
+        ...(projected.disclosed ?? []),
+      ],
+    };
+  } catch (e) {
     return { error: "presence-derivation-failed", detail: String(e?.message ?? e).slice(0, 200) };
   }
 }
