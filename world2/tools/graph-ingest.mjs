@@ -11,11 +11,10 @@
 // as_of_office), in one transaction: an existing snapshot at that key is
 // replaced whole, and only the newest `--keep` snapshots stay.
 //
-// ⚑ THIS STEP STILL READS A SQLITE FILE, AT BUILD TIME. The hydrator writes
-// world.db, and teaching it to emit rows straight into the store is its own
-// part on POS-270. Until then the file exists only as the hydrator's output:
-// no office reader opens it once the snapshot has loaded
-// (src/world-graph-snapshot.mjs).
+// THE HYDRATOR WRITES THE SNAPSHOT ITSELF NOW (world-hydrate.mjs --to-store,
+// POS-270 lane W item 1), from the rows it built, through
+// `writeGraphSnapshot` below. This CLI's --db path is the manual one, for a
+// world.db that already exists.
 //
 // A FAILED-stamped hydration is refused, never copied. A snapshot of a store
 // that said it was broken would be a broken store with a better address.
@@ -98,6 +97,23 @@ export async function writeGraphSnapshot(client, snap, { keep = 4, batch = 400 }
     try { await client.query("ROLLBACK"); } catch { /* the connection is gone; nothing committed */ }
     throw e;
   }
+}
+
+/**
+ * The newest snapshot's lint verdicts, for the hydrator's delta when there is no
+ * file to compare against. `{ as_of_world, hydrated_at, findings }` in the shape
+ * the hydrator reads off an old world.db, or null with no snapshot.
+ */
+export async function previousGraphLints(client) {
+  const { rows: [pin] } = await client.query(
+    `SELECT tag_sha, office_sha FROM world_graphs ORDER BY settlement DESC NULLS LAST, built_at DESC LIMIT 1`);
+  if (!pin) return null;
+  const at = [pin.tag_sha, pin.office_sha];
+  const meta = Object.fromEntries((await client.query(
+    "SELECT key, value FROM world_graph_meta WHERE tag_sha = $1 AND office_sha = $2 AND key IN ('as_of_world', 'hydrated_at')", at)).rows.map((r) => [r.key, r.value]));
+  const findings = (await client.query(
+    "SELECT lint, verdict, headline FROM world_graph_lints WHERE tag_sha = $1 AND office_sha = $2 ORDER BY ord", at)).rows;
+  return { as_of_world: meta.as_of_world ?? null, hydrated_at: meta.hydrated_at ?? null, findings };
 }
 
 const argOf = (name) => { const i = process.argv.indexOf(name); return i !== -1 ? process.argv[i + 1] : null; };
