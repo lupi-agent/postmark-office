@@ -154,8 +154,6 @@ test(`THE SWITCH on a real store: G1–G5 ${SKIP ? `(${SKIP})` : ""}`, { skip: S
     await grantRole(r, { subject: 777, actor: "keemin", note: "after the switch" });
     const lateSeq = await appendTownJournal(o, { cls: "join", act: "declare-household", household: "newcomers", handle: "newcomer", ghId: "777" });
     await advanceTownCursor(o, lateSeq);
-    assert.ok(paperStatus().mirrored > mirroredBefore, "the switched writes reached the file's mirror");
-    assert.equal(paperStatus().mirrorFailed, 0, `no mirror write failed: ${paperStatus().lastMirrorError}`);
     const switched = { lookups: await lookups(o), late: view(await keyLookup(o, db, clone, lateKey)), ledgers: await ledgers(o), roles: await book(r) };
     assert.equal(switched.lookups.human, null, "the rotation on the store retired the human's old key");
 
@@ -174,6 +172,13 @@ test(`THE SWITCH on a real store: G1–G5 ${SKIP ? `(${SKIP})` : ""}`, { skip: S
         assert.ok((await readTownJournal(ofileBack)).some((row) => row.seq === lateSeq && row.handle === "newcomer"));
       });
     } finally { ofileBack.close(); rfileBack.close(); }
+
+    // The instrument, read AFTER the behaviour it counts: G2 is the proof, this
+    // is only the office's own tally of it agreeing.
+    await t.test("the mirror's own tally agrees: writes counted, none failed", () => {
+      assert.ok(paperStatus().mirrored > mirroredBefore, "the switched writes reached the file's mirror");
+      assert.equal(paperStatus().mirrorFailed, 0, `no mirror write failed: ${paperStatus().lastMirrorError}`);
+    });
 
     await t.test("G5 · paperwork-import --check: file and store still equal, row for row, after the switched writes", async () => {
       const checked = await importPaperwork(owner, { oauth: oauthPath, roles: rolesPath }, { check: true });
