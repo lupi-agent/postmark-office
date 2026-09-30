@@ -7,7 +7,7 @@
 // byte-identical to the town's, and so is every row kind below. The six row
 // kinds, exactly as the town writes them:
 //
-//   - <date> · pot-receipt · pot:<pot> · rail: <stripe|usdc|grant> · usd: <n> · from: <payer> · ref: <ref>
+//   - <date> · pot-receipt · pot:<pot> · rail: <stripe|usdc|paypal|grant> · usd: <n> · from: <payer> · ref: <ref>
 //   - <date> · <handle> → stake:pot/<pot> · <n> · via: <api|mail:letter-id>
 //   - <date> · stake:pot/<pot> → <handle> · <n> · for: pot-return:<epoch>
 //   - <date> · stake:pot/<pot> → <handle> · <n> · for: unstake · via: <founder|api|web>   (a stake taken back BEFORE the close — the founder's word 2026-09-17; not a close, so it never marks an epoch closed)
@@ -161,7 +161,8 @@ export const FUNDING_KINDS = ["pot-stake", "pot-return", "pot-unstake", "keeping
 // note above. A retired shape that reads as silence is indistinguishable from a
 // row the door failed to notice.
 export const RETIRED_KINDS = ["keeper-equity", "keeping-equity", "keeping-mint-arrowed"];
-export const RAILS = new Set(["stripe", "usdc", "grant"]);
+// The town's KEEPING_RAILS, in its order. PayPal joined 2026-09-29 (POS-183 part 2).
+export const RAILS = new Set(["stripe", "usdc", "paypal", "grant"]);
 // The reserved direct-to-town pot: receipts only — no file, no stakes, no
 // close, and its holo rows carry 0 (nothing burned, nothing minted; the town
 // never receives from its own seam). The zero row still gets written, because
@@ -246,7 +247,7 @@ export function parseLedgerText(text) {
 // point of this module is that it does not paraphrase the town.
 const POT_ID_CLASS = String.raw`[a-z0-9][a-z0-9-]*`;
 const EPOCH_CLASS = String.raw`\d{4}-\d{2}`;
-const POT_RECEIPT_RE = new RegExp(String.raw`^- (\d{4}-\d{2}-\d{2}) · pot-receipt · pot:(${POT_ID_CLASS}) · rail: (stripe|usdc|grant) · usd: ([1-9]\d*) · from: (\S+) · ref: (\S+)$`);
+const POT_RECEIPT_RE = new RegExp(String.raw`^- (\d{4}-\d{2}-\d{2}) · pot-receipt · pot:(${POT_ID_CLASS}) · rail: (stripe|usdc|paypal|grant) · usd: ([1-9]\d*) · from: (\S+) · ref: (\S+)$`);
 // THE HAND, CORRECTED (the town's `pot-correction`, founder-ruled 2026-08-27):
 // a witnessed dollar's payer was wrong, and this row says whose it really was.
 // ARROW-FREE, no usd and no pot — it corrects WHOSE dollar, never how many or
@@ -375,7 +376,7 @@ function diagnose(kind, canonical) {
     case "pot-receipt": {
       if (!isPot(L.get("pot"))) return potReason("pot-receipt");
       const rail = L.get("rail");
-      if (!rail || !RAILS.has(rail)) return `pot-receipt rail must be one of stripe|usdc|grant, got ${JSON.stringify(rail)}`;
+      if (!rail || !RAILS.has(rail)) return `pot-receipt rail must be one of ${[...RAILS].join("|")}, got ${JSON.stringify(rail)}`;
       if (!isCount(L.get("usd"))) return usdReason("pot-receipt", L.get("usd"));
       if (!isHandle(L.get("from"))) return "pot-receipt names no payer — the witnessed payer rides `from:`";
       if (!isHandle(L.get("ref"))) return "pot-receipt carries no `ref:` — an unwitnessed payment is not a receipt, and the ref is what makes one dollar one mint chance";

@@ -19,8 +19,8 @@
 // "the one that drifts is the one nobody rereads". `via` is the phrase the
 // commit message names the door by, for the same reason.
 //
-// The rail set is the TOWN's (`stripe|usdc|grant`, KEEPING_RAILS in
-// stamp-mint.mjs and `rail: (stripe|usdc|grant)` in the pot-receipt grammar).
+// The rail set is the TOWN's (`stripe|usdc|paypal|grant`, KEEPING_RAILS in
+// stamp-mint.mjs, which the pot-receipt grammar reads its rails from).
 // Checked here only so a bad rail is a bounce with a sentence instead of a
 // subprocess FATAL — the CLI refuses it regardless, and that is the enforcer.
 //
@@ -59,14 +59,15 @@ function classifyFatal(stderr) {
   return { code: 500, defect: "the receipt refused", hint: (s.split("\n").find(Boolean) ?? "unknown").slice(0, 200) };
 }
 
-// The town's own rail set (stamp-mint.mjs KEEPING_RAILS / the pot-receipt
-// grammar's `rail: (stripe|usdc|grant)`). One word per rail, and no fourth.
-const RAILS = ["stripe", "usdc", "grant"];
+// The town's own rail set (stamp-mint.mjs KEEPING_RAILS, which the pot-receipt
+// grammar reads its rails from). One word per rail; paypal is the fourth
+// (POS-183 part 2, 2026-09-29), and there is no fifth.
+const RAILS = ["stripe", "usdc", "paypal", "grant"];
 
 async function main() {
   const { pot, usd, from, ref, date, rail = "usdc", via = "the /fund door" } = JSON.parse(process.argv[2] ?? "{}");
   if (!RAILS.includes(rail))
-    return err(422, `"${rail}" is not a rail`, `a pot receipt rides one of ${RAILS.join(", ")} — the town's own grammar has no fourth`);
+    return err(422, `"${rail}" is not a rail`, `a pot receipt rides one of ${RAILS.join(", ")} — the town's own grammar has no other`);
   if (!existsSync(KEY_PATH))
     return err(409, "not-yet-open", "the office has no pen key configured for the stamp-ledger");
   const mint = join(CLONE, "tools", "stamp-mint.mjs");

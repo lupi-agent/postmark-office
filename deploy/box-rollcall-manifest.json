@@ -269,6 +269,17 @@
    "stale_means": "Stripe payments stop being attributed: a resident pays and the funding ledger does not learn, so the town's own record of who is paid up goes quietly wrong rather than loudly absent. The allowance is three ticks. WHAT THIS ROW HAS ALREADY CAUGHT ONCE, and the reason it judges the unit before the heartbeat: on 2026-08-27 a file at /srv/postmark-office/.stripe-watch-state.json was four minutes fresh, written by a HAND-RUN of the tool's default state path, while no unit existed on the box at all. That file is not this row's heartbeat and must never become it — a hand-run's output is exactly the evidence that makes a rail with no runner look alive. THE ROW'S OWN SCAR (2026-08-30, the v1 sweep): this rail was adopted on 08-27 by flipping stage parked -> live, and every sentence around that word stayed written for a rail that does not run — cadence said 'would be … once adopted', cadence_source said 'the unit is not on the box', and parked_because and adopt_command were both still standing. The suite went red for three weeks about a manifest that described the wrong box, which is this file's own failure class committed inside this file."
   },
   {
+   "unit": "postmark-paypal-watch.timer",
+   "label": "the paypal watch",
+   "stage": "parked",
+   "activation_owner": "Wright installs it at deploy and Keemin adopts it — built 2026-09-29 (POS-183 part 2, lane plumb-paypal-rail) and not yet on the box.",
+   "parked_because": "its witness, PayPal Transaction Search, answers 403 until the app's \"Transaction search\" feature is enabled in developer.paypal.com (the founder's step, asked 2026-09-29), and the live REST pair must reach /etc/postmark-paypal-watch.env by Wright's hand. Until both, an enabled timer would only fail every tick.",
+   "adopt_command": "sudo systemctl enable --now postmark-paypal-watch.timer — after the env file exists, a supervised --dry-run has been read (deploy/postmark-paypal-watch.service § FIRST RUN), and this row is flipped to live in the same commit.",
+   "cadence": "none while parked (the unit file keeps its *:14/15 OnCalendar — :14/:29/:44/:59 — for the day it is adopted, off stripe-watch's :07/15 and usdc-watch's *:0/10)",
+   "cadence_source": "the unit file — not installed, no next fire, is this row's healthy state",
+   "stale_means": "not judged while parked. Once live, its heartbeat is /srv/postmark-paypal/state.json § last_run, and late means PayPal gifts stop being attributed to their pots — with PayPal's own indexing lag of up to three hours ADDED to any allowance, because a payment is not in search until PayPal has indexed it."
+  },
+  {
    "unit": "postmark-site-refresh.timer",
    "label": "the box publishes the site (atomic swap, lock, convergence)",
    "stage": "live",

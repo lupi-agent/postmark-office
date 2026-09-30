@@ -127,7 +127,7 @@ const LOOSE = `- 2026-08-21 · pot-receipt · pot: keeping-ec2 · rail: stripe �
 `;
 
 // Malformed under the landed grammar itself.
-const FORGED = `- 2026-08-21 · pot-receipt · pot:keeping-ec2 · rail: paypal · usd: 25 · from: mallory · ref: x1 · sig: sigT
+const FORGED = `- 2026-08-21 · pot-receipt · pot:keeping-ec2 · rail: venmo · usd: 25 · from: mallory · ref: x1 · sig: sigT
 - 2026-08-21 · pot-receipt · pot:keeping-ec2 · rail: stripe · usd: 10.5 · from: mallory · ref: x2 · sig: sigU
 - 2026-08-21 · mallory → stake:pot/treasury · 5 · via: api · sig: sigV
 - 2026-08-21 · holo · mallory · 5 · pot:treasury · epoch:2026-08 · ref: x3 · sig: sigW
@@ -281,7 +281,8 @@ test("a row that is complete but writes the loose colon is refused by the fold, 
 
 test("rows malformed under the landed grammar are surfaced by name", () => {
   const f = fold();
-  assert.match(reasonFor(f, "paypal"), /stripe\|usdc\|grant/, "the paypal rail is refused by name");
+  // PayPal is a rail since 2026-09-29 (POS-183 part 2); a rail the town has not named is still refused.
+  assert.match(reasonFor(f, "venmo"), /stripe\|usdc\|paypal\|grant, got "venmo"/, "an unnamed rail is refused by name");
   assert.match(reasonFor(f, "10.5"), /WHOLE number/, "fractional dollars are not a smaller payment, they are not a row");
   assert.match(reasonFor(f, "stake:pot/treasury"), /takes direct-to-town receipts, never stakes/);
   assert.match(reasonFor(f, "holo · mallory · 5 · pot:treasury"), /mint no holo/,
