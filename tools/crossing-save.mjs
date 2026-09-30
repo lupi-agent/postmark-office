@@ -67,7 +67,7 @@ import { dirname, join, resolve } from "node:path";
 
 import { penCommit } from "../src/write.mjs";
 import { WORLD_CLONE } from "../src/world-store.mjs";
-import { openDynamic, putMeta, getMeta } from "../src/dynamic-store.mjs";
+import { openDynamic, putMeta, getMeta, emissionsEnabled, soundClass, soundMs } from "../src/dynamic-store.mjs";
 import { world2Enabled } from "../src/world2-acts.mjs";
 import {
   readDepartureEvents, governingAt, entityFromDeparture, byHandle,
@@ -78,6 +78,8 @@ import { DEPARTURE_GAPS, RECORD_READ_FIELDS, storedDepartureEvents } from "../sr
 import { emissionsBetween, pruneEmissions } from "../src/dynamic-emissions.mjs";
 import { holdEdgeOnActs } from "../src/hold-edge.mjs";
 import { storeAttachmentRows } from "../src/world2-guards.mjs";
+import { laneFlipped } from "../src/world2-pen.mjs";
+import { emissionRowsFromActs, readSayActs } from "../src/save-emissions.mjs";
 
 const argOf = (name, fallback = null) => { const i = process.argv.indexOf(name); return i !== -1 ? process.argv[i + 1] : fallback; };
 const flag = (name) => process.argv.includes(name);
@@ -99,6 +101,25 @@ export const stableJson = (v) => `${JSON.stringify(v, null, 2)}\n`;
  */
 export async function attachmentsForSave(db, { onActs = holdEdgeOnActs(), read = storeAttachmentRows } = {}) {
   return onActs ? read() : readAttachments(db);
+}
+
+/**
+ * The emissions a save carries (POS-269), the attachments' rule applied to
+ * speech. Where the say lane's pen is the record (W2_PEN has say), every voice
+ * is an act and the lines are written from it (src/save-emissions.mjs, measured
+ * byte-equal on the town's own files); elsewhere dynamic.db is still the source.
+ * WORLD_EMISSIONS still decides whether the record carries speech at all: off,
+ * no emission line is written from either source, exactly as before.
+ * A record that will not answer, or a voice that cannot be placed, throws, and
+ * `main` refuses by name.
+ */
+export async function emissionsForSave(db, { fromIso, toIso, onActs = laneFlipped("say"), enabled = emissionsEnabled(),
+  readActs = readSayActs, centres = async () => (await import("../src/world.mjs")).markCentreOf(), cls = null } = {}) {
+  if (!onActs) return emissionsBetween(db, fromIso ?? new Date(0).toISOString(), toIso);
+  if (!enabled) return [];
+  const law = cls ?? soundClass({ repo: CLONE });
+  const { ttlMs, earshotM } = soundMs(law);
+  return emissionRowsFromActs(await readActs(fromIso, toIso), { centreOf: await centres(), cls: law, ttlMs, earshotM });
 }
 
 const die = (code, gate, detail) => {
@@ -510,7 +531,15 @@ async function main() {
   let attachments;
   try { attachments = await attachmentsForSave(db); }
   catch (e) { db.close(); return die(4, "holdings", `the holding record could not be read: ${String(e?.message ?? e).slice(0, 160)}`); }
-  const allEmissions = emissionsBetween(db, new Date(0).toISOString(), new Date(saveMs).toISOString());
+  // From the start of the crossing this run may close, to the save instant:
+  // every window `buildSave` is handed below lies inside it.
+  let allEmissions;
+  try {
+    allEmissions = await emissionsForSave(db, {
+      fromIso: new Date(crossingStartMs(Math.max(0, crossing - 1))).toISOString(),
+      toIso: new Date(saveMs).toISOString(),
+    });
+  } catch (e) { db.close(); return die(4, "emissions", `the voices could not be read from the record: ${String(e?.message ?? e).slice(0, 200)}`); }
 
   const written = [];
   const saves = [];
