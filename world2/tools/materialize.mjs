@@ -21,7 +21,7 @@
 // materialization that could commit on its own would be a second candle.
 
 import { computeStanding, admissionNotes, gistContainment } from "./standing.mjs";
-import { houseKeyOfVia, houseRowsVia } from "../../src/household-deriver.mjs";
+import { houseKeyOfVia, houseKeysOf, houseRowsVia } from "../../src/household-deriver.mjs";
 import { REFUSALS, refuse } from "../../src/ceremony.mjs";
 
 /**
@@ -228,6 +228,25 @@ export async function ownerHouseholdFor(q, owner) {
   return key;
 }
 
+/**
+ * EVERY SPELLING A HOUSE HAS WORN → ITS LIVE KEY, as one function for the
+ * standing walk (standing.mjs § computeStanding's `houseOf`).
+ *
+ * The same deriver `ownerHouseholdFor` asks, over the same registry, so the
+ * standing rows and the candidates they are judged against speak one key per
+ * house. A spelling no house claims maps to itself: a `solo:<handle>` that is
+ * nobody's resident is its own household, as it always was.
+ */
+export async function liveHouseOfVia(q) {
+  const rows = await houseRowsVia(queryableFor(q));
+  const live = new Map();
+  for (const slug of Object.keys(rows?.registry?.households ?? {})) {
+    const keys = houseKeysOf(`hh:${slug}`, rows.registry, rows.pins);
+    for (const k of keys) if (!live.has(k)) live.set(k, keys[0]);
+  }
+  return (key) => live.get(key) ?? key;
+}
+
 export async function materializeClaims(q, { claims, amends = new Map(), revives = new Map(), windowId, label }) {
   const named = claims.filter((c) => slugOf(c));   // a stake or escrow claim names no mark
   const ordered = orderByParent(named, { label: label ?? `window ${windowId}` });
@@ -301,7 +320,7 @@ export async function recomputeStanding(q) {
   // — the reader refuses to run its pair query unindexed precisely because
   // unindexed it is slower than the walk it would replace.
   const containment = await gistContainment(q);
-  const tiers = computeStanding(standing, { containment });
+  const tiers = computeStanding(standing, { containment, houseOf: await liveHouseOfVia(q) });
   const moved = [];
   for (const m of standing) {
     const next = tiers.get(m.slug);
