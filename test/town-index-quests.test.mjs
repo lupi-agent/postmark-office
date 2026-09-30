@@ -193,3 +193,15 @@ test("household { read: stamps | quests | fund } answers through the store when 
     for (const [k, v] of Object.entries(keep)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
 });
+
+test("a switched reader that throws is answered with a 500, and the office stays up", async (t) => {
+  if (skip) return t.skip(skip);
+  // a bent row in the STORE only (a region no other answer here reads)
+  const w = await s.connect("law_ingester");
+  await w.query("INSERT INTO town_regions (id, name, json, digest) VALUES ('bent-region', 'Bent', 'not json', 'x')");
+  await w.end();
+  const r = await fetch(offices.switched.base + "/regions");
+  assert.equal(r.status, 500, "the reader's own error is the office's 500, not an unanswered rejection");
+  assert.match((await r.json()).defect, /tripped reading the town index/);
+  assert.equal((await fetch(offices.switched.base + "/quests/wright")).status, 200, "and the office is still answering");
+});
