@@ -479,10 +479,11 @@ test("INVARIANT since-lingering: the cursor filters both arrays to strictly-newe
   await store.say("rei", "third");
   const inc = await store.hear("wright", { since: full.latest });
   assert.deepEqual(inc.voices.map((v) => v.said), ["third"], "hearing filtered to newer");
-  // MOVED by POS-265: a line the ear carried is not repeated in the record — the
-  // delta's record holds only what the ear missed, and says where the rest went.
-  assert.deepEqual(inc.conversation.record, [], "the heard line is not repeated in the record");
-  assert.match(inc.conversation.note, /the lines you heard are in `voices`/);
+  // MOVED back (2026-09-30, the Well House): POS-265 took a heard line OUT of the
+  // record, and a listener reading `record` alone went silently deaf. The record
+  // keeps every line since `since`; the heard one is marked, not removed.
+  assert.deepEqual(inc.conversation.record.map((v) => [v.said, v.heard]), [["third", true]], "the heard line stays in the record, marked");
+  assert.match(inc.conversation.note, /`record` is the whole room since your last call; a line marked heard: true is also in `voices`/);
   assert.equal(inc.conversation.voice_count, 3, "the room's count still rides");
   assert.ok(inc.latest > full.latest);
 
@@ -491,6 +492,26 @@ test("INVARIANT since-lingering: the cursor filters both arrays to strictly-newe
   assert.deepEqual(quiet.conversation.record, []);
   assert.match(quiet.conversation.note, /nothing new since your last call/);
   assert.equal(quiet.latest, inc.latest, "the cursor holds steady through silence");
+});
+
+test("a since-call's record keeps EVERY line: one the ear caught is marked heard, one it missed rides unmarked (the Well House, 2026-09-30)", async () => {
+  // a — b — c, 50 m apart: one conversation (b holds the chain), and c hears b
+  // but not a (100 m is past earshot). "A listening fault dressed as an empty
+  // room": the record used to drop b's line because the ear had it.
+  const { store, tick } = bench({ a: { x: 0, y: 0 }, b: { x: 50, y: 0 }, c: { x: 100, y: 0 } });
+  await store.say("b", "the room opens");
+  const first = await store.hear("c");
+  tick(16_000);
+  await store.say("b", "a line c can hear");
+  tick(16_000);
+  await store.say("a", "a line past c's earshot");
+  const inc = await store.hear("c", { since: first.latest });
+
+  assert.deepEqual(inc.voices.map((v) => v.said), ["a line c can hear"], "the ear carries only b");
+  assert.deepEqual(inc.conversation.record.map((v) => [v.said, v.heard ?? false]),
+    [["a line c can hear", true], ["a line past c's earshot", false]],
+    "the record is the whole room since `since`: the heard line stays, marked; the missed one rides unmarked");
+  assert.match(inc.conversation.note, /`record` is the whole room since your last call/);
 });
 
 // ── POS-265: the retry key and the delta ─────────────────────────────────────
