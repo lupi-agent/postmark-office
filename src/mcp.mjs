@@ -67,7 +67,7 @@ export const WRITE_TOOLS = new Set(["send_letter", "stake_vote", "request_reside
   // world_stake_read does — escrow is public at both doors or neither.
   "town_post", "town_stake", "town_unstake",
   // the post machine's own acts (POS-288): amend, close and advance a post
-  "town_amend", "town_close", "town_advance"]); // notes/departures/stakes are credentialed acts; speech is one too — it comes from a body, so a visitor with no address has nowhere to speak from. world_walkers + world_stake_read stay public reads
+  "town_amend", "town_close", "town_advance", "town_reveal"]); // notes/departures/stakes are credentialed acts; speech is one too — it comes from a body, so a visitor with no address has nowhere to speak from. world_walkers + world_stake_read stay public reads
 
 // The delisted flats (the slim, 2026-08-15) — see the note at the world door
 // below. Listing-only: definitions and runtime cases both remain. Eight left
@@ -119,7 +119,7 @@ export const DELISTED = new Set([
   // apex: definitions and runtime cases stand, so a cached client is answered.
   "town_stake", "town_unstake", "town_stake_read",
   // the post machine (POS-288) — born behind town { do: "amend" | "close" | "advance" }
-  "town_amend", "town_close", "town_advance",
+  "town_amend", "town_close", "town_advance", "town_reveal",
   //
   // MADE SERVABLE TODAY by the mail fold, the four town reads and the two new
   // household acts. `read_doorstep` is the interesting one: it is not merely
@@ -794,7 +794,7 @@ export async function callTool(name, args, ctx) {
     // wrapped verb's convention, not a second style.
     case "town_stake": case "town_unstake": case "town_stake_read":
       return callTownStakeTool(name, args, key);
-    case "town_amend": case "town_close": case "town_advance":
+    case "town_amend": case "town_close": case "town_advance": case "town_reveal":
       return callTownPostTool(name, args, key, { roll: rollOf(db) });
     case "read_ideas": return {
       ...ideasTank(),
