@@ -252,7 +252,11 @@ async function main(argv) {
   const { penMailPort } = await import("../../src/earpiece-mail.mjs");
   const { townLogEnabled } = await import("../../src/town-journal.mjs");
   const db = existsSync(dbPath) ? new DatabaseSync(dbPath) : null;
-  const odb = townLogEnabled() && existsSync(odbPath) ? (await import("../../src/oauth.mjs")).openOauthDb(odbPath) : null;
+  // A paper (POS-271): the store's town log when the office is switched, the
+  // file otherwise — the same switch as the office's own.
+  const { openPaper, paperworkStoreOn } = await import("../../src/paperwork.mjs");
+  const odb = townLogEnabled() && (paperworkStoreOn() || existsSync(odbPath))
+    ? await openPaper(odbPath, { schema: (await import("../../src/oauth.mjs")).oauthSchema }) : null;
   const townClone = process.env.TOWN_CLONE ?? join(ROOT, "town-clone");
   const sendMail = mailEnabled() ? penMailPort({ db, clone: existsSync(townClone) ? townClone : null, odb }) : null;
   try {

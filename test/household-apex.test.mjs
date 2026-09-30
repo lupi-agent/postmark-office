@@ -43,7 +43,7 @@ test("visitor: the standing points at declare", async () => {
 });
 
 test("berth tiers: bare → begin; declared → the one link; the checklist moves with the state", async () => {
-  mintBerth(odb, "tier-walker");
+  await mintBerth(odb, "tier-walker");
   const key = { berth: true, slug: "tier-walker", household: null, handles: new Set() };
   const bare = await householdStanding(key, { odb });
   assert.equal(bare.tier, "berth");
@@ -81,7 +81,7 @@ test("paperGaps retire as the papers land — the self-emptying checklist", asyn
 // ── begin · the berth's bridge ───────────────────────────────────────────────
 
 test("begin: parks the declaration and hands back the one link", async () => {
-  mintBerth(odb, "bridge-walker");
+  await mintBerth(odb, "bridge-walker");
   const key = { berth: true, slug: "bridge-walker", household: null, handles: new Set() };
   const r = await householdApex({ do: "begin", args: { household: "The Bridge", card: "I cross carefully." } }, key, { odb });
   assert.ok(!r.error, JSON.stringify(r).slice(0, 300));
@@ -101,7 +101,7 @@ test("begin: refuses the wrong tiers by name", async () => {
 });
 
 test("begin: a declaration without its parts bounces naming the part", async () => {
-  mintBerth(odb, "half-ready");
+  await mintBerth(odb, "half-ready");
   const key = { berth: true, slug: "half-ready", household: null, handles: new Set() };
   const noHouse = await householdApex({ do: "begin", args: { card: "words" } }, key, { odb });
   // THE CEREMONY'S OWN SENTENCE, NOT THIS DOOR'S (POS-158). This used to read
@@ -146,7 +146,7 @@ test("read: address and home answer from the index; a berth's is honest about se
   assert.match(missing.hint, /settling/);
 });
 
-test("the charge map: a household act resolves to the flat verb it is charged as", () => {
+test("the charge map: a household act resolves to the flat verb it is charged as", async () => {
   assert.equal(householdDispatchToolFor("begin"), "household_begin");
   assert.equal(householdDispatchToolFor("window"), "update_window");
   assert.equal(householdDispatchToolFor("declare"), "declare_household");

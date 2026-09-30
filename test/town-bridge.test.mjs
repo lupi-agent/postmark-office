@@ -138,13 +138,13 @@ function townClone({ handles = ["wright", "limen"] } = {}) {
 const key = { household: "keemin", handles: new Set(["wright"]), ghId: "42", ghLogin: "keeminlee" };
 
 /** The three classes, one row each, in the order a crossing would find them. */
-function seedThreeClasses(o) {
-  const join_ = appendTownJournal(o, {
+async function seedThreeClasses(o) {
+  const join_ = await appendTownJournal(o, {
     cls: "join", act: "declare-household", household: "newcomers", handle: "newcomer",
     ghId: "777", ghLogin: "newcomer-gh",
     payload: { household: "Newcomers", card: "A newcomer's card." },
   });
-  const update = appendTownJournal(o, {
+  const update = await appendTownJournal(o, {
     cls: "update", act: "home", household: "keemin", handle: "wright",
     ghId: "42", ghLogin: "keeminlee",
     payload: { args: { handle: "wright", body: "A home written by the drain, not the door." } },
@@ -164,9 +164,9 @@ function seedThreeClasses(o) {
 // fixture can ASK rather than re-spell — the same rule `enqueueLetter` already
 // states about the path ("two spellings of it would be two things that can
 // drift"). Pass an explicit date only to test a date, never to name today.
-function seedLetter(o, { from = "wright", to = "limen", title = "a fine hat", date = letterDate(), slug = "a-fine-hat" } = {}) {
+async function seedLetter(o, { from = "wright", to = "limen", title = "a fine hat", date = letterDate(), slug = "a-fine-hat" } = {}) {
   const id = `${from}-${date}-to-${to}-${slug}`;
-  return appendTownJournal(o, {
+  return await appendTownJournal(o, {
     cls: "letter", act: MAIL_ACT, household: "keemin", handle: from,
     ghId: "42", ghLogin: "keeminlee",
     payload: {
@@ -245,9 +245,9 @@ test("F1 · THE LIVE CONSUMER: one call settles a join, a paper act and a letter
   const o = liveShapeOdb();
   try {
     await flagOn(async () => {
-      seedThreeClasses(o);
-      seedLetter(o);
-      const head = pendingRows(o).at(-1).seq;
+      await seedThreeClasses(o);
+      await seedLetter(o);
+      const head = (await pendingRows(o)).at(-1).seq;
 
       const r = await run(o, { clone, date: "2026-08-24" });
 
@@ -275,8 +275,8 @@ test("F1 · THE LIVE CONSUMER: one call settles a join, a paper act and a letter
 
       // and the cursor moved to the head of what was drained
       assert.equal(r.head, head);
-      assert.equal(townDrainCursor(o), head);
-      assert.deepEqual(pendingRows(o), [], "nothing is left pending");
+      assert.equal((await townDrainCursor(o)), head);
+      assert.deepEqual((await pendingRows(o)), [], "nothing is left pending");
     });
   } finally { o.close(); dropOdbHomes(); rmSync(clone, { recursive: true, force: true, maxRetries: 5 }); }
 });
@@ -292,12 +292,12 @@ test("F1c · POS-224 a title-less founding the door accepted before the rule DRA
   const o = liveShapeOdb();
   try {
     await flagOn(async () => {
-      appendTownJournal(o, {
+      await appendTownJournal(o, {
         cls: "update", act: "home", household: "keemin", handle: "wright",
         ghId: "42", ghLogin: "keeminlee",
         payload: { args: { handle: "wright", body: "Founded before the door asked for a name." } },
       });
-      const head = pendingRows(o).at(-1).seq;
+      const head = (await pendingRows(o)).at(-1).seq;
       const r = await run(o, { clone, date: "2026-08-24" });
       assert.equal(r.bounced, 0, "the drain does not re-judge an act the door accepted");
       assert.equal(r.updates[0].bounced, undefined);
@@ -305,8 +305,8 @@ test("F1c · POS-224 a title-less founding the door accepted before the rule DRA
       const home = readFileSync(join(clone, "WHITE_PAGES", "wright", "HOME", "HOME.md"), "utf8");
       assert.equal(home, "---\nresident: wright\n---\n\nFounded before the door asked for a name.\n",
         "exactly as the door founded it then: the identity tie, no invented title");
-      assert.equal(townDrainCursor(o), head, "and the cursor advanced past it");
-      assert.deepEqual(pendingRows(o), []);
+      assert.equal((await townDrainCursor(o)), head, "and the cursor advanced past it");
+      assert.deepEqual((await pendingRows(o)), []);
     });
   } finally { o.close(); dropOdbHomes(); rmSync(clone, { recursive: true, force: true, maxRetries: 5 }); }
 });
@@ -317,7 +317,7 @@ test("F1b · THE DRAIN DOES NOT DELIVER — the invoker stops exactly where repl
   try {
     await flagOn(async () => {
       const before = ledgerOf(clone);
-      seedLetter(o);
+      await seedLetter(o);
       await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(outboxFiles(clone, "wright").length, 1, "the outbox: written");
@@ -338,8 +338,8 @@ test("F2 · FLAG-OFF: rows in the table, and the bridge writes nothing and names
   const o = liveShapeOdb();
   try {
     delete process.env.TOWN_SINGLE_LOG;
-    seedThreeClasses(o);
-    seedLetter(o);
+    await seedThreeClasses(o);
+    await seedLetter(o);
     const before = treeHash(clone);
 
     const lines = [];
@@ -350,7 +350,7 @@ test("F2 · FLAG-OFF: rows in the table, and the bridge writes nothing and names
     assert.match(r.skipped, /TOWN_SINGLE_LOG is off/,
       "a step that printed nothing would be indistinguishable from a step that silently failed to run");
     assert.equal(treeHash(clone), before, "not one byte of the record moved");
-    assert.equal(townDrainCursor(o), 0, "and the cursor did not move either — the rows are still there for the day the flag flips");
+    assert.equal((await townDrainCursor(o)), 0, "and the cursor did not move either — the rows are still there for the day the flag flips");
     assert.equal(lines.length, 1, "one honest line, whatever happened");
     assert.match(lines[0], /^\[town-drain\] skipped — TOWN_SINGLE_LOG is off/);
   } finally { o.close(); dropOdbHomes(); rmSync(clone, { recursive: true, force: true, maxRetries: 5 }); }
@@ -369,9 +369,9 @@ test("F3 · RE-RUN SAFE: a crash between the commit and the cursor costs nothing
   const o = liveShapeOdb();
   try {
     await flagOn(async () => {
-      seedThreeClasses(o);
-      seedLetter(o);
-      const head = pendingRows(o).at(-1).seq;
+      await seedThreeClasses(o);
+      await seedLetter(o);
+      const head = (await pendingRows(o)).at(-1).seq;
 
       const first = await run(o, { clone, date: "2026-08-24" });
       assert.equal(first.drained, 3);
@@ -381,7 +381,7 @@ test("F3 · RE-RUN SAFE: a crash between the commit and the cursor costs nothing
       // the cursor advance. Every row is pending again — which is exactly the
       // price the cursor-last ordering pays to never lose a household.
       o.prepare("INSERT OR REPLACE INTO meta VALUES (?, ?)").run(TOWN_DRAIN_CURSOR, "0");
-      assert.equal(pendingRows(o).length, 3, "the resume state: all three rows pending again");
+      assert.equal((await pendingRows(o)).length, 3, "the resume state: all three rows pending again");
 
       const second = await run(o, { clone, date: "2026-08-24" });
 
@@ -392,7 +392,7 @@ test("F3 · RE-RUN SAFE: a crash between the commit and the cursor costs nothing
       assert.equal(second.letters[0].already, true,
         "…and SAYS it skipped rather than reporting a drain that did not happen");
       assert.equal(second.commit, null, "the join wrote the same bytes, so penCommit had an empty diff and made no commit");
-      assert.equal(townDrainCursor(o), head, "and the cursor catches up");
+      assert.equal((await townDrainCursor(o)), head, "and the cursor catches up");
     });
   } finally { o.close(); dropOdbHomes(); rmSync(clone, { recursive: true, force: true, maxRetries: 5 }); }
 });
@@ -402,8 +402,8 @@ test("F3b · …and a third run over a drained log is simply nothing to do", asy
   const o = liveShapeOdb();
   try {
     await flagOn(async () => {
-      seedThreeClasses(o);
-      seedLetter(o);
+      await seedThreeClasses(o);
+      await seedLetter(o);
       await run(o, { clone, date: "2026-08-24" });
       const after = treeHash(clone);
       const again = await run(o, { clone, date: "2026-08-24" });
@@ -423,7 +423,7 @@ test("F4 · A CLASS THIS DRAIN CANNOT SETTLE STOPS THE WHOLE RUN", async () => {
   const o = liveShapeOdb();
   try {
     await flagOn(async () => {
-      seedThreeClasses(o);
+      await seedThreeClasses(o);
       ensureTownJournal(o);
       // Raw SQL ON PURPOSE: appendTownJournal already refuses a foreign class,
       // so a row can only reach this table past that guard — a hand-run
@@ -435,14 +435,14 @@ test("F4 · A CLASS THIS DRAIN CANNOT SETTLE STOPS THE WHOLE RUN", async () => {
       assert.equal(TOWN_CLASSES.has("mark"), false, "the premise: 'mark' is the world log's class, not this one");
 
       const before = treeHash(clone);
-      const pendingBefore = pendingRows(o).length;
+      const pendingBefore = (await pendingRows(o)).length;
       const r = await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(r.refused, "foreign-class");
       assert.equal(r.drained, 0);
       assert.equal(treeHash(clone), before, "NOTHING was written — not even the two rows it did understand");
-      assert.equal(townDrainCursor(o), 0, "and above all the cursor did not move");
-      assert.equal(pendingRows(o).length, pendingBefore, "every row is still here");
+      assert.equal((await townDrainCursor(o)), 0, "and above all the cursor did not move");
+      assert.equal((await pendingRows(o)).length, pendingBefore, "every row is still here");
       assert.match(r.skipped, /rows \d+:mark/, "the refusal names the row and the class, so an operator can go look");
 
       // Skipping the row instead would advance the cursor past something nothing
@@ -466,9 +466,9 @@ test("F4b · ONE BAD LETTER DOES NOT STOP THE BOAT — recorded, passed over, st
       // A letter to somebody the office has never heard of. The door judged this
       // letter when it wrote the row; between then and the boat the recipient
       // stopped being a resident, and enqueueLetter now throws 422 on replay.
-      seedLetter(o, { to: "nobody-here", slug: "into-the-void" });
-      seedLetter(o, { to: "limen", title: "a good letter", slug: "a-good-letter" });
-      const head = pendingRows(o).at(-1).seq;
+      await seedLetter(o, { to: "nobody-here", slug: "into-the-void" });
+      await seedLetter(o, { to: "limen", title: "a good letter", slug: "a-good-letter" });
+      const head = (await pendingRows(o)).at(-1).seq;
 
       const lines = [];
       const r = await run(o, { clone, date: "2026-08-24", log: (l) => lines.push(l) });
@@ -489,7 +489,7 @@ test("F4b · ONE BAD LETTER DOES NOT STOP THE BOAT — recorded, passed over, st
       // truncated: the world's drain does `DELETE FROM journal WHERE seq <= head`
       // and a row it passed over would be gone. Here the cursor is the only
       // thing that moves, so the bounced row is still sitting in the table.
-      assert.equal(townDrainCursor(o), head);
+      assert.equal((await townDrainCursor(o)), head);
       const still = o.prepare("SELECT COUNT(*) n FROM town_journal").get().n;
       assert.equal(still, 2, "both rows are still in town_journal — the drain truncates nothing");
 
@@ -509,13 +509,13 @@ test("F5 · UNLOCKED: the drain writes the town clone, so it refuses to run besi
   const o = liveShapeOdb();
   try {
     await flagOn(async () => {
-      seedThreeClasses(o);
+      await seedThreeClasses(o);
       const before = treeHash(clone);
       const r = await run(o, { clone, lockHeld: () => false });
 
       assert.equal(r.refused, "unlocked");
       assert.equal(treeHash(clone), before);
-      assert.equal(townDrainCursor(o), 0);
+      assert.equal((await townDrainCursor(o)), 0);
       assert.match(r.skipped, /must run under the ferry's flock/);
 
       // and `null` — the answer off linux, where there is no flock to consult —
@@ -559,11 +559,11 @@ test("F6 · THE LIVE LOG HAS NO `meta` UNTIL THE LOG MAKES ONE", async () => {
     const o = liveShapeOdb();
     try {
       await flagOn(async () => {
-        seedThreeClasses(o);
-        const head = pendingRows(o).at(-1).seq;
+        await seedThreeClasses(o);
+        const head = (await pendingRows(o)).at(-1).seq;
         const r = await run(o, { clone, date: "2026-08-24" });
         assert.equal(r.ran, true);
-        assert.equal(townDrainCursor(o), head,
+        assert.equal((await townDrainCursor(o)), head,
           "the cursor is written into a table the log itself ensures — a function that writes a cursor owns the table the cursor sits in");
       });
     } finally { o.close(); dropOdbHomes(); rmSync(clone, { recursive: true, force: true, maxRetries: 5 }); }
@@ -579,8 +579,8 @@ test("F7 · every run leaves exactly one line, and it says what happened", async
   const o = liveShapeOdb();
   try {
     await flagOn(async () => {
-      seedThreeClasses(o);
-      seedLetter(o);
+      await seedThreeClasses(o);
+      await seedLetter(o);
       const lines = [];
       const r = await run(o, { clone, date: "2026-08-24", log: (l) => lines.push(l) });
       assert.equal(lines.length, 1);
@@ -699,7 +699,7 @@ test("F11 · PARITY: the same fixture, both skins, deep-equal", async () => {
     // one log, one pending paper act, belonging to the key's own resident
     const odbPath = join(tmp, "oauth.db");
     const o = openOauthDb(odbPath);
-    appendTownJournal(o, {
+    await appendTownJournal(o, {
       cls: "update", act: "window", household: "keemin", handle: "wright",
       payload: { args: { handle: "wright", html: "<p>hung, not yet settled</p>" } },
     });
@@ -792,13 +792,13 @@ test("F13 · A LETTER AND A PAPER ACT WHOSE PUSH CANNOT LAND ARE HELD, and the n
     process.env.TOWN_PUSH = "1";
     await flagOn(async () => {
       const before = g("rev-parse", "HEAD");
-      const cursor0 = townDrainCursor(o);
-      appendTownJournal(o, {
+      const cursor0 = await townDrainCursor(o);
+      await appendTownJournal(o, {
         cls: "update", act: "home", household: "keemin", handle: "wright", ghId: "42", ghLogin: "keeminlee",
         payload: { args: { handle: "wright", body: "A home the town did not take the first time." } },
       });
-      seedLetter(o);
-      const head = pendingRows(o).at(-1).seq;
+      await seedLetter(o);
+      const head = (await pendingRows(o)).at(-1).seq;
 
       const lines = [];
       const r1 = await run(o, { clone, date: "2026-09-28", log: (l) => lines.push(l) });
@@ -807,7 +807,7 @@ test("F13 · A LETTER AND A PAPER ACT WHOSE PUSH CANNOT LAND ARE HELD, and the n
       assert.equal(r1.bounced, 0, "…and neither is called a bounce");
       assert.match(r1.letters[0].held, /the town did not take this write/);
       assert.match(r1.updates[0].held, /the town did not take this write/);
-      assert.equal(townDrainCursor(o), cursor0, "THE CURSOR STAYS below the held rows");
+      assert.equal((await townDrainCursor(o)), cursor0, "THE CURSOR STAYS below the held rows");
       assert.equal(g("rev-parse", "HEAD"), before, "no commit stands for a push that did not land");
       assert.equal(g("status", "--porcelain", "--untracked-files=all"), "", "the clone is clean");
       assert.deepEqual(outboxFiles(clone, "wright"), [], "no letter file stands for a letter the town did not take");
@@ -818,7 +818,7 @@ test("F13 · A LETTER AND A PAPER ACT WHOSE PUSH CANNOT LAND ARE HELD, and the n
       const r2 = await run(o, { clone, date: "2026-09-28" });
       assert.equal(r2.held ?? 0, 0);
       assert.equal(r2.bounced, 0);
-      assert.equal(townDrainCursor(o), head, "the cursor moves once both have landed");
+      assert.equal((await townDrainCursor(o)), head, "the cursor moves once both have landed");
       assert.equal(outboxFiles(clone, "wright").length, 1, "the letter is delivered");
       const origin = (...a) => execFileSync("git", ["-C", bare, ...a], { encoding: "utf8" }).trim();
       const file = outboxRelPath("wright", letterDate(), "limen", "a-fine-hat");

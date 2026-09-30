@@ -78,7 +78,7 @@ const withEnv = async (over, fn) => {
 test("GREEN, the real pipe: a drained join appends a registry line the town's own verifier seals green", { skip: SKIP }, async () => {
   const { dir, keyFile } = sealedTown();
   const db = odb();
-  appendTownJournal(db, joinRow());
+  await appendTownJournal(db, joinRow());
   await withEnv({ STAMP_KEY: keyFile, STAMP_ENGINE_DIR: join(TOWN, "tools") }, () => withRecordFrom(dir, async () => {
     const plan = await planTownDrain(db, dir, { date: "2026-08-29" });
     const touched = await writeTownDrain(dir, plan, { date: "2026-08-29" });
@@ -94,7 +94,7 @@ test("GREEN, the real pipe: a drained join appends a registry line the town's ow
 test("CAN-FAIL: a mangled sig on the drain's line turns the town's verifier red — the oracle sees this line", { skip: SKIP }, async () => {
   const { dir, keyFile } = sealedTown();
   const db = odb();
-  appendTownJournal(db, joinRow());
+  await appendTownJournal(db, joinRow());
   await withEnv({ STAMP_KEY: keyFile, STAMP_ENGINE_DIR: join(TOWN, "tools") }, () => withRecordFrom(dir, async () => {
     await writeTownDrain(dir, await planTownDrain(db, dir, { date: "2026-08-29" }), { date: "2026-08-29" });
   }));
@@ -113,12 +113,12 @@ test("CAN-FAIL: a mangled sig on the drain's line turns the town's verifier red 
 test("REFUSE, never degrade: with the pen key absent the crossing writes NOTHING and every row stays queued", { skip: SKIP }, async () => {
   const { dir } = sealedTown();
   const db = odb();
-  appendTownJournal(db, joinRow());
+  await appendTownJournal(db, joinRow());
   const before = readFileSync(join(dir, "WHITE_PAGES/stamp-ledger.md"), "utf8");
   const report = await withEnv({ TOWN_SINGLE_LOG: "1", STAMP_KEY: join(dir, "no-such-key.pem"), STAMP_ENGINE_DIR: join(TOWN, "tools") }, () =>
     withRecordFrom(dir, () => runTownDrain(db, { db, clone: dir, lockHeld: () => true, log: () => {} })));
   assert.equal(report.refused, "ledger-pen-not-ready", "the crossing refuses by name");
   assert.equal(readFileSync(join(dir, "WHITE_PAGES/stamp-ledger.md"), "utf8"), before, "the ledger is byte-identical");
-  assert.equal(townDrainCursor(db), 0, "the cursor did not move — every row is still here");
+  assert.equal((await townDrainCursor(db)), 0, "the cursor did not move — every row is still here");
   rmSync(dir, { recursive: true, force: true });
 });

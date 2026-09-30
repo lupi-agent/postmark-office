@@ -66,6 +66,9 @@ export const LANDED = {
   "029_letter_opens.sql":          { probe: `${rel("letter_opens")} AND ${col("letter_opens", "how")}` },
   // 030 (POS-292): the table, and the counting function WITH its fold of small cells.
   "030_arrival_heard.sql":         { probe: `${rel("arrival_heard")} AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'arrival_heard_weekly' AND prosrc LIKE '%fewer-than-3%')` },
+  // 031 and 032 (POS-271): oauth.db and roles.db, whole.
+  "031_office_paperwork.sql":      { probe: ["oauth_clients", "oauth_pending", "oauth_codes", "oauth_tokens", "oauth_berths", "oauth_key_claims", "office_roles", "office_role_audit"].map(rel).join(" AND ") },
+  "032_office_ledgers.sql":        { probe: ["office_media", "office_town_journal", "office_meta"].map(rel).join(" AND ") },
   // 033 (POS-268): the first and last of office.db's twins, and the snapshot ledger.
   "033_town_index.sql":            { probe: `${rel("town_meta")} AND ${rel("town_funding_invalid")} AND ${col("town_index_snapshots", "digests")}` },
   // 037/038 (POS-270): the world graph's snapshot per settlement, and its walk ledger.

@@ -49,6 +49,7 @@ import { doorstepBundle } from "./doorstep-bundle.mjs"; // the doorstep, finishe
 import { THREE_STRINGS } from "./mail-thread.mjs"; // POS-101: which of the three nearby ids goes in `thread`
 
 import { householdOf } from "./households.mjs";
+import { freshFor } from "./paper-fresh.mjs"; // POS-271: the pending paper rows, read before a composed read
 
 // Tools that WRITE — gated on a signed-in door. Called without a credential
 // they challenge for auth so MCP clients start the GitHub sign-in dance.
@@ -601,7 +602,7 @@ export async function callTool(name, args, ctx) {
     case "read_town": return townSummary(db, meta);
     case "list_residents": return residentPage(db, args ?? {});
     case "read_resident": {
-      const r = resident(db, args.handle, { odb, clone, asOf });
+      const r = resident(db, args.handle, await freshFor(args.handle, { odb, clone, asOf }));
       if (!r) return notFound(`no resident "${args.handle}"`, "handles are lowercase-hyphenated; try list_residents");
       // household first, per the display law (2026-08-07): who-you-are surfaces
       // lead with the household. Garnish-shaped — a missing registry never 500s a read.
@@ -682,7 +683,7 @@ export async function callTool(name, args, ctx) {
     // not HTTP — which is exactly why the three refusals differ in their SENTENCE
     // and not only in their number. Through this door, prose is the whole signal.
     case "read_metrics": {
-      const gated = roleGate(rdb, key, ROLE_SUBSCRIBER);
+      const gated = await roleGate(rdb, key, ROLE_SUBSCRIBER);
       if (gated) return { error: "bounce", defect: gated.defect, hint: gated.hint };
       return metricsMail(db, { days: args?.days });
     }
@@ -694,13 +695,14 @@ export async function callTool(name, args, ctx) {
     });
     case "list_regions": return townIndexReads() ? fromStore((c) => regionListFromStore(c, args ?? {})) : regionList(db, args ?? {});
     case "read_home": {
+      const fresh = await freshFor(args.handle, { odb, clone, asOf });
       if (townIndexReads()) {
-        const r = await storeAnswer((c) => homeFromStore(c, args.handle, { odb, clone }));
+        const r = await storeAnswer((c) => homeFromStore(c, args.handle, fresh));
         if (r.refused) return r.refused;
         if (!r.out) return notFound(`no home for "${args.handle}"`, "the resident may have no HOME/ yet; try list_residents");
         return { ...r.out, world: await worldBlockForHandle(args.handle, key) };
       }
-      const h = home(db, args.handle, { odb, clone, asOf });
+      const h = home(db, args.handle, fresh);
       if (!h) return notFound(`no home for "${args.handle}"`, "the resident may have no HOME/ yet; try list_residents");
       return { ...h, world: await worldBlockForHandle(args.handle, key) };
     }
@@ -862,7 +864,7 @@ export async function callTool(name, args, ctx) {
         // Passing `odb` is now the whole contribution: the door writes the row
         // beside its own pen commit, and the `logged` block below still rides
         // the answer exactly as it did — same shape, same field, one owner.
-        return verb(args, key, db, clone, odb);
+        return await verb(args, key, db, clone, odb);
       }
       catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
     }

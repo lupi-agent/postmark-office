@@ -29,6 +29,14 @@
 //
 // The flag is TOWN_SINGLE_LOG, and it is deliberately NOT WORLD_SINGLE_LOG: two
 // logs on two cadences, and one of them being live must never imply the other.
+//
+// WHERE IT LIVES (POS-271). In the office's paperwork: oauth.db by default, the
+// store's office_town_journal + office_meta (032) once the office is switched
+// (OFFICE_PAPERWORK_STORE=1). Every function here takes a paper (paperwork.mjs)
+// or a node:sqlite handle as `db`, and every one that reads or writes a row is
+// async. The pure ones (rowSpendingNonce, rowIsSettleable) are not.
+
+import { asPaper } from "./paperwork.mjs";
 
 // The classes THIS log owns — a closed set, exported because the world log's
 // tripwire reads it to know what to refuse. One source: the town grows a class
@@ -91,8 +99,10 @@ export const TOWN_JOURNAL_SCHEMA = `
   CREATE INDEX IF NOT EXISTS town_journal_household ON town_journal (household, seq);
 `;
 
+// The FILE's tables. A paper runs this on its file only (paperwork.mjs § exec);
+// the store's are 032's.
 export function ensureTownJournal(db) {
-  db.exec(TOWN_JOURNAL_SCHEMA);
+  asPaper(db).exec(TOWN_JOURNAL_SCHEMA);
 }
 
 /**
@@ -103,7 +113,7 @@ export function ensureTownJournal(db) {
  * is a bug, and a bug that bounces at write time costs a stack trace while one
  * that is eaten at truncate time costs somebody their household.
  */
-export function appendTownJournal(db, entry = {}) {
+export async function appendTownJournal(db, entry = {}) {
   const {
     cls = "join", act, household, handle = null,
     ghId = null, ghLogin = null, cosignedGhId = null,
@@ -117,15 +127,18 @@ export function appendTownJournal(db, entry = {}) {
   if (!household) throw new Error("a town journal line needs a household — the town's grain is the household");
 
   ensureTownJournal(db);
-  const info = db.prepare(
+  // `append`, not `run`: the seq is the store's (or the file's) to assign, and
+  // the mirror writes the file's copy of the row under the SAME seq, so the
+  // drain cursor names one row in both.
+  return asPaper(db).append(
     `INSERT INTO town_journal (class, act, household, handle, gh_id, gh_login, cosigned_gh_id, payload, written_at, channel)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(cls, String(act), String(household), handle == null ? null : String(handle),
-    ghId == null ? null : String(ghId), ghLogin == null ? null : String(ghLogin),
-    cosignedGhId == null ? null : String(cosignedGhId),
-    payload == null ? null : JSON.stringify(payload), writtenAt,
-    channel == null ? null : String(channel));
-  return Number(info.lastInsertRowid);
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [cls, String(act), String(household), handle == null ? null : String(handle),
+      ghId == null ? null : String(ghId), ghLogin == null ? null : String(ghLogin),
+      cosignedGhId == null ? null : String(cosignedGhId),
+      payload == null ? null : JSON.stringify(payload), writtenAt,
+      channel == null ? null : String(channel)],
+    "seq");
 }
 
 const hydrate = (r) => ({
@@ -135,25 +148,25 @@ const hydrate = (r) => ({
   writtenAt: r.written_at, channel: r.channel,
 });
 
-export function readTownJournal(db, { sinceSeq = 0, limit = null } = {}) {
+export async function readTownJournal(db, { sinceSeq = 0, limit = null } = {}) {
   ensureTownJournal(db);
   const sql = `SELECT * FROM town_journal WHERE seq > ? ORDER BY seq`
     + (limit != null && Number.isFinite(Number(limit)) ? ` LIMIT ${Math.max(1, Math.floor(Number(limit)))}` : "");
-  return db.prepare(sql).all(Number(sinceSeq) || 0).map(hydrate);
+  return (await asPaper(db).all(sql, Number(sinceSeq) || 0)).map(hydrate);
 }
 
-export const townJournalHead = (db) => {
+export const townJournalHead = async (db) => {
   ensureTownJournal(db);
-  return Number(db.prepare("SELECT MAX(seq) s FROM town_journal").get()?.s ?? 0);
+  return Number((await asPaper(db).get("SELECT MAX(seq) s FROM town_journal"))?.s ?? 0);
 };
 
-export const townDrainCursor = (db) => {
-  try { return Number(db.prepare("SELECT value FROM meta WHERE key = ?").get(TOWN_DRAIN_CURSOR)?.value ?? 0); }
+export const townDrainCursor = async (db) => {
+  try { return Number((await asPaper(db).get("SELECT value FROM meta WHERE key = ?", TOWN_DRAIN_CURSOR))?.value ?? 0); }
   catch { return 0; }
 };
 
 /** Rows the ferry has not yet drained into the record. */
-export const pendingRows = (db) => readTownJournal(db, { sinceSeq: townDrainCursor(db) });
+export const pendingRows = async (db) => readTownJournal(db, { sinceSeq: await townDrainCursor(db) });
 
 // ── THE RETRY KEY'S TWO SHARED FACTS (office#45; POS-70 §5, ruled 2026-09-24) ─
 //
@@ -184,9 +197,9 @@ export const rowSpendingNonce = (rows, nonce) => (!nonce ? null
  * declare for the same handle would conform, and the two would collide twelve
  * hours later inside the drain, where there is no door left to bounce at.
  */
-export function pendingHandles(db) {
+export async function pendingHandles(db) {
   const out = new Map();
-  for (const row of pendingRows(db)) {
+  for (const row of await pendingRows(db)) {
     if (!row.handle) continue;
     if (!out.has(row.handle)) out.set(row.handle, row);
   }

@@ -160,7 +160,9 @@ export async function stampsDetail(q, handle) {
  * `asOf` is the STORE's head, never a caller's. The ladder asks "has the pen
  * written this since the index this row came from", and the row came from the
  * store; a caller passing office.db's as-of would date a store row by the other
- * index's clock. (`fresh.asOf` is ignored here for that reason.)
+ * index's clock. (`fresh.asOf` is ignored here for that reason.) `fresh` is
+ * paper-fresh's `freshFor` context, pending rows already read, as the door
+ * hands it to the office.db reader.
  */
 export async function home(q, handle, fresh = null) {
   const row = (await q.query("SELECT json FROM town_homes WHERE handle = $1", [handle])).rows[0];

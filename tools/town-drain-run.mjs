@@ -36,7 +36,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
-import { openOauthDb } from "../src/oauth.mjs";
+import { oauthSchema } from "../src/oauth.mjs";
+import { openPaper } from "../src/paperwork.mjs";
 import { runTownDrain } from "../src/town-bridge.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -59,7 +60,13 @@ if (DATE && !/^\d{4}-\d{2}-\d{2}$/.test(DATE)) {
 // safeguard. Missing is fine and common on a fresh box: the doors that need it
 // bounce in their own vocabulary.
 const db = existsSync(DB_PATH) ? new DatabaseSync(DB_PATH) : null;
-const odb = openOauthDb(ODB_PATH);
+// THE TOWN LOG'S PAPER (POS-271), opened the way the office opens its own:
+// oauth.db by default, the store's office_town_journal + office_meta with
+// OFFICE_PAPERWORK_STORE=1. The drain must read the log the office writes and
+// advance the cursor the office reads, so this unit takes the SAME switch as
+// the office's own — a drain on the file behind a switched office would settle
+// the mirror and leave the store's cursor where it was.
+const odb = await openPaper(ODB_PATH, { schema: oauthSchema });
 
 // ── AWAITED, AND THE EXIT MOVED OUT OF THE `try` (POS-158) ─────────────────
 //
