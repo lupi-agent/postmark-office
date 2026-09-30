@@ -96,8 +96,12 @@ beforeEach(() => {
   record = { movements: [], attachments: [], say_acts: [], centres: { [GROUND]: { x: 0, y: 0 } } };
   writeRecord();
   fixtureWorldDb(worldDbPath, { sha: SHA, departures: DEPARTURES });
-  // a git tree with no STATE/ at all, so each test's commits start clean
+  // a git tree with no STATE/ at all, so each test's commits start clean. The
+  // removal is COMMITTED: left staged, a save whose bytes matched the previous
+  // test's committed nothing, and "the first save lands a commit" held only
+  // because the test before it happened to write different bytes.
   try { execFileSync("git", ["-C", repo, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "STATE"], { encoding: "utf8" }); } catch { /* nothing tracked */ }
+  try { execFileSync("git", ["-C", repo, "commit", "-q", "-m", "test: STATE/ cleared"], { encoding: "utf8", stdio: "ignore" }); } catch { /* nothing to clear */ }
 });
 
 // ── 1. the save, and the replay ──────────────────────────────────────────────
