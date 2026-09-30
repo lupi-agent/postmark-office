@@ -1209,9 +1209,20 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
     // read_stamps stays the PUBLIC roster; these are your household's own books
     // and the town's board. The split is public-record vs. your-books.
     if (what === "stamps" || what === "quests" || what === "fund") {
-      const { estateRead, questsRead, fundRead } = await import("./household-stamps.mjs");
+      const { estateRead, questsRead, fundRead, fundReadOf } = await import("./household-stamps.mjs");
+      // THE SWITCH (POS-268): with TOWN_INDEX_READS=store the three reads answer
+      // from the store's town index; a store that cannot be reached is a 503,
+      // never office.db's answer.
+      const { townIndexReads, storeIndexPooled, TownIndexUnreachable } = await import("./town-index-store.mjs");
+      // Each index read takes its own short transaction (storeIndexPooled's
+      // header says why a composed read must not hold one across the rest).
+      const fromIndex = async (read) => {
+        try { return await read(storeIndexPooled(clone)); }
+        catch (e) { if (e instanceof TownIndexUnreachable) return bounce(503, e.refused.defect, e.refused.hint); throw e; }
+      };
+      const switched = townIndexReads();
       // meta rides the ctx every door is called with (mcp.mjs § dispatch)
-      if (what === "stamps") return estateRead(key, { db, meta, clone });
+      if (what === "stamps") return switched ? fromIndex((ix) => estateRead(key, { db, meta, clone, ix })) : estateRead(key, { db, meta, clone });
       // ── ASK, DON'T GUESS — THE ONE READ THAT WAS STILL GUESSING ───────────
       //
       // `handle` was computed thirty lines up and every read below this point
@@ -1231,8 +1242,9 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
         if (!handle) return bounce(422, "whose quest board? this key holds several residents",
           `name one with handle: — this key acts for ${held.join(", ")}. The pots on the board are the town's, not any one resident's: town { read: "quests" } and household { read: "fund" } answer those with no resident named`,
           { your_residents: held });
-        return questsRead(handle, { db, meta, clone });
+        return switched ? fromIndex((ix) => questsRead(handle, { db, meta, clone, ix })) : questsRead(handle, { db, meta, clone });
       }
+      if (switched) return fromIndex(async (ix) => { let list = []; try { list = (await ix.potBoard())?.list ?? []; } catch (e) { if (e instanceof TownIndexUnreachable) throw e; list = []; } return fundReadOf(list); });
       return fundRead(key, { db });
     }
     // ── media (2026-08-23) ───────────────────────────────────────────────────

@@ -2029,11 +2029,33 @@ export function stampsDetailOf(row, funding) {
 const POT_ROWS = 20;
 
 export function potBoard(db, extraInvalid = []) {
-  const pots = db.prepare("SELECT id, json FROM pots ORDER BY id").all().map((r) => {
+  return potBoardOf(potBoardRows(db), extraInvalid);
+}
+
+/**
+ * Every row potBoard reads, and nothing it does not: each pot's own row with its
+ * roll, receipts, escrow and stakers, and the invalid funding rows. The store's
+ * twin (town-index-store.mjs § potBoardRows) answers the same shape; potBoardOf
+ * turns either into the board.
+ */
+export function potBoardRows(db) {
+  return {
+    pots: db.prepare("SELECT id, json FROM pots ORDER BY id").all().map((r) => ({
+      id: r.id, json: r.json,
+      roll: db.prepare("SELECT patron, usd, date, receipt, holo FROM funding_roll WHERE pot = ? ORDER BY date, seq").all(r.id),
+      receipts: db.prepare("SELECT rail, usd, date, receipt, payer FROM pot_receipts WHERE pot = ? ORDER BY date, seq").all(r.id),
+      staked: db.prepare("SELECT staked FROM pot_escrow WHERE pot = ?").get(r.id)?.staked ?? 0,
+      stakers: db.prepare("SELECT handle, staked FROM pot_stakers WHERE pot = ? ORDER BY staked DESC, handle").all(r.id),
+    })),
+    invalid: db.prepare("SELECT row_kind, line, reason FROM funding_invalid ORDER BY seq").all(),
+  };
+}
+
+/** The pot board from its rows (potBoardRows, or the store's). Shared with the store's twin. */
+export function potBoardOf(rows, extraInvalid = []) {
+  const pots = rows.pots.map((r) => {
     const d = JSON.parse(r.json);
-    const roll = db.prepare("SELECT patron, usd, date, receipt, holo FROM funding_roll WHERE pot = ? ORDER BY date, seq").all(r.id);
-    const receipts = db.prepare("SELECT rail, usd, date, receipt, payer FROM pot_receipts WHERE pot = ? ORDER BY date, seq").all(r.id);
-    const staked = db.prepare("SELECT staked FROM pot_escrow WHERE pot = ?").get(r.id)?.staked ?? 0;
+    const { roll, receipts, staked } = r;
     // WHO holds that escrow. Sorted by size and then by handle, so the order is
     // total (two stakers at the same size would otherwise ride on SQLite's
     // rowid order, which is a hydrate detail no reader should be able to see).
@@ -2045,8 +2067,7 @@ export function potBoard(db, extraInvalid = []) {
     // and compares differently, so a caller's deepStrictEqual against a plain
     // literal fails on two lists that are identical in every value. A door's
     // answer should not carry that surprise across the wire.
-    const stakers = db.prepare("SELECT handle, staked FROM pot_stakers WHERE pot = ? ORDER BY staked DESC, handle")
-      .all(r.id).map((s) => ({ handle: s.handle, staked: s.staked }));
+    const stakers = r.stakers.map((s) => ({ handle: s.handle, staked: s.staked }));
     return {
       id: r.id,
       title: d.title ?? r.id,
@@ -2129,7 +2150,7 @@ export function potBoard(db, extraInvalid = []) {
       escrow: { staked, stakers, teach: TEACH.escrow },
     };
   });
-  const invalid = db.prepare("SELECT row_kind, line, reason FROM funding_invalid ORDER BY seq").all()
+  const invalid = rows.invalid.map((x) => ({ row_kind: x.row_kind, line: x.line, reason: x.reason }))
     .concat(extraInvalid.map((x) => ({ row_kind: x.row_kind, line: x.line, reason: x.reason })));
   return { teach: TEACH.pots_section, list: pots, ...(invalid.length ? { invalid_rows: { teach: TEACH.invalid, list: invalid } } : {}) };
 }
@@ -2486,6 +2507,15 @@ export function standingFor(db, handle) {
 const RESIDENT_ROW_FIELDS = ["progress", "complete", "counted", "household"];
 
 export function townQuestBoard({ db, registry, boardForHandle, today }) {
+  return townQuestBoardOf({ registry, boardForHandle, today }, (extra) => potBoard(db, extra), () => db.prepare("SELECT id FROM pots").all().map((r) => r.id));
+}
+
+/**
+ * The town's board, its pots read through `pots(extraInvalid)` and `potIds()`
+ * (either may throw: an index older than the funding seam). Shared with the
+ * store's twin, which hands in the rows it already read.
+ */
+export function townQuestBoardOf({ registry, boardForHandle, today }, pots, potIds) {
   const bountyIds = (registry.quests ?? []).filter((q) => q.subtype === "bounty").map((q) => q.id);
   // Same lift as the resident board below: a pot's registry row is a BOARD
   // POSTING, not a quest card, and it belongs in `pots`.
@@ -2498,7 +2528,7 @@ export function townQuestBoard({ db, registry, boardForHandle, today }) {
       + "without anyone's progress on them. For a resident's progress name one: args: { handle }. "
       + "Your own household's board, with your progress, is household { read: \"quests\" }.",
   };
-  try { board.pots = potBoard(db, postingsWithoutPots(bountyIds, db.prepare("SELECT id FROM pots").all().map((r) => r.id))); }
+  try { board.pots = pots(postingsWithoutPots(bountyIds, potIds())); }
   catch { board.pots_note = "this index predates the funding seam — pots are not indexed here yet; they appear at the next rehydrate"; }
   return board;
 }
@@ -2521,14 +2551,53 @@ export function townQuestBoard({ db, registry, boardForHandle, today }) {
 //
 // Neither given (the bare `/quests/{handle}` door, which is public and which the
 // resident page reads), the board reads the world itself.
-export async function questBoardFor(db, meta, handle, clone, { worldSited: decided = undefined, worldBlock = null } = {}) {  const registry = JSON.parse(meta.quest_registry ?? '{"quests":[]}');
+export async function questBoardFor(db, meta, handle, clone, opts = {}) {
+  return questBoardWith(officeQuestSource(db), meta, handle, clone, opts);
+}
+
+/**
+ * The reads household-stamps makes, from office.db — the same methods the
+ * store's `storeIndex` answers, so a door picks its index once and the
+ * readers never branch.
+ */
+export const officeIndex = (db, meta, clone) => ({
+  stampsDetail: async (handle) => stampsDetail(db, handle),
+  questBoard: async (handle, opts) => questBoardFor(db, meta, handle, clone, opts),
+  potBoard: async (extraInvalid) => potBoard(db, extraInvalid),
+});
+
+/** questBoardWith's reads, from office.db. */
+export const officeQuestSource = (db) => ({
+  progressRow: (handle) => db.prepare("SELECT * FROM quest_progress WHERE handle = ?").get(handle),
+  standing: (handle) => standingFor(db, handle),
+  pots: (extraInvalid) => potBoard(db, extraInvalid),
+  potIds: () => db.prepare("SELECT id FROM pots").all().map((r) => r.id),
+});
+
+/**
+ * A resident's quest board (or the town's, with no handle) from its index
+ * reads: `src` answers progressRow, standing, pots and potIds, sync or async.
+ * Shared with the store's twin (town-index-store.mjs § questBoardFor).
+ */
+export async function questBoardWith(src, meta, handle, clone, { worldSited: decided = undefined, worldBlock = null } = {}) {
+  const registry = JSON.parse(meta.quest_registry ?? '{"quests":[]}');
   const { boardForHandle, townDay } = await questTools(clone);
   const today = townDay();
   // Before any query that keys on the handle — the trip in #2760 was one line
   // below this, and a blank string is the same absence as a missing argument.
-  if (handle == null || String(handle).trim() === "") return townQuestBoard({ db, registry, boardForHandle, today });
+  if (handle == null || String(handle).trim() === "") {
+    // townQuestBoardOf reads the pots through two thunks, synchronously, and the
+    // source may answer asynchronously: so both are read first and handed in, a
+    // failure kept and re-thrown where townQuestBoardOf's own catch expects it.
+    const settle = async (fn) => { try { return { v: await fn() }; } catch (e) { return { e }; } };
+    const take = (r) => { if (r.e) throw r.e; return r.v; };
+    const bountyIds = (registry.quests ?? []).filter((q) => q.subtype === "bounty").map((q) => q.id);
+    const ids = await settle(() => src.potIds());
+    const pots = ids.e ? ids : await settle(() => src.pots(postingsWithoutPots(bountyIds, ids.v)));
+    return townQuestBoardOf({ registry, boardForHandle, today }, () => take(pots), () => take(ids));
+  }
   const fresh = meta.quest_day === today; // stale hydrate across a midnight → zero
-  const row = fresh ? db.prepare("SELECT * FROM quest_progress WHERE handle = ?").get(handle) : null;
+  const row = fresh ? await src.progressRow(handle) : null;
   // a column written before sent_to/heard_from existed, or a malformed value,
   // must degrade to [] — the card then simply shows no names rather than 500ing
   // on a display affordance.
@@ -2557,7 +2626,7 @@ export async function questBoardFor(db, meta, handle, clone, { worldSited: decid
   // the 08-15 gate reaches down here intact — see the note on the signature.
   const worldSited = decided !== undefined ? decided
     : await (await import("./household-apex.mjs")).worldSitedFor(handle, worldBlock ? { worldBlock } : {});
-  const standing = standingFor(db, handle);
+  const standing = await src.standing(handle);
   const board = boardForHandle(registry, prog, handle, today, { complete: idea ? { "first-idea": idea.complete } : null });
   // The funding pots ride the same board (funding seam, 2026-08-21) — pots are
   // bounty files ON the quest board, so the board read carries them rather than
@@ -2647,7 +2716,7 @@ export async function questBoardFor(db, meta, handle, clone, { worldSited: decid
       const row = patch ? { ...q, ...patch } : q;
       return { ...row, measured: typeof row.progress === "number" };
     });
-  try { board.pots = potBoard(db, postingsWithoutPots(bountyIds, db.prepare("SELECT id FROM pots").all().map((r) => r.id))); }
+  try { board.pots = await src.pots(postingsWithoutPots(bountyIds, await src.potIds())); }
   catch { board.pots_note = "this index predates the funding seam — pots are not indexed here yet; they appear at the next rehydrate"; }
   // WHICH MIDNIGHT THE DAILY BARS RESET ON. `today` is already the variable this
   // whole board was computed against, two screens up; it was simply never said
