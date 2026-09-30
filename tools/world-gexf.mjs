@@ -38,8 +38,13 @@ const KIND_COLOR = {
   entity: "#FA5252", emission: "#868E96", unknown: "#495057",
 };
 
-export function exportGexf({ dbPath = DEFAULT_DB, out = join(OFFICE_ROOT, "world-graph.gexf"), kinds = null, dropUnresolved = false } = {}) {
-  const { graph, meta, counts } = loadWorldGraph(dbPath);
+export function exportGexf({ dbPath = DEFAULT_DB, loaded = null, out = join(OFFICE_ROOT, "world-graph.gexf"), kinds = null, dropUnresolved = false } = {}) {
+  // `loaded`: a graph already built (the hydrator's rows, or the store's
+  // snapshot). It is COPIED, because the filters below drop nodes and a caller's
+  // graph must come back as it was handed over.
+  const src = loaded ?? loadWorldGraph(dbPath);
+  const { meta, counts } = src;
+  const graph = loaded ? src.graph.copy() : src.graph;
 
   // Filtering drops nodes, and an edge whose endpoint went with them has to go
   // too — Graphology's dropNode does that for us, which is exactly the wanted
