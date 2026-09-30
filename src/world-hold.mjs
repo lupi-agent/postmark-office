@@ -62,7 +62,7 @@ import { worldFreezeBounce } from "./freeze.mjs";
 import { readAttachments, declareAttachment } from "./dynamic-entities.mjs";
 import { openDynamic, openDynamicReadOnly } from "./dynamic-store.mjs";
 import { holdEdgeOnActs, reloadHoldings } from "./holdings-snapshot.mjs";
-import { announce } from "./read-workers.mjs";
+import { announce, IN_READ_WORKER } from "./read-workers.mjs";
 import { classDials } from "./world-classes.mjs";
 
 /** The thing class's own params, read from the record every time (never cached here). */
@@ -1358,6 +1358,13 @@ export function holdingEntry(did, { crossing, at, witnesses, cls, household }) {
 // inside it. The sqlite arm keeps its transaction for its own edge's sake. `deps` exist so the ordering can be proven with no world db and no
 // Postgres; the door injects the real ones.
 export async function declareHoldingFlipped({ db, thing, to = null, actor, dials = {}, key = null, deps = {}, reached = null, stood = null }) {
+  // THE QUEUE IS ONE THREAD'S. `holdingQueue` serializes the holder check
+  // against the commit only among the holds THIS thread runs; a hold written
+  // from a read worker would run beside the main thread's with no lock between
+  // them. The router never hands a POST to a worker (read-workers.mjs §
+  // workerTakes / mcpWorkerTakes), and this refusal is the second wall, so a
+  // future routing change fails loudly here rather than racing quietly.
+  if (IN_READ_WORKER) throw new Error("a hold is written on the main thread only — the holding queue serializes one thread, and this is a read worker");
   const journal = await import("./world-journal.mjs");
   const appendActFlipped = deps.appendActFlipped ?? journal.appendActFlipped;
   const CLASS_HOLDING = journal.CLASS_HOLDING;
