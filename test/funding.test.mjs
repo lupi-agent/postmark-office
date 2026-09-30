@@ -136,6 +136,16 @@ const FORGED = `- 2026-08-21 · pot-receipt · pot:keeping-ec2 · rail: venmo ·
 const fold = () => foldFunding(parseLedgerText(LEDGER + GUESSED + RETIRED + LOOSE + FORGED));
 const reasonFor = (f, needle) => f.invalid.find((i) => i.line.includes(needle))?.reason ?? "";
 
+test("POS-183 part 2 · a `rail: paypal` receipt folds as a receipt, beside the card's and the chain's", () => {
+  // The town's grammar (stamp-mint.mjs KEEPING_RAILS, from 2026-09-29): stripe|usdc|paypal|grant.
+  const paypal = "- 2026-09-29 · pot-receipt · pot:keeping-ec2 · rail: paypal · usd: 25 · from: outside:paypal · ref: paypal:5O190127TN364715T · sig: sigPP\n";
+  const f = foldFunding(parseLedgerText(LEDGER + paypal));
+  const r = (f.receiptsByPot.get("keeping-ec2") ?? []).find((x) => x.rail === "paypal");
+  assert.ok(r, `the paypal receipt was not folded (invalid: ${f.invalid.map((i) => i.reason).join(" | ")})`);
+  assert.deepEqual([r.usd, r.from, r.receipt], [25, "outside:paypal", "paypal:5O190127TN364715T"]);
+  assert.ok(!f.invalid.some((i) => i.line.includes("rail: paypal")), "the paypal row is not surfaced invalid");
+});
+
 test("the fold reads every landed row kind: receipts, escrow, burn, holo, and the roll it joins", () => {
   const f = fold();
 
