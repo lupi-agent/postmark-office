@@ -66,6 +66,8 @@ export const LANDED = {
   "029_letter_opens.sql":          { probe: `${rel("letter_opens")} AND ${col("letter_opens", "how")}` },
   // 030 (POS-292): the table, and the counting function WITH its fold of small cells.
   "030_arrival_heard.sql":         { probe: `${rel("arrival_heard")} AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'arrival_heard_weekly' AND prosrc LIKE '%fewer-than-3%')` },
+  // 033 (POS-268): the first and last of office.db's twins, and the snapshot ledger.
+  "033_town_index.sql":            { probe: `${rel("town_meta")} AND ${rel("town_funding_invalid")} AND ${col("town_index_snapshots", "digests")}` },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */
