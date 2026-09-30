@@ -10,6 +10,7 @@
 
 import { townSummary, residentList, residentPage, resident, mailList, letterAnswer, LETTER_READING_LAW_LINE, search, bulletinList, bulletinTeaser, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, home, identityOf, repoLog, DOORSTEP_SEGMENTS } from "./queries.mjs";
 import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore, stampsRoster as stampsRosterFromStore, stampsDetail as stampsDetailFromStore, questBoardFor as questBoardFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
+import * as townIndexStore from "./town-index-store.mjs"; // the moved readers by name, as the list above grows past a line
 import { READ_FIELDS } from "./one-contract.mjs"; // the one field list a read shares with its twin at another door (POS-70 row 39)
 
 /** One line per doorstep segment, for `read_doorstep`'s description. Keyed by
@@ -658,17 +659,29 @@ export async function callTool(name, args, ctx) {
         conversationsOffset: args.correspondence_offset, slim: true });
       return d ?? notFound(`no resident "${args.handle}"`, "try town { read: \"residents\" }");
     }
-    case "list_mail": return mailList(db, args.handle, args.box ?? "inbox", {
-      since: args.since, until: args.until, limit: args.limit, offset: args.offset });
+    case "list_mail": {
+      const opts = { since: args.since, until: args.until, limit: args.limit, offset: args.offset };
+      if (townIndexReads()) return fromStore((c) => townIndexStore.mailList(c, args.handle, args.box ?? "inbox", opts));
+      return mailList(db, args.handle, args.box ?? "inbox", opts);
+    }
     // Opening clears it (POS-286): the flat read, `town { read: "letter" }` and
     // GET /town/apex all land here; a recipient's key clears their unread.
     case "read_letter": {
-      const l = letterAnswer(db, args.id);
+      let l;
+      if (townIndexReads()) {
+        const r = await storeAnswer((c) => townIndexStore.letterAnswer(c, args.id));
+        if (r.refused) return r.refused;
+        l = r.out;
+      } else l = letterAnswer(db, args.id);
       if (!l) return notFound("no letter by that id", "ids come from list_mail or read_doorstep");
       const { answerOpening } = await import("./unread-store.mjs");
       return answerOpening(l, key);
     }
-    case "search_town": return search(db, args.q ?? "", { limit: args.limit, offset: args.offset });
+    case "search_town": {
+      const opts = { limit: args.limit, offset: args.offset };
+      if (townIndexReads()) return fromStore((c) => townIndexStore.search(c, args.q ?? "", opts));
+      return search(db, args.q ?? "", opts);
+    }
     // THE ROLE GATE'S SECOND HALF — and the reason it needed one. `/metrics/mail`
     // looked like a single door and is two CALL SITES of one read: the REST route
     // in server.mjs, and this case, which the town apex ALSO funnels into
@@ -685,14 +698,19 @@ export async function callTool(name, args, ctx) {
     case "read_metrics": {
       const gated = await roleGate(rdb, key, ROLE_SUBSCRIBER);
       if (gated) return { error: "bounce", defect: gated.defect, hint: gated.hint };
+      if (townIndexReads()) return fromStore((c) => townIndexStore.metricsMail(c, { days: args?.days }));
       return metricsMail(db, { days: args?.days });
     }
     case "list_commits": return townIndexReads() ? fromStore((c) => repoLogFromStore(c, args ?? {})) : repoLog(db, args ?? {});
-    case "list_letters": return letterList(db, {
-      resident: args.resident, region: args.region, since: args.since, until: args.until,
-      excludeOffice: args.exclude_office === true, full: args.full === true,
-      limit: args.limit, offset: args.offset,
-    });
+    case "list_letters": {
+      const opts = {
+        resident: args.resident, region: args.region, since: args.since, until: args.until,
+        excludeOffice: args.exclude_office === true, full: args.full === true,
+        limit: args.limit, offset: args.offset,
+      };
+      if (townIndexReads()) return fromStore((c) => townIndexStore.letterList(c, opts));
+      return letterList(db, opts);
+    }
     case "list_regions": return townIndexReads() ? fromStore((c) => regionListFromStore(c, args ?? {})) : regionList(db, args ?? {});
     case "read_home": {
       const fresh = await freshFor(args.handle, { odb, clone, asOf });

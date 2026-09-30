@@ -32,6 +32,8 @@ import {
   bulletinListing, bulletinTeaserOf, bulletinEntryOf,
   stampsRosterPage, stampsDetailOf, stampParties,
   potBoardOf, questBoardWith,
+  excerpt, LETTER_READING_LAW_LINE, MAIL_PAGE, SEARCH_LETTERS, SEARCH_RESIDENTS,
+  mailListOf, letterListNoRegion, letterListPage, correspondentsOf, mailAwaitingOf, searchPage, metricsMailOf,
 } from "./queries.mjs";
 
 // The row SHAPES are queries.mjs's own exported functions, the ones its office.db
@@ -39,7 +41,8 @@ import {
 // would be the private copy that drifts.
 import { freshnessFor, composeHome } from "./paper-fresh.mjs"; // the freshness ladder, as queries.home uses it
 
-export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home", "stampsRoster", "stampsDetail", "potBoard", "questBoardFor", "standingFor", "townQuestBoard"]);
+export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home", "stampsRoster", "stampsDetail", "potBoard", "questBoardFor", "standingFor", "townQuestBoard",
+  "letter", "letterAnswer", "letterList", "mailList", "mailCorrespondents", "mailAwaiting", "search", "metricsMail", "outboxSettled"]);
 
 /** Is the switch on? Only the exact value `store` turns it on. */
 export const townIndexReads = (env = process.env) => env.TOWN_INDEX_READS === "store";
@@ -179,7 +182,8 @@ export async function potBoard(q, extraInvalid = []) {
 /** queries.standingFor, from the store: the standing row, or null. */
 export async function standingFor(q, handle) {
   const row = (await q.query("SELECT json FROM town_quest_standing WHERE handle = $1", [handle])).rows[0];
-  return row?.json ? JSON.parse(row.json) : null;
+  // a bent row is null, exactly as office.db's reader answers it
+  try { return row?.json ? JSON.parse(row.json) : null; } catch { return null; }
 }
 
 /** The index meta a quest board reads (quest_registry, quest_day), from the store's own town_meta. */
@@ -220,6 +224,153 @@ export const storeIndex = (q, clone) => ({
   questBoard: (handle, opts) => questBoardFor(q, handle, clone, opts),
   potBoard: (extraInvalid) => potBoard(q, extraInvalid),
 });
+
+// ── letters and mail (group 2) ───────────────────────────────────────────────
+
+// A letter row as the shapes read it: the office.db columns, never `digest`.
+const LETTER_COLS = "id, from_h, to_h, date, thread, box, owner, path, json, delivered_at";
+// queries.mjs § NEWEST, bytewise: real timestamps win over a bare same-day date.
+const NEWEST = `COALESCE(delivered_at, date) COLLATE "C" DESC, id COLLATE "C"`;
+const count = async (q, sql, params = []) => Number((await q.query(sql, params)).rows[0].n);
+
+/** queries.letter, from the store: one letter whole, or null. */
+export async function letter(q, id) {
+  const row = (await q.query("SELECT json FROM town_letters WHERE id = $1", [id])).rows[0];
+  return row ? JSON.parse(row.json) : null;
+}
+
+/** queries.letterAnswer, from the store. */
+export async function letterAnswer(q, id) {
+  const l = await letter(q, id);
+  return l ? { reading_law: LETTER_READING_LAW_LINE, ...l } : null;
+}
+
+/** queries.mailList, from the store: one box, newest first, paged. */
+export async function mailList(q, handle, box = "inbox", { since, until, limit, offset } = {}) {
+  const where = [`${box === "outbox" ? "from_h" : "to_h"} = $1`];
+  if (box !== "outbox") where.push("(box = 'inbox' OR box IS NULL)");
+  const params = [handle];
+  if (since) { params.push(since); where.push(`date COLLATE "C" >= $${params.length}`); }
+  if (until) { params.push(until); where.push(`date COLLATE "C" <= $${params.length}`); }
+  const clause = `WHERE ${where.join(" AND ")}`;
+  const n = Math.min(Math.max(Number(limit) || MAIL_PAGE, 1), 200);
+  const start = Math.max(Number(offset) || 0, 0);
+  const total = await count(q, `SELECT COUNT(*) AS n FROM town_letters ${clause}`, params);
+  const rows = (await q.query(`SELECT ${LETTER_COLS} FROM town_letters ${clause} ORDER BY ${NEWEST} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, n, start])).rows;
+  return mailListOf(handle, box, { total, limit: n, offset: start, letters: rows.map(excerpt) });
+}
+
+/** queries.outboxSettled, from the store: the letters in a resident's outbox. */
+export async function outboxSettled(q, handle) {
+  return count(q, "SELECT COUNT(*) AS n FROM town_letters WHERE from_h = $1 AND box = 'outbox'", [handle]);
+}
+
+/** queries.regionResidents, from the store: a region's roll, by slug or display name. */
+export async function regionResidents(q, slugOrName) {
+  const row = (await q.query(`SELECT json FROM town_regions WHERE id = $1 OR name = $1 ORDER BY (id = $1) DESC, id COLLATE "C" LIMIT 1`, [slugOrName])).rows[0];
+  return row ? (JSON.parse(row.json).residents ?? []) : [];
+}
+
+// queries.mjs § isOffice, the same three spellings of the office flag.
+const isOffice = (d) => d.is_office === true || d.address?.data?.office === true || d.address?.data?.office === "true";
+
+/** queries.officeHandles, from the store: every resident whose card says office. */
+export async function officeHandles(q) {
+  return (await q.query("SELECT handle, json FROM town_residents")).rows.filter((r) => isOffice(JSON.parse(r.json))).map((r) => r.handle);
+}
+
+/** queries.letterList, from the store: the filtered list, newest first, paged. */
+export async function letterList(q, opts = {}) {
+  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
+  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const asOf = await townIndexAsOf(q);
+  const where = [];
+  const params = [];
+  const p = (v) => { params.push(v); return `$${params.length}`; };
+  if (opts.resident) { const r = p(opts.resident); where.push(`(from_h = ${r} OR to_h = ${r})`); }
+  if (opts.region) {
+    const handles = await regionResidents(q, opts.region);
+    if (!handles.length) return letterListNoRegion({ limit, offset, asOf, region: opts.region });
+    const h = p(handles);
+    where.push(`(from_h = ANY(${h}::text[]) OR to_h = ANY(${h}::text[]))`);
+  }
+  if (opts.since) where.push(`date COLLATE "C" >= ${p(opts.since)}`);
+  if (opts.until) where.push(`date COLLATE "C" <= ${p(opts.until)}`);
+  if (opts.excludeOffice) {
+    const off = await officeHandles(q);
+    if (off.length) { const o = p(off); where.push(`NOT (from_h = ANY(${o}::text[])) AND NOT (to_h = ANY(${o}::text[]))`); }
+  }
+  const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const fixed = params.slice();
+  const rows = (await q.query(`SELECT ${LETTER_COLS} FROM town_letters ${clause} ORDER BY ${NEWEST} LIMIT ${p(limit)} OFFSET ${p(offset)}`, params)).rows;
+  const total = await count(q, `SELECT COUNT(*) AS n FROM town_letters ${clause}`, fixed);
+  return letterListPage({ total, rows, limit, offset, full: opts.full, asOf });
+}
+
+/** queries.mailCorrespondents, from the store. */
+export async function mailCorrespondents(q, handle, opts = {}) {
+  // `multi` is the letter's json only where a toList may stand in it, as
+  // office.db's reader does; the list's answer does not depend on the test
+  // (a json without a toList array keeps the column's own recipient either way).
+  const rows = (await q.query(`SELECT id, from_h, to_h, date, delivered_at,
+      CASE WHEN strpos(json, '"toList"') > 0 THEN json ELSE NULL END AS multi
+    FROM town_letters`)).rows;
+  return correspondentsOf(rows, handle, opts);
+}
+
+/** The newest day the mail ledger holds (bytewise, as sqlite's MAX over text), or null. */
+async function ledgerNewest(q) {
+  return (await q.query(`SELECT MAX(date COLLATE "C") AS d FROM town_ledger WHERE date IS NOT NULL`)).rows[0]?.d ?? null;
+}
+
+/** queries.mailAwaiting, from the store. */
+export async function mailAwaiting(q, handle, opts = {}) {
+  const row = (await q.query("SELECT json FROM town_mail_state WHERE handle = $1", [handle])).rows[0];
+  // a bent law is no law, exactly as office.db's reader answers it
+  let law = null;
+  try { law = row ? JSON.parse(row.json) : null; } catch { law = null; }
+  return mailAwaitingOf(law, await ledgerNewest(q), handle, opts);
+}
+
+// sqlite's LIKE with no ESCAPE clause: ASCII case folded, no escape character
+const like = (col, param) => likeAscii(col, param, "");
+
+/** queries.search, from the store. */
+export async function search(q, term, { limit, offset } = {}) {
+  const pattern = `%${term}%`;
+  const n = Math.min(Math.max(Number(limit) || SEARCH_LETTERS, 1), 200);
+  const start = Math.max(Number(offset) || 0, 0);
+  const lettersTotal = await count(q, `SELECT COUNT(*) AS n FROM town_letters WHERE ${like("id", "$1")} OR ${like("json", "$1")}`, [pattern]);
+  const residentsTotal = await count(q, `SELECT COUNT(*) AS n FROM town_residents WHERE ${like("handle", "$1")} OR ${like("json", "$1")}`, [pattern]);
+  const residents = (await q.query(`SELECT handle FROM town_residents
+      WHERE ${like("handle", "$1")} OR ${like("json", "$1")}
+      ORDER BY CASE
+        WHEN handle = $2        THEN 0
+        WHEN ${like("handle", "$3")} THEN 1
+        WHEN ${like("handle", "$1")} THEN 2
+        ELSE 3 END, handle COLLATE "C"
+      LIMIT $4`, [pattern, term, `${term}%`, SEARCH_RESIDENTS])).rows.map((r) => r.handle);
+  const letters = (await q.query(`SELECT ${LETTER_COLS} FROM town_letters WHERE ${like("id", "$1")} OR ${like("json", "$1")} ORDER BY ${NEWEST} LIMIT $2 OFFSET $3`,
+    [pattern, n, start])).rows.map(excerpt);
+  return searchPage({ q: term, n, start, lettersTotal, residentsTotal, residents, letters });
+}
+
+/** queries.metricsMail, from the store. */
+export async function metricsMail(q, opts = {}) {
+  const newest = await ledgerNewest(q);
+  const dayCounts = (await q.query("SELECT date, kind, COUNT(*) AS n FROM town_ledger WHERE date IS NOT NULL GROUP BY date, kind")).rows
+    .map((r) => ({ date: r.date, kind: r.kind, n: Number(r.n) }));
+  const totals = {
+    deliveries: await count(q, "SELECT COUNT(*) AS n FROM town_ledger WHERE kind = 'delivery'"),
+    bounces: await count(q, "SELECT COUNT(*) AS n FROM town_ledger WHERE kind = 'bounce'"),
+    letters: await count(q, "SELECT COUNT(*) AS n FROM town_letters"),
+    threads: await count(q, "SELECT COUNT(*) AS n FROM town_threads"),
+    residents: await count(q, "SELECT COUNT(*) AS n FROM town_residents"),
+  };
+  const threadJsons = newest ? (await q.query("SELECT json FROM town_threads")).rows.map((t) => t.json) : [];
+  return metricsMailOf({ newest, dayCounts, totals, threadJsons: () => threadJsons }, opts);
+}
 
 /**
  * queries.home, from the store. The freshness ladder composes over the row

@@ -613,12 +613,24 @@ const j = (res, code, obj) => {
 // X-Postmark-As-Of beside it is still office.db's, which the unmoved doors
 // answer from), `onNull` for a reader that found nothing, and the 503 when the
 // store cannot be read. Never a fallback to office.db.
-async function fromTownIndex(res, fn, onNull = null) {
-  const r = await townIndexStore.storeAnswer(fn);
-  if (r.refused) return bounce(res, 503, r.refused.defect, r.refused.hint);
-  if (r.asOf) res.setHeader("x-postmark-town-index-as-of", r.asOf);
-  if (r.out == null && onNull) return onNull();
-  return j(res, 200, r.out);
+//
+// AND A READER THAT THROWS IS ANSWERED, NEVER LEFT TO REJECT. storeAnswer hands
+// a reader's own error back (it is not the store's absence), and a route here
+// returns this promise without awaiting it: an unanswered rejection took the
+// whole office down in the first run of group 2's tests. `onError` lets a door
+// keep its own sentence for a failed read (GET /quests/{h}'s "quest board
+// unavailable"); otherwise it is the 500 every other tripped read answers.
+async function fromTownIndex(res, fn, onNull = null, onError = null) {
+  try {
+    const r = await townIndexStore.storeAnswer(fn);
+    if (r.refused) return bounce(res, 503, r.refused.defect, r.refused.hint);
+    if (r.asOf) res.setHeader("x-postmark-town-index-as-of", r.asOf);
+    if (r.out == null && onNull) return onNull();
+    return j(res, 200, r.out);
+  } catch (e) {
+    if (onError) return onError(e);
+    return bounce(res, 500, "the office tripped reading the town index", String(e?.message ?? e).slice(0, 200));
+  }
 }
 
 const jCompact = (res, code, obj) => {
@@ -1689,6 +1701,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       if (path === "/metrics/mail") {
         roleGate(rdb, key, ROLE_SUBSCRIBER).then((gated) => {
           if (gated) return bounce(res, gated.code, gated.defect, gated.hint);
+          if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.metricsMail(c));
           return j(res, 200, metricsMail(db));
         }).catch((e) => bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200)));
         return;
@@ -1775,7 +1788,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       // GET /letters — the filtered list (before /letters/{id}, which needs a slug)
       if (path === "/letters") {
         const p = url.searchParams;
-        return j(res, 200, letterList(db, {
+        const opts = {
           resident: p.get("resident") ?? undefined,
           region: p.get("region") ?? undefined,
           since: p.get("since") ?? undefined,
@@ -1784,7 +1797,9 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
           full: p.get("full") === "1",
           limit: p.get("limit") ?? undefined,
           offset: p.get("offset") ?? undefined,
-        }));
+        };
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.letterList(c, opts));
+        return j(res, 200, letterList(db, opts));
       }
 
       if ((m = /^\/mail\/([a-z0-9-]+)$/.exec(path))) {
@@ -1814,20 +1829,33 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
         // ?limit/?offset/?since/?until are untouched: they still shape the
         // page, exactly as they did. The response is that page, rather than a
         // report about it.
-        return j(res, 200, mailList(db, m[1], box, {
+        const handle = m[1];
+        const opts = {
           since: url.searchParams.get("since") ?? undefined,
           until: url.searchParams.get("until") ?? undefined,
           limit: url.searchParams.get("limit") ?? undefined,
           offset: url.searchParams.get("offset") ?? undefined,
-        }).letters);
+        };
+        if (townIndexReads()) return fromTownIndex(res, async (c) => (await townIndexStore.mailList(c, handle, box, opts)).letters);
+        return j(res, 200, mailList(db, handle, box, opts).letters);
       }
 
       if ((m = /^\/letters\/(.+)$/.exec(path))) {
-        const l = letter(db, decodeURIComponent(m[1]));
-        if (!l) return bounce(res, 404, "no letter by that id", "ids come from /mail/{handle} or the ledger");
-        // Opening clears it (POS-286); a keyed GET stays on this thread for it
-        // (read-workers.mjs § opensALetter).
-        return import("./unread-store.mjs").then(({ answerOpening }) => answerOpening(l, key)).then((a) => j(res, 200, a));
+        const id = decodeURIComponent(m[1]);
+        const open = (l) => {
+          if (!l) return bounce(res, 404, "no letter by that id", "ids come from /mail/{handle} or the ledger");
+          // Opening clears it (POS-286); a keyed GET stays on this thread for it
+          // (read-workers.mjs § opensALetter).
+          return import("./unread-store.mjs").then(({ answerOpening }) => answerOpening(l, key)).then((a) => j(res, 200, a));
+        };
+        if (townIndexReads()) {
+          return townIndexStore.storeAnswer((c) => townIndexStore.letter(c, id)).then((r) => {
+            if (r.refused) return bounce(res, 503, r.refused.defect, r.refused.hint);
+            if (r.asOf) res.setHeader("x-postmark-town-index-as-of", r.asOf);
+            return open(r.out);
+          }).catch((e) => bounce(res, 500, "the office tripped reading the town index", String(e?.message ?? e).slice(0, 200)));
+        }
+        return open(letter(db, id));
       }
 
       if ((m = /^\/doorstep\/([a-z0-9-]+)$/.exec(path))) {
@@ -1901,7 +1929,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       if ((m = /^\/quests\/([a-z0-9-]+)$/.exec(path))) {
         const handle = m[1];
         const unavailable = () => bounce(res, 503, "quest board unavailable", "the office couldn't read the quest registry from its clone — retry shortly");
-        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.questBoardFor(c, handle, TOWN_CLONE)).catch(unavailable);
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.questBoardFor(c, handle, TOWN_CLONE), null, unavailable);
         return questBoardFor(db, meta, handle, TOWN_CLONE)
           .then((b) => j(res, 200, b))
           .catch(unavailable);
@@ -1924,10 +1952,12 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       if (path === "/search") {
         const q = (url.searchParams.get("q") ?? "").trim();
         if (!q) return bounce(res, 400, "empty query", "GET /search?q=...");
-        return j(res, 200, search(db, q, {
+        const opts = {
           limit: url.searchParams.get("limit") ?? undefined,
           offset: url.searchParams.get("offset") ?? undefined,
-        }));
+        };
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.search(c, q, opts));
+        return j(res, 200, search(db, q, opts));
       }
 
     // GET /fund/intake — the published address, and the disclosures that must
