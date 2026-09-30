@@ -168,17 +168,17 @@ test("ISO: an outcome's `at` is ISO whatever the store handed back, and the even
 
 // ── the ownership gate ──────────────────────────────────────────────────────
 
-function mailOdb() {
+async function mailOdb() {
   const o = new DatabaseSync(":memory:");
   o.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
-  appendTownJournal(o, { cls: "letter", act: "send-letter", household: "fixture", handle: "r000",
+  await appendTownJournal(o, { cls: "letter", act: "send-letter", household: "fixture", handle: "r000",
     payload: { args: { from: "r000", to: "r001", title: "standing", body: "not sailed" },
       id: "r000-2026-09-26-to-r001-standing", file: "WHITE_PAGES/r000/outbox/standing.md" } });
   return o;
 }
 
 test("THE GATE: a key holding r000 adds r000's owner-only blocks — the doorstep's own — and r001's page stays public", async () => {
-  const odb = mailOdb();
+  const odb = await mailOdb();
   process.env.TOWN_SINGLE_LOG = "1";
   try {
     const key = { household: "fixture", handles: new Set(["r000"]) };

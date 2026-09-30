@@ -527,10 +527,10 @@ const MAIL_LAW =
   + " until the crossing delivers it.";
 
 /** An oauth-side db holding the town journal, as every door's `odb` is. */
-function mailOdb(rows) {
+async function mailOdb(rows) {
   const o = new DatabaseSync(":memory:");
   o.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
-  for (const r of rows) appendTownJournal(o, r);
+  for (const r of rows) await appendTownJournal(o, r);
   return o;
 }
 
@@ -570,7 +570,7 @@ const throughBothDoors = async (h, over) => ({
 
 test("THE MAIL TENSE: a sender's own counter counts the letters standing in the log, on BOTH doors", async () => {
   assert.equal(TENSE_LAW, LADDER_NOTE, "the tense law is quoted from the constant that owns it");
-  const odb = mailOdb(standingRows());
+  const odb = await mailOdb(standingRows());
   await flagOn(async () => {
     const doors = await throughBothDoors(HANDLE, { key: senderKey, odb });
     for (const [door, d] of Object.entries(doors)) {
@@ -606,7 +606,7 @@ test("THE MAIL TENSE: a sender's own counter counts the letters standing in the 
 
 test("THE MAIL LAW HOLDS ON THE COUNTER: a non-sender is told nothing, and is not told a zero either", async () => {
   assert.ok(MAIL_LAW.includes("the RECIPIENT sees nothing at all"));
-  const odb = mailOdb(standingRows());
+  const odb = await mailOdb(standingRows());
   await flagOn(async () => {
     for (const [who, key] of [["a stranger's key", strangerKey], ["no key at all", null]]) {
       const doors = await throughBothDoors(HANDLE, { key, odb });
@@ -636,7 +636,7 @@ test("THE MAIL LAW HOLDS ON THE COUNTER: a non-sender is told nothing, and is no
 });
 
 test("THE FLIP: the counter falsifier can fail — the answer Vex read is rejected", async () => {
-  const odb = mailOdb(standingRows());
+  const odb = await mailOdb(standingRows());
   await flagOn(async () => {
     const d = await doorstepBundle(HANDLE, { ...ctx, key: senderKey, odb });
     // The defect exactly as Vex read it: the disclosure present, the counter
@@ -652,7 +652,7 @@ test("THE FLIP: the counter falsifier can fail — the answer Vex read is reject
 
 test("FLAG-OFF the counter is the index's own number, and says so", async () => {
   delete process.env.TOWN_SINGLE_LOG;
-  const odb = mailOdb(standingRows());
+  const odb = await mailOdb(standingRows());
   const d = await doorstepBundle(HANDLE, { ...ctx, key: senderKey, odb });
   assert.equal(d.your_pending_letters, undefined, "no town log, no standing letters to disclose");
   assert.equal(d.pending_outbox, 6);
