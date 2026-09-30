@@ -404,18 +404,21 @@ test("world_holdings: `count` is what you hold, `shown` is what was listed", asy
   //
   // `count` was already here and already the true number; what it lacked was a
   // bound to be a count AGAINST.
-  const path = join(TMP, "holdings-bound.db");
-  rmSync(path, { force: true });
-  const db = openDynamic(path);
-  for (let i = 0; i < 60; i++) {
-    declareHolding({ db, thing: `alpha/thing-${String(i).padStart(3, "0")}`, actor: "alpha" });
-  }
-  db.close();
-
-  const previous = process.env.WORLD_DYNAMIC_DB;
-  process.env.WORLD_DYNAMIC_DB = path;
+  // The holdings are the hold acts (POS-269): sixty takes, filed through the
+  // real pen onto the in-memory record, and read back by the door.
+  const { installHoldRecord } = await import("./acts-pen-stub.mjs");
+  const rec = await installHoldRecord();
   try {
-    const { callHoldTool } = await import("../src/world-hold.mjs");
+    const { callHoldTool, declareHoldingFlipped } = await import("../src/world-hold.mjs");
+    const deps = {
+      witnessStamp: async () => ({ at: { anchor: "the-town/the-quay", dx: 0, dy: 0 }, witnesses: null }),
+      resolvedWorldHousehold: () => null,
+      currentCrossing: () => 221,
+    };
+    for (let i = 0; i < 60; i++) {
+      await declareHoldingFlipped({ db: null, thing: `alpha/thing-${String(i).padStart(3, "0")}`, actor: "alpha", deps });
+    }
+    assert.equal(rec.pen.rows().length, 60, "sixty takes in the record");
     const key = { handles: new Set(["alpha"]) };
 
     const page = await callHoldTool("world_holdings", {}, key);
@@ -436,26 +439,17 @@ test("world_holdings: `count` is what you hold, `shown` is what was listed", asy
     // the pages tile what you hold
     const seen = [...page.holding, ...rest.holding].map((h) => h.thing);
     assert.equal(new Set(seen).size, 60);
-  } finally {
-    if (previous === undefined) delete process.env.WORLD_DYNAMIC_DB;
-    else process.env.WORLD_DYNAMIC_DB = previous;
-  }
+  } finally { rec.restore(); }
 });
 
 test("world_holdings: empty hands are complete, not capped", async () => {
-  const path = join(TMP, "holdings-empty.db");
-  rmSync(path, { force: true });
-  openDynamic(path).close();
-  const previous = process.env.WORLD_DYNAMIC_DB;
-  process.env.WORLD_DYNAMIC_DB = path;
+  const { installHoldRecord } = await import("./acts-pen-stub.mjs");
+  const rec = await installHoldRecord();
   try {
     const { callHoldTool } = await import("../src/world-hold.mjs");
     const r = await callHoldTool("world_holdings", {}, { handles: new Set(["alpha"]) });
     assert.equal(r.count, 0);
     assert.equal(r.complete, true);
     assert.equal(r.more_note, undefined, "empty hands and cut hands must not look alike");
-  } finally {
-    if (previous === undefined) delete process.env.WORLD_DYNAMIC_DB;
-    else process.env.WORLD_DYNAMIC_DB = previous;
-  }
+  } finally { rec.restore(); }
 });

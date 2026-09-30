@@ -60,7 +60,6 @@
 
 import { worldFreezeBounce } from "./freeze.mjs";
 import { readAttachments, declareAttachment } from "./dynamic-entities.mjs";
-import { openDynamic, openDynamicReadOnly } from "./dynamic-store.mjs";
 import { holdEdgeOnActs } from "./hold-edge.mjs";
 import { IN_READ_WORKER } from "./read-workers.mjs";
 import { classDials } from "./world-classes.mjs";
@@ -1061,12 +1060,16 @@ export async function callHoldTool(name, args = {}, key = null) {
   // write-mode default produced, minus the write." So the read's ANSWER is
   // unchanged on every store, present or absent; what changed is that it no
   // longer creates one to find out.
-  // Where the holding edge is on `acts` (POS-269) this door opens NO sqlite
-  // handle at all: the holder check and the holdings read come from the
-  // record, and the flipped pen writes nothing to dynamic.db. Elsewhere sqlite
-  // is that office's record: a read-only handle to read it, a writable one to
-  // write the edge.
-  const db = holdEdgeOnActs() ? null : (name === "world_holdings" ? openDynamicReadOnly() : openDynamic());
+  // THE HOLDING EDGE IS THE HOLD ACTS, OR THERE IS NONE (POS-269). Where the
+  // hold lane is flipped under the guards this door opens no sqlite handle at
+  // all: the holder check and the holdings read come from the record. Anywhere
+  // else there used to be dynamic.db's attachments table, and it is retired, so
+  // the door refuses by name rather than holding things nowhere. THROWN, as
+  // every other refusal here is: a returned one reached REST as a 200.
+  if (!holdEdgeOnActs())
+    throw bounce(503, "holding things needs the hold lane's record, and this office does not keep it",
+      "the hold lane's pen must be flipped (W2_PEN has hold) with the guards on (W2_GUARDS=1); dynamic.db, which used to hold the edge, is retired (POS-269)");
+  const db = null;
   try {
     if (name === "world_holdings") {
       // B1: give/drop/take's own holder fold, read from `acts` under W2_GUARDS=1.

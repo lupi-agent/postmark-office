@@ -3,13 +3,16 @@
 // Under WORLD_POSITIONS=1 a presence read is handed the position projection and
 // now reads ONLY it: no entities table, and the vessel's sailing line taken from
 // her governing record in the projection instead of `meta.vessel_departure`.
-// Presence is what residents see, so the gate is EQUALITY: the three presence
-// answers — who is near (orient, open-your-eyes, GET /world/present), the
-// witness stamp's "who saw" (near, excluding the actor), and the say's
-// listeners (near at earshot, capped) — must equal the entities-table answers,
-// on a fixture with a sailing vessel and a passenger aboard her, at instants
-// before, during and after the sailing. `as_of` and the staleness disclosures
-// are the store's own words about itself and are the one named difference.
+// Presence is what residents see, so the gate was EQUALITY: the three presence
+// answers — who is near, the witness stamp's "who saw", and the say's
+// listeners — held equal to the entities-table answers at instants before,
+// during and after a sailing (#280). The entities table went with dynamic.db
+// (POS-269), so that side of the equality has nothing left to read; the
+// parity's standing half is `position-projection.test.mjs § PRESENCE`
+// (positionsAt over the projection equals positionsAt over the ledger's
+// governing legs plus the store). What stays here is what made the parity
+// non-vacuous: the passenger aboard, the late one not, the vessel no resident,
+// and a projection-only read that opens no store.
 //
 //   node --test test/presence-projection-parity.test.mjs
 
@@ -44,8 +47,6 @@ const HOUR = 3600_000;
 // The room at the origin, a walker leaving it, one far away, the vessel sailing
 // from the quay with a passenger who departed with her, and one who set off
 // down the same line a minute EARLIER and is NOT aboard (a different instant).
-// (Every departure predates the refresh: a walk after it is the entities
-// table's own staleness, which it discloses, and not a difference in kind.)
 const SAIL = { at: new Date(B).toISOString(), from: { x: -5000, y: 0 }, toward: { x: -20000, y: 0 }, crossing: N, pace: 40 };
 const DEPARTURES = [
   { at: new Date(B).toISOString(), actor: "wright", from: { x: 0, y: 0 }, toward: { x: 0, y: 0 }, crossing: N, line_no: 1 },
@@ -56,21 +57,13 @@ const DEPARTURES = [
   { ...SAIL, actor: "vermillion", line_no: 6 },
   { ...SAIL, at: new Date(B - 60_000).toISOString(), actor: "early-eli", line_no: 7 },
 ];
-const wipeDyn = () => { for (const p of [dynPath, `${dynPath}-wal`, `${dynPath}-shm`]) if (existsSync(p)) rmSync(p, { force: true }); };
 
 let presence, entities;
 before(async () => {
   presence = await import("../src/dynamic-presence.mjs");
   entities = await import("../src/dynamic-entities.mjs");
 });
-beforeEach(async () => {
-  wipeDyn();
-  fixtureWorldDb(worldDbPath, { sha: SHA, departures: DEPARTURES });
-  const { resetClassCache } = await import("../src/dynamic-store.mjs");
-  resetClassCache();
-  const r = await entities.refreshEntities({ dbPath: dynPath, repo, at: B });
-  assert.equal(r.ok, true, `seed refused: ${JSON.stringify(r.refused)}`);
-});
+beforeEach(() => { fixtureWorldDb(worldDbPath, { sha: SHA, departures: DEPARTURES }); });
 
 /** The projection as its rebuild holds it: the governing record per handle, in walk shape, vessel included. */
 const projection = (departures = DEPARTURES) => ({
@@ -81,33 +74,6 @@ const projection = (departures = DEPARTURES) => ({
   built_at: new Date(B).toISOString(), disclosed: [], epoch: 1,
 });
 
-// The three answers, reduced to what a resident is told. The store's words
-// about itself (as_of, ledger_moved, disclosed) are the named difference.
-const told = (r) => ({ count: r.count, shown: r.shown, capped: r.capped, residents: r.residents });
-const INSTANTS = { boundary: B, "mid-sailing": B + HOUR, "half a crossing": B + 6 * HOUR, "after the landing": B + 11 * HOUR };
-const ASKS = {
-  "who is near the square": { x: 0, y: 0, radiusM: 500 },
-  "who is near the water (the vessel's line)": { x: -20000, y: 0, radiusM: 100000 },
-  "the witness stamp at the square": { x: 0, y: 0, radiusM: 500, exclude: ["wright"] },
-  "the say's listeners at the square (earshot, capped)": { x: 0, y: 0, radiusM: 60, limit: 12 },
-};
-
-for (const [when, atMs] of Object.entries(INSTANTS)) {
-  for (const [what, ask] of Object.entries(ASKS)) {
-    test(`PARITY · ${what} · ${when}: the projection answers what the entities table answered`, async () => {
-      const table = await presence.near({ ...ask, dbPath: dynPath, repo, atMs });
-      const kept = await presence.near({ ...ask, dbPath: dynPath, repo, atMs, projected: projection() });
-      assert.ok(!table.error && !kept.error, JSON.stringify({ table: table.error, kept: kept.error }));
-      assert.deepEqual(told(kept), told(table));
-    });
-  }
-  test(`PARITY · everyone · ${when}`, async () => {
-    const table = await presence.everyone({ dbPath: dynPath, repo, atMs });
-    const kept = await presence.everyone({ dbPath: dynPath, repo, atMs, projected: projection() });
-    assert.deepEqual(told(kept), told(table));
-  });
-}
-
 test("the parity is not vacuous: mid-sailing a passenger reads aboard and the late one does not, and the vessel is no resident", async () => {
   const r = await presence.near({ x: -20000, y: 0, radiusM: 100000, dbPath: dynPath, repo, atMs: B + HOUR, projected: projection() });
   const by = Object.fromEntries(r.residents.map((p) => [p.handle, p]));
@@ -116,8 +82,7 @@ test("the parity is not vacuous: mid-sailing a passenger reads aboard and the la
   assert.equal("the-post-office" in by, false);
 });
 
-test("THE PROJECTION-ONLY READ OPENS NO STORE: with the file gone it still answers, and says its as_of is the projection's", async () => {
-  wipeDyn();
+test("THE PROJECTION-ONLY READ OPENS NO STORE: it answers, says its as_of is the projection's, and no dynamic.db appears", async () => {
   const r = await presence.near({ x: 0, y: 0, radiusM: 500, dbPath: dynPath, repo, atMs: B, projected: projection() });
   assert.equal(r.error, undefined, JSON.stringify(r));
   assert.deepEqual(r.residents.map((p) => p.handle), ["wright", "iris"]);

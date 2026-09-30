@@ -233,8 +233,10 @@ test("A6: every everyonePlaced caller that can hold a roll passes one — the do
   const dp = read("dynamic-presence.mjs");
   for (const hop of [/export function positionsAt\([^)]*roll = \[\][^)]*\)/s,
                      /async function readPresence\(\{[^}]*roll = \[\][^}]*\}/s,
-                     // POS-264 adds `projected` after the roll; the roll must still be handed down.
-                     /positionsAt\(db, atMs, w, vessel, \{ world, where: whereMod, frames, stored, roll(, projected: [^}]*)? \}\)/])
+                     // POS-269: readPresence hands the projection-only read the roll…
+                     /return projectedPresence\(\{[^}]*roll[^}]*\}\)/s,
+                     // …and that read hands it to positionsAt beside the projection.
+                     /positionsAt\(null, atMs, w, vesselFromProjection\(departures\),\s*\{ world, where: whereMod, frames, stored: null, roll, projected: departures, placed \}\)/s])
     assert.match(dp, hop, "a roll accepted at one hop and dropped at the next is worse than none");
 
   // The server gives BOTH doors the same reader.

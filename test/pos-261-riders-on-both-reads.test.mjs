@@ -79,17 +79,16 @@ const dynPath = join(scratch, "dynamic.db");
 process.env.WORLD_CLONE = repo;
 process.env.WORLD_STORE_DB = worldDbPath;
 process.env.WORLD_DYNAMIC_DB = dynPath;
+// Presence reads the position projection (POS-269): the entities table it read
+// without one went with dynamic.db.
+process.env.WORLD_POSITIONS = "1";
 process.env.WORLD_MOVEMENT_V2 = "1";
 delete process.env.WORLD_APEX;
 delete process.env.WORLD_EMISSIONS;
-delete process.env.WORLD_POSITIONS;
 
 let world, movement;
 before(async () => {
   fixtureWorldDb(worldDbPath, { sha: mainShaOf(repo), departures: DEPARTURES });
-  const entities = await import("../src/dynamic-entities.mjs");
-  const r = await entities.refreshEntities({ dbPath: dynPath, repo, at: B });
-  assert.equal(r.ok, true, `seed refused: ${JSON.stringify(r.refused)}`);
   world = await import("../src/world.mjs");
   movement = await import("../src/world-movement.mjs");
   process.env.WORLD_PRESENCE = "1";

@@ -6,21 +6,23 @@
 //                   before presence existed, asserted by deep-equality against a
 //                   run with the flag unset — and the tool descriptions are
 //                   byte-identical to the ones on the previous commit.
-//   fresh, not      positions are DERIVED AT THE INSTANT ASKED from the store's
-//   photographed    governing departures, not read out of the stale x/y columns.
-//                   A walker seeded at the boundary must have moved by the time
-//                   the question is asked, or the layer is serving a photograph.
+//   fresh, not      positions are DERIVED AT THE INSTANT ASKED from the
+//   photographed    projection's governing departures. A walker whose record
+//                   says the boundary must have moved by the time the question
+//                   is asked, or the layer is serving a photograph.
 //   the vessel      a passenger reads `aboard`; the boat herself is never a
 //                   resident in the list.
 //   the town's      a resident is described in the same words a hill is — the
 //   own words       engine's own 16-point rose and named distance bands.
-//   disclosure      a ledger that moved since the refresh is named, not smoothed.
+//   disclosure      a read handed no projection is named, not smoothed; the
+//                   projection's own disclosure rides through. (The entities
+//                   table these tests once seeded went with dynamic.db, POS-269.)
 //
 //   node --test test/dynamic-presence.test.mjs
 
 import test, { after, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -33,17 +35,9 @@ const MARKS = [
   { id: FRAME, by: "the-town", kind: "sited", tier: "constitution", at: { x: 0, y: 0 }, extent: { w: 100000, h: 100000 }, body: "let there be light" },
   { id: "the-town/town-square", by: "the-town", kind: "sited", tier: "constitution", at: { x: 0, y: 0 }, extent: { w: 400, h: 400 }, body: "the square" },
 ];
-const repo = fixtureWorldCloneWithEngine({ label: "presence", marks: MARKS });
-const sweep = (d) => { try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch { /* litter */ } };
-after(() => { sweep(scratch); sweep(repo); });
-
-const SHA = mainShaOf(repo);
 const worldDbPath = join(scratch, "world.db");
-const dynPath = join(scratch, "dynamic.db");
 
-process.env.WORLD_CLONE = repo;
 process.env.WORLD_STORE_DB = worldDbPath;
-process.env.WORLD_DYNAMIC_DB = dynPath;
 delete process.env.WORLD_PRESENCE;
 delete process.env.WORLD_EMISSIONS;
 
@@ -65,42 +59,47 @@ const DEPARTURES = [
   { ...SAIL, actor: "vermillion", line_no: 6 },
 ];
 
-const buildWorld = (o = {}) => fixtureWorldDb(worldDbPath, { sha: SHA, departures: DEPARTURES, ...o });
-const wipeDyn = () => { for (const p of [dynPath, `${dynPath}-wal`, `${dynPath}-shm`]) if (existsSync(p)) rmSync(p, { force: true }); };
+// The ledger file carries them: the projection reads the record, as the office does.
+const repo = fixtureWorldCloneWithEngine({ label: "presence", marks: MARKS, departures: DEPARTURES });
+const sweep = (d) => { try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch { /* litter */ } };
+after(() => { sweep(scratch); sweep(repo); });
+const SHA = mainShaOf(repo);
+process.env.WORLD_CLONE = repo;
 
-let presence, entities;
+const buildWorld = (o = {}) => fixtureWorldDb(worldDbPath, { sha: SHA, departures: DEPARTURES, ...o });
+let presence, entities, world;
 before(async () => {
   presence = await import("../src/dynamic-presence.mjs");
   entities = await import("../src/dynamic-entities.mjs");
+  world = await import("../src/world.mjs");
 });
 
-beforeEach(async () => {
-  wipeDyn();
+beforeEach(() => {
   buildWorld();
   delete process.env.WORLD_PRESENCE;
-  const { resetClassCache } = await import("../src/dynamic-store.mjs");
-  resetClassCache();
+  delete process.env.WORLD_POSITIONS;
 });
 
-/** Seed the store the way the office does — the derivation refreshed AT THE BOUNDARY. */
+/**
+ * The projection as the office keeps it — both eras' governing departures,
+ * built AT THE BOUNDARY. The miniature ledger grammar has no pace clause, so the
+ * two sailings carry theirs the way the store's era does: on the record.
+ */
+const SAILORS = new Set(["the-post-office", "vermillion"]);
 const seed = async (at = B) => {
-  const r = await entities.refreshEntities({ dbPath: dynPath, repo, at });
-  assert.equal(r.ok, true, `seed refused: ${JSON.stringify(r.refused)}`);
-  return r;
+  const derived = await world.departuresAcrossEras(repo, { atMs: at });
+  const departures = derived.departures.map((d) => SAILORS.has(d.handle) ? { ...d, pace: SAIL.pace } : d);
+  return { ...derived, departures, built_at: new Date(at).toISOString() };
 };
 
 // ── 1. positions are derived at the ask, not read off the row ────────────────
 
 test("a walker's position is DERIVED at the instant asked, not served from the stored column", async () => {
-  await seed(B);   // the rows were computed at the boundary: jetto has gone nowhere yet
+  const projected = await seed(B);   // built at the boundary: jetto's record is his departure, not a place
+  const kept = projected.departures.find((d) => d.handle === "jetto");
+  assert.equal(Math.round(kept.from.x), 2000, "the record is the departure, as filed at the boundary");
 
-  const { openDynamic } = await import("../src/dynamic-store.mjs");
-  const db = openDynamic(dynPath, { readOnly: true });
-  const stored = entities.readEntities(db).find((e) => e.handle === "jetto");
-  db.close();
-  assert.equal(Math.round(stored.x), 2000, "the stored column is a photograph of the boundary");
-
-  const r = await presence.near({ x: 0, y: 0, radiusM: 100000, dbPath: dynPath, repo, atMs: ASK });
+  const r = await presence.near({ x: 0, y: 0, radiusM: 100000, repo, atMs: ASK, projected });
   const jetto = r.residents.find((p) => p.handle === "jetto");
   assert.equal(jetto.at.x, 9500, "half a crossing at 15 km/crossing is 7500 m further on — the answer moved with the clock");
   assert.equal(jetto.moving, true);
@@ -111,8 +110,8 @@ test("a walker's position is DERIVED at the instant asked, not served from the s
 // ── 2. near(): radius, order, cap, self ──────────────────────────────────────
 
 test("near() answers who is within the radius, nearest first, in the town's own words", async () => {
-  await seed(B);
-  const r = await presence.near({ x: 0, y: 0, radiusM: 500, dbPath: dynPath, repo, atMs: B });
+  const projected = await seed(B);
+  const r = await presence.near({ x: 0, y: 0, radiusM: 500, repo, projected, atMs: B });
   assert.deepEqual(r.residents.map((p) => p.handle), ["wright", "iris"], "hal is 12 km away and jetto has not moved yet");
 
   const iris = r.residents[1];
@@ -125,14 +124,14 @@ test("near() answers who is within the radius, nearest first, in the town's own 
 });
 
 test("near() excludes whoever asked — you are not your own audience", async () => {
-  await seed(B);
-  const r = await presence.near({ x: 0, y: 0, radiusM: 500, exclude: ["wright"], dbPath: dynPath, repo, atMs: B });
+  const projected = await seed(B);
+  const r = await presence.near({ x: 0, y: 0, radiusM: 500, exclude: ["wright"], repo, projected, atMs: B });
   assert.deepEqual(r.residents.map((p) => p.handle), ["iris"]);
 });
 
 test("the cap is a rendering decision and says so — a short list is not an empty room", async () => {
-  await seed(B);
-  const r = await presence.near({ x: 0, y: 0, radiusM: 500, limit: 1, dbPath: dynPath, repo, atMs: B });
+  const projected = await seed(B);
+  const r = await presence.near({ x: 0, y: 0, radiusM: 500, limit: 1, repo, projected, atMs: B });
   assert.equal(r.count, 2, "two are actually there");
   assert.equal(r.shown, 1);
   assert.equal(r.capped, true);
@@ -140,12 +139,12 @@ test("the cap is a rendering decision and says so — a short list is not an emp
 });
 
 test("place words ride when a place function is injected, and are absent when it is not", async () => {
-  await seed(B);
-  const bare = await presence.near({ x: 0, y: 0, radiusM: 500, dbPath: dynPath, repo, atMs: B });
+  const projected = await seed(B);
+  const bare = await presence.near({ x: 0, y: 0, radiusM: 500, repo, projected, atMs: B });
   assert.equal(bare.residents[0].place, undefined);
 
   const dressed = await presence.near({
-    x: 0, y: 0, radiusM: 500, dbPath: dynPath, repo, atMs: B,
+    x: 0, y: 0, radiusM: 500, repo, projected, atMs: B,
     place: async ({ x, y }) => `a fixture place at ${Math.round(x)},${Math.round(y)}`,
   });
   assert.equal(dressed.residents[1].place, "a fixture place at 30,0");
@@ -154,8 +153,8 @@ test("place words ride when a place function is injected, and are absent when it
 // ── 3. the vessel ────────────────────────────────────────────────────────────
 
 test("a passenger reads aboard, and the vessel herself is never a resident", async () => {
-  await seed(B);
-  const r = await presence.near({ x: -20000, y: 0, radiusM: 100000, dbPath: dynPath, repo, atMs: B + 3600_000 });
+  const projected = await seed(B);
+  const r = await presence.near({ x: -20000, y: 0, radiusM: 100000, repo, projected, atMs: B + 3600_000 });
   const handles = r.residents.map((p) => p.handle);
   assert.equal(handles.includes("the-post-office"), false, "she is a mark that moves, not a resident");
 
@@ -168,9 +167,9 @@ test("a passenger reads aboard, and the vessel herself is never a resident", asy
 });
 
 test("aboard ends when the sailing does — a passenger set down ashore is standing on ground", async () => {
-  await seed(B);
+  const projected = await seed(B);
   // 20 km at 40 km/crossing lands well inside one crossing
-  const r = await presence.near({ x: -20000, y: 0, radiusM: 1000, dbPath: dynPath, repo, atMs: B + 11 * 3600_000 });
+  const r = await presence.near({ x: -20000, y: 0, radiusM: 1000, repo, projected, atMs: B + 11 * 3600_000 });
   const v = r.residents.find((p) => p.handle === "vermillion");
   assert.equal(v.moving, false);
   assert.equal(v.aboard, false, "the deck holds until the landing, and not one instant after");
@@ -179,8 +178,8 @@ test("aboard ends when the sailing does — a passenger set down ashore is stand
 // ── 4. everyone() ────────────────────────────────────────────────────────────
 
 test("everyone() is ONE list — arrived and standing are the same state, learned differently", async () => {
-  await seed(B);
-  const r = await presence.everyone({ dbPath: dynPath, repo, atMs: ASK });
+  const projected = await seed(B);
+  const r = await presence.everyone({ repo, projected, atMs: ASK });
   assert.deepEqual(r.residents.map((p) => p.handle).sort(), ["hal", "iris", "jetto", "vermillion", "wright"]);
   assert.equal(r.count, 5);
   assert.equal(r.residents.find((p) => p.handle === "jetto").remaining_m, 52500);
@@ -189,34 +188,32 @@ test("everyone() is ONE list — arrived and standing are the same state, learne
 
 // ── 5. the gates ─────────────────────────────────────────────────────────────
 
-test("no store, or a ledger that moved since the refresh — each is named, never smoothed", async () => {
-  const gone = await presence.near({ x: 0, y: 0, dbPath: dynPath, repo });
-  assert.equal(gone.error, "store-absent");
-  assert.deepEqual(gone.residents, []);
+test("no projection, or a projection that disclosed a gap — each is named, never smoothed", async () => {
+  const gone = await presence.near({ x: 0, y: 0, repo });
+  assert.equal(gone.error, "presence-needs-projection");
+  assert.match(gone.detail, /dynamic\.db, which it read without one, is retired/);
 
-  await seed(B);
-  // someone walks: the ledger the store read is no longer the ledger on main
-  buildWorld({ sha: "b".repeat(40) });
-  const r = await presence.near({ x: 0, y: 0, radiusM: 500, dbPath: dynPath, repo, atMs: B });
-  assert.equal(r.ledger_moved, true);
-  assert.match(r.disclosed[0], /ledger-moved-since-refresh/);
-  assert.equal(r.residents.length, 2, "and it still answers — a disclosed staleness is not a refusal");
+  const projected = { ...(await seed(B)), disclosed: ["store-unreadable: a fixture gap"] };
+  const r = await presence.near({ x: 0, y: 0, radiusM: 500, repo, atMs: B, projected });
+  assert.ok(r.disclosed.includes("store-unreadable: a fixture gap"), "the projection's own disclosure rides through");
+  assert.equal(r.residents.length, 2, "and it still answers — a disclosed gap is not a refusal");
 });
 
 // ── 6. flag off ──────────────────────────────────────────────────────────────
 
 test("flag off — presentNear returns null on its first line and the store is never opened", async () => {
-  await seed(B);
-  writeFileSync(dynPath, "this is not a database");
-  assert.equal(await presence.presentNear({ x: 0, y: 0 }, { repo }), null);
+  const projected = await seed(B);
+  assert.equal(await presence.presentNear({ x: 0, y: 0 }, { repo, projected }), null);
 
   process.env.WORLD_PRESENCE = "1";
-  const broken = await presence.presentNear({ x: 0, y: 0 }, { repo });
-  assert.equal(broken.unavailable, "store-unreadable", "and with the flag ON a broken store is a named absence, never a throw");
+  const blind = await presence.presentNear({ x: 0, y: 0 }, { repo });
+  assert.equal(blind.unavailable, "presence-needs-projection", "and with the flag ON a read with no projection is a named absence, never a throw");
+  const broken = await presence.presentNear({ x: 0, y: 0 }, { repo, projected: { get departures() { throw new Error("torn"); } } });
+  assert.equal(broken.unavailable, "presence-derivation-failed", "nor is a projection that trips");
 });
 
 test("flag off — orient and open-your-eyes answer exactly what they answered before presence existed", async () => {
-  await seed(B);
+  process.env.WORLD_POSITIONS = "1";   // presence reads only the kept projection (POS-269)
   const { worldOrient, worldEyes } = await import("../src/world.mjs");
   const at = { x: 10, y: 10 };
 
@@ -242,6 +239,7 @@ test("flag off — orient and open-your-eyes answer exactly what they answered b
   assert.deepEqual(eyesOn.residents.map((g) => g.band), ["close by"], "grouped by the engine's own bands, nearest first");
 
   const orientAgain = await worldOrient(at, null);
+  delete process.env.WORLD_POSITIONS;
   assert.deepEqual(orientAgain, orientOff, "and turning it back off restores the old answer exactly");
 });
 
@@ -282,8 +280,8 @@ test("GET /world/present 404s when presence is off — 'nobody about' must not l
   assert.equal(off.error, "bounce");
   assert.equal(off.code, 404);
 
-  await seed(B);
   process.env.WORLD_PRESENCE = "1";
+  process.env.WORLD_POSITIONS = "1";
   const near = await worldPresent({ x: "0", y: "0" });
   assert.deepEqual(near.residents.map((r) => r.handle), ["wright", "iris"]);
   const all = await worldPresent({});
@@ -291,6 +289,7 @@ test("GET /world/present 404s when presence is off — 'nobody about' must not l
   const bad = await worldPresent({ x: "not-a-number" });
   assert.equal(bad.code, 422);
   delete process.env.WORLD_PRESENCE;
+  delete process.env.WORLD_POSITIONS;
 });
 
 // ── 8. one rule, one home ────────────────────────────────────────────────────
