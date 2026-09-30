@@ -86,6 +86,36 @@ lawful AS (
     -- (POS-292). INSERT only and no SELECT policy for any role: the answer is
     -- given once, and read only as counts through arrival_heard_weekly().
     ('office_api',   'arrival_heard',    'INSERT'),
+    -- 031_office_paperwork.sql, oauth.db and roles.db moved into the store
+    -- (POS-271). Each grant is a statement oauth.mjs or roles.mjs runs today.
+    -- The DELETEs are lawful because none of this is the record: an expired or
+    -- rotated credential has to stop resolving, and deletion is how it stops.
+    -- The audit table is INSERT only. Row level security keeps every other
+    -- role out.
+    ('office_api',   'oauth_clients',    'INSERT'),
+    ('office_api',   'oauth_pending',    'INSERT'),
+    ('office_api',   'oauth_pending',    'UPDATE'),
+    ('office_api',   'oauth_pending',    'DELETE'),
+    ('office_api',   'oauth_codes',      'INSERT'),
+    ('office_api',   'oauth_codes',      'DELETE'),
+    ('office_api',   'oauth_tokens',     'INSERT'),
+    ('office_api',   'oauth_tokens',     'DELETE'),
+    ('office_api',   'oauth_berths',     'INSERT'),
+    ('office_api',   'oauth_berths',     'UPDATE'),
+    ('office_api',   'oauth_key_claims', 'INSERT'),
+    ('office_api',   'oauth_key_claims', 'UPDATE'),
+    ('office_api',   'oauth_key_claims', 'DELETE'),
+    ('office_api',   'office_roles',     'INSERT'),
+    ('office_api',   'office_roles',     'UPDATE'),
+    ('office_api',   'office_roles',     'DELETE'),
+    ('office_api',   'office_role_audit', 'INSERT'),
+    -- 032_office_ledgers.sql, the rest of oauth.db (POS-271): the media quota
+    -- ledger and the town log are append-only, and the drain cursor is the one
+    -- row that is upserted.
+    ('office_api',   'office_media',     'INSERT'),
+    ('office_api',   'office_town_journal', 'INSERT'),
+    ('office_api',   'office_meta',      'INSERT'),
+    ('office_api',   'office_meta',      'UPDATE'),
     ('clearing_job', 'claims',           'UPDATE'),
     ('clearing_job', 'windows',          'INSERT'),
     ('clearing_job', 'windows',          'UPDATE'),
