@@ -2425,8 +2425,8 @@ async function apexDo(args, key, ctx = {}) {
       ...(seatedAt ? { seat: seatBlock(seatedAt, args, key), ...(match.via_seat ? { via_seat: true } : {}) } : {}),
       ...(acting ? { actor: { kind: acting.kind, standing: acting.standing, residue: acting.residue, says: acting.says, note: acting.note } } : {}) };
     let result;
-    // Declared out here because the CROSSING below needs it too — the wheel has
-    // to be told which hand crossed, and that block sits after this try.
+    // Declared out here, as it was when the arena's wheel on the crossing below
+    // needed it too (the arena closed 2026-09-30); derived once, inside.
     let hand = null;
     try {
       // THE ACTOR SEAM'S ONE EFFECT ON DISPATCH. A human's COMPANIONED say goes
