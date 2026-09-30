@@ -74,9 +74,9 @@ const dropHomes = () => { for (const d of homes.splice(0)) rmSync(d, { recursive
 const key = { household: "keemin", handles: new Set(["wright"]), ghId: "42", ghLogin: "keeminlee" };
 const db = fixtureDb();
 
-const rowsIn = (path) => {
+const rowsIn = async (path) => {
   const o = openOauthDb(path);
-  try { ensureTownJournal(o); return readTownJournal(o); } finally { o.close(); }
+  try { ensureTownJournal(o); return await readTownJournal(o); } finally { o.close(); }
 };
 
 // ASYNC-AWARE SINCE POS-158. `return fn()` handed back a promise and the
@@ -155,7 +155,7 @@ test("P1-P4 · EVERY SKIN LOGS: REST PATCH, household apex, flat tool — one ro
     assert.ok(flat.logged?.seq, "the flat tool still logs — the seam moved, it did not go away");
 
     // ── P4 · EXACTLY ONE ROW EACH, and all of them `profile`.
-    const rows = rowsIn(odbPath);
+    const rows = await rowsIn(odbPath);
     assert.equal(rows.length, 3,
       `three edits through three skins is three rows — got ${rows.length}: ${JSON.stringify(rows.map((r) => [r.seq, r.act]))}`);
     assert.deepEqual(rows.map((r) => r.act), ["profile", "profile", "profile"]);
@@ -182,19 +182,19 @@ test("P1-P4 · EVERY SKIN LOGS: REST PATCH, household apex, flat tool — one ro
 // P5 · A BOUNCE LOGS NOTHING
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("P5 · a bounce never leaves a row claiming an edit that did not happen", () => {
+test("P5 · a bounce never leaves a row claiming an edit that did not happen", async () => {
   const clone = townClone();
   const path = logHome();
   const o = openOauthDb(path);
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       // not one of this key's residents — scope() throws before any pen work
-      assert.throws(() => updateProfile({ handle: "limen", bio: "not mine to write" }, key, db, clone, o),
+      await assert.rejects(async () => await updateProfile({ handle: "limen", bio: "not mine to write" }, key, db, clone, o),
         (e) => e.code === 403);
       // and a door that reaches its own validation and refuses
-      assert.throws(() => updateHome({ handle: "wright" }, key, db, clone, o),
+      await assert.rejects(async () => await updateHome({ handle: "wright" }, key, db, clone, o),
         (e) => e.code === 422);
-      assert.deepEqual(readTownJournal(o), [],
+      assert.deepEqual((await readTownJournal(o)), [],
         "the throw leaves `impl` before the wrapper's log line is ever reached — there is no branch to get wrong");
     });
   } finally { o.close(); dropHomes(); rmSync(clone, { recursive: true, force: true, maxRetries: 5 }); }
@@ -204,18 +204,18 @@ test("P5 · a bounce never leaves a row claiming an edit that did not happen", (
 // P6 · FLAG-OFF IS BYTE-IDENTICAL
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("P6 · FLAG-OFF: no row, and the answer is the answer it always was", () => {
+test("P6 · FLAG-OFF: no row, and the answer is the answer it always was", async () => {
   const clone = townClone();
   const path = logHome();
   const o = openOauthDb(path);
   try {
     delete process.env.TOWN_SINGLE_LOG;
-    const out = updateProfile({ handle: "wright", bio: "flag-off" }, key, db, clone, o);
+    const out = await updateProfile({ handle: "wright", bio: "flag-off" }, key, db, clone, o);
     assert.equal(out.error, undefined);
     assert.ok(out.commit, "the pen commit is the whole behaviour flag-off");
     assert.equal("logged" in out, false,
       "no `logged` key at all — not a null one. A caller comparing the two flag states must see the same object shape it saw before wave 2 existed.");
-    assert.deepEqual(readTownJournal(o), []);
+    assert.deepEqual((await readTownJournal(o)), []);
   } finally { o.close(); dropHomes(); rmSync(clone, { recursive: true, force: true, maxRetries: 5 }); }
 });
 
@@ -230,8 +230,8 @@ test("P7 · A WHOLE CROSSING REPLAYS THE ACT AND WRITES NO NEW ROW", async () =>
   try {
     await flagOn(async () => {
       // one real edit, logged by the door
-      updateProfile({ handle: "wright", bio: "the original act" }, key, db, clone, o);
-      const before = readTownJournal(o);
+      await updateProfile({ handle: "wright", bio: "the original act" }, key, db, clone, o);
+      const before = await readTownJournal(o);
       assert.equal(before.length, 1);
 
       // NOW RUN THE REAL CROSSING, through the real bridge, with the real log
@@ -269,9 +269,9 @@ test("P7 · A WHOLE CROSSING REPLAYS THE ACT AND WRITES NO NEW ROW", async () =>
       assert.equal(r.updates[0].already, true,
         "and recognised it as already applied — an act the door itself committed into this clone (#2302)");
 
-      assert.deepEqual(readTownJournal(o).map((r2) => r2.seq), [before[0].seq],
+      assert.deepEqual((await readTownJournal(o)).map((r2) => r2.seq), [before[0].seq],
         "STILL ONE ROW — the crossing settled the act and wrote nothing down");
-      assert.equal(readTownJournal(o).length, 1,
+      assert.equal((await readTownJournal(o)).length, 1,
         "a log that grows on drain is a log that never empties, and every crossing after this one would be bigger than the last");
     });
   } finally { o.close(); dropHomes(); rmSync(clone, { recursive: true, force: true, maxRetries: 5 }); }
@@ -297,7 +297,7 @@ test("P8 · logPaperAct has exactly ONE caller in src/, and it is the door wrapp
     const src = readFileSync(join(ROOT, "src", f), "utf8");
     // the definition itself is not a call
     const hits = (src.match(/logPaperAct\(/g) ?? []).length
-      - (src.match(/export function logPaperAct\(/g) ?? []).length;
+      - (src.match(/export (async )?function logPaperAct\(/g) ?? []).length;
     if (hits > 0) callers.push([f, hits]);
   }
   assert.deepEqual(callers, [["town-updates.mjs", 1]],
@@ -371,10 +371,10 @@ test("P8c · every caller of a paper door hands it the log", () => {
 // P9 · A LOG THAT WILL NOT WRITE IS LOUD, AND THE EDIT STILL STANDS
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("P9 · a failed log warns on stderr and does NOT fail the edit", () => {
+test("P9 · a failed log warns on stderr and does NOT fail the edit", async () => {
   const clone = townClone();
   try {
-    flagOn(() => {
+    await flagOn(async () => {
       // a log handle that throws on use — a closed database, a locked file, a
       // table that will not create
       const broken = { prepare() { throw new Error("database is locked"); }, exec() { throw new Error("database is locked"); } };
@@ -383,7 +383,7 @@ test("P9 · a failed log warns on stderr and does NOT fail the edit", () => {
       const realError = console.error;
       console.error = (...a) => said.push(a.join(" "));
       let out;
-      try { out = updateProfile({ handle: "wright", bio: "the log will fail" }, key, db, clone, broken); }
+      try { out = await updateProfile({ handle: "wright", bio: "the log will fail" }, key, db, clone, broken); }
       finally { console.error = realError; }
 
       // THE EDIT LANDED. The pen commit is already in the town clone, so
@@ -408,23 +408,23 @@ test("P9 · a failed log warns on stderr and does NOT fail the edit", () => {
 // P10 · THE OTHER FOUR ACTS GO THROUGH THE SAME DOOR
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("P10 · all five paper acts log, under their own act names", () => {
+test("P10 · all five paper acts log, under their own act names", async () => {
   const clone = townClone();
   const path = logHome();
   const o = openOauthDb(path);
   try {
-    flagOn(() => {
-      updateAddressBody({ handle: "wright", body: "a new address note" }, key, db, clone, o);
-      updateAddressFields({ handle: "wright", note: "a directory line" }, key, db, clone, o);
-      updateHome({ handle: "wright", title: "the Trueing-House", body: "a home description" }, key, db, clone, o);
-      updateProfile({ handle: "wright", bio: "a bio" }, key, db, clone, o);
-      updateWindow({ handle: "wright", html: "<p>hung</p>" }, key, db, clone, o);
+    await flagOn(async () => {
+      await updateAddressBody({ handle: "wright", body: "a new address note" }, key, db, clone, o);
+      await updateAddressFields({ handle: "wright", note: "a directory line" }, key, db, clone, o);
+      await updateHome({ handle: "wright", title: "the Trueing-House", body: "a home description" }, key, db, clone, o);
+      await updateProfile({ handle: "wright", bio: "a bio" }, key, db, clone, o);
+      await updateWindow({ handle: "wright", html: "<p>hung</p>" }, key, db, clone, o);
 
-      assert.deepEqual(readTownJournal(o).map((r) => r.act),
+      assert.deepEqual((await readTownJournal(o)).map((r) => r.act),
         ["address-body", "address-fields", "home", "profile", "window"],
         "each door logs under ITS OWN act name — the drain routes on this, so a mislabelled row replays through the wrong door");
       // and each names the file the crossing will settle
-      for (const r of readTownJournal(o))
+      for (const r of (await readTownJournal(o)))
         assert.equal(typeof PAPER_ACTS[r.act].file(r.handle), "string");
     });
   } finally { o.close(); dropHomes(); rmSync(clone, { recursive: true, force: true, maxRetries: 5 }); }

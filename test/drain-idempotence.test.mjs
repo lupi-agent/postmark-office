@@ -147,7 +147,7 @@ test("F1 · a door no-op, a hand edit, a crossing — the four fields SURVIVE (#
   await withLog(async (o) => {
     // 1. the door call of the instance: four fields cleared, against a file
     //    that has none of them. Documented no-op — the door says so itself.
-    const out = updateProfile(
+    const out = await updateProfile(
       { handle: "postmaster", color: "", color_name: "", bio: "", runtime: "" },
       KEY, db, clone, o);
     assert.equal(out.unchanged, true, "the door call was a no-op — that is the premise, not the bug");
@@ -155,7 +155,7 @@ test("F1 · a door no-op, a hand edit, a crossing — the four fields SURVIVE (#
     assert.deepEqual(paperActCommits(out), [], "so its whole outcome is the empty list");
 
     // THE COMPANION FIX: a row that wrote nothing is not written down.
-    assert.deepEqual(readTownJournal(o), [],
+    assert.deepEqual((await readTownJournal(o)), [],
       "a documented no-op has nothing to settle, so it must not be logged — a row that wrote nothing can only re-impose args at the crossing");
     assert.equal(out.logged, undefined, "and the caller is not told an edit is pending when none is");
 
@@ -190,9 +190,9 @@ test("F1 · a door no-op, a hand edit, a crossing — the four fields SURVIVE (#
 test("F2 · a row whose commit is already behind HEAD is `already`, not replayed", async () => {
   const clone = postmasterClone();
   await withLog(async (o) => {
-    const out = updateProfile({ handle: "postmaster", bio: "keeper of the paper" }, KEY, db, clone, o);
+    const out = await updateProfile({ handle: "postmaster", bio: "keeper of the paper" }, KEY, db, clone, o);
     assert.ok(out.commit, "the door landed a real commit");
-    const [row] = readTownJournal(o);
+    const [row] = await readTownJournal(o);
     assert.deepEqual(row.payload.commits, [out.commit],
       "and the row records it — the resume key, exactly as `payload.file` is a letter's");
 
@@ -233,7 +233,7 @@ test("F2b · a committed clear is not re-imposed over the rewrite that supersede
     "commit", "-q", "-m", "fixture: a profile with a bio");
 
   await withLog(async (o) => {
-    const out = updateProfile({ handle: "postmaster", bio: "" }, KEY, db, clone, o);
+    const out = await updateProfile({ handle: "postmaster", bio: "" }, KEY, db, clone, o);
     assert.ok(out.commit, "premise: clearing a field that was really there really commits");
     const file = join(clone, "WHITE_PAGES", "postmaster", "PROFILE.md");
     assert.ok(!readFileSync(file, "utf8").includes("bio:"), "and the bio is gone, as asked");
@@ -265,7 +265,7 @@ test("F2b · a committed clear is not re-imposed over the rewrite that supersede
 test("F3 · a row whose commit is NOT behind HEAD replays — no act is lost", async () => {
   const clone = postmasterClone();
   await withLog(async (o) => {
-    const out = updateProfile({ handle: "postmaster", bio: "keeper of the paper" }, KEY, db, clone, o);
+    const out = await updateProfile({ handle: "postmaster", bio: "keeper of the paper" }, KEY, db, clone, o);
     assert.ok(out.commit, "the door committed");
 
     // the crash recovery the ferry unit runs at ExecStart, which throws the
@@ -297,12 +297,12 @@ test("F4 · a commit-less legacy row is grandfathered — replayed as before", a
   const clone = postmasterClone();
   await withLog(async (o) => {
     // the pre-fix row shape, written by hand: args only, no outcome
-    appendTownJournal(o, {
+    await appendTownJournal(o, {
       cls: "update", act: "profile", household: "office", handle: "postmaster",
       ghId: "7", ghLogin: "keeminlee", channel: null,
       payload: { args: { handle: "postmaster", bio: "written before the fix" } },
     });
-    const [row] = readTownJournal(o);
+    const [row] = await readTownJournal(o);
     assert.equal(row.payload.commits, undefined, "precondition: the legacy row carries no outcome");
 
     const r = await drain(o, clone);
@@ -342,11 +342,11 @@ test("F5 · paperActCommits reads the act's whole outcome, not just the top leve
 test("F5b · a two-commit row replays unless EVERY sha is behind HEAD", async () => {
   const clone = postmasterClone();
   await withLog(async (o) => {
-    const out = updateAddressBody({ handle: "postmaster", body: "the office window" }, KEY, db, clone, o);
+    const out = await updateAddressBody({ handle: "postmaster", body: "the office window" }, KEY, db, clone, o);
     assert.ok(out.commit, "one real commit landed");
     // the row as the w37 two-file act would write it: the landed half plus a
     // half this clone has never seen
-    appendTownJournal(o, {
+    await appendTownJournal(o, {
       cls: "update", act: "profile", household: "office", handle: "postmaster",
       ghId: "7", ghLogin: "keeminlee", channel: null,
       payload: { args: { handle: "postmaster", bio: "the second half never landed" },
@@ -392,7 +392,7 @@ test("F7 · the two-file profile act records BOTH commits, and a name-only call 
   await withLog(async (o) => {
     // a call that touches both files: a bio (PROFILE.md) and a shown name
     // (ADDRESS.md's `agent`, through its own writer)
-    const both = updateProfile(
+    const both = await updateProfile(
       { handle: "postmaster", bio: "keeper of the paper", display_name: "The Postmaster" },
       KEY, db, clone, o);
     assert.ok(both.commit, "the PROFILE.md half committed");
@@ -402,7 +402,7 @@ test("F7 · the two-file profile act records BOTH commits, and a name-only call 
     // landed could not be taken back when the profile half was refused.
     assert.equal(both.commit, both.named.commit, "two files, ONE commit, one act — whole or nothing");
 
-    const [row] = readTownJournal(o);
+    const [row] = await readTownJournal(o);
     assert.deepEqual(new Set(row.payload.commits), new Set([both.commit, both.named.commit]),
       "the row records the act's WHOLE outcome, not just the half it thinks of as its own");
     assert.deepEqual(git(clone, "show", "--name-only", "--format=", both.commit).split(/\r?\n/).sort(),
@@ -410,12 +410,12 @@ test("F7 · the two-file profile act records BOTH commits, and a name-only call 
 
     // a display-name-only call: `commit: null, unchanged: true` at the top
     // level, and a real sha underneath. It must still be logged.
-    const nameOnly = updateProfile({ handle: "postmaster", display_name: "Postmaster General" },
+    const nameOnly = await updateProfile({ handle: "postmaster", display_name: "Postmaster General" },
       KEY, db, clone, o);
     assert.equal(nameOnly.commit, null, "the top level reports no commit");
     assert.equal(nameOnly.unchanged, true, "and calls itself unchanged");
     assert.ok(nameOnly.named?.commit, "while the shown name really landed");
-    const rows = readTownJournal(o);
+    const rows = await readTownJournal(o);
     assert.equal(rows.length, 2,
       "a name-only call is NOT a documented no-op — dropping it would lose the resident's shown name");
     assert.deepEqual(rows[1].payload.commits, [nameOnly.named.commit], "and it carries the sha that did land");

@@ -52,6 +52,7 @@ import { mintHousehold, joinHousehold, collectingDrain, NO_DRAIN } from "./cerem
 import {
   ensureTownJournal, pendingRows, rowIsSettleable, townDrainCursor, TOWN_DRAIN_CURSOR, SETTLE_THRESHOLD,
 } from "./town-journal.mjs";
+import { asPaper } from "./paperwork.mjs";
 
 // ── THE GANGWAY REACHES THE SETTLEMENT ROAD ────────────────────────────────
 //
@@ -105,7 +106,7 @@ export const UNREACHABLE_RECORD =
  * the founder's tier line creates.
  */
 export async function planTownDrain(odb, clone, { date }) {
-  const rows = pendingRows(odb);
+  const rows = await pendingRows(odb);
   // THE REGISTRY, FROM THE RECORD (POS-158). This used to read the clone's
   // `tools/households.json` with an `?? { households: {} }` fallback, and that
   // fallback was the dangerous half: against an empty registry every account is
@@ -125,7 +126,7 @@ export async function planTownDrain(odb, clone, { date }) {
         .map((row) => ({ row, why: UNREACHABLE_RECORD })),
       skipped: [], plans: [], registry: null, unreachable: true,
       gangway: { state: gangwayState(clone), held: 0 },
-      head: rows.length ? rows[rows.length - 1].seq : townDrainCursor(odb),
+      head: rows.length ? rows[rows.length - 1].seq : await townDrainCursor(odb),
     };
   const gangway = gangwayState(clone);
   const gangwayOpen = gangway === "open";
@@ -185,7 +186,7 @@ export async function planTownDrain(odb, clone, { date }) {
   return {
     settle, waiting, skipped, plans, registry: working,
     gangway: { state: gangway, held },
-    head: rows.length ? rows[rows.length - 1].seq : townDrainCursor(odb),
+    head: rows.length ? rows[rows.length - 1].seq : await townDrainCursor(odb),
   };
 }
 
@@ -443,5 +444,8 @@ export async function writeTownDrain(clone, plan, { date, drainWith = collecting
  */
 export function advanceTownCursor(odb, head) {
   ensureTownJournal(odb);
-  odb.prepare("INSERT OR REPLACE INTO meta VALUES (?, ?)").run(TOWN_DRAIN_CURSOR, String(head));
+  // The upsert both engines speak (paperwork.mjs § ONE SPELLING OF THE SQL);
+  // `INSERT OR REPLACE` is SQLite's alone.
+  return asPaper(odb).run("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+    TOWN_DRAIN_CURSOR, String(head));
 }

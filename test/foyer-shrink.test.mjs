@@ -944,7 +944,7 @@ test("F9 · the pending view is NOT a second tense computer — its ladder is th
       inOutbox: outboxSettled(db, "wright"), standing: 1,
       settledAsOf: db.prepare("SELECT value FROM meta WHERE key = 'as_of'").get().value,
     }), "one owner: if the mail law's tense vocabulary changes, both surfaces move together");
-    assert.deepEqual(r.standing, hotMailBlock(odb, KEY, { handle: "wright" }).standing,
+    assert.deepEqual(r.standing, (await hotMailBlock(odb, KEY, { handle: "wright" })).standing,
       "and the rows are the doorstep's rows, not a second shaping of them");
     odb.close();
   });
@@ -956,7 +956,7 @@ test('F10 · `the-town/the-disclosure`: "An answer given without its inputs must
     const clone = mailClone();
     // limen has a letter standing. wright asks about it.
     await sendLetterAsRow({ from: "limen", to: "wright", title: "a reply", body: "hello" }, LIMEN, db, clone, odb);
-    assert.equal(pendingRows(odb).length, 1, "there IS something standing — a zero here would be a lie, not an emptiness");
+    assert.equal((await pendingRows(odb)).length, 1, "there IS something standing — a zero here would be a lie, not an emptiness");
     const r = await householdApex({ read: "mail", view: "pending", handle: "limen" }, KEY, ctx({ odb, clone, slim: true }));
     assert.equal(r.error, "bounce");
     assert.equal(r.code, 403);
@@ -1035,7 +1035,7 @@ test('F12 · Hal: "duplicate refusal returning the original receipt" — the sam
     const args = letter({ nonce: "retry-abc" });
     const first = await householdApex({ do: "send", args }, KEY, ctx({ odb, clone, canWrite: true, slim: true }));
     const second = await householdApex({ do: "send", args }, KEY, ctx({ odb, clone, canWrite: true, slim: true }));
-    assert.equal(pendingRows(odb).length, 1, "NOTHING WAS WRITTEN TWICE — this is the whole seam");
+    assert.equal((await pendingRows(odb)).length, 1, "NOTHING WAS WRITTEN TWICE — this is the whole seam");
     assert.equal(second.result.duplicate, true);
     assert.equal(second.result.letter_id, first.result.letter_id, "the ORIGINAL receipt, not a new one");
     assert.equal(second.result.logged.seq, first.result.logged.seq);
@@ -1050,7 +1050,7 @@ test("F12b · a DIFFERENT nonce from the same sender is a different letter — t
     const clone = mailClone();
     await householdApex({ do: "send", args: letter({ nonce: "one" }) }, KEY, ctx({ odb, clone, canWrite: true, slim: true }));
     await householdApex({ do: "send", args: letter({ title: "a second hat", nonce: "two" }) }, KEY, ctx({ odb, clone, canWrite: true, slim: true }));
-    assert.equal(pendingRows(odb).length, 2);
+    assert.equal((await pendingRows(odb)).length, 2);
     odb.close();
   });
 });
@@ -1062,7 +1062,7 @@ test("F12c · a nonce cannot be probed across households — limen spending wrig
     await sendLetterAsRow(letter({ nonce: "shared-word" }), KEY, db, clone, odb);
     const r = await sendLetterAsRow({ from: "limen", to: "wright", title: "hers", body: "hi", nonce: "shared-word" }, LIMEN, db, clone, odb);
     assert.equal(r.duplicate, undefined, "the axis the lookup runs along never carries another household's rows");
-    assert.equal(pendingRows(odb).length, 2);
+    assert.equal((await pendingRows(odb)).length, 2);
     odb.close();
   });
 });
@@ -1072,7 +1072,7 @@ test("F12d · THE DRAIN CANNOT TRIP ON THE NONCE — the replay lane's door is e
     const odb = logDb();
     const clone = mailClone();
     const sent = await sendLetterAsRow(letter({ nonce: "drain-me" }), KEY, db, clone, odb);
-    const row = pendingRows(odb)[0];
+    const row = (await pendingRows(odb))[0];
     assert.equal(row.payload.args.nonce, "drain-me", "the row stores the caller's arguments verbatim, nonce included");
     const out = replayLetter(row, { doors: { [MAIL_DOOR]: enqueueLetter }, db, clone });
     assert.equal(out.skipped, undefined);
@@ -1164,7 +1164,7 @@ test("F15 · TWO CALLS AT ONCE, one nonce: exactly ONE letter is written, and th
       sendLetterAsRow(args, KEY, db, clone, odb),
       sendLetterAsRow(args, KEY, db, clone, odb),
     ]);
-    assert.equal(pendingRows(odb).length, 1,
+    assert.equal((await pendingRows(odb)).length, 1,
       "two overlapping calls wrote two letters — the seam is a sequence, not a seam");
     assert.equal(a.letter_id, b.letter_id, "one letter, so one id");
     assert.equal(a.logged.seq, b.logged.seq, "and one row, so one seq");
@@ -1179,7 +1179,7 @@ test("F15b · and it holds at five — the map is a gate, not a two-caller speci
     const clone = mailClone();
     const args = letter({ nonce: "race-5" });
     const out = await Promise.all([1, 2, 3, 4, 5].map(() => sendLetterAsRow(args, KEY, db, clone, odb)));
-    assert.equal(pendingRows(odb).length, 1);
+    assert.equal((await pendingRows(odb)).length, 1);
     assert.equal(out.filter((r) => r.duplicate).length, 4);
     assert.equal(new Set(out.map((r) => r.letter_id)).size, 1, "all five hold the same letter");
   });
@@ -1199,11 +1199,11 @@ test("F15c · a first call that BOUNCES spends no nonce — the waiter tries hon
     ]);
     assert.equal(results.filter((r) => r.status === "rejected").length, 2,
       "both are refused, and neither is handed a duplicate receipt for a letter that does not exist");
-    assert.equal(pendingRows(odb).length, 0, "and nothing was written");
+    assert.equal((await pendingRows(odb)).length, 0, "and nothing was written");
     // the nonce is not burned: a good letter carrying it still goes
     const ok = await sendLetterAsRow(letter({ nonce: "bounce-1" }), KEY, db, clone, odb);
     assert.equal(ok.duplicate, undefined);
-    assert.equal(pendingRows(odb).length, 1);
+    assert.equal((await pendingRows(odb)).length, 1);
   });
 });
 
@@ -1215,11 +1215,11 @@ test("F16 · an over-long nonce is REFUSED, never trimmed — two nonces cut to 
       () => sendLetterAsRow(letter({ nonce: "x".repeat(NONCE_MAX + 1) }), KEY, db, clone, odb),
       (e) => e.code === 422 && /nonce must be under/.test(e.defect),
       "a nonce past the cap bounces by name");
-    assert.equal(pendingRows(odb).length, 0, "and writes nothing on the way out");
+    assert.equal((await pendingRows(odb)).length, 0, "and writes nothing on the way out");
     // exactly at the cap still goes
     const ok = await sendLetterAsRow(letter({ nonce: "y".repeat(NONCE_MAX) }), KEY, db, clone, odb);
     assert.equal(ok.letter_id, "wright-" + ok.letter_id.split("-").slice(1).join("-"));
-    assert.equal(pendingRows(odb).length, 1, "the cap is a bound, not an off-by-one");
+    assert.equal((await pendingRows(odb)).length, 1, "the cap is a bound, not an off-by-one");
   });
 });
 

@@ -240,7 +240,7 @@ test("F5 · the letter is ACCEPTED either way — the pending row exists and it 
     const clone = mailClone();
     const r = await callTool("send_letter", letter(), ctx({ odb, clone, canWrite: true, key: KEY }));
     const { hotMailBlock } = await import("../src/town-mail.mjs");
-    const pending = hotMailBlock(odb, KEY, { handle: "wright" });
+    const pending = await hotMailBlock(odb, KEY, { handle: "wright" });
     assert.ok(pending, "the row stands in the town log");
     const mine = pending.standing.find((s) => s.letter_id === r.letter_id);
     assert.ok(mine, "the letter this call wrote");

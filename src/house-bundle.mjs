@@ -47,6 +47,7 @@ import { ownerGate } from "./doorstep-bundle.mjs";
 import { unreadFor } from "./unread-store.mjs";
 import { nextCrossingForDoorstep, currentCrossing, CROSSING_EPOCH_UTC, CROSSING_MS } from "./crossings.mjs";
 import { resolveHouse, houseRows, VIA } from "./household-deriver.mjs";
+import { freshFor } from "./paper-fresh.mjs"; // POS-271: the pending paper rows, read before a composed read
 
 /** The doorstep keys that are the same on every resident's page: carried once, at the top. */
 export const HOUSE_ONCE = Object.freeze(["clocks", "psa", "town", "bulletin", "town_pulse"]);
@@ -265,7 +266,7 @@ export async function houseBundle({ household = null } = {}, ctx = {}) {
   // costly part of a doorstep (it parses every resident for the latest
   // arrivals and folds the PSA board and the pulse), so it is paid once here
   // where nine doorsteps paid it nine times.
-  const first = ashore.length ? doorstep(db, ashore[0], asOf, { fresh: { odb, clone, asOf }, nowMs }) : null;
+  const first = ashore.length ? doorstep(db, ashore[0], asOf, { fresh: await freshFor(ashore[0], { odb, clone, asOf }), nowMs }) : null;
   const once = first ? Object.fromEntries(HOUSE_ONCE.filter((k) => k in first).map((k) => [k, first[k]])) : {};
 
   // UNREAD, ONCE FOR THE HOUSE (POS-286): one store read for every resident
@@ -277,7 +278,7 @@ export async function houseBundle({ household = null } = {}, ctx = {}) {
 
   const residents = {};
   for (const h of ashore) {
-    const d = { handle: h, ...residentSegments(db, h, { odb, clone, asOf }) };
+    const d = { handle: h, ...residentSegments(db, h, await freshFor(h, { odb, clone, asOf })) };
     await ownerGate(d, h, { db, clone, key, odb, meta, asOf, unread });
     d.last_active = lastActiveOf(db, h);
     d.stands = stands.byHandle[h] ?? null;
@@ -345,7 +346,7 @@ export async function needsYou({ household = null } = {}, ctx = {}) {
     const { claimState } = readers.claimState ? { claimState: readers.claimState } : await import("./oauth.mjs");
     for (const h of mine) {
       try {
-        const s = claimState(odb, h);
+        const s = await claimState(odb, h);
         if (s && s.cosigned === false && s.asks_standing) keyAsks.push({
           handle: h, asks_standing: s.asks_standing,
           cause: `${h} has asked for a key of their own; it grants nothing until this house's GitHub account co-signs the ask`,

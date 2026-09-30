@@ -282,7 +282,7 @@ export async function runTownDrain(odb, {
       skipped: `nothing holds ${townLockPath()} — the drain writes the town clone and must run under the ferry's flock, as every unit in deploy/ does` });
 
   const stamp = date ?? townDayOf(now);
-  const rows = pendingRows(odb);
+  const rows = await pendingRows(odb);
 
   // ── THE TRIPWIRE, EXTENDED TO THE INVOKER ────────────────────────────────
   //
@@ -305,10 +305,10 @@ export async function runTownDrain(odb, {
 
   const counts = { join: 0, update: 0, letter: 0 };
   for (const r of rows) counts[r.cls] += 1;
-  const head = rows.length ? rows[rows.length - 1].seq : townDrainCursor(odb);
+  const head = rows.length ? rows[rows.length - 1].seq : (await townDrainCursor(odb));
 
   if (!rows.length)
-    return done({ ran: true, date: stamp, drained: 0, counts, head, cursor: townDrainCursor(odb),
+    return done({ ran: true, date: stamp, drained: 0, counts, head, cursor: (await townDrainCursor(odb)),
       commit: null, settled: [], waiting: [], skipped_rows: [], updates: [], letters: [],
       remaining: 0, note: "nothing pending" });
 
@@ -403,7 +403,7 @@ export async function runTownDrain(odb, {
   if (stranded.length)
     return done({ ran: false, refused: "deferred-rows", drained: 0, counts, head,
       ...(dryRun ? { dry_run: true } : {}),
-      cursor: townDrainCursor(odb), commit: null,
+      cursor: (await townDrainCursor(odb)), commit: null,
       // THE MESSAGE CARRIES THE REASONS, NOT JUST THE SEQS. This refusal stops
       // the crossing and therefore the mail, so it is the one line an operator
       // reads at whatever hour it fires — and a row named only by number tells
@@ -426,7 +426,7 @@ export async function runTownDrain(odb, {
 
   if (dryRun)
     return done({ ran: true, dry_run: true, date: stamp, drained: 0, counts, head,
-      cursor: townDrainCursor(odb), commit: null, ...gangwayFields,
+      cursor: (await townDrainCursor(odb)), commit: null, ...gangwayFields,
       settled: plan.settle.map((r) => r.handle), waiting: plan.waiting.map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })),
       skipped_rows: plan.skipped.filter(({ row }) => row.cls === "join").map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })),
       updates: [], letters: [], remaining: rows.length });
@@ -440,7 +440,7 @@ export async function runTownDrain(odb, {
     const pen = drainPenReady(clone);
     if (!pen.ready)
       return done({ ran: false, refused: "ledger-pen-not-ready", drained: 0, counts, head,
-        cursor: townDrainCursor(odb), ...gangwayFields,
+        cursor: (await townDrainCursor(odb)), ...gangwayFields,
         skipped: `the drain would append ${plan.plans.length} registry line(s) and cannot sign them — ${pen.why}. `
           + `Nothing was written and the cursor did not move: every row is still here. (#2040)`,
         settled: [], waiting: plan.settle.map((r) => ({ handle: r.handle, why: "pen not ready" })),
@@ -599,11 +599,11 @@ export async function runTownDrain(odb, {
   // ── the cursor, LAST — and not at all while the gangway holds a row ──────
   if (held)
     log(`drain: ${held} row(s) could not land on the town's remote and are held — the cursor stays for the next crossing`);
-  if (!gangwayHold && !stalledRows.length && !held) advanceTownCursor(odb, head);
+  if (!gangwayHold && !stalledRows.length && !held) await advanceTownCursor(odb, head);
 
   return done({
     ran: true, date: stamp, drained: rows.length, counts, head,
-    cursor: townDrainCursor(odb), commit, first_idea: firstIdea, ...gangwayFields,
+    cursor: (await townDrainCursor(odb)), commit, first_idea: firstIdea, ...gangwayFields,
     ...(registryRefused ? { registry_refused: registryRefused } : {}),
     ...(stalledRows.length ? { store: stalledRows.map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })) } : {}),
     settled: plan.plans.map(({ row }) => row.handle),
@@ -623,6 +623,6 @@ export async function runTownDrain(odb, {
     // held crossing leaves rows at or below `head` still pending, and counting
     // from `head` would report `remaining: 0` over three joins that are still
     // sitting there.
-    remaining: Math.max(0, townJournalHead(odb) - townDrainCursor(odb)),
+    remaining: Math.max(0, (await townJournalHead(odb)) - (await townDrainCursor(odb))),
   });
 }

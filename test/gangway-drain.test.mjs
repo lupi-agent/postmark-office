@@ -93,18 +93,18 @@ const setGangway = (clone, state) => {
 
 const liveOdb = () => openOauthDb(join(tmp("gangway-odb"), "oauth.db"));
 
-const seedJoin = (o, handle = "newcomer") => appendTownJournal(o, {
+const seedJoin = async (o, handle = "newcomer") => await appendTownJournal(o, {
   cls: "join", act: "declare-household", household: handle, handle,
   ghId: "777", ghLogin: `${handle}-gh`,
   payload: { household: handle, card: `${handle}'s card.` },
 });
-const seedUpdate = (o) => appendTownJournal(o, {
+const seedUpdate = async (o) => await appendTownJournal(o, {
   cls: "update", act: "home", household: "keemin", handle: "wright",
   ghId: "42", ghLogin: "keeminlee",
   payload: { args: { handle: "wright", body: "A home written by the drain." } },
 });
-const seedLetter = (o, { from = "wright", to = "limen", date = "2026-08-24", slug = "a-fine-hat" } = {}) =>
-  appendTownJournal(o, {
+const seedLetter = async (o, { from = "wright", to = "limen", date = "2026-08-24", slug = "a-fine-hat" } = {}) =>
+  await appendTownJournal(o, {
     cls: "letter", act: MAIL_ACT, household: "keemin", handle: from,
     ghId: "42", ghLogin: "keeminlee",
     payload: {
@@ -142,8 +142,8 @@ test("G1 · FROZEN: every join row is filed WAITING, and the reason names the ga
   const clone = townClone();
   const o = liveOdb();
   try {
-    seedJoin(o, "newcomer");
-    seedJoin(o, "second-arrival");
+    await seedJoin(o, "newcomer");
+    await seedJoin(o, "second-arrival");
     setGangway(clone, "frozen");
 
     const plan = await planTownDrain(o, clone, { date: "2026-08-24" });
@@ -170,7 +170,7 @@ test("G2 · THE FLIP: the same rows, the same clone, `state: open` — they sett
   const clone = townClone();
   const o = liveOdb();
   try {
-    seedJoin(o, "newcomer");
+    await seedJoin(o, "newcomer");
     setGangway(clone, "frozen");
     assert.deepEqual((await planTownDrain(o, clone, { date: "2026-08-24" })).settle, [], "frozen: nothing");
 
@@ -188,7 +188,7 @@ test("G3 · ABSENT HARBOR IS OPEN: a clone with no gangway file behaves exactly 
   const clone = townClone(); // no HARBOR/ at all
   const o = liveOdb();
   try {
-    seedJoin(o, "newcomer");
+    await seedJoin(o, "newcomer");
     const plan = await planTownDrain(o, clone, { date: "2026-08-24" });
     assert.deepEqual(plan.settle.map((r) => r.handle), ["newcomer"],
       "residency.mjs § gangwayState: absent file = open — a town with no HARBOR has no freeze");
@@ -205,14 +205,14 @@ test("G4 · THE CURSOR DOES NOT MOVE: a held join is still pending after the cro
   const o = liveOdb();
   try {
     await flagOn(async () => {
-      seedJoin(o, "newcomer");
+      await seedJoin(o, "newcomer");
       setGangway(clone, "frozen");
 
       const r = await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(r.ran, true);
       assert.deepEqual(r.settled, [], "settles zero rows…");
-      assert.equal(townDrainCursor(o), 0, "…and advances no cursor");
+      assert.equal((await townDrainCursor(o)), 0, "…and advances no cursor");
       assert.equal(r.cursor, 0, "the report says so in the same breath");
       assert.equal(ashore(clone, "newcomer"), false, "nobody came ashore through a raised gangway");
 
@@ -220,7 +220,7 @@ test("G4 · THE CURSOR DOES NOT MOVE: a held join is still pending after the cro
       // Without the cursor half, the row would be reported as waiting and then
       // walked past forever — losing a household while printing the word that
       // promises you did not.
-      assert.equal(pendingRows(o).length, 1,
+      assert.equal((await pendingRows(o)).length, 1,
         "the row is still in the log, which is the only thing that makes `waiting` mean what it says");
 
       assert.equal(r.gangway, "frozen");
@@ -235,7 +235,7 @@ test("G5 · AND THE CROSSING AFTER THE GANGWAY LOWERS SETTLES THEM", async () =>
   const o = liveOdb();
   try {
     await flagOn(async () => {
-      seedJoin(o, "newcomer");
+      await seedJoin(o, "newcomer");
       setGangway(clone, "frozen");
       await run(o, { clone, date: "2026-08-24" });
       assert.equal(ashore(clone, "newcomer"), false);
@@ -246,8 +246,8 @@ test("G5 · AND THE CROSSING AFTER THE GANGWAY LOWERS SETTLES THEM", async () =>
       assert.deepEqual(r.settled, ["newcomer"], "the freeze was a pause, not a refusal");
       assert.equal(ashore(clone, "newcomer"), true);
       assert.equal(r.gangway, undefined, "an open crossing says nothing about the gangway — a quiet crossing reads as quiet");
-      assert.equal(townDrainCursor(o), r.head, "and the cursor catches up");
-      assert.deepEqual(pendingRows(o), []);
+      assert.equal((await townDrainCursor(o)), r.head, "and the cursor catches up");
+      assert.deepEqual((await pendingRows(o)), []);
     });
   } finally { o.close(); }
 });
@@ -257,9 +257,9 @@ test("G6 · JOINS ONLY, AND THAT IS THE SCOPE CALL: a frozen crossing still carr
   const o = liveOdb();
   try {
     await flagOn(async () => {
-      seedJoin(o, "newcomer");
-      seedUpdate(o);
-      seedLetter(o);
+      await seedJoin(o, "newcomer");
+      await seedUpdate(o);
+      await seedLetter(o);
       setGangway(clone, "frozen");
 
       const r = await run(o, { clone, date: "2026-08-24" });
@@ -277,7 +277,7 @@ test("G6 · JOINS ONLY, AND THAT IS THE SCOPE CALL: a frozen crossing still carr
       // …and the join is still held, and the cursor with it
       assert.deepEqual(r.settled, []);
       assert.equal(ashore(clone, "newcomer"), false);
-      assert.equal(townDrainCursor(o), 0);
+      assert.equal((await townDrainCursor(o)), 0);
     });
   } finally { o.close(); }
 });

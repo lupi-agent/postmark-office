@@ -87,13 +87,13 @@ function indexDb() {
   return path;
 }
 
-function seededDb(seed) {
+async function seededDb(seed) {
   const home = mkdtempSync(join(tmpdir(), "pos158-entry-odb-"));
   temps.push(home);
   const path = join(home, "oauth.db");
   const o = openOauthDb(path);
   ensureTownJournal(o);
-  seed(o);
+  await seed(o);
   o.close();                 // Windows holds the file open otherwise
   return path;
 }
@@ -121,15 +121,15 @@ const outbox = (clone, h) => {
 
 test.after(() => { for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5 }); });
 
-test("THE ENTRYPOINT SETTLES: a letter row becomes real files, and the tool exits 0", () => {
+test("THE ENTRYPOINT SETTLES: a letter row becomes real files, and the tool exits 0", async () => {
   // CAN-FAIL, and it is the half that catches the exact defect: drop the
   // `await` in `tools/town-drain-run.mjs` and this still exits 0 — because the
   // broken caller always did — but the outbox is EMPTY, because the process
   // ended before the promise ran.
   const clone = townClone();
   const date = letterDate();
-  const odbPath = seededDb((o) => {
-    appendTownJournal(o, {
+  const odbPath = await seededDb(async (o) => {
+    await appendTownJournal(o, {
       cls: "letter", act: MAIL_ACT, household: "keemin", handle: "wright",
       ghId: "42", ghLogin: "keeminlee",
       payload: {
@@ -150,7 +150,7 @@ test("THE ENTRYPOINT SETTLES: a letter row becomes real files, and the tool exit
   assert.equal(report.counts.letter, 1);
 });
 
-test("THE ENTRYPOINT REFUSES: a deferred row reaches `$?` as a 1, and stays pending", () => {
+test("THE ENTRYPOINT REFUSES: a deferred row reaches `$?` as a 1, and stays pending", async () => {
   // THE REFUSAL THIS TOOL REALLY MEETS. A foreign-class row cannot be seeded —
   // `appendTownJournal` refuses one at WRITE time, which is its own tripwire
   // working — so the refusal exercised here is the deferral tripwire, reached
@@ -163,8 +163,8 @@ test("THE ENTRYPOINT REFUSES: a deferred row reaches `$?` as a 1, and stays pend
   // defect, and to an `&&`-joined ferry chain a refusal that exits 0 is
   // indistinguishable from a clean crossing.
   const clone = townClone();
-  const odbPath = seededDb((o) => {
-    appendTownJournal(o, {
+  const odbPath = await seededDb(async (o) => {
+    await appendTownJournal(o, {
       cls: "join", act: "declare-household", household: "newcomers", handle: "newcomer",
       ghId: "777", ghLogin: "newcomer-gh",
       payload: { household: "Newcomers", card: "A newcomer's card." },
@@ -181,12 +181,12 @@ test("THE ENTRYPOINT REFUSES: a deferred row reaches `$?` as a 1, and stays pend
     "and nobody was settled");
 });
 
-test("the report is real JSON with real fields, never a stringified promise", () => {
+test("the report is real JSON with real fields, never a stringified promise", async () => {
   // `JSON.stringify(aPromise, null, 2)` is `{}`, which parses, has no fields
   // and asserts nothing. This names the shape so a future un-awaited call
   // cannot pass by being merely parseable.
   const clone = townClone();
-  const odbPath = seededDb(() => { /* nothing pending */ });
+  const odbPath = await seededDb(() => { /* nothing pending */ });
   const r = runTool(clone, odbPath);
   assert.equal(r.status, 0);
   const report = JSON.parse(r.stdout);

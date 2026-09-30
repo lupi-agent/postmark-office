@@ -27,6 +27,7 @@ import { hotMailBlock, outboxTense } from "./town-mail.mjs";
 import { votesAvailable, doorstepVotes } from "./votes.mjs";
 import { nextCrossingForDoorstep } from "./crossings.mjs";
 import { unreadFor, unreadBlock } from "./unread-store.mjs";
+import { freshFor } from "./paper-fresh.mjs"; // POS-271: the pending paper rows, read before a composed read
 
 /**
  * The finished doorstep for one resident, or null when there is no such
@@ -65,7 +66,7 @@ export async function doorstepBundle(handle, ctx = {}) {
   // composition that straddles a crossing could previously name boat N in
   // `rulings` and boat N+1 in `next_crossing`. It cannot now.
   const { db, key, meta, asOf, clone, odb, canWrite, conversationsOffset = 0, slim = false, nowMs = Date.now() } = ctx;
-  const core = doorstep(db, handle, asOf, { conversationsOffset, slim, fresh: { odb, clone, asOf }, nowMs });
+  const core = doorstep(db, handle, asOf, { conversationsOffset, slim, fresh: await freshFor(handle, { odb, clone, asOf }), nowMs });
   if (!core) return null;
 
   // ── THE HEADER'S CLOCK (postmark#2922) ─────────────────────────────────────
@@ -343,7 +344,7 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
     // resident who edited through REST and read back through REST was told
     // nothing about their own pending edit.
     try {
-      const hot = hotTenseBlock(odb, key, { handle });
+      const hot = await hotTenseBlock(odb, key, { handle });
       if (hot) d.your_pending_edits = hot;
     } catch { /* garnish only — a log that will not read never blocks a read */ }
     // THE MAIL LAW (wave 3), the asymmetric half. A SENDER is told about the
@@ -352,7 +353,7 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
     // them. Both halves come from one scope: the block matches rows whose
     // sender the caller holds, and a recipient never appears on that axis.
     try {
-      const pending = hotMailBlock(odb, key, { handle });
+      const pending = await hotMailBlock(odb, key, { handle });
       if (pending) d.your_pending_letters = pending;
       // ONE SCOPE, ONE ANSWER. The count comes off the block that was just
       // composed rather than from a second query, so there is no second filter

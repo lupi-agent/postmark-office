@@ -46,6 +46,8 @@ import { actionFields, declareStanceAtOffice, openStore, residueOf, parseEnvelop
 // world-stance.mjs is already in this module's static graph (world-apex imports
 // it), so naming it here costs nothing and buys the one-grammar guarantee.
 import { ACTION_STANCE, STANCE_TOOLS } from "./world-stance.mjs";
+import { asPaper } from "./paperwork.mjs"; // POS-271: the berth card is paperwork
+import { freshFor } from "./paper-fresh.mjs"; // POS-271: the pending paper rows, read before a composed read
 
 const PUBLIC_BASE = (process.env.PUBLIC_BASE ?? "https://postmark.town/api").replace(/\/+$/, "");
 
@@ -708,8 +710,8 @@ export async function worldSitedFor(handle, { worldBlock = worldBlockForHandle }
   return world.sited === true;
 }
 
-const berthRow = (odb, slug) => {
-  try { return odb?.prepare("SELECT * FROM berths WHERE slug = ?").get(slug) ?? null; } catch { return null; }
+const berthRow = async (odb, slug) => {
+  try { return (odb ? await asPaper(odb).get("SELECT * FROM berths WHERE slug = ?", slug) : null) ?? null; } catch { return null; }
 };
 
 /**
@@ -728,7 +730,7 @@ export async function householdStanding(key, { db, clone, odb, worldBlock = worl
   }
 
   if (key.berth) {
-    const row = odb ? berthRow(odb, key.slug) : null;
+    const row = odb ? await berthRow(odb, key.slug) : null;
     let decl = null;
     try { decl = row?.card ? JSON.parse(row.card) : null; } catch { decl = null; }
     const cosigned = Boolean(row?.cosigned_gh_id);
@@ -854,7 +856,7 @@ async function doBegin(fields, key, { odb }) {
     ...(fields.note ? { note: String(fields.note).slice(0, 500) } : {}),
   };
   try {
-    odb.prepare("UPDATE berths SET card = ? WHERE slug = ?").run(JSON.stringify(decl), key.slug);
+    await asPaper(odb).run("UPDATE berths SET card = ? WHERE slug = ?", JSON.stringify(decl), key.slug);
   } catch (e) {
     return bounce(500, "the declaration would not park", String(e?.message ?? e).slice(0, 200));
   }
@@ -1310,7 +1312,7 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
             "a letter here is a committed file the moment it conforms, so nothing is ever standing between the door and the record — there is no pending half to read. Your sent mail: household { read: \"mail\", view: \"outbox\" }");
         const { hotMailBlock, outboxTense } = await import("./town-mail.mjs");
         const { nextCrossing } = await import("./write.mjs");
-        const block = hotMailBlock(odb, key, { handle });
+        const block = await hotMailBlock(odb, key, { handle });
         const standing = block ? block.standing : [];
         return {
           handle, box: "pending", total: standing.length, shown: standing.length, complete: true,
@@ -1339,7 +1341,7 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
     // there was no way to ask what your window currently says.
     if (what === "window") {
       if (!handle) return whichResident("window");
-      const w = windowRead(db, handle, { odb, clone, asOf });
+      const w = windowRead(db, handle, await freshFor(handle, { odb, clone, asOf }));
       // the domain is `w` ENTIRE — the same object the doorstep segment carries,
       // so the two cannot drift into two renderings of one read.
       if (w) return shadowReadAnswer("window", w, { read: "window", of: handle }, w, ctx);
@@ -1616,10 +1618,10 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
       // `do: "profile"` wrote a pen commit and no row. The apex is the LISTED
       // way to perform these acts and the flats are delisted, so this was the
       // path most real edits took.
-      case "address": result = updateAddressBody(fields, key, db, clone, odb); break;
-      case "home": result = updateHome(fields, key, db, clone, odb); break;
-      case "profile": result = updateProfile(fields, key, db, clone, odb); break;
-      case "window": result = updateWindow(fields, key, db, clone, odb); break;
+      case "address": result = await updateAddressBody(fields, key, db, clone, odb); break;
+      case "home": result = await updateHome(fields, key, db, clone, odb); break;
+      case "profile": result = await updateProfile(fields, key, db, clone, odb); break;
+      case "window": result = await updateWindow(fields, key, db, clone, odb); break;
       // ── the stamps tenancy's writes ─────────────────────────────────────
       // Both wrap an existing implementation rather than growing a second one:
       // the stake rides stakeViaOffice's flock/pen shape, and fund-verify is
@@ -1662,7 +1664,7 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
       }
       case "address-fields": {
         const { updateAddressFields } = await import("./edit.mjs");
-        result = updateAddressFields(fields, key, db, clone, odb);
+        result = await updateAddressFields(fields, key, db, clone, odb);
         break;
       }
       // ── the consent door (#2392) ────────────────────────────────────────
