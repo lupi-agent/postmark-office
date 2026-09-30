@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { __setPoolForTest } from "../src/world2-acts.mjs";
 import { rowsFromRegistry, renderRegistry } from "../src/registry-rows.mjs";
 import { loadRegistryRows } from "../src/registry-store.mjs";
-import { checkRegistry, drainRegistry } from "../tools/registry-drain.mjs";
+import { checkRegistry, drainRegistry, missingFromStore } from "../tools/registry-drain.mjs";
 import { REGISTRY_PATH, PINS_PATH } from "../src/residency.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -239,4 +239,18 @@ test("the meta pair renders in the FILE's order, not the table's", async () => {
     assert.deepEqual(Object.keys(r.rows.meta), ["schema_version", "note"]);
     assert.equal(renderRegistry(r.rows).households, HOUSEHOLDS_RAW);
   } finally { __setPoolForTest(null); }
+});
+
+// ── A RENAME IS NOT A DELETION (#256) ───────────────────────────────────────
+//
+// A house the store renamed carries its old key in `formerly`. The file still
+// holds the old key until the drain prints, so the shrink guard must read the
+// old key as renamed, or every drain after a rename refuses and the printed
+// registers stall (the choose-once path; the POS-299 re-key).
+test("the shrink guard reads a renamed house as renamed, not missing — and a real deletion is still refused", () => {
+  const rows = { households: [{ slug: "fern-hollow", formerly: ["fernwood"] }, { slug: "starforge", formerly: [] }], pins: [] };
+  const file = { households: { fernwood: {}, starforge: {} } };
+  assert.deepEqual(missingFromStore(rows, file, {}), { households: [], pins: [] }, "the old key is the renamed house");
+  const gone = { households: { fernwood: {}, starforge: {}, "a-house-the-store-lost": {} } };
+  assert.deepEqual(missingFromStore(rows, gone, {}).households, ["a-house-the-store-lost"], "a house the store does not hold under any key still stops the drain");
 });
