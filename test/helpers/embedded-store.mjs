@@ -54,6 +54,10 @@ export async function startStore({ db = "town_index_test" } = {}) {
   const server = new EmbeddedPostgres({
     databaseDir: join(scratch, "data"), user: "postgres", password: PW, port, persistent: false,
     onLog: () => {}, onError: () => {},
+    // io_method=sync: Postgres 18's io_worker children outlived a Windows stop
+    // (taskkill /t did not reach them), held the server's stderr pipe, and kept
+    // the test file from ever exiting. No io workers, nothing to outlive it.
+    postgresFlags: ["-c", "io_method=sync"],
   });
   await server.initialise();
   await server.start();
@@ -78,7 +82,10 @@ export async function startStore({ db = "town_index_test" } = {}) {
     async stop() {
       // Windows can hold the data directory for a moment after the server has
       // gone; a scratch directory left in tmp is not a test failure.
+      // persistent: false makes stop() delete the data directory itself, and on
+      // Windows that delete can race the server's last handle (EBUSY): named, not thrown.
       try { await server.stop(); }
+      catch (e) { console.error(`[embedded-store] stop: ${e.code ?? e.message}`); }
       finally {
         try { rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }
         catch (e) { console.error(`[embedded-store] left ${scratch} behind (${e.code ?? e.message})`); }

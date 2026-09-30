@@ -9,7 +9,7 @@
 // arrive with no CONTRIBUTING.md in context, so the contract IS the etiquette.
 
 import { townSummary, residentList, residentPage, resident, mailList, letterAnswer, LETTER_READING_LAW_LINE, search, bulletinList, bulletinTeaser, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, home, identityOf, repoLog, DOORSTEP_SEGMENTS } from "./queries.mjs";
-import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
+import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore, stampsRoster as stampsRosterFromStore, stampsDetail as stampsDetailFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
 import { READ_FIELDS } from "./one-contract.mjs"; // the one field list a read shares with its twin at another door (POS-70 row 39)
 
 /** One line per doorstep segment, for `read_doorstep`'s description. Keyed by
@@ -744,9 +744,13 @@ export async function callTool(name, args, ctx) {
       }
       catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
     }
-    case "read_stamps": return args.handle
-      ? { handle: args.handle, ...stampsDetail(db, args.handle) }
-      : stampsRoster(db, meta, { limit: args?.limit, offset: args?.offset });
+    case "read_stamps":
+      if (townIndexReads()) return fromStore(async (c) => (args.handle
+        ? { handle: args.handle, ...(await stampsDetailFromStore(c, args.handle)) }
+        : stampsRosterFromStore(c, { limit: args?.limit, offset: args?.offset })));
+      return args.handle
+        ? { handle: args.handle, ...stampsDetail(db, args.handle) }
+        : stampsRoster(db, meta, { limit: args?.limit, offset: args?.offset });
     case "read_quests": return questBoardFor(db, meta, args.handle, clone);
     case "read_bounties": return bountyBoard();
     // The Civic Quarter, read whole. No args: the quarter is five buildings and

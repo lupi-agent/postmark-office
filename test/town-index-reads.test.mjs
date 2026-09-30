@@ -55,6 +55,16 @@ before(async () => {
   b.run("2026-07-21-a-human-please", JSON.stringify({ slug: "2026-07-21-a-human-please", data: { title: "A human, please", human_gated: "true" }, body: "Ask your human to look." }));
   b.run("README", JSON.stringify({ slug: "README", data: {}, body: "# The board\n\nWhat goes here." }));
   b.run("a-note", JSON.stringify({ slug: "a-note", data: { title: "A note" }, body: "Before README in English, after it bytewise." }));
+  // stamps: a tie in balance (the handle breaks it, bytewise), a patron's holo
+  // with its receipt, a receipt ref two receipts share, and a keeping-mint row
+  const st = db.prepare("INSERT INTO stamps (handle, balance, mint_count, staked) VALUES (?, ?, ?, ?)");
+  st.run("Zed", 4, 4, 0);
+  st.run("stake:the-quay/wright", 2, 0, 0);
+  db.prepare("INSERT INTO pot_receipts (pot, rail, usd, date, receipt, payer) VALUES (?, ?, ?, ?, ?, ?)").run("the-quay-fund", "stripe", 25, "2026-07-10", "rc-1", "wright");
+  db.prepare("INSERT INTO pot_receipts (pot, rail, usd, date, receipt, payer) VALUES (?, ?, ?, ?, ?, ?)").run("the-quay-fund", "stripe", 5, "2026-07-10", "rc-1", "wright");
+  db.prepare("INSERT INTO funding_holo (party, pot, holo, epoch, date, receipt) VALUES (?, ?, ?, ?, ?, ?)").run("wright", "the-quay-fund", 3, "2026-07", "2026-07-10", "rc-1");
+  db.prepare("INSERT INTO funding_holo (party, pot, holo, epoch, date, receipt) VALUES (?, ?, ?, ?, ?, ?)").run("wright", "the-quay-fund", 1, "2026-07", "2026-07-09", "rc-none");
+  db.prepare("INSERT INTO funding_keeping_mint (party, pot, n, epoch, date) VALUES (?, ?, ?, ?, ?)").run("wright", "keeping", 2, "2026-07", "2026-07-11");
   const w = await s.connect("law_ingester");
   await copyIndexToStore(w, db);
   await w.end();
@@ -107,6 +117,15 @@ test("home answers as office.db does, its freshness dated by the store's own as-
   // A caller's asOf is the OTHER index's clock: the store's reader dates its row
   // by its own head, so a stray asOf changes nothing it answers.
   await same("home wright, a caller's asOf ignored", office.home(db, "wright"), store.home(api, "wright", { asOf: "someothersha" }));
+});
+
+test("stampsRoster and stampsDetail answer as office.db does", async (t) => {
+  if (skip) return t.skip(skip);
+  const meta = Object.fromEntries(db.prepare("SELECT key, value FROM meta").all().map((r) => [r.key, r.value]));
+  for (const a of [{}, { limit: 1 }, { limit: 2, offset: 1 }, { offset: 9 }, { limit: "x" }])
+    await same(`stampsRoster ${JSON.stringify(a)}`, office.stampsRoster(db, meta, a), store.stampsRoster(api, a));
+  for (const h of ["wright", "limen", "Zed", "nobody"])
+    await same(`stampsDetail ${h}`, office.stampsDetail(db, h), store.stampsDetail(api, h));
 });
 
 test("the store's as-of is the index's own", async (t) => {

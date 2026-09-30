@@ -1844,10 +1844,15 @@ export function stampsRoster(db, meta, { limit, offset } = {}) {
   // the list stopped short of.
   const accounts = Object.values(db.prepare("SELECT COUNT(*) AS n FROM stamps").get())[0];
   const balances = db.prepare("SELECT handle, balance FROM stamps ORDER BY balance DESC, handle LIMIT ? OFFSET ?").all(n, start);
+  return stampsRosterPage({ minted: meta.stamps_minted, accounts, n, start }, balances);
+}
+
+/** /stamps's page around its balances. Shared with the store's twin (town-index-store.mjs). */
+export function stampsRosterPage({ minted, accounts, n, start }, balances) {
   const next = start + balances.length;
   const complete = next >= accounts;
   return {
-    minted_cumulative: Number(meta.stamps_minted ?? 0),
+    minted_cumulative: Number(minted ?? 0),
     accounts,
     shown: balances.length,
     limit: n, offset: start, complete,
@@ -1902,24 +1907,45 @@ export function stampsFor(db, handle) {
 // than one opaque number, because a read nobody can check is not a read.
 export function stampsDetail(db, handle) {
   const row = db.prepare("SELECT balance, mint_count, staked FROM stamps WHERE handle = ?").get(handle);
-  const liquid = row?.balance ?? 0;
-  const staked = row?.staked ?? 0;
-  const mint_count = row?.mint_count ?? 0;
-  const base = { stamps: liquid, mint_count, staked, liquid, assets: liquid + staked };
+  let funding = null;
   try {
-    let parties = [handle];
-    try { const hh = householdOf(handle); if (hh?.slug && hh.slug !== handle) parties.push(hh.slug); } catch { /* garnish only */ }
+    const parties = stampParties(handle);
     const ph = parties.map(() => "?").join(",");
     // THE JOIN, IN THE OPEN. `pot-receipt` is the only money row (the founder's
     // 2026-08-26 ruling), so the dollars behind a holo row are read off the
     // receipt its `ref:` names rather than restated on a second row. LEFT, so a
     // holo row whose receipt this index does not hold still appears, with
     // `dollars` null — absent, never guessed.
+    // `, r.seq` names the order sqlite already gave two receipts sharing one
+    // ref (it scans pot_receipts in rowid order); the store's twin says it too.
     const holoRows = db.prepare(`
       SELECT h.party, h.pot, h.holo, h.epoch, h.date, h.receipt, r.usd AS usd
       FROM funding_holo h LEFT JOIN pot_receipts r ON r.receipt = h.receipt
-      WHERE h.party IN (${ph}) ORDER BY h.date, h.seq`).all(...parties);
+      WHERE h.party IN (${ph}) ORDER BY h.date, h.seq, r.seq`).all(...parties);
     const keepingRows = db.prepare(`SELECT pot, n, epoch, date FROM funding_keeping_mint WHERE party IN (${ph}) ORDER BY date, seq`).all(...parties);
+    funding = { holoRows, keepingRows };
+  } catch { /* an index older than the funding seam: stampsDetailOf says so */ }
+  return stampsDetailOf(row, funding);
+}
+
+/** Whose funding rows a handle's stamps read: the handle, and its household's slug when that differs. */
+export function stampParties(handle) {
+  const parties = [handle];
+  try { const hh = householdOf(handle); if (hh?.slug && hh.slug !== handle) parties.push(hh.slug); } catch { /* garnish only */ }
+  return parties;
+}
+
+/**
+ * /stamps/{h}'s answer from its stamps row and its funding rows (null when the
+ * index has no funding tables). Shared with the store's twin.
+ */
+export function stampsDetailOf(row, funding) {
+  const liquid = row?.balance ?? 0;
+  const staked = row?.staked ?? 0;
+  const mint_count = row?.mint_count ?? 0;
+  const base = { stamps: liquid, mint_count, staked, liquid, assets: liquid + staked };
+  if (funding) {
+    const { holoRows, keepingRows } = funding;
     const holo = holoRows.reduce((n, r) => n + r.holo, 0);
     const keeping_total = keepingRows.reduce((n, r) => n + r.n, 0);
     return {
@@ -1973,7 +1999,7 @@ export function stampsDetail(db, handle) {
       // is here rather than a silent shape change.
       moved: "what this household funded — which pot, when, how many dollars, and the receipt that witnessed them — rides on each row of `holo.mints`, beside the holo minted for it. The dollars themselves are the ledger's `pot-receipt` rows, which the pot board serves whole.",
     };
-  } catch {
+  } else {
     // an index hydrated before the funding seam has no funding tables — serve
     // the honest note rather than a guessed-empty section (the mail_state
     // precedent: this window closes at the next rehydrate)

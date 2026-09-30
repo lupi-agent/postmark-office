@@ -1857,13 +1857,20 @@ const handle = (req, res) => {
         return;
       }
 
-      if (path === "/stamps") return j(res, 200, stampsRoster(db, meta, {
-        limit: url.searchParams.get("limit") ?? undefined,
-        offset: url.searchParams.get("offset") ?? undefined,
-      }));
+      if (path === "/stamps") {
+        const opts = {
+          limit: url.searchParams.get("limit") ?? undefined,
+          offset: url.searchParams.get("offset") ?? undefined,
+        };
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.stampsRoster(c, opts));
+        return j(res, 200, stampsRoster(db, meta, opts));
+      }
 
-      if ((m = /^\/stamps\/([a-z0-9-]+)$/.exec(path)))
-        return j(res, 200, { handle: m[1], ...stampsDetail(db, m[1]) });
+      if ((m = /^\/stamps\/([a-z0-9-]+)$/.exec(path))) {
+        const handle = m[1];
+        if (townIndexReads()) return fromTownIndex(res, async (c) => ({ handle, ...(await townIndexStore.stampsDetail(c, handle)) }));
+        return j(res, 200, { handle, ...stampsDetail(db, handle) });
+      }
 
       // quest board for one resident (registry × today's progress). The handle
       // regex IS the arg validation; the board zeroes on a rolled TOWN_TZ day.

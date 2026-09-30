@@ -30,6 +30,7 @@
 import {
   repoLogPage, repoLogCommit, regionListing, regionPage, regionWhole,
   bulletinListing, bulletinTeaserOf, bulletinEntryOf,
+  stampsRosterPage, stampsDetailOf, stampParties,
 } from "./queries.mjs";
 
 // The row SHAPES are queries.mjs's own exported functions, the ones its office.db
@@ -37,7 +38,7 @@ import {
 // would be the private copy that drifts.
 import { freshnessFor, composeHome } from "./paper-fresh.mjs"; // the freshness ladder, as queries.home uses it
 
-export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home"]);
+export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home", "stampsRoster", "stampsDetail"]);
 
 /** Is the switch on? Only the exact value `store` turns it on. */
 export const townIndexReads = (env = process.env) => env.TOWN_INDEX_READS === "store";
@@ -125,6 +126,32 @@ export async function bulletinTeaser(q, opts = {}) {
 export async function bulletinEntry(q, slug) {
   const row = (await q.query("SELECT json FROM town_bulletin WHERE slug = $1", [slug])).rows[0];
   return row ? bulletinEntryOf(row.json) : null;
+}
+
+const STAMPS_PAGE = 50;
+
+/** queries.stampsRoster, from the store; the minted total is the store's own meta. */
+export async function stampsRoster(q, { limit, offset } = {}) {
+  const n = Math.min(Math.max(Number(limit) || STAMPS_PAGE, 1), 200);
+  const start = Math.max(Number(offset) || 0, 0);
+  const accounts = Number((await q.query("SELECT COUNT(*) AS n FROM town_stamps")).rows[0].n);
+  const balances = (await q.query(
+    `SELECT handle, balance FROM town_stamps ORDER BY balance DESC, handle COLLATE "C" LIMIT $1 OFFSET $2`, [n, start])).rows;
+  const minted = (await q.query("SELECT value FROM town_meta WHERE key = 'stamps_minted'")).rows[0]?.value;
+  return stampsRosterPage({ minted, accounts, n, start }, balances);
+}
+
+/** queries.stampsDetail, from the store. */
+export async function stampsDetail(q, handle) {
+  const row = (await q.query("SELECT balance, mint_count, staked FROM town_stamps WHERE handle = $1", [handle])).rows[0];
+  const parties = stampParties(handle);
+  const holoRows = (await q.query(
+    `SELECT h.party, h.pot, h.holo, h.epoch, h.date, h.receipt, r.usd AS usd
+       FROM town_funding_holo h LEFT JOIN town_pot_receipts r ON r.receipt = h.receipt
+      WHERE h.party = ANY($1::text[]) ORDER BY h.date COLLATE "C", h.seq, r.seq`, [parties])).rows;
+  const keepingRows = (await q.query(
+    `SELECT pot, n, epoch, date FROM town_funding_keeping_mint WHERE party = ANY($1::text[]) ORDER BY date COLLATE "C", seq`, [parties])).rows;
+  return stampsDetailOf(row, { holoRows, keepingRows });
 }
 
 /**
