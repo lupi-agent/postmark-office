@@ -1069,17 +1069,12 @@ export async function callHoldTool(name, args = {}, key = null) {
   if (!holdEdgeOnActs())
     throw bounce(503, "holding things needs the hold lane's record, and this office does not keep it",
       "the hold lane's pen must be flipped (W2_PEN has hold) with the guards on (W2_GUARDS=1); dynamic.db, which used to hold the edge, is retired (POS-269)");
-  const db = null;
   try {
     if (name === "world_holdings") {
       // B1: give/drop/take's own holder fold, read from `acts` under W2_GUARDS=1.
       // This read is the SHADOW of those three verbs — one answer, one source.
-      //
-      // Under the guards the rows come from Postgres and the sqlite handle is
-      // not consulted at all, so an absent sqlite store must NOT short-circuit
-      // the flipped read — `guardStatus()` is what tells the two apart.
-      const { guardedAttachments, guardStatus } = await import("./world2-guards.mjs");
-      const rows = (db || guardStatus().flipped) ? await guardedAttachments(db) : [];
+      const { guardedAttachments } = await import("./world2-guards.mjs");
+      const rows = await guardedAttachments();
       const held = holdingsOf(rows, actor);
       // ── THE HOLDINGS BOUND (2026-08-25) ─────────────────────────────
       //
@@ -1136,12 +1131,9 @@ export async function callHoldTool(name, args = {}, key = null) {
     // it is not better for being mine.
     const dials = thingDials();
     // ── LANE TWO OF THE PEN FLIP (W2_PEN=hold; runbook C2, 2026-09-03) ────────
-    // Flipped, the record is Postgres `acts`, committed and awaited BEFORE the
-    // attachments edge is allowed to stand; sqlite gets the edge + the
-    // reverse-mirror copy in ONE transaction that commits only after the pen
-    // has. Unreachable Postgres = the ruled refusal, and nothing was written —
-    // the thing is exactly where it was. Unflipped, the door is what it was.
-    const { laneFlipped } = await import("./world-journal.mjs");
+    // The record is Postgres `acts`, committed and awaited. Unreachable
+    // Postgres = the ruled refusal, and nothing was written — the thing is
+    // exactly where it was.
     // ── THE REACH, AT THE DOOR, FOR BOTH PENS ─────────────────────────
     //
     // ⛔ IT WAS INSIDE `declareHoldingFlipped` FOR ONE COMMIT, and the suite
@@ -1163,15 +1155,19 @@ export async function callHoldTool(name, args = {}, key = null) {
     // standing exactly where it now lies, and the reach it skipped would have
     // passed.
     const { guardedAttachments: guardRows } = await import("./world2-guards.mjs");
-    const preRows = await guardRows(db);
+    const preRows = await guardRows();
     const preHolder = liveHolder(preRows, String(args.thing));
     refuseGiveOfUnheld({ thing: args.thing, to: args.to ?? null, actor, holder: preHolder });
     const face = faceOf(preHolder, args.to ?? null);
     const reached = await refuseOutOfReach({ thing: args.thing, to: args.to ?? null, actor, act: face, holder: preHolder });
 
-    if (laneFlipped("hold")) {
+    // The hold lane is flipped here — the door refused above if it was not —
+    // so there is one pen: the holding act, awaited. (The unflipped pen, which
+    // wrote dynamic.db's edge and mirrored the act fire-and-forget, went with
+    // dynamic.db, POS-269.)
+    {
       const stood = await standpointOfActor(actor);
-      const out = await declareHoldingFlipped({ db, thing: args.thing, to: args.to ?? null, actor, dials, key, reached, stood });
+      const out = await declareHoldingFlipped({ db: null, thing: args.thing, to: args.to ?? null, actor, dials, key, reached, stood });
       if (out?.did !== "drop") return out;
       // AFTER the drop's COMMIT, never inside its transaction: the amend is the
       // mark lane's own act on the mark lane's own pen, and holding the hold
@@ -1181,76 +1177,13 @@ export async function callHoldTool(name, args = {}, key = null) {
       const setDown = await fileSetDownAmend({ did: out, stood, key, actId: out.seq ?? null });
       return { ...out, stands_note: setDownNote(setDown), set_down: setDown };
     }
-    // ── THE UNFLIPPED PEN ─────────────────────────────────────────────
-    // Both legs run before anything is written, and both are read from the live
-    // holder the adjudicator is about to read: the `to:`-on-an-unheld-thing
-    // bounce needs the caller's own word (which the faces discard), and the
-    // reach needs the face (which only the adjudicator can name). So the holder
-    // is read once here, the words are refused first, the faces are derived,
-    // and the geometry is asked last — each question at the only point where
-    // its input still exists.
-    // B1: the same guard read on the unflipped pen path — the read flip and the
-    // write flip are independent flags (runbook §4: "the ports gate the
-    // DELETION, not the flag"), so W2_GUARDS=1 with W2_PEN unset is a real and
-    // supported state, and it is the one this lane is proven in.
-    const did = declareHolding({ db, thing: args.thing, to: args.to ?? null, actor, roster: null, groundOwner: null, dials, rows: preRows });
-    const stood = await standpointOfActor(actor);
-    mirrorHoldingAct(did, key);
-    // The mirror is fire-and-forget on this pen, so there is no act id to
-    // attribute to; the declaration's own stamp pairs the two acts instead.
-    const setDown = did.did === "drop" ? await fileSetDownAmend({ did, stood, key, actId: null }) : null;
-    return dressReceipt(did, { reached, stood, setDown });
-  } finally { try { db?.close(); } catch { /* a reader that cannot close is still a reader that read */ } }
+  } finally { /* no handle is opened: the record is read through the guards */ }
 }
 
-// ── THE HOLDING GAP, CLOSED (2026-08-28) ────────────────────────────────────
-//
-// Third instance of the say gap's class: a live write lane whose pen is not the
-// journal, and so invisible to World 2.0. Here the pen is the `attachments`
-// table (`declareAttachment`, dynamic-entities.mjs), and give/drop/take are
-// three of the world's thirteen apex actions — nothing anyone has picked up,
-// handed over or set down since the seed had a line in `acts`.
-//
-// HOOKED AT THE DOOR, NOT INSIDE `declareHolding`, and that is deliberate:
-// `declareHolding` is the pure adjudicator — it takes a db and no key, it is
-// tested directly on hand-built stores, and giving it a mirror would give every
-// one of those tests a Postgres dependency it has no business having. The door
-// is where a key exists (so the household resolves the way every other act's
-// does) and where success is unambiguous: `declareHolding` THROWS on refusal,
-// so a returned value is a declaration that landed.
-//
-// THE LAZY IMPORT IS THE POINT, not a shortcut. `world.mjs` imports this file,
-// so a static import back would close a cycle; `await import(...)` inside the
-// async body is the idiom this codebase already uses for exactly this
-// (world-stake.mjs reaching world2-claims.mjs). It also means a store with the
-// mirror off never loads world.mjs's world at all.
-//
-// Privacy: a holding is public by the door's own law — "what it does instead is
-// RECORD every take with the resident who made it, so a ground-holder who
-// objects has the record to point at" (world_hold's description). The thing is
-// a public mark id and the actor is the resident who acted. Nothing new leaves
-// the box.
-function mirrorHoldingAct(did, key) {
-  if (!did?.thing) return;
-  void (async () => {
-    try {
-      const { world2Enabled } = await import("./world2-acts.mjs");
-      if (!world2Enabled()) return;
-      const { mirrorLaneAct, CLASS_HOLDING } = await import("./world-journal.mjs");
-      const { witnessStamp } = await import("./world.mjs");
-      const { resolvedWorldHousehold } = await import("./world-branches.mjs");
-      const { currentCrossing } = await import("./crossings.mjs");
-
-      // The actor's own standpoint, not the thing's: an act is witnessed where
-      // the ACTOR stood (the-witnessed-line), and a held thing has no position
-      // of its own — "it is wherever its holder is, derived on read".
-      const { at, witnesses } = await witnessStamp(did.declared_by);
-      await mirrorLaneAct(holdingEntry(did, { crossing: currentCrossing(), at, witnesses, cls: CLASS_HOLDING, household: resolvedWorldHousehold(key) }));
-    } catch (e) {
-      console.error(`[world2-acts] a holding did not reach acts (${String(e?.message ?? e).slice(0, 160)}) — the attachments edge is unaffected`);
-    }
-  })();
-}
+// THE HOLDING GAP, CLOSED (2026-08-28) and then gone: `mirrorHoldingAct`
+// copied an unflipped hold into `acts` fire-and-forget beside dynamic.db's
+// edge. With the edge retired (POS-269) there is only the flipped pen, which
+// writes the act and awaits it.
 
 /** ONE ROW SHAPE for a holding act, whichever pen records it — the mirror
  * (unflipped) and the flipped pen must describe the same act the same way, or
@@ -1297,8 +1230,10 @@ export function holdingEntry(did, { crossing, at, witnesses, cls, household }) {
 // Only this process's main thread writes holding acts (a read worker refuses
 // every unsafe door), so an in-process queue gives the same guarantee with no
 // file under it: `holdingQueue` runs one flipped hold at a time, the check read
-// inside it. The sqlite arm keeps its transaction for its own edge's sake. `deps` exist so the ordering can be proven with no world db and no
-// Postgres; the door injects the real ones.
+// inside it. There is no sqlite arm (POS-269): the hold acts are the edge, and
+// off the hold lane this refuses as the door does. `deps` exist so the
+// ordering can be proven with no world db and no Postgres; the door injects the
+// real ones.
 export async function declareHoldingFlipped({ db, thing, to = null, actor, dials = {}, key = null, deps = {}, reached = null, stood = null }) {
   // THE QUEUE IS ONE THREAD'S. `holdingQueue` serializes the holder check
   // against the commit only among the holds THIS thread runs; a hold written
@@ -1317,12 +1252,15 @@ export async function declareHoldingFlipped({ db, thing, to = null, actor, dials
   const { guardedAttachments } = await import("./world2-guards.mjs");
   const onActs = deps.onActs ?? holdEdgeOnActs();
 
+  if (!onActs)
+    throw bounce(503, "holding things needs the hold lane's record, and this office does not keep it",
+      "the hold lane's pen must be flipped (W2_PEN has hold) with the guards on (W2_GUARDS=1); dynamic.db, which used to hold the edge, is retired (POS-269)");
+
   const turn = holdingQueue.then(() => holdOnce());
   holdingQueue = turn.catch(() => {});
   return turn;
 
   async function holdOnce() {
-  if (!onActs) db.exec("BEGIN IMMEDIATE");
   try {
     // ── B1: THE HOLDER CHECK, INSIDE THE TRANSACTION SHAPE ─────────────────
     // Read INSIDE the queue's turn, never before it. No other flipped hold runs
@@ -1332,16 +1270,15 @@ export async function declareHoldingFlipped({ db, thing, to = null, actor, dials
     // the thing on between the check and the write, and "current state before
     // history" (the three faces above) would be answering about a past. The
     // rows come from `acts`, both eras, latest-wins.
-    const rows = await guardedAttachments(db);
+    const rows = await guardedAttachments();
     // The reach was already asked at the door, above the flip branch, and its
     // answer rides in as `reached`. It is NOT re-asked here: this function's
     // contract is that it can be driven on a hand-built store with no world db
     // and no Postgres, and a world read inside the transaction would take that
     // away from the three tests that exist to prove the pen's ordering.
-    const did = declareHolding({ db, thing, to, actor, roster: null, groundOwner: null, dials, rows, writeEdge: !onActs }); // throws the door's own bounce on refusal
+    const did = declareHolding({ db, thing, to, actor, roster: null, groundOwner: null, dials, rows, writeEdge: false }); // throws the door's own bounce on refusal
     const { at, witnesses } = await witnessStamp(did.declared_by);
     const row = await appendActFlipped(db, holdingEntry(did, { crossing: currentCrossing(), at, witnesses, cls: CLASS_HOLDING, household: resolvedWorldHousehold(key) }));
-    if (!onActs) db.exec("COMMIT");
     // Which store is the RECORD for this act — said in the answer, as the stance
     // door says it (the journal row behind it is the reverse-mirror copy).
     // `seq` IS THE ACT'S ID (G1): `appendActFlipped` answers `seq: null` and
@@ -1350,7 +1287,6 @@ export async function declareHoldingFlipped({ db, thing, to = null, actor, dials
     // which needs the drop act's id to attribute the amend to.
     return { ...dressReceipt(did, { reached, stood }), log: "acts", seq: row.actId ?? row.seq ?? null };
   } catch (err) {
-    if (!onActs) { try { db.exec("ROLLBACK"); } catch { /* no transaction to roll back — the BEGIN itself failed */ } }
     if (err?.name === "PenUnreachableError")
       throw bounce(503, err.message,
         "this lane's pen is the office's record (W2_PEN=hold); when it cannot be reached the door refuses rather than writing anywhere else — the thing is exactly where it was, and your act is safe to make again");

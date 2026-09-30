@@ -112,17 +112,16 @@ test("THE QUEUE: two takes racing for one thing — one wins, the other is refus
   } finally { db.close(); rec.restore(); }
 });
 
-test("W2_GUARDS OFF: the holder check still reads sqlite, so the sqlite edge is still written (and the pen still first)", async () => {
+test("W2_GUARDS OFF: the flipped pen refuses by name — there is no sqlite edge left to read or write (POS-269)", async () => {
   Object.assign(process.env, { WORLD2_PG: "1", WORLD2_PG_URL: "postgres://hold-edge-test/none", W2_PEN: "hold" });
   delete process.env.W2_GUARDS;
   assert.equal(holdEdgeOnActs(), false);
   const rec = recordStandIn();
-  const db = openDynamic(join(tmp, "guards-off.db"));
   try {
-    const did = await declareHoldingFlipped({ db, thing: "maker/cup", actor: "alpha", deps: deps(rec.pen) });
-    assert.equal(did.holder, "alpha");
-    assert.equal(count(db, "attachments"), 1, "with the guards on sqlite, that office's edge must still be written");
-  } finally { db.close(); rec.restore(); }
+    await assert.rejects(declareHoldingFlipped({ db: null, thing: "maker/cup", actor: "alpha", deps: deps(rec.pen) }),
+      (e) => e.code === 503 && /holding things needs the hold lane's record/.test(e.message));
+    assert.equal(rec.acts.length, 0, "and nothing reached the record");
+  } finally { rec.restore(); }
 });
 
 test("CROSSING-SAVE: the save's attachments are the record's; off the hold lane it refuses by name; a record that will not answer is thrown, never a file", async () => {
@@ -180,48 +179,13 @@ test("ONE THREAD, THE SECOND WALL: a hold that reaches a read worker refuses bef
   assert.equal(out.pens, 0, "the pen must not be tried from a worker");
 });
 
-// ── CROSSING-SAVE, BYTE PARITY (Wright's condition 3 on (a)) ────────────────
-// One run of the door with BOTH stores written (the guards-off arm writes the
-// sqlite edge inside its transaction and the stand-in pen writes the act), so
-// the two sources hold the same holdings at the same instants. Then the save is
-// built from each, and the bytes compared.
-
-test("CROSSING-SAVE PARITY: the snapshot from acts is byte-equal to the snapshot from dynamic.db; the log lines differ in `seq` alone", async () => {
-  prodFlags();
-  const rec = recordStandIn();
-  const db = openDynamic(join(tmp, "parity.db"));
-  try {
-    const both = { ...deps(rec.pen), onActs: false };
-    await declareHoldingFlipped({ db, thing: "maker/stool", actor: "alpha", deps: both });
-    await declareHoldingFlipped({ db, thing: "maker/stool", to: "beta", actor: "alpha", deps: both });
-    await declareHoldingFlipped({ db, thing: "maker/lamp", actor: "beta", deps: both });
-    await declareHoldingFlipped({ db, thing: "maker/stool", actor: "beta", deps: both });
-    const { readAttachments } = await import("../src/dynamic-entities.mjs");
-    const { storeAttachmentRows } = await import("../src/world2-guards.mjs");
-    const { buildSave, stableJson } = await import("../tools/crossing-save.mjs");
-    const fromSqlite = readAttachments(db);
-    const fromActs = await storeAttachmentRows();
-    assert.equal(fromSqlite.length, 4);
-    assert.equal(fromActs.length, 4);
-    const at = (rows) => rows.map((r) => Date.parse(r.born_at));
-    const lo = Math.min(...at(fromSqlite)) - 1, hi = Math.max(...at(fromSqlite)) + 1;
-    const save = (attachments) => buildSave({ crossing: 221, boundaryMs: hi, fromMs: lo, toMs: hi, crossingMs: 43_200_000,
-      events: [], attachments, emissions: [], walk: null, asOfWorld: "0".repeat(40) });
-    const s = save(fromSqlite), a = save(fromActs);
-    assert.equal(stableJson(a.snapshot), stableJson(s.snapshot), "the snapshot written from acts is not byte-equal to the one written from dynamic.db");
-    // THE KNOWN DIFFERENCE, asserted exactly so any other one is red: a log
-    // line carries `seq`, which is a sqlite rowid, and a live act has none.
-    assert.equal(a.lines.length, s.lines.length);
-    assert.deepEqual(a.lines.map((l) => ({ ...l, seq: undefined })), s.lines.map((l) => ({ ...l, seq: undefined })), "the log lines differ in more than seq");
-    assert.deepEqual(s.lines.map((l) => l.seq), [1, 2, 3, 4]);
-    assert.deepEqual(a.lines.map((l) => l.seq), [null, null, null, null]);
-    if (process.env.PARITY_OUT) {
-      const { writeFileSync } = await import("node:fs");
-      writeFileSync(join(process.env.PARITY_OUT, "save-from-sqlite.json"), stableJson(s));
-      writeFileSync(join(process.env.PARITY_OUT, "save-from-acts.json"), stableJson(a));
-    }
-  } finally { db.close(); rec.restore(); }
-});
+// ── CROSSING-SAVE, BYTE PARITY (Wright's condition 3 on (a)) — RETIRED ──────
+// This ran the door with BOTH stores written (the guards-off arm wrote the
+// sqlite edge, the stand-in pen the act) and held the save built from each
+// byte-equal, differing in `seq` alone. It was the gate for moving the save's
+// holdings onto acts, and it passed there. The guards-off arm it needed is
+// gone with dynamic.db (POS-269), so there is no second source to compare;
+// the save reads the record only (the CROSSING-SAVE test above).
 
 test("NO SQLITE AT THE DOOR: on prod's flags the holdings read opens no dynamic.db — a store that is not a database is never touched", async () => {
   prodFlags();
