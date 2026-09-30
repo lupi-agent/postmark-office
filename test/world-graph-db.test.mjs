@@ -19,14 +19,14 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { worldClone, NO_WORLD, OFFICE_ROOT } from "./fixture-paths.mjs";
 import { loadPglite, storeFloor } from "./helpers/pglite-store.mjs";
-import { readWorldDbTables } from "../src/world-store.mjs";
+import { CLASS_ROSTER_GATE_SQL, readWorldDbTables } from "../src/world-store.mjs";
 import { graphDb, twinnedStatements } from "../src/world-graph-db.mjs";
 // The modules that register twins, loaded so their statements are in the census.
 import "../src/world-apex.mjs";
@@ -103,6 +103,44 @@ test("EVERY TWIN IS ITS SQL: row for row, column for column, in order, over the 
     const unasked = twinnedStatements().filter((s) => !asked.has(s));
     assert.deepEqual(unasked, [], "a registered twin was never asked, so it was never proved");
     t.diagnostic(`${asked.size} statements, each asked over ${ids.length} ids / ${classes.length} class names / ${slots.length} slots`);
+  } finally { sqlite.close(); }
+});
+
+// The blessed world may not hold every shape a twin must get right, so a copy of
+// it is seeded with the edges the record can reach but S<n> happens not to: a
+// town class mark with no works placement (its roster gate is NULL, not 0), and
+// a closed bounty filed before an open one (the board sorts open first).
+test("THE SEEDED WORLD: a NULL roster gate and a closed bounty, each twin still its SQL", (t) => {
+  if (why) return t.skip(why);
+  const seeded = join(dir, "seeded.db");
+  copyFileSync(file, seeded);
+  const w = new DatabaseSync(seeded);
+  const SEEDS = [
+    ["the-town/seed-unplaced-class", "mark", "declared", "constitution", "the-town", { class: "seed-unplaced", body: "no works placement" }],
+    ["the-town/the-bounty-board/a-closed-seed", "mark", "declared", "resident", "seed-household", { class: "bounty", status: "closed", ask: "a", reward: 1, body: "closed" }],
+    ["the-town/the-bounty-board/z-open-seed", "mark", "declared", "resident", "seed-household", { class: "bounty", ask: "z", reward: 2, body: "open" }],
+  ];
+  try {
+    for (const [id, kind, subkind, tier, by, props] of SEEDS)
+      w.prepare("INSERT INTO nodes (id, kind, subkind, tier, by, props) VALUES (?, ?, ?, ?, ?, ?)").run(id, kind, subkind, tier, by, JSON.stringify(props));
+    for (const [id] of SEEDS.slice(1))
+      w.prepare("INSERT INTO edges (src, dst, type) VALUES ('the-town/the-bounty-board', ?, 'contains')").run(id);
+  } finally { w.close(); }
+  const sqlite = new DatabaseSync(seeded, { readOnly: true });
+  const store = graphDb(readWorldDbTables(seeded));
+  try {
+    const plain = (rows) => JSON.stringify(rows.map((r) => ({ ...r })));
+    const gate = plain(sqlite.prepare(`SELECT (${CLASS_ROSTER_GATE_SQL}) AS g FROM nodes WHERE id = ?`).all(SEEDS[0][0]));
+    assert.equal(gate, '[{"g":null}]', "the seed no longer reaches the NULL gate, so this leg proves nothing");
+    const board = sqlite.prepare("SELECT count(*) AS n FROM edges WHERE src = 'the-town/the-bounty-board' AND type = 'contains'").get().n;
+    assert.ok(board >= 2, "the seeded bounties are not on the board");
+    const ask = [[]].concat(SEEDS.map(([id]) => [id]));
+    for (const sql of twinnedStatements()) {
+      const kind = argKind(sql);
+      if (kind !== "none" && kind !== "id") continue;
+      for (const args of kind === "none" ? [[]] : ask.slice(1))
+        assert.equal(plain(store.prepare(sql).all(...args)), plain(sqlite.prepare(sql).all(...args)), `over the seeded world, a twin answered differently: ${sql.slice(0, 90)} ${JSON.stringify(args)}`);
+    }
   } finally { sqlite.close(); }
 });
 
