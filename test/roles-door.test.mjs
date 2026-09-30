@@ -74,8 +74,8 @@ async function office({ port, gates }) {
       const text = env?.result?.content?.[0]?.text;
       try { return JSON.parse(text); } catch { return env; }
     },
-    grant: () => { const r = openRolesDb(rolesPath); grantRole(r, { subject: GH_ID, actor: "door-test", login: HOUSEHOLD }); r.close(); },
-    revoke: () => { const r = openRolesDb(rolesPath); revokeRole(r, { subject: GH_ID, actor: "door-test" }); r.close(); },
+    grant: async () => { const r = openRolesDb(rolesPath); await grantRole(r, { subject: GH_ID, actor: "door-test", login: HOUSEHOLD }); r.close(); },
+    revoke: async () => { const r = openRolesDb(rolesPath); await revokeRole(r, { subject: GH_ID, actor: "door-test" }); r.close(); },
     async stop() {
       if (child.exitCode === null) { const gone = new Promise((ok) => child.on("exit", ok)); child.kill(); await gone; }
       rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -124,13 +124,13 @@ test("FLAG ON — the door actually consults the registry (grant passes, revoke 
 
     // 3. grant -> served. No restart: the CLI writes the same file the live
     //    handle reads, which is what makes hand-keeping workable at all.
-    gated.grant();
+    await gated.grant();
     const passed = await gated.signedIn();
     assert.equal(passed.status, 200, "a granted household passes the gate — with no office restart");
     assert.ok(!(await passed.json()).error);
 
     // 4. revoke -> refused again, live
-    gated.revoke();
+    await gated.revoke();
     const after = await gated.signedIn();
     assert.equal(after.status, 403, "a revoke takes effect at the door, live");
   } finally {
@@ -154,7 +154,7 @@ test("A GATED SURFACE IS GATED AT EVERY CALL SITE — the MCP door serves the sa
     assert.ok(!("days" in refusedMcp) && !("totals" in refusedMcp),
       "the refusal must not carry the payload it was refusing");
 
-    gated.grant();
+    await gated.grant();
     const passedMcp = await gated.viaMcp();
     assert.ok(!passedMcp.error, "a granted household passes at the MCP door too");
     assert.ok("totals" in passedMcp || "days" in passedMcp,
@@ -176,7 +176,7 @@ test('AMBIGUITY #4, RULED: "a household that exists only as an env string cannot
   // Grant to the household NAME, the way a pre-rekey operator might have.
   // Nothing about that row can ever be reached, because names are not subjects.
   const seed = openRolesDb(rolesPath);
-  try { grantRole(seed, { subject: GH_ID, actor: "seed", login: HOUSEHOLD }); } finally { seed.close(); }
+  try { await grantRole(seed, { subject: GH_ID, actor: "seed", login: HOUSEHOLD }); } finally { seed.close(); }
 
   const child = spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"),

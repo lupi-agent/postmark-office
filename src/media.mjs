@@ -36,8 +36,9 @@
 // The quota grain is the HOUSEHOLD — the credential grain, same as the
 // anti-sybil floor — sized per resident it holds (20 MB each by default), so
 // a one-resident household gets 20 MB and a three-resident founder household
-// gets 60. The ledger lives in the office's own DB (odb — oauth.db), not the
-// town repo: byte-accounting is machinery, NEVER record. (It read "not record"
+// gets 60. The ledger lives in the office's own paperwork (odb — oauth.db, or
+// the store's office_media once the office is switched: paperwork.mjs, POS-271),
+// not the town repo: byte-accounting is machinery, NEVER record. (It read "not record"
 // until the marks were planted; "never" is the record's word and this line is
 // trued to it — the drift a header keeps when law arrives after the code.)
 //
@@ -58,6 +59,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, resolve as resolvePath, sep } from "node:path";
 import { decodeWhole, imageFormat, loadSharp, MAX_IMAGE, MEDIA_FORMATS, MEDIA_TYPE_BY_EXT } from "./edit.mjs";
+import { asPaper } from "./paperwork.mjs";
 
 const bounce = (code, defect, hint) => Object.assign(new Error(defect), { code, defect, hint });
 
@@ -80,8 +82,10 @@ const fmtMB = (n) => `${(n / 1024 / 1024).toFixed(n % (1024 * 1024) === 0 ? 0 : 
 const sha256hex = (data) => createHash("sha256").update(data).digest("hex");
 const hmac = (key, data) => createHmac("sha256", key).update(data).digest();
 
+// The FILE's table, created on first use. A paper runs it on its file only
+// (paperwork.mjs § exec); the store's table is 032's.
 export function ensureMediaTable(odb) {
-  odb.exec(`
+  asPaper(odb).exec(`
     CREATE TABLE IF NOT EXISTS media (
       household TEXT NOT NULL, sha TEXT NOT NULL, ext TEXT NOT NULL,
       bytes INTEGER NOT NULL, by_handle TEXT NOT NULL, created INTEGER NOT NULL,
@@ -220,10 +224,12 @@ export async function putThumbnails({ household, sha, ext, bytes, sizes = THUMB_
  * ceiling off the town's roster instead would quote a household a cap its own
  * key cannot spend.
  */
-export function mediaQuota(odb, household, residents = 1) {
+export async function mediaQuota(odb, household, residents = 1) {
   ensureMediaTable(odb);
   const ceiling = QUOTA_PER_RESIDENT * Math.max(1, residents);
-  const used = odb.prepare("SELECT COALESCE(SUM(bytes), 0) AS u FROM media WHERE household = ?").get(household).u;
+  // Number(): the store's SUM over a bigint is a numeric, which node-postgres
+  // hands back as a string (paperwork.mjs § NUMBERS).
+  const used = Number((await asPaper(odb).get("SELECT COALESCE(SUM(bytes), 0) AS u FROM media WHERE household = ?", household)).u);
   return { per_resident: QUOTA_PER_RESIDENT, ceiling, used, remaining: Math.max(0, ceiling - used) };
 }
 
@@ -232,11 +238,10 @@ export function mediaQuota(odb, household, residents = 1) {
  * accounting (the table above), so this is the only read that can answer what a
  * household actually holds — the upload answer names one URL and is gone.
  */
-export function mediaLedgerRows(odb, household) {
+export async function mediaLedgerRows(odb, household) {
   ensureMediaTable(odb);
-  return odb
-    .prepare("SELECT sha, ext, bytes, by_handle, created FROM media WHERE household = ? ORDER BY created DESC, sha ASC")
-    .all(household)
+  return (await asPaper(odb)
+    .all("SELECT sha, ext, bytes, by_handle, created FROM media WHERE household = ? ORDER BY created DESC, sha ASC", household))
     .map((r) => ({
       url: mediaUrlFor(household, r.sha, r.ext),
       sha: r.sha,
@@ -735,11 +740,11 @@ export async function uploadMedia(args = {}, key = null, odb = null,
   const objectKey = mediaObjectKey(household, sha, ext);
   const url = mediaUrlFor(household, sha, ext);
 
-  const { ceiling, used } = mediaQuota(odb, household, handles.length);
+  const { ceiling, used } = await mediaQuota(odb, household, handles.length);
   // Same bytes, same wall: answer with the URL that already exists. This sits
   // BEFORE the quota check on purpose — re-sending what you already hold can
   // never be refused for fullness.
-  if (odb.prepare("SELECT 1 FROM media WHERE household = ? AND sha = ?").get(household, sha))
+  if (await asPaper(odb).get("SELECT 1 FROM media WHERE household = ? AND sha = ?", household, sha))
     return { url, bytes: bytes.length, type: mediaType, sha, already: true, via: source, ...(read_at ? { read_at } : {}), quota: { used, ceiling } };
   if (used + bytes.length > ceiling)
     throw bounce(413, "your household's media is full",
@@ -760,8 +765,8 @@ export async function uploadMedia(args = {}, key = null, odb = null,
       console.log(`[media] no small copies for ${household} ${sha.slice(0, 12)}.${ext}: ${e?.defect ?? e?.message ?? e}`);
     }
   }
-  odb.prepare("INSERT INTO media (household, sha, ext, bytes, by_handle, created) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(household, sha, ext, bytes.length, by, Date.now());
+  await asPaper(odb).run("INSERT INTO media (household, sha, ext, bytes, by_handle, created) VALUES (?, ?, ?, ?, ?, ?)",
+    household, sha, ext, bytes.length, by, Date.now());
   // ONE LINE SO A WALL BREACH LEAVES A TRACE. The ledger row is byte-accounting
   // and deliberately keeps no URL — but the SSRF wall carries a knowingly-open
   // rebinding gap, and a gap nothing records is one nobody can ever notice.

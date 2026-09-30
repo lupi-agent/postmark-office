@@ -90,7 +90,7 @@ export const SETTLES_AT = "the next ferry crossing (00:00 / 12:00 UTC)";
  * `args` is the door's own argument object, stored VERBATIM: the drain's whole
  * contract is that replaying it through the door reproduces the pen's commit.
  */
-export function logLetter(odb, { args, key, from, id, file }) {
+export async function logLetter(odb, { args, key, from, id, file }) {
   if (!odb || !townLogEnabled()) return null;
   if (!from) throw new Error("a letter row needs a sender — the row's handle is its FROM, and the hot tense is scoped on it");
   return appendTownJournal(odb, {
@@ -119,11 +119,11 @@ export function logLetter(odb, { args, key, from, id, file }) {
  * is the mail law expressed as a scope, and the falsifier named
  * "THE MAIL LAW" in test/town-mail.test.mjs is what holds it there.
  */
-export function hotLetters(odb, key, { handle = null } = {}) {
+export async function hotLetters(odb, key, { handle = null } = {}) {
   if (!odb || !townLogEnabled()) return [];
   const mine = new Set([...(key?.handles ?? [])].filter(Boolean));
   if (handle && !mine.has(handle)) return [];
-  return pendingRows(odb).filter((r) => r.cls === "letter" && r.handle && mine.has(r.handle)
+  return (await pendingRows(odb)).filter((r) => r.cls === "letter" && r.handle && mine.has(r.handle)
     && (!handle || r.handle === handle));
 }
 
@@ -151,8 +151,8 @@ export function hotLetters(odb, key, { handle = null } = {}) {
  * Every entry is one un-drained letter. Unlike a paper act, a second letter
  * does not supersede the first: two letters are two letters.
  */
-export function hotMailBlock(odb, key, { handle = null } = {}) {
-  const rows = hotLetters(odb, key, { handle });
+export async function hotMailBlock(odb, key, { handle = null } = {}) {
+  const rows = await hotLetters(odb, key, { handle });
   if (!rows.length) return null;
   return {
     standing: rows.map((r) => ({
@@ -340,11 +340,11 @@ export async function preflightEnvelope(clone, plan) {
 // That is asserted rather than assumed — see the falsifier of that name.
 
 /** The row that already spent this nonce for this sender, or null. */
-export function spentNonce(odb, key, { from, nonce }) {
+export async function spentNonce(odb, key, { from, nonce }) {
   if (!odb || !nonce || !from) return null;
   // The lookup itself is shared with the paper acts (town-journal.mjs §
   // rowSpendingNonce); the SCOPE is this function's, and it is the mail law's.
-  return rowSpendingNonce(hotLetters(odb, key, { handle: from }), nonce);
+  return rowSpendingNonce(await hotLetters(odb, key, { handle: from }), nonce);
 }
 
 /**
@@ -467,7 +467,7 @@ async function sendRow(args, key, db, clone, odb, nonce) {
   // and the first call is what put the town in the state a second validation
   // would now be judging. The lookup is key-scoped, so an unvalidated `from`
   // buys nothing: a handle this key does not hold matches no row.
-  const spent = spentNonce(odb, key, { from: args?.from, nonce });
+  const spent = await spentNonce(odb, key, { from: args?.from, nonce });
   if (spent) return duplicateReceipt(spent, nonce);
 
   const plan = validateLetter(args, key, db); // the office's own fence, unchanged and first
@@ -476,7 +476,7 @@ async function sendRow(args, key, db, clone, odb, nonce) {
   if (bad) { const e = new Error(bad.defect); Object.assign(e, bad); throw e; }
 
   const file = outboxRelPath(plan.from, plan.date, plan.to, plan.slug);
-  const seq = logLetter(odb, { args, key, from: plan.from, id: plan.id, file });
+  const seq = await logLetter(odb, { args, key, from: plan.from, id: plan.id, file });
   return {
     letter_id: plan.id,
     // NOTHING IS COMMITTED, and the field says so rather than going missing:

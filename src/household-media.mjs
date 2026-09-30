@@ -155,8 +155,8 @@ export async function mediaRead(key, { odb, db, clone, embedded = embeddedScan, 
     const handles = [...(key?.handles ?? [])].filter(Boolean).sort();
     // The SAME arithmetic the upload door charges against — literally the same
     // function, sized off the residents this key acts for.
-    const quota = mediaQuota(odb, household, handles.length);
-    const rows = mediaLedgerRows(odb, household);
+    const quota = await mediaQuota(odb, household, handles.length);
+    const rows = await mediaLedgerRows(odb, household);
     const mediaN = Math.min(Math.max(Number(limit) || MEDIA_PAGE, 1), 200);
     const mediaStart = Math.max(Number(offset) || 0, 0);
     const page = rows.slice(mediaStart, mediaStart + mediaN);

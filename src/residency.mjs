@@ -769,7 +769,7 @@ export async function requestResidency(args, key, db, pen, {
       key: { ghId: key.ghId, ghLogin: key.ghLogin, handles: [...(key.handles ?? [])] },
       dbPath,
     }, { clone });
-    const logged = odb && townLogEnabled() ? appendTownJournal(odb, {
+    const logged = odb && townLogEnabled() ? await appendTownJournal(odb, {
       act: "request-residency",
       household: landed.household.slug,
       handle,
@@ -804,7 +804,7 @@ export async function requestResidency(args, key, db, pen, {
   // written there would be a second queue beside the manifest.
   let logged = null;
   if (odb && townLogEnabled()) {
-    logged = appendTownJournal(odb, {
+    logged = await appendTownJournal(odb, {
       act: "request-residency",
       household: plan?.slug ?? house?.slug ?? String(key?.household ?? ""),
       handle,

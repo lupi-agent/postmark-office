@@ -80,9 +80,17 @@
 // table is what a restore would be rebuilt FROM, which is the strongest reason
 // it is append-only; a backup discipline for this one file is an operations
 // decision that is not this module's to make, only to state.
+//
+// ⚑ AND SINCE POS-271 IT HAS ONE: the store. Every function below takes a
+// paper (paperwork.mjs) as `rdb` — roles.db by default, the store's
+// office_roles / office_role_audit once the office is switched
+// (OFFICE_PAPERWORK_STORE=1) — so every one of them is async. The store is
+// backed up with everything else in it (deploy/world2-backup.sh), which is the
+// durability this file could only name.
 
 import { DatabaseSync } from "node:sqlite";
 import { join, resolve } from "node:path";
+import { asPaper } from "./paperwork.mjs";
 
 // THIS MODULE IMPORTS NOTHING BUT NODE BUILTINS, ON PURPOSE.
 //
@@ -141,6 +149,13 @@ export const displayLogin = (login) => {
 export function openRolesDb(path = DEFAULT_ROLES_DB, { readOnly = false } = {}) {
   if (readOnly) return new DatabaseSync(path, { readOnly: true });
   const db = new DatabaseSync(path);
+  rolesSchema(db);
+  return db;
+}
+
+/** The file's own shape and its additive migrations (the writer runs it; the
+ *  store's shape is 031's). Exported for paperwork.mjs § openPaper. */
+export function rolesSchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS roles (
       subject    TEXT NOT NULL,
@@ -168,7 +183,6 @@ export function openRolesDb(path = DEFAULT_ROLES_DB, { readOnly = false } = {}) 
   for (const sql of ["ALTER TABLE roles ADD COLUMN login TEXT",
                      "ALTER TABLE role_audit ADD COLUMN login TEXT"])
     try { db.exec(sql); } catch { /* already there */ }
-  return db;
 }
 
 /**
@@ -181,9 +195,9 @@ export function openRolesDb(path = DEFAULT_ROLES_DB, { readOnly = false } = {}) 
  * turned back into an id without asking GitHub, and guessing is how you grant
  * a stranger someone else's subscription.
  */
-export function staleRows(rdb) {
+export async function staleRows(rdb) {
   try {
-    return rdb.prepare("SELECT * FROM roles").all().filter((r) => normalizeSubject(r.subject) === null);
+    return (await asPaper(rdb).all("SELECT * FROM roles")).filter((r) => normalizeSubject(r.subject) === null);
   } catch { return []; }
 }
 
@@ -197,26 +211,24 @@ const nowIso = () => new Date().toISOString();
 // second line is the fact that someone asked again, which is exactly the kind
 // of thing an operator later wants to see.
 
-export function grantRole(rdb, { subject, role = ROLE_SUBSCRIBER, actor, note = null, login = null }) {
+export async function grantRole(rdb, { subject, role = ROLE_SUBSCRIBER, actor, note = null, login = null }) {
   const s = normalizeSubject(subject);
   if (!s) throw new Error(`grant needs a subject: the household's gh_id (digits). Got ${JSON.stringify(subject)}`);
   if (!role) throw new Error("grant needs a role name");
   if (!actor) throw new Error("grant needs an actor — who ran this");
   const at = nowIso();
   const who = displayLogin(login);
-  rdb.exec("BEGIN");
-  try {
-    rdb.prepare(
+  await asPaper(rdb).tx(async (t) => {
+    await t.run(
       "INSERT INTO roles (subject, role, login, granted_at, granted_by, note) VALUES (?,?,?,?,?,?)" +
       " ON CONFLICT(subject, role) DO UPDATE SET granted_at = excluded.granted_at," +
       " granted_by = excluded.granted_by, note = excluded.note," +
       // A re-grant with no login known must not ERASE the label we already had.
-      " login = COALESCE(excluded.login, roles.login)"
-    ).run(s, role, who, at, actor, note);
-    rdb.prepare("INSERT INTO role_audit (at, action, subject, role, login, actor, note) VALUES (?,'grant',?,?,?,?,?)")
-      .run(at, s, role, who, actor, note);
-    rdb.exec("COMMIT");
-  } catch (e) { rdb.exec("ROLLBACK"); throw e; }
+      " login = COALESCE(excluded.login, roles.login)",
+      s, role, who, at, actor, note);
+    await t.append("INSERT INTO role_audit (at, action, subject, role, login, actor, note) VALUES (?,'grant',?,?,?,?,?)",
+      [at, s, role, who, actor, note], "id");
+  });
   return { subject: s, role, at, login: who };
 }
 
@@ -230,14 +242,15 @@ export function grantRole(rdb, { subject, role = ROLE_SUBSCRIBER, actor, note = 
  * Fires only when the label actually differs, so the common request writes
  * nothing.
  */
-export function refreshLogin(rdb, subject, login) {
+export async function refreshLogin(rdb, subject, login) {
   const s = normalizeSubject(subject);
   const who = displayLogin(login);
   if (!rdb || !s || !who) return false;
   try {
-    const row = rdb.prepare("SELECT login FROM roles WHERE subject = ? LIMIT 1").get(s);
+    const P = asPaper(rdb);
+    const row = await P.get("SELECT login FROM roles WHERE subject = ? LIMIT 1", s);
     if (!row || row.login === who) return false;
-    rdb.prepare("UPDATE roles SET login = ? WHERE subject = ?").run(who, s);
+    await P.run("UPDATE roles SET login = ? WHERE subject = ?", who, s);
     return true;
   } catch { return false; }
 }
@@ -249,42 +262,42 @@ export function refreshLogin(rdb, subject, login) {
  * revoke this" is a fact worth keeping, and a silent no-op here would be a
  * state with no receipt.
  */
-export function revokeRole(rdb, { subject, role = ROLE_SUBSCRIBER, actor, note = null }) {
+export async function revokeRole(rdb, { subject, role = ROLE_SUBSCRIBER, actor, note = null }) {
   const s = normalizeSubject(subject);
   if (!s) throw new Error(`revoke needs a subject: the household's gh_id (digits). Got ${JSON.stringify(subject)}`);
   if (!role) throw new Error("revoke needs a role name");
   if (!actor) throw new Error("revoke needs an actor — who ran this");
   const at = nowIso();
-  rdb.exec("BEGIN");
   let held = false;
   let who = null;
-  try {
-    const row = rdb.prepare("SELECT login FROM roles WHERE subject = ? AND role = ?").get(s, role);
+  await asPaper(rdb).tx(async (t) => {
+    const row = await t.get("SELECT login FROM roles WHERE subject = ? AND role = ?", s, role);
     held = Boolean(row);
     who = row?.login ?? null;
-    rdb.prepare("DELETE FROM roles WHERE subject = ? AND role = ?").run(s, role);
+    await t.run("DELETE FROM roles WHERE subject = ? AND role = ?", s, role);
     // The label goes into the audit line so the trail stays READABLE after the
     // standing row — and its login column — is gone.
-    rdb.prepare("INSERT INTO role_audit (at, action, subject, role, login, actor, note) VALUES (?,'revoke',?,?,?,?,?)")
-      .run(at, s, role, who, actor, note);
-    rdb.exec("COMMIT");
-  } catch (e) { rdb.exec("ROLLBACK"); throw e; }
+    await t.append("INSERT INTO role_audit (at, action, subject, role, login, actor, note) VALUES (?,'revoke',?,?,?,?,?)",
+      [at, s, role, who, actor, note], "id");
+  });
   return { subject: s, role, at, held, login: who };
 }
 
 // ── the reads ───────────────────────────────────────────────────────────────
 
 export function listRoles(rdb, { role = null } = {}) {
+  const P = asPaper(rdb);
   return role
-    ? rdb.prepare("SELECT * FROM roles WHERE role = ? ORDER BY subject").all(role)
-    : rdb.prepare("SELECT * FROM roles ORDER BY subject, role").all();
+    ? P.all("SELECT * FROM roles WHERE role = ? ORDER BY subject", role)
+    : P.all("SELECT * FROM roles ORDER BY subject, role");
 }
 
 export function auditTrail(rdb, { subject = null, limit = 100 } = {}) {
   const s = normalizeSubject(subject);
+  const P = asPaper(rdb);
   return s
-    ? rdb.prepare("SELECT * FROM role_audit WHERE subject = ? ORDER BY id DESC LIMIT ?").all(s, limit)
-    : rdb.prepare("SELECT * FROM role_audit ORDER BY id DESC LIMIT ?").all(limit);
+    ? P.all("SELECT * FROM role_audit WHERE subject = ? ORDER BY id DESC LIMIT ?", s, limit)
+    : P.all("SELECT * FROM role_audit ORDER BY id DESC LIMIT ?", limit);
 }
 
 // ── the check ───────────────────────────────────────────────────────────────
@@ -310,12 +323,12 @@ export function auditTrail(rdb, { subject = null, limit = 100 } = {}) {
 // become a free door. It is loud rather than silent precisely because the
 // reason rides out with the refusal.
 
-export function roleCheck(rdb, ghId, role = ROLE_SUBSCRIBER) {
+export async function roleCheck(rdb, ghId, role = ROLE_SUBSCRIBER) {
   const subject = normalizeSubject(ghId);
   if (!subject) return { ok: false, reason: "no-subject", subject: null, role };
   if (!rdb) return { ok: false, reason: "store-unreadable", subject, role };
   try {
-    const row = rdb.prepare("SELECT 1 FROM roles WHERE subject = ? AND role = ?").get(subject, role);
+    const row = await asPaper(rdb).get("SELECT 1 FROM roles WHERE subject = ? AND role = ?", subject, role);
     return row
       ? { ok: true, reason: "granted", subject, role }
       : { ok: false, reason: "not-granted", subject, role };
@@ -328,8 +341,8 @@ export function roleCheck(rdb, ghId, role = ROLE_SUBSCRIBER) {
  * The plain question, for callers that genuinely only need yes or no.
  * Takes the household's gh_id — never a login, never `key.household`.
  */
-export function hasRole(rdb, ghId, role = ROLE_SUBSCRIBER) {
-  return roleCheck(rdb, ghId, role).ok === true;
+export async function hasRole(rdb, ghId, role = ROLE_SUBSCRIBER) {
+  return (await roleCheck(rdb, ghId, role)).ok === true;
 }
 
 // ── the gate ────────────────────────────────────────────────────────────────
@@ -353,15 +366,15 @@ export const roleGatesOn = () => process.env.OFFICE_ROLE_GATES === "1";
  * Note the flag is checked FIRST and short-circuits: flag off never reads the
  * store, so a missing or broken roles.db cannot affect an ungated office.
  */
-export function roleGate(rdb, key, role = ROLE_SUBSCRIBER) {
+export async function roleGate(rdb, key, role = ROLE_SUBSCRIBER) {
   if (!roleGatesOn()) return null;
   // `key.ghId` — the immutable account id oauth.mjs verifies — and NEVER
   // `key.household`, which is the mutable login. That one property choice is
   // the whole rekey: a caller who renamed their GitHub account arrives here
   // with the same ghId and a different ghLogin, and passes.
-  const check = roleCheck(rdb, key?.ghId ?? null, role);
+  const check = await roleCheck(rdb, key?.ghId ?? null, role);
   // The label follows the human, on sight, without ever being consulted.
-  if (check.ok) refreshLogin(rdb, check.subject, key?.ghLogin);
+  if (check.ok) await refreshLogin(rdb, check.subject, key?.ghLogin);
   return check.ok ? null : roleBounce(check);
 }
 

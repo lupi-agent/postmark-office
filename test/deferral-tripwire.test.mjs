@@ -102,7 +102,7 @@ const setGangway = (clone, state) => {
 const liveOdb = () => openOauthDb(join(tmp("tripwire-odb"), "oauth.db"));
 
 /** An ANCHORED join row — what every live door writes. */
-const seedAnchored = (o, handle) => appendTownJournal(o, {
+const seedAnchored = async (o, handle) => await appendTownJournal(o, {
   cls: "join", act: "declare-household", household: handle, handle,
   ghId: "777", ghLogin: `${handle}-gh`,
   payload: { household: handle, card: `${handle}'s card.` },
@@ -117,14 +117,14 @@ const seedAnchored = (o, handle) => appendTownJournal(o, {
  * exists for. A fixture that could be produced by a door would mean the fence
  * had a hole, which is the other thing this file is watching.
  */
-const seedUnanchored = (o, handle) => appendTownJournal(o, {
+const seedUnanchored = async (o, handle) => await appendTownJournal(o, {
   cls: "join", act: "declare-household", household: handle, handle,
   ghId: null, ghLogin: null, cosignedGhId: null,
   payload: { household: handle, card: `${handle}'s card.` },
 });
 
-const seedLetter = (o, { from = "wright", to = "limen", date = "2026-08-24", slug = "a-fine-hat" } = {}) =>
-  appendTownJournal(o, {
+const seedLetter = async (o, { from = "wright", to = "limen", date = "2026-08-24", slug = "a-fine-hat" } = {}) =>
+  await appendTownJournal(o, {
     cls: "letter", act: MAIL_ACT, household: "keemin", handle: from,
     ghId: "42", ghLogin: "keeminlee",
     payload: {
@@ -163,14 +163,14 @@ test("T1 · A DEFERRED ROW STOPS THE CROSSING: nothing written, cursor unmoved, 
   const o = liveOdb();
   try {
     await flagOn(async () => {
-      const seq = seedUnanchored(o, "unanchored");
+      const seq = await seedUnanchored(o, "unanchored");
 
       const r = await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(r.ran, false);
       assert.equal(r.refused, "deferred-rows");
-      assert.equal(townDrainCursor(o), 0, "the cursor did not move");
-      assert.equal(pendingRows(o).length, 1, "and the row is still in the log — which is what `waiting` promised");
+      assert.equal((await townDrainCursor(o)), 0, "the cursor did not move");
+      assert.equal((await pendingRows(o)).length, 1, "and the row is still in the log — which is what `waiting` promised");
       assert.equal(ashore(clone, "unanchored"), false, "nothing was written");
 
       // The refusal NAMES the row and says what it is protecting, because a
@@ -198,7 +198,7 @@ test("T1 · A DEFERRED ROW STOPS THE CROSSING: nothing written, cursor unmoved, 
       assert.equal(dry.refused, "deferred-rows");
       assert.equal(dry.dry_run, true);
       assert.deepEqual(dry.waiting.map((w) => w.handle), ["unanchored"]);
-      assert.equal(townDrainCursor(o), 0);
+      assert.equal((await townDrainCursor(o)), 0);
     });
   } finally { o.close(); }
 });
@@ -208,8 +208,8 @@ test("T1b · EVERY deferred row is named, each with its OWN reason beside it", a
   const o = liveOdb();
   try {
     await flagOn(async () => {
-      const first = seedUnanchored(o, "first-adrift");
-      const second = seedUnanchored(o, "second-adrift");
+      const first = await seedUnanchored(o, "first-adrift");
+      const second = await seedUnanchored(o, "second-adrift");
 
       const r = await run(o, { clone, date: "2026-08-24" });
 
@@ -222,8 +222,8 @@ test("T1b · EVERY deferred row is named, each with its OWN reason beside it", a
       assert.match(r.skipped, new RegExp(`${first}:first-adrift — ${escapeRe(SETTLE_THRESHOLD)}`));
       assert.match(r.skipped, new RegExp(`${second}:second-adrift — ${escapeRe(SETTLE_THRESHOLD)}`));
 
-      assert.equal(townDrainCursor(o), 0);
-      assert.equal(pendingRows(o).length, 2, "and both are still in the log");
+      assert.equal((await townDrainCursor(o)), 0);
+      assert.equal((await pendingRows(o)).length, 2, "and both are still in the log");
     });
   } finally { o.close(); }
 });
@@ -233,15 +233,15 @@ test("T2 · THE FLIP: the same crossing with the row ANCHORED settles it and adv
   const o = liveOdb();
   try {
     await flagOn(async () => {
-      const seq = seedAnchored(o, "anchored");
+      const seq = await seedAnchored(o, "anchored");
 
       const r = await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(r.refused, undefined, "an anchored row is not deferred, so there is nothing to refuse");
       assert.deepEqual(r.settled, ["anchored"]);
       assert.equal(ashore(clone, "anchored"), true);
-      assert.equal(townDrainCursor(o), seq, "and the cursor advances, as it always did");
-      assert.deepEqual(pendingRows(o), []);
+      assert.equal((await townDrainCursor(o)), seq, "and the cursor advances, as it always did");
+      assert.deepEqual((await pendingRows(o)), []);
     });
   } finally { o.close(); }
 });
@@ -254,7 +254,7 @@ test("T3 · A JUDGED ROW IS NOT A DEFERRED ONE — `skipped` still passes the cu
       // "already stands in the white pages" — a decision, not a deferral. The
       // tripwire must not confuse the two, or every re-run of a settled join
       // would halt the ferry.
-      const seq = seedAnchored(o, "wright"); // wright is already ashore in the fixture
+      const seq = await seedAnchored(o, "wright"); // wright is already ashore in the fixture
 
       const r = await run(o, { clone, date: "2026-08-24" });
 
@@ -262,8 +262,8 @@ test("T3 · A JUDGED ROW IS NOT A DEFERRED ONE — `skipped` still passes the cu
       assert.deepEqual(r.settled, []);
       assert.equal(r.skipped_rows.length, 1);
       assert.match(r.skipped_rows[0].why, /already stands in the white pages/);
-      assert.equal(townDrainCursor(o), seq, "the cursor advances past a row that was judged");
-      assert.deepEqual(pendingRows(o), []);
+      assert.equal((await townDrainCursor(o)), seq, "the cursor advances past a row that was judged");
+      assert.deepEqual((await pendingRows(o)), []);
     });
   } finally { o.close(); }
 });
@@ -273,8 +273,8 @@ test("T4 · IT COMPOSES WITH THE GANGWAY: a frozen crossing defers and does NOT 
   const o = liveOdb();
   try {
     await flagOn(async () => {
-      seedAnchored(o, "newcomer");
-      seedLetter(o);
+      await seedAnchored(o, "newcomer");
+      await seedLetter(o);
       setGangway(clone, "frozen");
 
       const r = await run(o, { clone, date: "2026-08-24" });
@@ -285,8 +285,8 @@ test("T4 · IT COMPOSES WITH THE GANGWAY: a frozen crossing defers and does NOT 
       assert.equal(r.refused, undefined, "the gangway is exempt: its deferral is already honoured");
       assert.equal(r.ran, true);
       assert.equal(r.gangway_held, 1);
-      assert.equal(townDrainCursor(o), 0, "the cursor is frozen, so nothing is stranded");
-      assert.equal(pendingRows(o).length, 2, "every row is still here");
+      assert.equal((await townDrainCursor(o)), 0, "the cursor is frozen, so nothing is stranded");
+      assert.equal((await pendingRows(o)).length, 2, "every row is still here");
       assert.equal(r.letters.length, 1);
       assert.equal(r.letters[0].skipped, undefined, "and the mail still sails, which is the whole point of the exemption");
     });
@@ -301,15 +301,15 @@ test("T4b · …and a frozen gangway covers a tier-line row too: held, not stran
       // The exemption is "the gangway is holding the cursor", not "the gangway
       // is up". A frozen gangway freezes the cursor, so an unanchored row on
       // that crossing is NOT stranded — it is held with everything else.
-      seedUnanchored(o, "unanchored");
+      await seedUnanchored(o, "unanchored");
       setGangway(clone, "frozen");
 
       const r = await run(o, { clone, date: "2026-08-24" });
 
       assert.equal(r.refused, undefined,
         "a frozen gangway holds every join row including this one — the cursor is frozen, so nothing is lost");
-      assert.equal(townDrainCursor(o), 0);
-      assert.equal(pendingRows(o).length, 1, "and the row survives, which is all the invariant asks");
+      assert.equal((await townDrainCursor(o)), 0);
+      assert.equal((await pendingRows(o)).length, 1, "and the row survives, which is all the invariant asks");
     });
   } finally { o.close(); }
 });
@@ -348,9 +348,9 @@ test("T5 · THE IDENTITY FENCE: neither join door will append a row without a ve
       child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
     });
 
-    const rows = () => {
+    const rows = async () => {
       const o = openOauthDb(odbPath);
-      try { ensureTownJournal(o); return readTownJournal(o); } finally { o.close(); }
+      try { ensureTownJournal(o); return await readTownJournal(o); } finally { o.close(); }
     };
     const rpc = (name, args, key) => fetch(`${BASE}/mcp`, {
       method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
@@ -375,7 +375,7 @@ test("T5 · THE IDENTITY FENCE: neither join door will append a row without a ve
     assert.match(await rpc("declare_household", { household: "Static House", handle: "statichouse", card: "a card" }, STATIC),
       /GitHub-verified sign-in/, "and refuses a static key the same way");
 
-    assert.deepEqual(rows(), [],
+    assert.deepEqual((await rows()), [],
       "zero rows written by any of it — the fence is in the same function as the append, and above it");
   } finally {
     if (child && child.exitCode === null) {
@@ -412,9 +412,9 @@ test("T6 · THE BERTH ARC OPENS NO WINDOW: `begin` parks a declaration, it does 
       child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
     });
 
-    const rows = () => {
+    const rows = async () => {
       const o = openOauthDb(odbPath);
-      try { ensureTownJournal(o); return readTownJournal(o); } finally { o.close(); }
+      try { ensureTownJournal(o); return await readTownJournal(o); } finally { o.close(); }
     };
 
     const berth = await (await fetch(`${BASE}/berth`, {
@@ -428,7 +428,7 @@ test("T6 · THE BERTH ARC OPENS NO WINDOW: `begin` parks a declaration, it does 
     }).then((r) => r.json()).then((j) => j.result?.content?.[0]?.text ?? "");
 
     assert.match(begun, /"did": "begin"/, "the declaration is accepted…");
-    assert.deepEqual(rows(), [],
+    assert.deepEqual((await rows()), [],
       "…and writes NO journal row. Its own answer says why: 'nothing is executed until the click' — "
       + "the co-sign runs the parked declaration under the human's just-verified identity, so the row is BORN anchored");
   } finally {

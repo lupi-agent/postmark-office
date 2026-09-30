@@ -159,7 +159,20 @@ const same = (a, b) => {
  * never be the reason a public read 500s — a freshness stamp is worth less than
  * the answer it decorates.
  */
-export function freshnessFor(handle, { odb = null, clone = null, asOf = null } = {}) {
+// THE PENDING ROWS ARE READ BY THE DOOR, BEFORE THE READ (POS-271). The town log
+// is a paper now (paperwork.mjs) and answers with a promise, while the composed
+// reads this context feeds (queries.mjs § resident, home, windowRead, doorstep)
+// are synchronous. So an async door calls `freshFor` first and hands the
+// composed read a context that already holds the rows; `freshnessFor` only
+// reads them. A context built without `freshFor` has no rows and composes no
+// overlay: the settled index answers, which is this module's garnish rule.
+export async function freshFor(handle, { odb = null, clone = null, asOf = null } = {}) {
+  let pendingRows = [];
+  try { pendingRows = await pendingPaperRows(odb, handle); } catch { /* garnish only */ }
+  return { clone, asOf, pendingRows };
+}
+
+export function freshnessFor(handle, { clone = null, asOf = null, pendingRows = [] } = {}) {
   const ctx = { handle, clone: null, asOf: asOf ?? null, suspended: false, pending: new Map() };
   if (!handle) return ctx;
 
@@ -178,9 +191,7 @@ export function freshnessFor(handle, { odb = null, clone = null, asOf = null } =
   if (ctx.suspended) { ctx.clone = null; return ctx; }
 
   // Newest-last, so a resident who edited twice is described by the second row.
-  try {
-    for (const row of pendingPaperRows(odb, handle)) ctx.pending.set(row.act, row);
-  } catch { /* garnish only */ }
+  for (const row of pendingRows ?? []) if (row.handle === handle) ctx.pending.set(row.act, row);
 
   return ctx;
 }

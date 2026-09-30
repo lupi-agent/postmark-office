@@ -195,7 +195,7 @@ export const OWN_HANDLE_HINT =
 // (residents), the ship's manifest (berths — a passenger holds their name), and
 // the declared registry (a household may list a resident the index hasn't seen
 // yet). Three places, because a name taken in any of them is taken.
-export function handleTaken(handle, { db, registry, clone, odb = null }) {
+export function handleTaken(handle, { db, registry, clone, pending = null }) {
   if (db?.prepare("SELECT 1 FROM residents WHERE handle = ?").get(handle)) return "the town";
   // ── THE FOURTH REGISTER: names spoken for but not yet drained ──────────
   //
@@ -210,10 +210,12 @@ export function handleTaken(handle, { db, registry, clone, odb = null }) {
   // inside the drain twelve hours later — where there is no door left to
   // bounce at and no person waiting to be told. The name has to be held from
   // the moment it is claimed.
-  if (odb && townLogEnabled()) {
-    const pending = pendingHandles(odb).get(handle);
-    if (pending) return `a join already in this epoch (${pending.household}, seq ${pending.seq})`;
-  }
+  //
+  // `pending` is the log's pending names, read by the async caller before this
+  // synchronous check (town-journal.mjs § pendingHandles; the log is a paper
+  // since POS-271). A caller that passes none has no log to consult.
+  const spoken = pending?.get?.(handle);
+  if (spoken) return `a join already in this epoch (${spoken.household}, seq ${spoken.seq})`;
   if (clone && existsSync(join(clone, "HARBOR", "berths", `${handle}.md`))) return "the ship's manifest";
   // ── THE FIFTH REGISTER: a standing address the index has not read yet ─────
   //
@@ -259,7 +261,7 @@ export function requireAnchor(key) {
 
 // The whole gate, in one pure-ish function. Throws a field-named bounce, or
 // returns the normalized declaration.
-export function conformance(args = {}, { db, registry, clone, key, odb = null } = {}) {
+export function conformance(args = {}, { db, registry, clone, key, pending = null } = {}) {
   // 11 — the anchor. A credential with no verified account behind it is not a
   // credential for this purpose: the anti-sybil floor rides the household class
   // and IS the credential grain (LOGOS/classes.md:64-70, INDEX.md atom 3), so a
@@ -290,7 +292,7 @@ export function conformance(args = {}, { db, registry, clone, key, odb = null } 
   }
 
   // 5 — global uniqueness, all three registers
-  const taken = handleTaken(handle, { db, registry, clone, odb });
+  const taken = handleTaken(handle, { db, registry, clone, pending });
   if (taken)
     throw bounce(409, "handle", `the handle "${handle}" is taken`,
       ownHandle(args, key)
@@ -649,7 +651,8 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
   requireAnchor(key);
   const { registry, pins } = await readRegisters(env);
 
-  const decl = conformance(args, { db, registry, clone, key, odb });
+  const pending = odb && townLogEnabled() ? await pendingHandles(odb) : null;
+  const decl = conformance(args, { db, registry, clone, key, pending });
   // The breaker, read live off the clone (same pattern as the identity pins, so
   // a founder commit flipping it needs no restart). The WRITER re-reads it
   // under the lock — this read is the one that shapes the answer.
@@ -684,7 +687,7 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
   // at a separate visit to the join page. Minting is idempotent-by-rotation: it
   // deletes any prior household key for this account before inserting, which is
   // the "one credential per household" half of the grain.
-  const credential = mintKey ? mintKey(odb, decl.ghId, decl.ghLogin) : null;
+  const credential = mintKey ? await mintKey(odb, decl.ghId, decl.ghLogin) : null;
 
   // ── the act, written to the town log (POS-44 slice 1, TOWN_SINGLE_LOG) ───
   //
@@ -701,7 +704,7 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
   // (town-journal.mjs § the tier line).
   let logged = null;
   if (odb && townLogEnabled()) {
-    logged = appendTownJournal(odb, {
+    logged = await appendTownJournal(odb, {
       act: "declare-household",
       household: decl.slug,
       handle: decl.handle,

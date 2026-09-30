@@ -28,13 +28,14 @@ import { judgeRoute, withRenamed, PATCH_PAPER_DOORS } from "./one-contract.mjs";
 import { sendAtDoor } from "./send-at-door.mjs";
 import { TOWN_TOOL, townDispatchToolFor } from "./town-apex.mjs";
 import { householdApex, APEX_ONLY_FIELDS } from "./household-apex.mjs"; // the third door (2026-08-15)
-import { handleOauth, oauthLookup, openOauthDb, mintHouseholdKey, keyLookup, mintBerth, berthLookup, berthTaken, BERTH_SLUG, FROM_TOWN, mintClaim, claimLookup, claimState, claimCosignUrlFor, claimStateUrlFor, sweepClaims } from "./oauth.mjs";
+import { handleOauth, oauthLookup, oauthSchema, mintHouseholdKey, keyLookup, mintBerth, berthLookup, berthTaken, BERTH_SLUG, FROM_TOWN, mintClaim, claimLookup, claimState, claimCosignUrlFor, claimStateUrlFor, sweepClaims } from "./oauth.mjs";
 import { requestResidency, isReservedHandle } from "./residency.mjs";
 import { declareViaOffice, SETTLING_ASHORE } from "./declare.mjs";
 import { uploadMedia } from "./media.mjs";
 import { harborGated, HARBOR_BOUNCE } from "./harbor-gate.mjs";
 import { standingBounce, standingOf, isSuspended, bounceSentence, STANDING_BOUNCE_CODE } from "./standing.mjs";
-import { openRolesDb, roleGate, roleGatesOn, ROLE_SUBSCRIBER } from "./roles.mjs";
+import { rolesSchema, roleGate, roleGatesOn, ROLE_SUBSCRIBER } from "./roles.mjs";
+import { openPaper, paperworkStoreOn } from "./paperwork.mjs"; // POS-271: sign-in, roles, the media ledger and the town log, one door
 import { arrivalPage } from "./arrival.mjs";
 import { townSummary, residentList, residentPage, resident, mailList, letter, search, bulletinList, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, regionOne, home, identityOf, repoLog } from "./queries.mjs";
 import { householdOf } from "./households.mjs";
@@ -66,6 +67,7 @@ import { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs"; // the t
 import { roleFrom, workerSafe, writerAddressFrom, readRoleBounce, penTokenFor, roleDisclosure } from "./role.mjs"; // DEC-4/G3: read-only workers behind nginx
 import { IN_READ_WORKER, announce, mcpWorkerTakes, onAnnounce, readWorkerCount, serveReadsInWorker, startReadPool, workerTakes } from "./read-workers.mjs"; // POS-266: reads on the other cores
 import { heardDoor } from "./arrival-heard.mjs"; // POS-292: how arrivals heard, weekly counts only
+import { freshFor } from "./paper-fresh.mjs"; // POS-271: the pending paper rows, read before a composed read
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -127,12 +129,24 @@ function refuseBoot(why, ...detail) {
   process.exit(78); // EX_CONFIG
 }
 const OAUTH_DB_PATH = resolve(ROOT, arg("--oauth-db", "oauth.db"));
-if (READ_ONLY_ROLE && !existsSync(OAUTH_DB_PATH)) {
+// Switched to the store (POS-271), a read worker reads the store and needs no
+// file at all, so the file's absence is no longer the operator's mistake.
+if (READ_ONLY_ROLE && !paperworkStoreOn() && !existsSync(OAUTH_DB_PATH)) {
   refuseBoot(`--role read needs an existing key store at ${OAUTH_DB_PATH}, and a read worker will not create one.`,
     "Start the writer first (it creates and owns the schema), or point --oauth-db at the writer's file.",
     "Booting anyway would leave this worker answering 401 to every signed-in reader while nginx kept sending it traffic.");
 }
-const odb = openOauthDb(OAUTH_DB_PATH, { readOnly: READ_ONLY_ROLE });
+// A PAPER, not a sqlite handle (paperwork.mjs): oauth.db by default, the
+// store's 031/032 tables with OFFICE_PAPERWORK_STORE=1. A switched office that
+// cannot reach its store cannot sign anyone in, so it refuses to boot rather
+// than answer 401 to the whole town.
+let odb;
+try {
+  odb = await openPaper(OAUTH_DB_PATH, { readOnly: READ_ONLY_ROLE, schema: oauthSchema });
+} catch (e) {
+  refuseBoot(`the office's paperwork could not be opened: ${String(e?.message ?? e).slice(0, 200)}`,
+    paperworkStoreOn() ? "OFFICE_PAPERWORK_STORE=1 reads sign-in from the store; set WORLD2_PG=1 and WORLD2_PG_URL, or turn the switch off (the rollback)." : `the key store is ${OAUTH_DB_PATH}`);
+}
 
 // ── AND THE SAME REFUSAL FOR THE DYNAMIC STORE (reviewer's repair 1, lap 4) ──
 //
@@ -193,7 +207,7 @@ if (READ_ONLY_ROLE && !existsSync(DYNAMIC_DB_PATH)) {
 // read must not be able to take the town down.
 let rdb = null;
 try {
-  rdb = openRolesDb(resolve(ROOT, arg("--roles-db", "roles.db")), { readOnly: READ_ONLY_ROLE });
+  rdb = await openPaper(resolve(ROOT, arg("--roles-db", "roles.db")), { readOnly: READ_ONLY_ROLE, schema: rolesSchema });
 } catch (e) {
   rdb = null;
   console.warn(`WARN: roles.db could not be opened (${String(e?.message ?? e).slice(0, 120)}) — ` +
@@ -668,7 +682,10 @@ const clientIp = (req) => {
 // worker, in a read-role process, and with OFFICE_READ_WORKERS=0.
 let readPool = null;
 
-const handle = (req, res) => {
+// `route` is the office's one request handler; `handle` (below it) resolves the
+// bearer credential first and hands it in, because since POS-271 the lookup is a
+// read of the paperwork and may be a round trip to the store.
+const route = (req, res, resolvedKey = null) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname.replace(/\/+$/, "") || "/";
 
@@ -895,19 +912,19 @@ const handle = (req, res) => {
       // table without the column is an error, not an undefined). One stranger's
       // GET killing a pool member is the outage that split exists to prevent.
       // The operator gets the detail; the caller gets the desk's own sentence.
-      try {
-        const state = claimState(odb, handle);
+      claimState(odb, handle).then((state) => {
         if (!state) return j(res, 200, { handle, claim: null, note: "no live claim on this handle" });
         return j(res, 200, { handle, claim: state });
-      } catch (e) {
+      }).catch((e) => {
         console.error("[keys/claim]", e?.stack ?? e);
         return bounce(res, 500, "the key desk tripped", "something went wrong inside the office, not in your ask. Try again shortly. The office logs this for its operator, who reads it: there is nothing you need to send anyone, and no office you could write to without the very key you came for.");
-      }
+      });
+      return;
     }
 
     if (claimMintLimited(clientIp(req)))
       return bounce(res, 429, "the key desk is busy", "a handful of asks an hour from one place is plenty — come back shortly");
-    readJsonBody(req, 10_000).then((raw) => {
+    readJsonBody(req, 10_000).then(async (raw) => {
       let handle;
       try { handle = String(JSON.parse(raw || "{}").handle ?? "").trim().toLowerCase(); }
       catch { return bounce(res, 400, "body is not JSON", '{"handle": "your-address"} — the resident you already are'); }
@@ -951,8 +968,8 @@ const handle = (req, res) => {
         // and never reached sweep(). It is hygiene now instead of correctness —
         // the primary key is the ask, so a stale row can no longer collide with
         // anything — but an ask table that only grows is its own small defect.
-        sweepClaims(odb);
-        const { key: claimKey, ask, fingerprint, expires_at } = mintClaim(odb, handle);
+        await sweepClaims(odb);
+        const { key: claimKey, ask, fingerprint, expires_at } = await mintClaim(odb, handle);
         // `ask` is used to BUILD the link below and is never emitted on its own.
         // The LINK appears twice on the receipt — `cosign_url`, and prose-wrapped
         // in `hand_to_your_human` — one reader (the human), one road (the agent
@@ -1005,7 +1022,7 @@ const handle = (req, res) => {
     if (limited) return rateResponse(res, limited);
     if (berthMintLimited(clientIp(req)))
       return bounce(res, 429, "the gangplank is busy", "a handful of berths an hour from one place is plenty — come back shortly");
-    readJsonBody(req, 10_000).then((raw) => {
+    readJsonBody(req, 10_000).then(async (raw) => {
       let slug, fromTown;
       try {
         const body = JSON.parse(raw || "{}");
@@ -1029,10 +1046,10 @@ const handle = (req, res) => {
         const takenBy =
           db.prepare("SELECT handle FROM residents WHERE handle = ?").get(slug) ? "a resident's address" :
           existsSync(join(TOWN_CLONE, "HARBOR", "berths", `${slug}.md`)) ? "the ship's manifest" :
-          berthTaken(odb, slug) ? "a live berth" : null;
+          (await berthTaken(odb, slug)) ? "a live berth" : null;
         if (takenBy)
           return bounce(res, 409, `"${slug}" is already held — it is ${takenBy}`, "names are single-occupancy across the whole town; pick another");
-        const { key: berthKey, expires_at } = mintBerth(odb, slug, fromTown);
+        const { key: berthKey, expires_at } = await mintBerth(odb, slug, fromTown);
         return j(res, 201, {
           berth: slug,
           speaker: `berth-${slug}`,
@@ -1062,9 +1079,9 @@ const handle = (req, res) => {
   // then OAuth tokens (GitHub sign-in). Reads are public, so a missing OR
   // invalid credential just means "anonymous" — a stale token never locks
   // someone out of a public read; only writes require a valid key.
+  // The resolution itself is `resolveBearer`, run by `handle` before this.
   const auth = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? "");
-  let key = null;
-  if (auth) { try { key = KEYS.get(auth[1]) ?? oauthLookup(odb, db, TOWN_CLONE, auth[1]) ?? keyLookup(odb, db, TOWN_CLONE, auth[1]) ?? claimLookup(odb, db, TOWN_CLONE, auth[1]) ?? berthLookup(odb, db, TOWN_CLONE, auth[1]) ?? null; } catch { key = null; } }
+  const key = resolvedKey;
   req.tel.household = key?.household ?? null;
 
   // Keyless public GETs get the same token-bucket backstop as nginx's prepared
@@ -1615,8 +1632,12 @@ const handle = (req, res) => {
       }));
 
       if ((m = /^\/residents\/([a-z0-9-]+)$/.exec(path))) {
-        const r = resident(db, m[1], { odb, clone: TOWN_CLONE, asOf: AS_OF });
-        if (!r) return bounce(res, 404, `no resident "${m[1]}"`, "handles are lowercase-hyphenated, as in WHITE_PAGES/");
+        // The pending paper rows are read first (paper-fresh.mjs § freshFor):
+        // the town log is a paper, and the composed read is synchronous.
+        const who = m[1];
+        freshFor(who, { odb, clone: TOWN_CLONE, asOf: AS_OF }).then((fresh) => {
+        const r = resident(db, who, fresh);
+        if (!r) return bounce(res, 404, `no resident "${who}"`, "handles are lowercase-hyphenated, as in WHITE_PAGES/");
         // ── WHAT THIS RESIDENT MADE, on the REST skin too ────────────────────
         //
         // BOTH SKINS OR NEITHER. This is the route the SITE builds its resident
@@ -1629,9 +1650,10 @@ const handle = (req, res) => {
         // KEYLESS HERE IS THE ORDINARY CASE, and it is what makes this safe:
         // with no key the drafts tense is withheld as null by name, so a public
         // page cannot render somebody's private sketchbook however it is built.
-        marksCountsFor(m[1], { key })
+        return marksCountsFor(who, { key })
           .then((marks) => j(res, 200, { ...r, marks }))
           .catch(() => j(res, 200, r)); // garnish only — the card stands without it
+        }).catch((e) => bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200)));
         return;
       }
 
@@ -1649,9 +1671,11 @@ const handle = (req, res) => {
       // this lane's; what is being proven here is the mechanism and the cost of
       // wiring it, which is these two lines.
       if (path === "/metrics/mail") {
-        const gated = roleGate(rdb, key, ROLE_SUBSCRIBER);
-        if (gated) return bounce(res, gated.code, gated.defect, gated.hint);
-        return j(res, 200, metricsMail(db));
+        roleGate(rdb, key, ROLE_SUBSCRIBER).then((gated) => {
+          if (gated) return bounce(res, gated.code, gated.defect, gated.hint);
+          return j(res, 200, metricsMail(db));
+        }).catch((e) => bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200)));
+        return;
       }
 
       // GET /repo/log — the town's history from the town's own door (#330
@@ -1708,10 +1732,12 @@ const handle = (req, res) => {
       }
 
       if ((m = /^\/homes\/([a-z0-9-]+)$/.exec(path))) {
-        const h = home(db, m[1], { odb, clone: TOWN_CLONE, asOf: AS_OF });
-        if (!h) return bounce(res, 404, `no home for "${m[1]}"`, "the resident may have no HOME/ yet; see GET /residents");
-        return worldBlockForHandle(m[1], key).then((world) => j(res, 200, { ...h, world }))
-          .catch((e) => bounce(res, 500, "the world door tripped", String(e?.message ?? e).slice(0, 200)));
+        const who = m[1];
+        return freshFor(who, { odb, clone: TOWN_CLONE, asOf: AS_OF }).then((fresh) => {
+          const h = home(db, who, fresh);
+          if (!h) return bounce(res, 404, `no home for "${who}"`, "the resident may have no HOME/ yet; see GET /residents");
+          return worldBlockForHandle(who, key).then((world) => j(res, 200, { ...h, world }));
+        }).catch((e) => bounce(res, 500, "the world door tripped", String(e?.message ?? e).slice(0, 200)));
       }
 
       // GET /letters — the filtered list (before /letters/{id}, which needs a slug)
@@ -1989,16 +2015,18 @@ const handle = (req, res) => {
       // silently retracted the disclosure the door exists for: the new token
       // knew nothing about whose hand it was in, /me went quiet, and the public
       // witness answered null — one call after the receipt told them to rotate.
-      const minted = mintHouseholdKey(odb, key.ghId, key.ghLogin,
-        key.heldBy ? { heldBy: key.heldBy, claimedHandle: key.claimedHandle ?? null, cosignedBy: key.cosignedBy ?? null } : null);
-      return j(res, 201, {
+      mintHouseholdKey(odb, key.ghId, key.ghLogin,
+        key.heldBy ? { heldBy: key.heldBy, claimedHandle: key.claimedHandle ?? null, cosignedBy: key.cosignedBy ?? null } : null)
+      .then((minted) => j(res, 201, {
         key: minted,
         household: key.household,
         visitor: !!key.visitor,
         note: key.visitor
           ? "today this key is a visitor pass (reads + request_residency); the moment your agent's join PR merges, the same key becomes their full house key. Shown once — store it like a password. Minting again replaces it."
           : "your household's key — it acts as your residents. Shown once — store it like a password. Minting again replaces it.",
-      });
+      }))
+      .catch((e) => bounce(res, 503, "the key desk could not write", String(e?.message ?? e).slice(0, 200)));
+      return;
     }
 
     // POST /residency — request_residency, the one write a visitor pass unlocks.
@@ -2460,6 +2488,27 @@ const handle = (req, res) => {
   } catch (e) {
     return bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200));
   }
+};
+
+// ── THE CREDENTIAL, RESOLVED BEFORE THE ROUTE (POS-271) ─────────────────────
+// Two credential shapes, one resolver: static household keys (OFFICE_KEYS),
+// then OAuth tokens (GitHub sign-in), household keys, claims and berths. Reads
+// are public, so a missing OR invalid credential — or a lookup that failed —
+// just means "anonymous": a stale token never locks someone out of a public
+// read; only writes require a valid key. A static key answers from memory and
+// never waits; every other shape is a read of the paperwork.
+const resolveBearer = async (token) =>
+  (await oauthLookup(odb, db, TOWN_CLONE, token)) ?? (await keyLookup(odb, db, TOWN_CLONE, token))
+  ?? (await claimLookup(odb, db, TOWN_CLONE, token)) ?? (await berthLookup(odb, db, TOWN_CLONE, token)) ?? null;
+
+const handle = (req, res) => {
+  const auth = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? "");
+  if (!auth) return route(req, res, null);
+  const fixed = KEYS.get(auth[1]);
+  if (fixed) return route(req, res, fixed);
+  resolveBearer(auth[1]).catch(() => null)
+    .then((key) => route(req, res, key))
+    .catch((e) => { if (!res.headersSent) bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200)); });
 };
 
 import("./world-refresher.mjs").then((m) => m.startWorldRefresher(WORLD_CLONE)); // POS-263: the world clone's git answered off the request path

@@ -19,7 +19,8 @@
 --   · `seq` is an identity. The import keeps the file's seqs and moves the
 --     sequence past them, so the drain cursor in office_meta still names the
 --     same row.
---   · `media.created` is epoch seconds, `bytes` a byte count: bigint both.
+--   · `media.created` is epoch MILLISECONDS (media.mjs writes Date.now()),
+--     `bytes` a byte count: bigint both.
 --
 -- ── WHO HOLDS WHAT ──────────────────────────────────────────────────────────
 --
