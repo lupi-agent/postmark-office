@@ -18,45 +18,49 @@ office.db's 21 tables move into Postgres as `town_*` tables, one for one, with e
 Every table states three things: what writes the **snapshot** (at the crossing's seal), what writes the **delta** (commits since), and what a **reader** sees at the seam.
 
 - **One live copy, not one copy per crossing.** A snapshot is the tables *as they stood at the seal*, plus a row in `town_index_snapshots` (the seal's sha, when it crossed, and each table's row count and content digest). The delta is then applied in place. A reader always reads one table: the newest snapshot plus the deltas since. There is no union at read time. Keeping a full copy per crossing would be about 90 MB twice a day for reads that only ever ask about "now". If a door ever needs the town *as of* a crossing, that is a new ruling and a new table.
-- **The ingest writes only rows that changed.** For keyed tables it compares a server-side `md5(json)` per key against the new derivation and writes only the rows that differ. Append-only tables only append. The gate test counts writes.
-- **A restart reads the snapshot, not history.** The office holds no index of its own: it reads the tables. The ingest reads its head from `projection_heads['town-index']` and applies only `head..HEAD`. The one full-history walk is the seed, run once at install, in one transaction: about 16s.
+- **The ingest writes only rows that changed.** Every twin carries a `digest` (the md5 of the row as written). A delta reads keys and digests, never the rows, and replaces only the rows whose digest moved. Append-only tables only append. The gate test counts writes.
+- **A restart reads the snapshot, not history.** The office holds no index of its own: it reads the tables. The ingest reads its head from `projection_heads['town-index']` and applies only `head..HEAD`. The one full-history walk is the seed, run once at install, in one transaction.
 
 | office.db table | Snapshot (at the seal) | Delta (commits since) | Reader at the seam |
 |---|---|---|---|
 | `repo_log` | rows up to the seal | **appends** `git log head..T` rows only | one table; the newest commit it holds is the head |
-| `letters` | as at the seal | letters whose file a delta commit touched (a new outbox letter, the ferry's move to inbox, an edit), re-read and upserted if their md5 moved; `delivered_at` is set only if absent (the oldest add wins, as hydrate's does) | one table |
+| `letters` | as at the seal | every letter re-derived from the tree `readTown` already read; only rows whose digest moved are replaced (a new outbox letter, the ferry's move to inbox, an edit). `delivered_at`: the store's value for that path wins, and only a path first added in the delta takes the delta's time (the oldest add, as hydrate's) | one table |
 | `threads` | as at the seal | `buildThreads` over the letters; only threads whose row changed are written (a reply can merge two) | one table |
 | `residents` | as at the seal | handles with a touched path under `WHITE_PAGES/<h>/` (ADDRESS, PROFILE, HOME, WINDOW, their mail) re-read; `last_active` = the newer of the stored value and the delta's newest non-inbox commit | one table; the roll memo keys on the head sha, not on a file stamp |
 | `ledger` (mail) | lines up to the seal | **appends** the lines past the stored count; a changed prefix refuses and names the line (the ledger is append-only by town law) | one table |
-| `mail_state` | as at the seal | recomputed **only for affected handles**: the parties of every thread that holds a touched letter, and of every new ledger line. About 47 ms each, versus 10 s for the whole town | one table |
+| `mail_state` | as at the seal | recomputed **only for affected handles**: the parties of every letter and thread that moved (before and after), of every new ledger line, and any resident with no row yet. About 60 ms each, versus 10 s for the whole town | one table |
 | `stamps` (+ `stamps_minted`) | the folds at the seal | **additive**: fold the new stamp-ledger lines and add them per account (measured additive above); the prefix is checked | one table |
-| `pots`, `funding_*`, `pot_*` | as at the seal | re-folded (46 ms) only when a delta commit touched `stamp-ledger.md` or a pot file; md5 diff | one table |
-| `quest_progress` (+ `quest_day`) | as at the seal | re-folded (180 ms) when the town day rolls or a delta touched mail. It is a *today* fold, so its cost is bounded by one day's activity | one table; the day guard in `questBoardFor` is unchanged |
-| `quest_standing` | as at the seal | re-folded (356 ms) at each crossing only, because its facts move at crossings; md5 diff | one table |
-| `bulletin` | as at the seal | slugs whose `TOWN_BULLETIN/*.md` changed | one table |
-| `regions`, `homes` | as at the seal | re-derived (under 50 ms) when `placements.json`, a `HOME/` or `REGION.md` changed; md5 diff | one table |
-| `meta` | `as_of`, counts, `quest_registry` at the seal | `as_of` = the applied sha | the door's `X-Postmark-As-Of` names the store's head for a moved door |
+| `pots`, `funding_*`, `pot_*` | as at the seal | re-folded whole each delta (65 ms), written where a digest moved | one table |
+| `quest_progress` (+ `quest_day`) | as at the seal | re-folded each delta, written where a digest moved. It is a *today* fold, so its cost is bounded by one day's activity | one table; the day guard in `questBoardFor` is unchanged |
+| `quest_standing` | as at the seal | re-folded each delta (its onboarding facts move with a resident's own pages, not only at crossings), written where a digest moved. Progress and standing together: 0.5–1.1 s | one table |
+| `bulletin` | as at the seal | re-derived from the tree, written where a digest moved | one table |
+| `regions`, `homes` | as at the seal | re-derived each delta (under 50 ms), written where a digest moved | one table |
+| `meta` | `as_of`, counts, `quest_registry` at the seal | `as_of` = the applied sha | a moved door adds `x-postmark-town-index-as-of` (the store's head); `X-Postmark-As-Of` stays office.db's while unmoved doors read it |
 
-**What is still whole-tree, and said so:** tonight's delta calls the vendored `readTown` once (2.1s) to read the *current tree*. That reads today's state, not history, and nothing re-walks `git log`. Only the touched keys are then written. Making `readTown` path-scoped needs the town to export `readResident`/`readLetterFile` (the vendored reader is upstream law, marked do-not-edit). That is a town-side follow-up I'd propose, not build.
+**What it costs, measured on the real town** (seed at the 09-29 00:03Z seal, then the 12:03Z crossing, 151 commits, then 211 more): each delta took about 12 s on this machine, of which `readTown` was 3.2–3.6 s, mail_state for 68–75 handles 4.2–5.0 s, residents 1.4–2.2 s, and the rest under 1.2 s. A fifteen-minute delta touches a handful of handles, so the floor is `readTown`. After both deltas every one of the 21 tables equalled a full hydrate at the same sha. The seed from a cold clone took 159 s, almost all of it the derivation reading a checkout nothing had read yet.
+
+**What is still whole-tree, and said so:** each delta calls the vendored `readTown` once to read the *current tree*. That reads today's state, not history, and nothing re-walks `git log`. Only the touched keys are then written. Making `readTown` path-scoped needs the town to export `readResident`/`readLetterFile` (the vendored reader is upstream law, marked do-not-edit). That is a town-side follow-up I'd propose, not build.
 
 ## The store side
 
-- **Migration `033_town_index.sql`** (this lane's ordinals are 033–036): the 21 tables with office.db's columns and names under a `town_` prefix, JSON kept as `text` (a `jsonb` column reorders keys, and every door serialises these objects whole), and `town_index_snapshots`. Collation: every `ORDER BY` a reader ports to the store uses `COLLATE "C"`, because SQLite sorts bytewise and Postgres' default collation does not.
-- **Pen:** `law_ingester`, the repo-first projection pen, which already reads the town. It gets INSERT, UPDATE and DELETE on the `town_*` tables. These are index rows: every one can be rebuilt from the town repo by the seed. The rows go on 003's lawful list in the same commit. **Proposed for a ruling:** `office_api` is the other candidate (the keep tick already writes `settlements` as it). I chose the ingester because a projection of a repo is exactly its job under the three-pens law.
+- **Migration `033_town_index.sql`** (this lane's ordinals are 033–036): the 21 tables with office.db's columns and names under a `town_` prefix, JSON kept as `text` (a `jsonb` column reorders keys, and every door serialises these objects whole), and `town_index_snapshots`. Every twin but `town_repo_log` also carries `digest`; `town_repo_log` carries `n`, a file's place in its commit (sqlite answered those by rowid, and Postgres promises no order). Collation: every text comparison and `ORDER BY` a reader ports to the store uses `COLLATE "C"`, because SQLite sorts bytewise and Postgres' default collation does not.
+- **Pen:** `law_ingester`, the repo-first projection pen, which already reads the town. It gets INSERT and DELETE on the `town_*` tables and no UPDATE, like every projection in the store: a changed row is replaced. These are index rows: every one can be rebuilt from the town repo by the seed. The rows go on 003's lawful list in the same commit. **Proposed for a ruling:** `office_api` is the other candidate (the keep tick already writes `settlements` as it). I chose the ingester because a projection of a repo is exactly its job under the three-pens law.
 - **Readers:** `office_api` gets SELECT (read workers connect as it too).
-- **Unit (files only):** `world2-ingest.sh town-index`, a third mode that uses its own refresh clone (`ingest-clones/town`, not the office's `TOWN_CLONE`, so it never takes the town lock), on `postmark-town-index.{service,timer}` at :05/:20/:35/:50. That is two minutes before the office's keep tick, which does not read these tables.
+- **Unit (files only, parked):** `deploy/town-index-ingest.sh` on `postmark-town-index.{service,timer}` at :05/:20/:35/:50, with its own FULL clone (`ingest-clones/town-index`: the shared `town` refresh clone is `--depth 1`, and a delta needs history; not the office's `TOWN_CLONE`, so it never takes the town lock). Each run ingests every seal since the head with `--snapshot`, then origin/main. With no head it exits 3 and writes nothing: the seed is a hand step at install.
 
 ## Moving the readers
 
 Behind `TOWN_INDEX_READS=store` (unset means office.db, as today). Rolling back means unsetting it; office.db and the rehydrate stay until the last reader has moved and a clean week has passed. Every store read is async, so each moved reader changes its signature at its callers, and those callers are named in the commit. The order goes from least entangled to most:
 
-1. `repoLog` (GET /repo/log, `list_commits`), `regionList`/`regionOne` (GET /regions, `list_regions`), `home` (GET /homes/:h, `read_home`).
+1. **Moved (2026-09-30):** `repoLog` (GET /repo/log, `list_commits`), `regionList` (GET /regions, `list_regions`), `regionOne` (GET /regions/{slug}). One change to the office.db twin, named: `repoLog` now breaks a tie in commit time by sha. Tied commits (47 on the live index) came back in the query plan's order, which differed with and without a date filter. **Next:** `home` (GET /homes/:h, `read_home`), which also reads the freshness ladder (`withFresh`).
 2. bulletin (`bulletinList`/`Entry`/`Teaser`, `psaFold`), then stamps (`stampsRoster`/`For`/`Detail`), pots and quests.
 3. letters and mail (`letter`, `letterList`, `mailList`, `mailCorrespondents`, `mailAwaiting`, `search`, `metricsMail`).
 4. residents and the doorstep last: `residentList` feeds the position doors' roll memo, and `doorstep` gathers six of the reads above.
 5. The out-of-process readers (`declare-exec`, `join-bind-exec`, `earpiece-mail`, `write.mjs`'s recipient checks) open office.db themselves; they move with the residents.
 
-Each door's gate is equality: the store is seeded from the fixture's office.db and both answers are compared deep-equal. Tonight's lane stops at a clean commit with whichever readers have moved, and says which remain.
+Each door's gate is equality: the store is seeded from the fixture's office.db, and both answers are compared as the bytes the door sends (`test/town-index-reads.test.mjs`). At the door, three offices share one office.db, with the switch off, on, and on with the store gone. They must answer byte-equal, the switched office must name the store's as-of, and the cut-off one must return a 503, never office.db's answer (`test/town-index-doors.test.mjs`).
+
+**Retiring hydrate.mjs, the rehydrate unit and the swap path waits for the last reader.** Everything in groups 2–5 above still reads office.db.
 
 ## Gates
 
