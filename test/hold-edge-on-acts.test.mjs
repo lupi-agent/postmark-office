@@ -11,8 +11,9 @@
 //   1. the door writes nothing to dynamic.db, and the act is the edge;
 //   2. what serialized the holder check against the write is an in-process
 //      queue, and two holds racing for one thing still cannot both win;
-//   3. the synchronous readers fold the record through `attachmentRows`, never
-//      the stale sqlite copy, once the snapshot has loaded.
+//   3. crossing-save reads holdings from the record, never the stale sqlite copy.
+//      (The arena and the portal block read a snapshot of it until the arena
+//      closed on 2026-09-30; they and the snapshot are gone.)
 //
 // The record is stood in for by an in-memory `acts` that answers the guard's
 // own attachments query (`pgAttachmentsFor`) and that the stub pen appends to.
@@ -35,7 +36,7 @@ after(restoreEnv);
 const { openDynamic } = await import("../src/dynamic-store.mjs");
 const { declareHoldingFlipped, declareHolding } = await import("../src/world-hold.mjs");
 const { useGuardReader } = await import("../src/world2-guards.mjs");
-const { attachmentRows, holdEdgeOnActs, holdingsStanding, reloadHoldings, resetHoldings } = await import("../src/holdings-snapshot.mjs");
+const { holdEdgeOnActs } = await import("../src/hold-edge.mjs");
 
 const count = (db, table) => Number(db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n);
 
@@ -63,36 +64,33 @@ function recordStandIn() {
   return { acts, pen, restore };
 }
 
-const deps = (pen, moved) => ({
+const deps = (pen) => ({
   witnessStamp: async () => ({ at: { anchor: "the-town/the-quay", dx: 0, dy: 0 }, witnesses: null }),
   resolvedWorldHousehold: () => null,
   currentCrossing: () => 221,
   appendActFlipped: pen,
-  holdingsMoved: () => { moved.n += 1; },
 });
 
-beforeEach(() => { resetHoldings(); restoreEnv(); });
+beforeEach(() => { restoreEnv(); });
 
 test("PROD'S FLAGS: take, give, drop — the acts are the edge and dynamic.db gets NO attachments row", async () => {
   prodFlags();
   assert.equal(holdEdgeOnActs(), true, "W2_PEN=hold with W2_GUARDS=1 puts the edge on acts");
   const rec = recordStandIn();
   const db = openDynamic(join(tmp, "prod-flags.db"));
-  const moved = { n: 0 };
   try {
-    const a = await declareHoldingFlipped({ db, thing: "maker/stool", actor: "alpha", deps: deps(rec.pen, moved) });
+    const a = await declareHoldingFlipped({ db, thing: "maker/stool", actor: "alpha", deps: deps(rec.pen) });
     // AWAITED BEFORE THE ANSWER: the stand-in pen lands its act only after a
     // real wait, so a door that answered on a fire-and-forget write would be
     // answering with the record still empty. With sqlite gone, that is a lost holding.
     assert.equal(rec.acts.length, 1, "the door answered before its act was in the record");
     assert.equal(a.seq, 1, "the receipt names the committed act's id");
-    const b = await declareHoldingFlipped({ db, thing: "maker/stool", to: "beta", actor: "alpha", deps: deps(rec.pen, moved) });
-    const c = await declareHoldingFlipped({ db, thing: "maker/stool", actor: "beta", deps: deps(rec.pen, moved) });
+    const b = await declareHoldingFlipped({ db, thing: "maker/stool", to: "beta", actor: "alpha", deps: deps(rec.pen) });
+    const c = await declareHoldingFlipped({ db, thing: "maker/stool", actor: "beta", deps: deps(rec.pen) });
     assert.deepEqual([a.did, b.did, c.did], ["take", "give", "drop"], "each face is read off the RECORD's holder");
     assert.deepEqual([a.holder, b.holder, c.holder], ["alpha", "beta", null]);
     assert.equal(rec.acts.length, 3, "three acts in the record");
     assert.equal(count(db, "attachments"), 0, "the sqlite edge was written — the door still writes dynamic.db on prod's flags");
-    assert.equal(moved.n, 3, "each committed act moves the holdings snapshot");
   } finally { db.close(); rec.restore(); }
 });
 
@@ -101,10 +99,9 @@ test("THE QUEUE: two takes racing for one thing — one wins, the other is refus
   const rec = recordStandIn();
   const db = openDynamic(join(tmp, "race.db"));
   try {
-    const moved = { n: 0 };
     const results = await Promise.allSettled([
-      declareHoldingFlipped({ db, thing: "maker/lamp", actor: "alpha", deps: deps(rec.pen, moved) }),
-      declareHoldingFlipped({ db, thing: "maker/lamp", actor: "beta", deps: deps(rec.pen, moved) }),
+      declareHoldingFlipped({ db, thing: "maker/lamp", actor: "alpha", deps: deps(rec.pen) }),
+      declareHoldingFlipped({ db, thing: "maker/lamp", actor: "beta", deps: deps(rec.pen) }),
     ]);
     const won = results.filter((r) => r.status === "fulfilled");
     const lost = results.filter((r) => r.status === "rejected");
@@ -122,33 +119,10 @@ test("W2_GUARDS OFF: the holder check still reads sqlite, so the sqlite edge is 
   const rec = recordStandIn();
   const db = openDynamic(join(tmp, "guards-off.db"));
   try {
-    const did = await declareHoldingFlipped({ db, thing: "maker/cup", actor: "alpha", deps: deps(rec.pen, { n: 0 }) });
+    const did = await declareHoldingFlipped({ db, thing: "maker/cup", actor: "alpha", deps: deps(rec.pen) });
     assert.equal(did.holder, "alpha");
     assert.equal(count(db, "attachments"), 1, "with the guards on sqlite, that office's edge must still be written");
   } finally { db.close(); rec.restore(); }
-});
-
-test("THE READERS: on prod's flags the arena and the portal fold the record's snapshot, not dynamic.db's stale copy", async () => {
-  const db = openDynamic(join(tmp, "readers.db"));
-  try {
-    // dynamic.db as it stood when the door stopped writing it: alpha holds the stool.
-    declareHolding({ db, thing: "maker/stool", actor: "alpha", dials: {} });
-    prodFlags();
-    assert.equal(holdingsStanding().source, "floor", "before the load, the floor is named");
-    assert.deepEqual(attachmentRows(db).map((r) => r.entity), ["alpha"], "the floor is the sqlite file as it stood");
-    // The record since: alpha gave it to beta.
-    const loaded = await reloadHoldings({ read: async () => [
-      { seq: null, entity: "alpha", target: "maker/stool", policy: "cascade", declared_by: "alpha", born_at: "2026-09-30T04:00:01.000Z" },
-      { seq: null, entity: "beta", target: "maker/stool", policy: "cascade", declared_by: "alpha", born_at: "2026-09-30T04:00:02.000Z" },
-    ] });
-    assert.deepEqual(loaded, { loaded: true, count: 2 });
-    assert.deepEqual(attachmentRows(db).map((r) => r.entity), ["alpha", "beta"], "the readers must fold the record once it has loaded");
-    assert.equal(holdingsStanding().source, "acts");
-    // Unflipped, sqlite is that office's record and the snapshot is never asked.
-    restoreEnv();
-    delete process.env.W2_PEN; delete process.env.W2_GUARDS;
-    assert.deepEqual(attachmentRows(db).map((r) => r.entity), ["alpha"]);
-  } finally { db.close(); }
 });
 
 test("CROSSING-SAVE: on prod's flags the save's attachments come from the record; a record that will not answer is thrown, never the file", async () => {
@@ -195,7 +169,7 @@ test("ONE THREAD, THE SECOND WALL: a hold that reaches a read worker refuses bef
       await declareHoldingFlipped({ db: null, thing: "maker/stool", actor: "alpha", deps: {
         onActs: true, appendActFlipped: async () => { pens++; return { actId: 1 }; },
         witnessStamp: async () => ({ at: null, witnesses: null }), resolvedWorldHousehold: () => null,
-        currentCrossing: () => 1, holdingsMoved: () => {} } });
+        currentCrossing: () => 1 } });
       parentPort.postMessage({ refused: false, pens });
     } catch (e) { parentPort.postMessage({ refused: true, message: String(e?.message ?? e), pens }); }
   `);
@@ -220,7 +194,7 @@ test("CROSSING-SAVE PARITY: the snapshot from acts is byte-equal to the snapshot
   const rec = recordStandIn();
   const db = openDynamic(join(tmp, "parity.db"));
   try {
-    const both = { ...deps(rec.pen, { n: 0 }), onActs: false };
+    const both = { ...deps(rec.pen), onActs: false };
     await declareHoldingFlipped({ db, thing: "maker/stool", actor: "alpha", deps: both });
     await declareHoldingFlipped({ db, thing: "maker/stool", to: "beta", actor: "alpha", deps: both });
     await declareHoldingFlipped({ db, thing: "maker/lamp", actor: "beta", deps: both });
@@ -250,4 +224,25 @@ test("CROSSING-SAVE PARITY: the snapshot from acts is byte-equal to the snapshot
       writeFileSync(join(process.env.PARITY_OUT, "save-from-acts.json"), stableJson(a));
     }
   } finally { db.close(); rec.restore(); }
+});
+
+test("NO SQLITE AT THE DOOR: on prod's flags the holdings read opens no dynamic.db — a store that is not a database is never touched", async () => {
+  prodFlags();
+  const rec = recordStandIn();
+  const { writeFileSync } = await import("node:fs");
+  const garbage = join(tmp, "not-a-database.db");
+  writeFileSync(garbage, "this is not a sqlite file, and any open of it throws\n");
+  const was = process.env.WORLD_DYNAMIC_DB;
+  process.env.WORLD_DYNAMIC_DB = garbage;
+  try {
+    await rec.pen(null, { actor: "alpha", action: "take", payload: { thing: "maker/stool", holder: "alpha", policy: "cascade" }, writtenAt: "2026-09-30T05:00:00.000Z" });
+    const { callHoldTool } = await import("../src/world-hold.mjs");
+    const r = await callHoldTool("world_holdings", { handle: "alpha" }, { handles: new Set(["alpha"]) });
+    assert.equal(r.error, undefined, `the read failed: ${JSON.stringify(r).slice(0, 200)}`);
+    assert.equal(r.count, 1, "alpha's holding comes from the record");
+    assert.deepEqual(r.holding.map((h) => h.thing), ["maker/stool"]);
+  } finally {
+    if (was === undefined) delete process.env.WORLD_DYNAMIC_DB; else process.env.WORLD_DYNAMIC_DB = was;
+    rec.restore();
+  }
 });

@@ -1,5 +1,6 @@
 // g1-the-journal-write-goes.test.mjs — G1's own falsifier: the general journal
-// INSERT is gone, the arena's narrow named one is not, and the write refuses.
+// INSERT is gone, and the write refuses. (The arena's narrow named INSERT went
+// when the arena closed, 2026-09-30, so world-journal.mjs now carries none.)
 //
 // POS-156. This is the test the deletion is proved by, and `tools/pos156-flip-
 // the-insert.sh` is the proof that it can fail: that script restores the INSERT
@@ -11,12 +12,6 @@
 //   the door writes NO journal row   behavioural, through a real sqlite store
 //                                    and the in-memory record. The whole claim
 //                                    of G1 in one assertion.
-//   the arena still writes one       the exemption is a FUNCTION, and it works.
-//                                    DEC-1/P-143, the founder's own words.
-//   and nothing else may use it      `appendArenaRow` refuses any other class BY
-//                                    NAME. An exception you can opt into is a
-//                                    switch, not an exception, and this is what
-//                                    makes it the former.
 //   the write REFUSES                RULING 3: a door whose act cannot reach the
 //                                    record answers 503, never 200 over a lost
 //                                    act. Asserted with the record unreachable.
@@ -33,7 +28,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { appendJournal, appendArenaRow, normalizeRow, readJournal, CLASS_ARENA_ACT, CLASS_FRAME, CLASS_MARK } from "../src/world-journal.mjs";
+import { appendJournal, normalizeRow, readJournal, CLASS_ARENA_ACT, CLASS_FRAME, CLASS_MARK } from "../src/world-journal.mjs";
 import { currentCrossing } from "../src/crossings.mjs";
 import { installActsPen, uninstallActsPen, RECORD_ON } from "./acts-pen-stub.mjs";
 
@@ -106,36 +101,6 @@ test("…and the same holds for a mark, which is the class whose body must never
   } finally { db.close(); }
 });
 
-// ── 2. THE ARENA'S EXEMPTION (DEC-1 / P-143) ─────────────────────────────────
-
-test("THE ARENA STILL WRITES ITS ROW — the exemption is a function, and it works", () => {
-  const db = freshDb();
-  try {
-    const r = appendArenaRow(db, {
-      crossing: currentCrossing(), actor: "wright", action: "strike", object: null,
-      cls: CLASS_ARENA_ACT, at: null, witnesses: null,
-      payload: { ground: "the-town/the-vault", roll: 17 },
-      effect: "the blow lands",
-    });
-    assert.equal(r.seq, 1, "the beat's seq is its IDENTITY in the fold, and it is a real rowid");
-    const [row] = readJournal(db, { cls: CLASS_ARENA_ACT });
-    assert.equal(row.actor, "wright");
-    assert.equal(row.payload.ground, "the-town/the-vault");
-  } finally { db.close(); }
-});
-
-test("AND NOTHING ELSE MAY REACH IT — a non-arena class is refused BY NAME", () => {
-  const db = freshDb();
-  try {
-    assert.throws(() => appendArenaRow(db, frameRow()),
-      /appendArenaRow is the arena's exemption/,
-      "any class could use the surviving INSERT — an exception you can opt into is a switch, not an exception");
-    assert.throws(() => appendArenaRow(db, frameRow()), /DEC-1\/P-143/,
-      "and the refusal carries the ruling it is, so a reader does not have to go looking for it");
-    assert.equal(db.prepare("SELECT COUNT(*) c FROM journal").get().c, 0, "and it wrote nothing on the way out");
-  } finally { db.close(); }
-});
-
 // ── 3. THE WRITE REFUSES (RULING 3) ──────────────────────────────────────────
 
 test("AN UNREACHABLE RECORD IS A REFUSAL, not a 200 over an act no store holds", async () => {
@@ -188,35 +153,6 @@ test("A STORE THAT THROWS AT WRITE TIME leaves the record UNCHANGED, not merely 
   } finally { db.close(); }
 });
 
-test("THE ARENA STILL WRITES ITS ROW WITH THE STORE DOWN — the exemption does not depend on Postgres", () => {
-  // The other falsifier RULING 3 names. The arena's sqlite row is its IDENTITY
-  // inside the fold, not a receipt, so it may not become conditional on a store
-  // being reachable. `mirrorAct` is fire-and-forget on this path by design —
-  // here the sqlite row genuinely IS the SoT, which is the one place in the
-  // office where that is still true.
-  uninstallActsPen();
-  const was = { pg: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL };
-  process.env.WORLD2_PG = "1";
-  process.env.WORLD2_PG_URL = "postgres://nobody:nothing@127.0.0.1:1/absent";
-  const db = freshDb();
-  try {
-    const r = appendArenaRow(db, {
-      crossing: currentCrossing(), actor: "wright", action: "cast", object: null,
-      cls: CLASS_ARENA_ACT, at: null, witnesses: null,
-      payload: { ground: "the-town/the-vault", spell: "the-long-word" },
-      effect: "the word lands",
-    });
-    assert.equal(r.seq, 1, "the beat took its rowid with the store unreachable");
-    const [row] = readJournal(db, { cls: CLASS_ARENA_ACT });
-    assert.equal(row.actor, "wright");
-    assert.equal(row.payload.spell, "the-long-word", "and the whole row is there, not a stub");
-  } finally {
-    db.close();
-    for (const [k, v] of [["WORLD2_PG", was.pg], ["WORLD2_PG_URL", was.url]])
-      if (v === undefined) delete process.env[k]; else process.env[k] = v;
-  }
-});
-
 // ── 4. THE SOURCE ────────────────────────────────────────────────────────────
 //
 // A pin, because the behavioural tests above would still pass if the INSERT
@@ -224,18 +160,15 @@ test("THE ARENA STILL WRITES ITS ROW WITH THE STORE DOWN — the exemption does 
 // puts it back unconditionally, so it reds test 1 as well — two ways to catch
 // the same return, which is what makes this a falsifier rather than a sentinel.
 
-test("PIN: `world-journal.mjs` carries exactly ONE `INSERT INTO journal`, and it is the arena's", () => {
+test("PIN: `world-journal.mjs` carries NO `INSERT INTO journal` (G1 took the general one; the arena's closed with it)", () => {
   const text = readFileSync(new URL("../src/world-journal.mjs", import.meta.url), "utf8");
   const code = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 
   const inserts = code.match(/INSERT INTO journal/g) ?? [];
-  assert.equal(inserts.length, 1,
-    `there are ${inserts.length} journal INSERTs in world-journal.mjs; G1 leaves exactly one and it belongs to the arena`);
+  assert.equal(inserts.length, 0,
+    `there are ${inserts.length} journal INSERTs in world-journal.mjs; G1 took the general one and the arena's closed on 2026-09-30`);
 
-  const arena = code.slice(code.indexOf("export function appendArenaRow"));
-  assert.match(arena, /INSERT INTO journal/, "the one that is left is not inside `appendArenaRow`");
-
-  const general = code.slice(code.indexOf("export async function appendJournal"), code.indexOf("export function appendArenaRow"));
+  const general = code.slice(code.indexOf("export async function appendJournal"), code.indexOf("export async function appendActFlipped"));
   assert.ok(general.length > 200, "appendJournal was not found — this pin is reading the wrong region");
   assert.equal(/INSERT INTO journal/.test(general), false,
     "`appendJournal` writes a journal row again — that is the INSERT G1 deleted");
@@ -243,8 +176,8 @@ test("PIN: `world-journal.mjs` carries exactly ONE `INSERT INTO journal`, and it
 });
 
 test("PIN: `normalizeRow` is still the one row shape, and both writers take it", () => {
-  // The normalizer survives the deletion on purpose: the arena's row, the
-  // record's row and every fixture read one shape. A second spelling is how two
+  // The normalizer survives the deletion on purpose: the record's row, the
+  // arena's archived rows and every fixture read one shape. A second spelling is how two
   // eras come to disagree in a way that still parses (this file's own lesson).
   const row = normalizeRow({ actor: "wright", action: "strike", cls: CLASS_ARENA_ACT, at: null });
   assert.equal(row.class, CLASS_ARENA_ACT);

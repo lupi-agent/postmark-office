@@ -2478,14 +2478,6 @@ import("./world-graph-snapshot.mjs").then((m) => {
   if (IN_READ_WORKER) { onAnnounce("world-graph", () => m.reloadWorldGraph()); m.reloadWorldGraph(); }
   else m.startWorldGraphRefresher({ onChange: () => announce("world-graph") });
 });
-// POS-269: who holds what, from the holding acts once the hold pen is flipped.
-// Loaded once here; the hold door reloads the main thread's copy after each act
-// and announces "holding", and a read worker reloads its own on that.
-import("./holdings-snapshot.mjs").then((m) => {
-  if (!m.holdEdgeOnActs()) return;
-  if (IN_READ_WORKER) onAnnounce("holding", () => m.reloadHoldings());
-  m.reloadHoldings();
-});
 
 // The role rides the boot line because it is the one fact about a worker that
 // an operator reading `journalctl` cannot otherwise see — four processes on four

@@ -437,7 +437,7 @@ test("§3 the store is unwritable underneath the worker and the reads keep worki
   }
 });
 
-test("§3b ALL SEVEN store readers ask for a READ handle, and the ask is load-bearing", async () => {
+test("§3b ALL FOUR store readers ask for a READ handle, and the ask is load-bearing", async () => {
   // ⚑ THE TITLE SAID FOUR AND THE BODY DROVE ONE (reviewer's repair C, lap 5).
   // And my first fix of that said FIVE over a loop of SIX — the same defect,
   // committed inside the repair for it, which is how little attention a title
@@ -470,22 +470,12 @@ test("§3b ALL SEVEN store readers ask for a READ handle, and the ask is load-be
         const { groundWithinReach } = await import(`../src/world-apex.mjs?p=${m}`);
         return groundWithinReach({ standpoint: { x: 0, y: 0 } }, null);
       }],
-      ["phaseAt", async (m) => {
-        const { phaseAt } = await import(`../src/world-apex.mjs?p=${m}`);
-        return phaseAt(null, []);
-      }],
-      ["portalBlockAt", async (m) => {
-        const { portalBlockAt } = await import(`../src/world-apex.mjs?p=${m}`);
-        return portalBlockAt(null, []);
-      }],
       ["readHoldEffects", async (m) => {
         const { readHoldEffects } = await import(`../src/world-hold.mjs?p=${m}`);
         return readHoldEffects({ handles: ["wright"] });
       }],
-      ["weaponInHand", async (m) => {
-        const { weaponInHand } = await import(`../src/arena.mjs?p=${m}`);
-        return weaponInHand(null, "wright");
-      }],
+      // FOUR, not seven, since 2026-09-30: `phaseAt`, `portalBlockAt` and
+      // `weaponInHand` were the arena's readers, and they closed with it.
       // SEVEN, not six: `callHoldTool`'s `world_holdings` branch is a reader
       // too, and it was opening the store in WRITE mode — it just had no way in
       // over HTTP, because the REST route into it was dead (#2599). Waking that
@@ -515,7 +505,7 @@ test("§3b ALL SEVEN store readers ask for a READ handle, and the ask is load-be
   assert.equal(throwers.length, 0,
     "a reader met an absent store and threw instead of answering empty: "
     + throwers.map((r) => `${r.name} (${r.threw})`).join(", "));
-  assert.equal(results.length, 7, "the count in the title must be the count in the loop");
+  assert.equal(results.length, 4, "the count in the title must be the count in the loop");
 });
 
 test("§3c readHoldEffects says UNREADABLE on an absent RECORD, not empty", async () => {

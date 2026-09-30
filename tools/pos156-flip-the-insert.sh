@@ -25,8 +25,8 @@ trap restore EXIT
 # THE PATCH ASSERTS ITS MATCH COUNT. A flip that patches nothing runs green.
 NEEDLE='  const row = normalizeRow(entry);'
 COUNT=$(grep -c -F "$NEEDLE" "$TARGET")
-echo "flip: match count for the normalize line = $COUNT (want exactly 3 — appendJournal, appendArenaRow, appendActFlipped)"
-if [ "$COUNT" != "3" ]; then
+echo "flip: match count for the normalize line = $COUNT (want exactly 2 — appendJournal, appendActFlipped; appendArenaRow closed with the arena 2026-09-30)"
+if [ "$COUNT" != "2" ]; then
   echo "FLIP REFUSED — the needle matched $COUNT times; a flip that patches nothing runs green"
   exit 1
 fi
@@ -36,14 +36,14 @@ fi
 # is the one inside `appendJournal`, and anchoring on the signature is what
 # keeps the patch off the other two.
 BEFORE=$(grep -c -F 'INSERT INTO journal' "$TARGET")
-echo "flip: journal INSERTs before = $BEFORE (want exactly 1 — the arena's)"
-[ "$BEFORE" = "1" ] || { echo "FLIP REFUSED — the tree does not hold the deletion this flip is proving"; exit 1; }
+echo "flip: journal INSERTs before = $BEFORE (want exactly 0 — G1's deletion, and the arena's closed)"
+[ "$BEFORE" = "0" ] || { echo "FLIP REFUSED — the tree does not hold the deletion this flip is proving"; exit 1; }
 
 perl -0777 -pi -e 's/(export async function appendJournal\(db, entry = \{\}\) \{\n  const row = normalizeRow\(entry\);\n)/$1\n  \/\/ FLIPPED BY tools\/pos156-flip-the-insert.sh — the deletion, undone.\n  db.prepare(\n    `INSERT INTO journal (\$\{ROW_COLUMNS\}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(\n    row.crossing, row.actor, row.action, row.object,\n    row.at_anchor, row.at_dx, row.at_dy,\n    row.witnesses, row.class, row.payload, row.effect,\n    row.household, row.written_at);\n/s' "$TARGET"
 
 AFTER=$(grep -c -F 'INSERT INTO journal' "$TARGET")
-echo "flip: journal INSERTs after = $AFTER (want exactly 2)"
-if [ "$AFTER" != "2" ]; then
+echo "flip: journal INSERTs after = $AFTER (want exactly 1)"
+if [ "$AFTER" != "1" ]; then
   echo "FLIP REFUSED — the patch did not land ($AFTER INSERTs); nothing was proven"
   exit 1
 fi

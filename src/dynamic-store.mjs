@@ -497,13 +497,10 @@ export function dynamicHealth({ repo = WORLD_CLONE } = {}) {
       // ── WHAT THESE NUMBERS MEAN AFTER G1 (POS-156, 2026-09-22) ───────────
       //
       // They used to answer "is the one pen receiving". G1 deleted the general
-      // INSERT, so what is left in this table is the ARENA's rows and nothing
-      // else — the named exemption (DEC-1/P-143, `world-journal.mjs §
-      // appendArenaRow`) — plus whatever history predates the deletion and has
-      // not been drained. So this is now the surface on which that exception is
-      // VISIBLE, which is the thing a named exception with a death condition
-      // most needs and the reason these three were kept rather than deleted
-      // with the other journal readers.
+      // INSERT, and the arena's (DEC-1/P-143) closed with the arena on
+      // 2026-09-30, so nothing writes this table now: what it holds is the
+      // arena's old rows and whatever history predates the deletion and has not
+      // been drained. The counts stay because they show exactly that.
       //
       // ⚑ AND `tools/g1-dev-proof.mjs` READS THEM. `db.journal` and
       // `db.journal_head` from this answer are the proof's DEFAULT source for

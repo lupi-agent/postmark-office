@@ -49,8 +49,8 @@
 // THE ARENA'S EXEMPTION DID NOT LIVE HERE AND DOES NOT DIE HERE. `LANE_MIRROR.
 // arena.expires` was null carrying P-143's words, and the ruling itself is
 // unchanged and now carried where the exception actually is: `FLIP_REFUSED` in
-// `world-journal.mjs`, and `appendArenaRow`, the one sqlite INSERT G1 leaves
-// standing, which refuses any other class by name. An exemption stated at the
+// `world-journal.mjs`. (`appendArenaRow`, the one sqlite INSERT G1 had left
+// standing, closed with the arena on 2026-09-30.) An exemption stated at the
 // code that implements it is stronger than one stated in a map beside it.
 
 /**
