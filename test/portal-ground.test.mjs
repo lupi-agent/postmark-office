@@ -26,6 +26,7 @@ import { cockpitPortal, groundAt, groundAtPoint, snapTo, spawnPointFor, strideOn
 const CELLAR = "the-town/the-cellar-door";
 const VAULT = "the-town/the-candle-vault";
 const ARENA_ROOM = "the-town/an-old-arena";
+const PARLOR = "the-town/the-lanternstep-parlor";
 // One-room spines: which room a MULTI-room spine answers is the live tie rule,
 // restored as it was and put to Wright separately (see portal-ground.mjs § groundAt).
 const IN_VAULT = [VAULT];
@@ -36,6 +37,10 @@ function worldDb() {
   db.exec(SCHEMA);
   const ins = db.prepare(`INSERT INTO nodes (id, by, kind, subkind, at_x, at_y, extent_w, extent_h, props) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   ins.run("the-town/portal-ground", "the-town", "mark", "class", null, null, null, null, JSON.stringify({ class: "portal-ground", dials: {} }));
+  // The parlor first, as the record orders them: it is the one the old
+  // class-only rule answered for every hand inside it, the vault's included.
+  ins.run(PARLOR, "the-town", "mark", "sited", 1100, -785, 10, 6,
+    JSON.stringify({ class: "portal-ground", dials: { guest_hp: 20 }, body: "The Lanternstep parlor — lamplight the color of late honey." }));
   ins.run(CELLAR, "the-town", "mark", "sited", 1097, -785, 5, 5,
     JSON.stringify({ class: "portal-ground", dials: { guest_hp: 20 }, body: "A door in the west wall of a house that has no cellar." }));
   ins.run(VAULT, "the-town", "mark", "sited", 1097, -783.5, 3, 2,
@@ -122,4 +127,20 @@ test("THE WIRING: the walk desk snaps by the ground, the read carries standpoint
   assert.match(apex, /portal = groundAt\(store\.db, spineIds\);/, "the read no longer finds the portal ground it stands in");
   assert.match(apex, /\.\.\.\(portal \? \{ portal: cockpitPortal\(portal\) \} : \{\}\)/, "the standpoint no longer carries `portal`");
   assert.match(apex, /if \(action === "enter" && !result\?\.error\) \{\s*const placed = await spawnOnEnter\(/, "an enter is no longer set down at the ground's spawn");
+});
+
+test("INNERMOST FIRST (Keemin, 2026-09-30): a hand in the vault is told the vault, with its stride; a hand in the parlor outside it, the parlor", () => {
+  const db = worldDb();
+  try {
+    // The spines as the apex builds them, outermost first. On the record all
+    // three rooms are `portal-ground`, which is what the class-only rule could
+    // not separate.
+    const inVault = groundAt(db, [PARLOR, CELLAR, VAULT]);
+    assert.equal(inVault.ground, VAULT, `a hand in the vault was told it stood in ${inVault.ground}`);
+    assert.equal(cockpitPortal(inVault).walk_min_step, 0.25, "standpoint.portal for a hand in the vault does not carry the vault's 0.25 m stride");
+    assert.equal(groundAt(db, [PARLOR, CELLAR]).ground, CELLAR, "a hand in the cellar door, outside the vault, is in the cellar door");
+    const inParlor = groundAt(db, [PARLOR]);
+    assert.equal(inParlor.ground, PARLOR, "a hand in the parlor outside the vault is in the parlor");
+    assert.equal("walk_min_step" in cockpitPortal(inParlor), false, "the parlor declares no stride");
+  } finally { db.close(); }
 });

@@ -90,18 +90,18 @@ export function groundAt(db, spineIds = []) {
   let rows = [];
   try { rows = db.prepare(GROUND_ROWS).all(JSON.stringify([...new Set(spineIds.filter(Boolean))])); }
   catch { return null; }
-  // ⚑ THE RULE AS IT WAS LIVE, restored verbatim, and it is not "innermost".
-  // It separates grounds by CLASS only (the arena wins a tie), and among
-  // grounds of one class it keeps the LAST row the query returned. On the
-  // record the parlor, the cellar door and the vault are all `portal-ground`,
-  // so for a hand in the vault this answers the Lanternstep parlor (measured on
-  // S87, docs/2026-09-30/rail/retire-the-arena/live-grounds.txt). Choosing the
-  // innermost instead would change what residents are shown, so it is put to
-  // Wright as its own call, not slipped into a restore.
-  const byClass = new Map(rows.map((r) => [String(r.class ?? ""), r]));
-  for (const cls of GROUND_CLASSES) {
-    const row = byClass.get(cls);
-    if (!row) continue;
+  // INNERMOST FIRST (Keemin, 2026-09-30). The spine arrives outermost first,
+  // and the ground a hand stands in is the DEEPEST portal ground on it. The
+  // rule this replaces separated grounds by class only and kept the last row
+  // the query returned, so with the parlor, the cellar door and the vault all
+  // `portal-ground`, a hand in the vault was told it stood in the Lanternstep
+  // parlor, with no stride (measured on S87,
+  // docs/2026-09-30/rail/retire-the-arena/live-grounds.txt).
+  const depth = new Map(spineIds.map((id, i) => [id, i]));
+  const row = rows
+    .filter((r) => GROUND_CLASSES.includes(String(r.class ?? "")))
+    .sort((a, b) => (depth.get(b.id) ?? -1) - (depth.get(a.id) ?? -1))[0];
+  if (row) {
     const place = placeOf(row);
     place.walk_min_step = walkMinStepOf(db, place);
     return place;
