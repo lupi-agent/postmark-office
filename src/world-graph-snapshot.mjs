@@ -89,7 +89,9 @@ export function reloadWorldGraph({ query = defaultQuery, force = false } = {}) {
       const tables = await graphTablesAt(query, pin);
       const built = graphFromTables(tables, { source: `world_graphs@S${pin.settlement ?? "?"}:${pin.tag_sha}` });
       // THE PUBLISH. One assignment: a reader sees the old graph or the new one.
-      state.snap = { ...built, pin: { tag_sha: pin.tag_sha, office_sha: pin.office_sha, settlement: pin.settlement } };
+      // `tables` rides along for the readers that ask the graph questions in
+      // SQL's shape (world-graph-db.mjs § graphDb): one set of rows, two views.
+      state.snap = { ...built, tables, pin: { tag_sha: pin.tag_sha, office_sha: pin.office_sha, settlement: pin.settlement } };
       state.key = key;
       state.lastError = null;
       return { changed: true, standing: worldGraphStanding() };
