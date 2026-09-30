@@ -227,6 +227,7 @@ const ROSTER = {
   "world2/tools/settlements-backfill.mjs": { args: [], env: NO_PG, code: 2, needle: "--world-repo <checkout> is required" },
   "world2/tools/snapshot-export.mjs": { args: ["--help"], env: NO_PG, code: 2, needle: "usage:" },
   "world2/tools/stamp-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: stamp-ingest.mjs" },
+  "world2/tools/town-index-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: town-index-ingest.mjs" },
   "world2/tools/state-log-rederive.mjs": { args: [], env: { ...NO_PG, WORLD2_PG_URL: "postgres://nobody@localhost/not_scratch" }, code: 2, needle: "REFUSED · WORLD2_PG_URL must name" },
   // POS-155 gave this tool a second door (`--window <N>`, a candle window) beside
   // the exact-crossing `--windows`, so its no-args sentence names both. The
