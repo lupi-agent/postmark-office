@@ -617,7 +617,7 @@ const j = (res, code, obj) => {
 // AND A READER THAT THROWS IS ANSWERED, NEVER LEFT TO REJECT. storeAnswer hands
 // a reader's own error back (it is not the store's absence), and a route here
 // returns this promise without awaiting it: an unanswered rejection took the
-// whole office down in the first run of group 2's tests. `onError` lets a door
+// whole office down in the first run of the mail group's tests. `onError` lets a door
 // keep its own sentence for a failed read (GET /quests/{h}'s "quest board
 // unavailable"); otherwise it is the 500 every other tripped read answers.
 async function fromTownIndex(res, fn, onNull = null, onError = null) {
