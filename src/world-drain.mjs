@@ -872,7 +872,10 @@ export async function drain({
 
   const whenIso = new Date(at).toISOString();
   const STATE = resolve(stateDir ?? join(repo, "STATE"));
-  const db = openDynamic(dbPath ?? undefined);
+  // THE LEGACY OPEN, NAMED (dynamic-store.mjs § RETIRED): the git road is the
+  // settlement's rollback and must be able to count the stale journal, and on
+  // its operator's word drain it, even where the store is retired.
+  const db = openDynamic(dbPath ?? undefined, { legacy: "the git-road drain" });
 
   try {
     const before = drainStatus(db);

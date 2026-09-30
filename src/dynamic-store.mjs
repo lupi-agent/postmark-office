@@ -80,6 +80,45 @@ export const singleLogEnabled = () => process.env.WORLD_SINGLE_LOG === "1";
 export const DEFAULT_DYNAMIC_DB = join(OFFICE_ROOT, "dynamic.db");
 export const dynamicDbPath = () => process.env.WORLD_DYNAMIC_DB ?? DEFAULT_DYNAMIC_DB;
 
+// ── RETIRED WHERE THE RECORD HOLDS EVERYTHING (POS-269, Wright 2026-09-30) ──
+//
+// On prod's flags nothing this file held is the record any more: positions and
+// the vessel's line are the position projection (WORLD_POSITIONS=1), speech is
+// the say lane's acts, holdings are the hold lane's acts under the guards. So
+// under exactly those flags the store is RETIRED and `openDynamic` refuses by
+// name. A path that still reaches for the file on those flags is a path this
+// lane missed, and it fails loudly rather than quietly reading a frozen copy.
+//
+// The predicate is world2-pen.mjs § laneFlipped's and hold-edge.mjs §
+// holdEdgeOnActs' rule, restated from the environment because this module sits
+// under both of them in the import graph; test/dynamic-retired.test.mjs holds
+// the restatement equal to the two functions over every combination.
+//
+// THE LEGACY OPEN, NAMED. One reader is let through on those flags, naming
+// itself: the git-road drain (the settlement's rollback, which must be able to
+// count the stale journal and, on its operator's word, drain it — our own guards
+// never block a fix). tools/arena-archive.mjs reads the arena's rows with its
+// own read-only node:sqlite handle, deliberately outside this opener: it runs
+// once, by hand, before the file leaves the box.
+const lanesOf = (env) => new Set(String(env.W2_PEN ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+export function dynamicRetired(env = process.env) {
+  if (env.WORLD_POSITIONS !== "1") return false;
+  if (!(env.WORLD2_PG === "1" && !!env.WORLD2_PG_URL)) return false;
+  const lanes = lanesOf(env);
+  const flipped = (lane) => lanes.has("all") || lanes.has(lane);
+  return flipped("say") && flipped("hold") && String(env.W2_GUARDS ?? "").trim() === "1";
+}
+
+export const RETIRED_LEGACY_READERS = Object.freeze(["the git-road drain"]);
+
+export class DynamicRetiredError extends Error {
+  constructor(path) {
+    super(`dynamic.db is retired on this office's flags (WORLD_POSITIONS=1, say and hold flipped, W2_GUARDS=1): the record holds positions, speech and holdings, and nothing may open ${path}`);
+    this.name = "DynamicRetiredError";
+    this.code = 503;
+  }
+}
+
 // ── the DDL ──────────────────────────────────────────────────────────────────
 //
 // IF NOT EXISTS everywhere, and no destructive migration anywhere: this file is
@@ -254,11 +293,15 @@ export const DYNAMIC_SCHEMA = `
  * write-mode default produced, minus the write.
  */
 export function openDynamicReadOnly(path = dynamicDbPath()) {
+  // Retired, the answer is the refusal, not "empty": an absent file must not let
+  // a path that should not be here pass for one that found nothing.
+  if (dynamicRetired()) throw new DynamicRetiredError(path);
   if (!existsSync(path)) return null;
   return openDynamic(path, { readOnly: true });
 }
 
-export function openDynamic(path = dynamicDbPath(), { readOnly = false } = {}) {
+export function openDynamic(path = dynamicDbPath(), { readOnly = false, legacy = null } = {}) {
+  if (dynamicRetired() && !RETIRED_LEGACY_READERS.includes(legacy)) throw new DynamicRetiredError(path);
   if (readOnly && !existsSync(path)) throw new Error(`no dynamic store at ${path} — run: npm run dynamic:rebuild`);
   if (!readOnly) mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path, readOnly ? { readOnly: true } : {});
@@ -467,6 +510,9 @@ export function dynamicHealth({ repo = WORLD_CLONE } = {}) {
       world_store: cls.store,
     },
   };
+  // RETIRED: the panel says so and opens nothing. Its counts described the file,
+  // and on these flags the file describes nothing the town holds.
+  if (dynamicRetired()) return { ...base, db: { ...base.db, retired: "dynamic.db is retired on this office's flags — positions are the position projection, speech the say acts, holdings the hold acts (POS-269). The counts below this line described the file; there is nothing left for them to describe." } };
   if (!base.db.present) return base;
   try {
     const db = openDynamic(path, { readOnly: true });
