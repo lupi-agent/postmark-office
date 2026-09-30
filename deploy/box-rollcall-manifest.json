@@ -506,6 +506,45 @@
    "repair": "sudo -u meepo git -C /srv/postmark-office/town-clone diff — then commit it by hand if it is lawful (run the town's tools/stamp-verify.mjs first for the ledger), or git checkout -- <file> if it is not, and push"
   }
  ],
+ "_blessings_readme": [
+  "§2e — THE KEEPER'S NEWEST BLESSING, AND HOW OLD IT IS.",
+  "",
+  "A crossing publishes at 06:00 and 18:00 UTC, and the keeper blesses it by cutting",
+  "settlement/S<n> on the world. Everything served as canon follows the newest tag: the",
+  "office's world.db and graph snapshot, the site's world pin, the law pen's blessed run.",
+  "From 2026-09-27 to 09-29 the box published three crossings, the keeper blessed none",
+  "of them, and nothing rang: every surface kept serving the last blessing and said so",
+  "politely (smalls-0930 D).",
+  "",
+  "ALARM-unblessed is its own verdict because its repair is the keeper's judgment:",
+  "reading the crossing and cutting the tag, or deciding not to and saying why. It is",
+  "not ALARM-outcome: that verdict reads what a RAIL produced, and no rail blesses.",
+  "",
+  "The newest tag is the highest S<n>, never the latest string (S10 sorts before S9)",
+  "or the latest date. Its age is the tag's own tagger date, the instant the keeper",
+  "blessed. The clone is read locally, as §2d's are: the rehydrate tick fetches it",
+  "every fifteen minutes, and when the clone's last fetch is over an hour old the",
+  "reason says so, because then part of the age may be the fetch's and not the keeper's.",
+  "",
+  "WHY 14 HOURS: two crossings a day, twelve hours apart, and two hours for the keeper",
+  "to read one. One missed blessing rings; a blessing cut an hour after its crossing",
+  "does not.",
+  "",
+  "FIELDS. id · label · path (a world clone the office fetches) · activation_owner ·",
+  "why (what goes wrong while nothing is blessed; required) · repair · max_age_hours",
+  "(required)."
+ ],
+ "blessings": [
+  {
+   "id": "world-blessing",
+   "label": "the keeper's newest blessing",
+   "path": "/srv/postmark-office/world-clone",
+   "max_age_hours": 14,
+   "activation_owner": "Wright — smalls-0930 item D, on Keemin's word (2026-09-30), after the 09-27 to 09-29 stall: three crossings published and none blessed",
+   "why": "Canon stands still while it is unblessed: the office's world.db and graph snapshot, the site's world pin and the law pen's blessed run all keep serving the last tag, and residents' marks from the unblessed crossings are not in the world anyone reads.",
+   "repair": "read the newest crossing on the world (git -C /srv/postmark-office/world-clone log --oneline -5 origin/main) and bless it with the keeper's tag, or record why it is being held"
+  }
+ ],
  "_trees_readme": [
   "§2c — WHICH TREE EACH UNIT WILL ACTUALLY RUN.",
   "",
