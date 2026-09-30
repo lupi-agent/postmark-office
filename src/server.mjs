@@ -685,7 +685,7 @@ let readPool = null;
 // `route` is the office's one request handler; `handle` (below it) resolves the
 // bearer credential first and hands it in, because since POS-271 the lookup is a
 // read of the paperwork and may be a round trip to the store.
-const route = (req, res, resolvedKey = null) => {
+const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname.replace(/\/+$/, "") || "/";
 
@@ -709,7 +709,8 @@ const route = (req, res, resolvedKey = null) => {
   // ── access telemetry: one JSONL line per request, written on finish.
   // req.tel is a mutable holder — identity lands after key resolution below,
   // and the MCP skin stamps the tool name (never the arguments) as it dispatches.
-  const t0 = Date.now();
+  // `t0` is taken by `handle`, BEFORE the credential is resolved, so the
+  // line's duration still covers the whole request, the lookup included.
   req.tel = { household: null, mcp: null };
   // A read worker writes no line: the main thread that handed it the read
   // already wrote one for the same request, with the same status.
@@ -2502,12 +2503,13 @@ const resolveBearer = async (token) =>
   ?? (await claimLookup(odb, db, TOWN_CLONE, token)) ?? (await berthLookup(odb, db, TOWN_CLONE, token)) ?? null;
 
 const handle = (req, res) => {
+  const t0 = Date.now();
   const auth = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? "");
-  if (!auth) return route(req, res, null);
+  if (!auth) return route(req, res, null, t0);
   const fixed = KEYS.get(auth[1]);
-  if (fixed) return route(req, res, fixed);
+  if (fixed) return route(req, res, fixed, t0);
   resolveBearer(auth[1]).catch(() => null)
-    .then((key) => route(req, res, key))
+    .then((key) => route(req, res, key, t0))
     .catch((e) => { if (!res.headersSent) bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200)); });
 };
 
