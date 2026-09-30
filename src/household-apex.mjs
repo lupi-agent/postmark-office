@@ -1219,13 +1219,14 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
     if (what === "stamps" || what === "quests" || what === "fund") {
       const { estateRead, questsRead, fundRead, fundReadOf } = await import("./household-stamps.mjs");
       // THE SWITCH (POS-268): with TOWN_INDEX_READS=store the three reads answer
-      // from the store's town index, all of one read inside ONE READ ONLY
-      // transaction (storeIndex over that client); a store that cannot be reached
-      // is a 503, never office.db's answer.
-      const { townIndexReads, storeAnswer, storeIndex } = await import("./town-index-store.mjs");
+      // from the store's town index; a store that cannot be reached is a 503,
+      // never office.db's answer.
+      const { townIndexReads, storeIndexPooled, TownIndexUnreachable } = await import("./town-index-store.mjs");
+      // Each index read takes its own short transaction (storeIndexPooled's
+      // header says why a composed read must not hold one across the rest).
       const fromIndex = async (read) => {
-        const r = await storeAnswer((c) => read(storeIndex(c, clone)));
-        return r.refused ? bounce(503, r.refused.defect, r.refused.hint) : r.out;
+        try { return await read(storeIndexPooled(clone)); }
+        catch (e) { if (e instanceof TownIndexUnreachable) return bounce(503, e.refused.defect, e.refused.hint); throw e; }
       };
       const switched = townIndexReads();
       // meta rides the ctx every door is called with (mcp.mjs § dispatch)
@@ -1251,7 +1252,7 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
           { your_residents: held });
         return switched ? fromIndex((ix) => questsRead(handle, { db, meta, clone, ix })) : questsRead(handle, { db, meta, clone });
       }
-      if (switched) return fromIndex(async (ix) => { let list = []; try { list = (await ix.potBoard())?.list ?? []; } catch { list = []; } return fundReadOf(list); });
+      if (switched) return fromIndex(async (ix) => { let list = []; try { list = (await ix.potBoard())?.list ?? []; } catch (e) { if (e instanceof TownIndexUnreachable) throw e; list = []; } return fundReadOf(list); });
       return fundRead(key, { db });
     }
     // ── media (2026-08-23) ───────────────────────────────────────────────────

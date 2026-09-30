@@ -225,6 +225,35 @@ export const storeIndex = (q, clone) => ({
   potBoard: (extraInvalid) => potBoard(q, extraInvalid),
 });
 
+/** Thrown by a pooled index method when the store cannot be reached; a door turns it into its 503. */
+export class TownIndexUnreachable extends Error {
+  constructor(refused = UNREACHABLE) { super(refused.defect); this.name = "TownIndexUnreachable"; this.refused = refused; }
+}
+
+/**
+ * The same methods as storeIndex, each in its OWN short READ ONLY transaction.
+ *
+ * THIS IS THE ONE A DOOR USES. A composed read (the estate, a doorstep) does
+ * more than read the index between its reads: the world's siting, the quest
+ * tools, a household's store writes. Holding one pooled connection across all
+ * of that while other work asks the same small pool (max 3) for another is how
+ * three concurrent readers each hold one connection and wait forever for a
+ * second. So each method takes a connection, reads, and gives it back. A store
+ * that cannot be reached throws TownIndexUnreachable, never an empty answer.
+ */
+export function storeIndexPooled(clone, { env = process.env } = {}) {
+  const via = (fn) => async (...args) => {
+    const r = await storeAnswer((c) => fn(c, ...args), { env });
+    if (r.refused) throw new TownIndexUnreachable(r.refused);
+    return r.out;
+  };
+  return {
+    stampsDetail: via((c, handle) => stampsDetail(c, handle)),
+    questBoard: via((c, handle, opts) => questBoardFor(c, handle, clone, opts)),
+    potBoard: via((c, extraInvalid) => potBoard(c, extraInvalid)),
+  };
+}
+
 // ── letters and mail (group 2) ───────────────────────────────────────────────
 
 // A letter row as the shapes read it: the office.db columns, never `digest`.

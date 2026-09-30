@@ -26,6 +26,12 @@
 // and the escrow split.
 
 import { potBoard, officeIndex } from "./queries.mjs";
+
+// A store the switched index cannot reach is the door's 503, never a quiet null
+// in one section of an answer: these reads' own catches (a board that trips, an
+// index older than the funding seam) pass it through. Named, not imported, so
+// this file does not load the store for a door that never switches.
+const unreachable = (e) => e?.name === "TownIndexUnreachable";
 import { intakeDisclosure } from "./fund.mjs";
 import { readIntakeMap } from "./intake-map.mjs";
 import { heldFor, stampsBlock, toConfirm, NOTHING_MOVED } from "./stamps-preview.mjs"; // POS-83: one grammar for every act that moves stamps
@@ -139,7 +145,7 @@ export async function estateRead(key, { db, meta, clone, ix = officeIndex(db, me
         left: q.target != null && q.progress != null ? Math.max(0, q.target - q.progress) : null,
         reward: q.reward ?? null,
       }));
-    } catch { quests = null; }
+    } catch (e) { if (unreachable(e)) throw e; quests = null; }
     residents.push({
       handle,
       tenses: detail.tenses ?? null,
@@ -199,10 +205,10 @@ export async function estateRead(key, { db, meta, clone, ix = officeIndex(db, me
 // longer a key here to pick a resident out of, so the guess cannot grow back.
 export async function questsRead(handle, { db, meta, clone, ix = officeIndex(db, meta, clone) }) {
   let board = null;
-  if (handle) { try { board = await ix.questBoard(handle); } catch { board = null; } }
+  if (handle) { try { board = await ix.questBoard(handle); } catch (e) { if (unreachable(e)) throw e; board = null; } }
   // The pots are the town's, not yours, so they answer with or without a key.
   let pots = null;
-  try { pots = await ix.potBoard(); } catch { pots = null; }
+  try { pots = await ix.potBoard(); } catch (e) { if (unreachable(e)) throw e; pots = null; }
   return {
     read: "quests",
     ...(handle ? { of: handle } : {}),
