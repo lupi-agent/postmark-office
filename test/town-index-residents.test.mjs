@@ -242,3 +242,18 @@ test("the house and needs-you answer the same through the store's index", async 
     for (const [k, v] of Object.entries(keep)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
 });
+
+test("the roster memo follows the store's head: a new ingest's residents are on the roll", async (t) => {
+  if (skip) return t.skip(skip);
+  store.__resetRosterForTest();
+  const before = (await store.residentList(api)).map((e) => e.handle);
+  assert.ok(!before.includes("newcomer"));
+  // what an ingest does: a new row, and the head moved (in the store only)
+  const w = await s.connect("law_ingester");
+  await w.query("INSERT INTO town_residents (handle, json, digest) VALUES ('newcomer', $1, 'x')", [JSON.stringify({ handle: "newcomer", address: { data: { joined: "2026-07-14" } } })]);
+  await w.query("DELETE FROM town_meta WHERE key = 'as_of'");
+  await w.query("INSERT INTO town_meta (key, value, digest) VALUES ('as_of', 'the-next-head', 'x')");
+  await w.end();
+  const after = (await store.residentList(api)).map((e) => e.handle);
+  assert.ok(after.includes("newcomer"), "a moved head re-reads the cards once, and the roll has the newcomer");
+});
