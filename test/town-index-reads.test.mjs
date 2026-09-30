@@ -40,6 +40,10 @@ before(async () => {
   // a commit over the 100-file cap, files inserted out of name order
   for (let i = 0; i < 103; i++)
     log.run("e5sha", "2026-07-22T12:00:00.000Z", "Postmark Pen", "seal: re-seal at the crossing", "M", `WHITE_PAGES/w${String((i * 37) % 103).padStart(3, "0")}/window.html`);
+  // an id that sorts differently bytewise ("B" < "a") than in an English
+  // collation ("a" < "B"): without COLLATE "C" the store's page order moves
+  db.prepare("INSERT INTO regions VALUES (?, ?, ?)").run("B-side", "the B Side", JSON.stringify({
+    id: "B-side", name: "the B Side", holder: "wright", body: "# B\n\nThe far bank.", images: [], residents: ["wright"] }));
   db.prepare("INSERT INTO regions VALUES (?, ?, ?)").run("a-quay", "the Low Quay", JSON.stringify({
     id: "a-quay", name: "the Low Quay", holder: "limen", body: "", images: [],
     residents: Array.from({ length: 30 }, (_, i) => `r${i}`) }));
