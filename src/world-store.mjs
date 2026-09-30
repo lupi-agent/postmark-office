@@ -428,21 +428,52 @@ export function pruneWorldCache(cacheRoot = WORLD_CACHE, keepDir = null, keep = 
 const parse = (s, fallback = {}) => { try { return JSON.parse(s ?? "") ?? fallback; } catch { return fallback; } };
 
 export function loadWorldGraph(dbPath = DEFAULT_DB, { allowFailed = false } = {}) {
+  return graphFromTables(readWorldDbTables(dbPath), { allowFailed, source: dbPath });
+}
+
+/**
+ * world.db's tables as plain rows, in the order the graph is built from them.
+ * The one sqlite read of the file; `world2/tools/graph-ingest.mjs` copies
+ * exactly these rows into the store's graph snapshot (037/038, POS-270), so
+ * the store's copy and the file are one set of rows read one way.
+ */
+export function readWorldDbTables(dbPath = DEFAULT_DB) {
   if (!existsSync(dbPath)) throw new Error(`no world store at ${dbPath} — run: node src/world-hydrate.mjs`);
   const db = new DatabaseSync(dbPath, { readOnly: true });
-  const all = (sql) => db.prepare(sql).all();
+  try {
+    const all = (sql) => db.prepare(sql).all();
+    return {
+      meta: all("SELECT key, value FROM meta"),
+      nodes: all("SELECT * FROM nodes"),
+      edges: all("SELECT * FROM edges ORDER BY seq"),
+      events: all("SELECT seq, at, actor, type, payload FROM events ORDER BY at"),
+      geometryVersions: all("SELECT * FROM geometry_versions ORDER BY mark_id, valid_from_iso"),
+      edgeTypes: all("SELECT type, note FROM edge_type_registry"),
+      lintFindings: all("SELECT * FROM lint_findings"),
+    };
+  } finally { db.close(); }
+}
 
-  const meta = Object.fromEntries(all("SELECT key, value FROM meta").map((r) => [r.key, r.value]));
+/**
+ * THE ONE CONSTRUCTION: world.db's rows, or the store's snapshot of them, into
+ * the graph and its companions. Both sources come through here, so "the
+ * snapshot equals the file" is a claim about rows, and the parity test checks
+ * it row for row.
+ *
+ * `source` names where the rows came from, for the errors and the `dbPath`
+ * field the file's readers have always carried.
+ */
+export function graphFromTables(tables, { allowFailed = false, source = null } = {}) {
+  const meta = Object.fromEntries(tables.meta.map((r) => [r.key, r.value]));
   // A hydration that failed its own emptiness check stamped itself, and the
   // whole point of stamping was that nothing should be able to read it by
   // accident and mistake missing rows for an empty world.
   if (!allowFailed && String(meta.hydration_status ?? "").startsWith("FAILED")) {
-    db.close();
-    throw new Error(`world store at ${dbPath} is stamped ${meta.hydration_status} — rehydrate before reading it`);
+    throw new Error(`world store at ${source} is stamped ${meta.hydration_status} — rehydrate before reading it`);
   }
   const graph = new MultiDirectedGraph();
 
-  for (const r of all("SELECT * FROM nodes")) {
+  for (const r of tables.nodes) {
     graph.addNode(r.id, {
       kind: r.kind, subkind: r.subkind, tier: r.tier, by: r.by,
       x: r.at_x, y: r.at_y, w: r.extent_w, h: r.extent_h,
@@ -451,7 +482,7 @@ export function loadWorldGraph(dbPath = DEFAULT_DB, { allowFailed = false } = {}
   }
 
   const placeholders = [];
-  for (const r of all("SELECT * FROM edges")) {
+  for (const r of tables.edges) {
     for (const end of [r.src, r.dst]) {
       if (end != null && !graph.hasNode(end)) {
         graph.addNode(end, {
@@ -469,15 +500,13 @@ export function loadWorldGraph(dbPath = DEFAULT_DB, { allowFailed = false } = {}
     });
   }
 
-  const events = all("SELECT seq, at, actor, type, payload FROM events ORDER BY at")
-    .map((e) => ({ ...e, payload: parse(e.payload) }));
-  const geometryVersions = all("SELECT * FROM geometry_versions ORDER BY mark_id, valid_from_iso");
-  const edgeTypes = all("SELECT type, note FROM edge_type_registry");
-  const lintFindings = all("SELECT * FROM lint_findings").map((r) => ({ ...r, evidence: parse(r.evidence, []) }));
+  const events = tables.events.map((e) => ({ ...e, payload: parse(e.payload) }));
+  const geometryVersions = tables.geometryVersions;
+  const edgeTypes = tables.edgeTypes;
+  const lintFindings = tables.lintFindings.map((r) => ({ ...r, evidence: parse(r.evidence, []) }));
 
-  db.close();
   return {
-    graph, meta, events, geometryVersions, edgeTypes, lintFindings, placeholders, dbPath,
+    graph, meta, events, geometryVersions, edgeTypes, lintFindings, placeholders, dbPath: source,
     counts: parse(meta.counts), anomalies: parse(meta.anomalies),
     anomalyDetail: parse(meta.anomaly_detail), gates: parse(meta.gates, []),
   };
