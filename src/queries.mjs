@@ -740,8 +740,6 @@ export function repoLog(db, opts = {}) {
   const total = Object.values(
     db.prepare(`SELECT COUNT(DISTINCT sha) AS n FROM repo_log ${clause}`).get(...params),
   )[0];
-  const next = offset + commits.length;
-  const complete = next >= total;
   const filesOf = likePrefix
     ? db.prepare("SELECT op, path FROM repo_log WHERE sha = ? AND path LIKE ? ESCAPE '\\' LIMIT 100")
     : db.prepare("SELECT op, path FROM repo_log WHERE sha = ? LIMIT 100");
@@ -752,22 +750,32 @@ export function repoLog(db, opts = {}) {
   const filesTotal = likePrefix
     ? db.prepare("SELECT COUNT(*) AS n FROM repo_log WHERE sha = ? AND path LIKE ? ESCAPE '\\'")
     : db.prepare("SELECT COUNT(*) AS n FROM repo_log WHERE sha = ?");
+  return repoLogPage({ total, limit, offset }, commits.map((c) => {
+    const files = likePrefix ? filesOf.all(c.sha, likePrefix) : filesOf.all(c.sha);
+    const ft = files.length === 100
+      ? Object.values((likePrefix ? filesTotal.get(c.sha, likePrefix) : filesTotal.get(c.sha)))[0]
+      : files.length;
+    return repoLogCommit(c, files, ft);
+  }));
+}
+
+/** One commit as /repo/log serves it. Shared with the store's twin (town-index-store.mjs). */
+export const repoLogCommit = (c, files, filesTotal) => ({
+  sha: c.sha, committed_at: c.committed_at, author: c.author, subject: c.subject,
+  ...(filesTotal > files.length ? { files_total: filesTotal } : {}),
+  files,
+});
+
+/** /repo/log's page around its commits. Shared with the store's twin. */
+export function repoLogPage({ total, limit, offset }, commits) {
+  const next = offset + commits.length;
+  const complete = next >= total;
   return {
     total, shown: commits.length, count: commits.length, limit, offset, complete,
     ...(complete ? {} : { next_offset: next,
       more_note: `${total - next} further commit${total - next === 1 ? "" : "s"} match this filter — call again with offset: ${next} (limit up to 200)` }),
     note: "the town's own history, from the town's own door — ops are git status letters (A added, M modified, D deleted); files capped at 100/commit, and a commit that hit the cap says so with files_total; when path is given, only matching files are listed",
-    commits: commits.map((c) => {
-      const files = likePrefix ? filesOf.all(c.sha, likePrefix) : filesOf.all(c.sha);
-      const ft = files.length === 100
-        ? Object.values((likePrefix ? filesTotal.get(c.sha, likePrefix) : filesTotal.get(c.sha)))[0]
-        : files.length;
-      return {
-        sha: c.sha, committed_at: c.committed_at, author: c.author, subject: c.subject,
-        ...(ft > files.length ? { files_total: ft } : {}),
-        files,
-      };
-    }),
+    commits,
   };
 }
 
@@ -2666,9 +2674,11 @@ export function bulletinList(db) {
   // Absent when the frontmatter carries none, exactly like `teaser` — the board
   // holds pages with no frontmatter at all (README.md), and an invented date is
   // worse than a missing one for the very reader asking for this field.
-  return db.prepare("SELECT slug, json FROM bulletin ORDER BY slug").all()
-    .map((r) => { const d = JSON.parse(r.json); return { slug: r.slug, title: d.data?.title ?? r.slug, posted: d.data?.posted || undefined, kind: d.data?.kind || undefined, human_gated: isHumanGated(d) || undefined, teaser: d.data?.teaser || undefined, first_line: letterExcerpt(d.body, 160) }; });
+  return db.prepare("SELECT slug, json FROM bulletin ORDER BY slug").all().map(bulletinListing);
 }
+
+/** One bulletin posting as the listing carries it (a row: slug, json). Shared with the store's twin. */
+export const bulletinListing = (r) => { const d = JSON.parse(r.json); return { slug: r.slug, title: d.data?.title ?? r.slug, posted: d.data?.posted || undefined, kind: d.data?.kind || undefined, human_gated: isHumanGated(d) || undefined, teaser: d.data?.teaser || undefined, first_line: letterExcerpt(d.body, 160) }; };
 
 /**
  * The bulletin as the doorstep carries it — the newest few, and how many more.
@@ -2684,8 +2694,12 @@ export function bulletinList(db) {
  * `bulletinList` itself sorts ascending by slug, so the reverse is taken here
  * rather than at the door that serves the whole list unchanged.
  */
-export function bulletinTeaser(db, { limit = BULLETIN_PAGE, offset = 0 } = {}) {
-  const all = bulletinList(db);
+export function bulletinTeaser(db, opts = {}) {
+  return bulletinTeaserOf(bulletinList(db), opts);
+}
+
+/** bulletinTeaser's bound and count, over a whole listing. Shared with the store's twin. */
+export function bulletinTeaserOf(all, { limit = BULLETIN_PAGE, offset = 0 } = {}) {
   const n = Math.min(Math.max(Number(limit) || BULLETIN_PAGE, 1), 200);
   // `offset` (2026-08-25) so the read-more the note names can actually be
   // walked. The note said "the whole listing is one read away" and meant the
@@ -2823,8 +2837,12 @@ export function psaFold(db, { now = Date.now(), worldDb = null } = {}) {
 
 export function bulletinEntry(db, slug) {
   const row = db.prepare("SELECT json FROM bulletin WHERE slug = ?").get(slug);
-  if (!row) return null;
-  const entry = JSON.parse(row.json);
+  return row ? bulletinEntryOf(row.json) : null;
+}
+
+/** One posting whole, from its stored json. Shared with the store's twin. */
+export function bulletinEntryOf(json) {
+  const entry = JSON.parse(json);
   if (isHumanGated(entry)) { entry.human_gated = true; entry.surfacing_note = HUMAN_GATED_NOTE; }
   return entry;
 }
@@ -2960,22 +2978,30 @@ export function regionList(db, { limit, offset } = {}) {
   const n = Math.min(Math.max(Number(limit) || REGIONS_PAGE, 1), 200);
   const start = Math.max(Number(offset) || 0, 0);
   const total = Object.values(db.prepare("SELECT COUNT(*) AS n FROM regions").get())[0];
-  const regions = db.prepare("SELECT id, name, json FROM regions ORDER BY id LIMIT ? OFFSET ?").all(n, start).map((r) => {
-    const d = JSON.parse(r.json);
-    const description = (d.body ?? "").split(/\r?\n/)
-      .find((l) => { const t = l.trim(); return t && !t.startsWith("#") && !t.startsWith("!["); })?.slice(0, 200) ?? "";
-    const all = d.residents ?? [];
-    const shown = all.slice(0, REGION_RESIDENTS);
-    return { slug: r.id, name: r.name, description,
-      // Count first, slice after: `residents_total` is the region's whole roll,
-      // which is the number a reader asking "how big is this region" wants —
-      // never the number that survived this read's own budget.
-      residents_total: all.length,
-      ...(all.length > shown.length
-        ? { residents_note: `${all.length - shown.length} more live here — read_home or list_residents names them all` }
-        : {}),
-      residents: shown };
-  });
+  const regions = db.prepare("SELECT id, name, json FROM regions ORDER BY id LIMIT ? OFFSET ?").all(n, start).map(regionListing);
+  return regionPage({ total, n, start }, regions);
+}
+
+/** One region as the /regions LIST serves it (a row: id, name, json). Shared with the store's twin. */
+export function regionListing(r) {
+  const d = JSON.parse(r.json);
+  const description = (d.body ?? "").split(/\r?\n/)
+    .find((l) => { const t = l.trim(); return t && !t.startsWith("#") && !t.startsWith("!["); })?.slice(0, 200) ?? "";
+  const all = d.residents ?? [];
+  const shown = all.slice(0, REGION_RESIDENTS);
+  return { slug: r.id, name: r.name, description,
+    // Count first, slice after: `residents_total` is the region's whole roll,
+    // which is the number a reader asking "how big is this region" wants —
+    // never the number that survived this read's own budget.
+    residents_total: all.length,
+    ...(all.length > shown.length
+      ? { residents_note: `${all.length - shown.length} more live here — read_home or list_residents names them all` }
+      : {}),
+    residents: shown };
+}
+
+/** The /regions page around its listings. Shared with the store's twin. */
+export function regionPage({ total, n, start }, regions) {
   const next = start + regions.length;
   const complete = next >= total;
   return {
@@ -3011,7 +3037,11 @@ export function regionList(db, { limit, offset } = {}) {
 // homes card calls `images` — see the report for that grammar divergence.
 export function regionOne(db, slug) {
   const row = db.prepare("SELECT id, name, json FROM regions WHERE id = ? OR name = ?").get(slug, slug);
-  if (!row) return null;
+  return row ? regionWhole(row) : null;
+}
+
+/** One region whole, from its row (id, name, json). Shared with the store's twin. */
+export function regionWhole(row) {
   const d = JSON.parse(row.json);
   const residents = d.residents ?? [];
   return {

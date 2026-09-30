@@ -27,7 +27,15 @@
 // Every reader takes a client (anything with pg's `query`), so a caller runs it
 // inside `officeRead`'s READ ONLY transaction and a test runs it on its own.
 
-export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne"]);
+import {
+  repoLogPage, repoLogCommit, regionListing, regionPage, regionWhole,
+  bulletinListing, bulletinTeaserOf, bulletinEntryOf,
+} from "./queries.mjs";
+
+// The row SHAPES are queries.mjs's own exported functions, the ones its office.db
+// readers call; only the SQL is written twice. A port that restated the shape
+// would be the private copy that drifts.
+export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry"]);
 
 /** Is the switch on? Only the exact value `store` turns it on. */
 export const townIndexReads = (env = process.env) => env.TOWN_INDEX_READS === "store";
@@ -65,8 +73,6 @@ export async function repoLog(q, opts = {}) {
        FROM town_repo_log ${clause} GROUP BY sha
       ORDER BY min(committed_at) COLLATE "C" DESC, sha COLLATE "C" LIMIT ${p(limit)} OFFSET ${p(offset)}`, params)).rows;
   const total = Number((await q.query(`SELECT COUNT(DISTINCT sha) AS n FROM town_repo_log ${clause}`, fixed)).rows[0].n);
-  const next = offset + commits.length;
-  const complete = next >= total;
   const filesWhere = likePrefix ? `sha = $1 AND ${likeAscii("path", "$2")}` : "sha = $1";
   const filesArgs = (sha) => (likePrefix ? [sha, likePrefix] : [sha]);
   const out = [];
@@ -76,50 +82,20 @@ export async function repoLog(q, opts = {}) {
     const ft = files.length === 100
       ? Number((await q.query(`SELECT COUNT(*) AS n FROM town_repo_log WHERE ${filesWhere}`, filesArgs(c.sha))).rows[0].n)
       : files.length;
-    out.push({
-      sha: c.sha, committed_at: c.committed_at, author: c.author, subject: c.subject,
-      ...(ft > files.length ? { files_total: ft } : {}),
-      files,
-    });
+    out.push(repoLogCommit(c, files, ft));
   }
-  return {
-    total, shown: commits.length, count: commits.length, limit, offset, complete,
-    ...(complete ? {} : { next_offset: next,
-      more_note: `${total - next} further commit${total - next === 1 ? "" : "s"} match this filter — call again with offset: ${next} (limit up to 200)` }),
-    note: "the town's own history, from the town's own door — ops are git status letters (A added, M modified, D deleted); files capped at 100/commit, and a commit that hit the cap says so with files_total; when path is given, only matching files are listed",
-    commits: out,
-  };
+  return repoLogPage({ total, limit, offset }, out);
 }
 
 const REGIONS_PAGE = 25;
-const REGION_RESIDENTS = 25;
 
 /** queries.regionList, from the store. */
 export async function regionList(q, { limit, offset } = {}) {
   const n = Math.min(Math.max(Number(limit) || REGIONS_PAGE, 1), 200);
   const start = Math.max(Number(offset) || 0, 0);
   const total = Number((await q.query("SELECT COUNT(*) AS n FROM town_regions")).rows[0].n);
-  const regions = (await q.query(`SELECT id, name, json FROM town_regions ORDER BY id COLLATE "C" LIMIT $1 OFFSET $2`, [n, start])).rows.map((r) => {
-    const d = JSON.parse(r.json);
-    const description = (d.body ?? "").split(/\r?\n/)
-      .find((l) => { const t = l.trim(); return t && !t.startsWith("#") && !t.startsWith("!["); })?.slice(0, 200) ?? "";
-    const all = d.residents ?? [];
-    const shown = all.slice(0, REGION_RESIDENTS);
-    return { slug: r.id, name: r.name, description,
-      residents_total: all.length,
-      ...(all.length > shown.length
-        ? { residents_note: `${all.length - shown.length} more live here — read_home or list_residents names them all` }
-        : {}),
-      residents: shown };
-  });
-  const next = start + regions.length;
-  const complete = next >= total;
-  return {
-    total, shown: regions.length, limit: n, offset: start, complete,
-    ...(complete ? {} : { next_offset: next,
-      more_note: `${total - next} further region${total - next === 1 ? "" : "s"} in the atlas — call again with offset: ${next}` }),
-    regions,
-  };
+  const rows = (await q.query(`SELECT id, name, json FROM town_regions ORDER BY id COLLATE "C" LIMIT $1 OFFSET $2`, [n, start])).rows;
+  return regionPage({ total, n, start }, rows.map(regionListing));
 }
 
 /**
@@ -130,19 +106,23 @@ export async function regionList(q, { limit, offset } = {}) {
 export async function regionOne(q, slug) {
   const row = (await q.query(
     `SELECT id, name, json FROM town_regions WHERE id = $1 OR name = $1 ORDER BY (id = $1) DESC, id COLLATE "C" LIMIT 1`, [slug])).rows[0];
-  if (!row) return null;
-  const d = JSON.parse(row.json);
-  const residents = d.residents ?? [];
-  return {
-    slug: row.id,
-    name: row.name,
-    founder: d.holder ?? null,
-    style: d.style ?? null,
-    description: d.body ?? "",
-    assets: d.images ?? [],
-    residents,
-    residents_total: residents.length,
-  };
+  return row ? regionWhole(row) : null;
+}
+
+/** queries.bulletinList, from the store: every posting's listing line, by slug, bytewise. */
+export async function bulletinList(q) {
+  return (await q.query(`SELECT slug, json FROM town_bulletin ORDER BY slug COLLATE "C"`)).rows.map(bulletinListing);
+}
+
+/** queries.bulletinTeaser, from the store (read_bulletin's paged answer; the doorstep keeps office.db's until it moves). */
+export async function bulletinTeaser(q, opts = {}) {
+  return bulletinTeaserOf(await bulletinList(q), opts);
+}
+
+/** queries.bulletinEntry, from the store: one posting whole, or null. */
+export async function bulletinEntry(q, slug) {
+  const row = (await q.query("SELECT json FROM town_bulletin WHERE slug = $1", [slug])).rows[0];
+  return row ? bulletinEntryOf(row.json) : null;
 }
 
 /**

@@ -47,6 +47,13 @@ before(async () => {
   db.prepare("INSERT INTO regions VALUES (?, ?, ?)").run("a-quay", "the Low Quay", JSON.stringify({
     id: "a-quay", name: "the Low Quay", holder: "limen", body: "", images: [],
     residents: Array.from({ length: 30 }, (_, i) => `r${i}`) }));
+  // the bulletin: date-led slugs, a human-gated notice, an upper-case slug that
+  // sorts first bytewise and not in an English collation, and a posting with no
+  // frontmatter at all (README's shape)
+  const b = db.prepare("INSERT INTO bulletin VALUES (?, ?)");
+  b.run("2026-07-20-the-quay-floods", JSON.stringify({ slug: "2026-07-20-the-quay-floods", data: { title: "The quay floods", posted: "2026-07-20", kind: "announcement", teaser: "Spring tide." }, body: "# The quay floods\n\nMind the steps." }));
+  b.run("2026-07-21-a-human-please", JSON.stringify({ slug: "2026-07-21-a-human-please", data: { title: "A human, please", human_gated: "true" }, body: "Ask your human to look." }));
+  b.run("README", JSON.stringify({ slug: "README", data: {}, body: "# The board\n\nWhat goes here." }));
   const w = await s.connect("law_ingester");
   await copyIndexToStore(w, db);
   await w.end();
@@ -81,6 +88,15 @@ test("regionList and regionOne answer as office.db does", async (t) => {
     await same(`regionList ${JSON.stringify(a)}`, office.regionList(db, a), store.regionList(api, a));
   for (const slug of ["the-terrace", "the Trueing Terrace", "a-quay", "the Low Quay", "nowhere", ""])
     await same(`regionOne ${slug}`, office.regionOne(db, slug), store.regionOne(api, slug));
+});
+
+test("bulletinList, bulletinTeaser and bulletinEntry answer as office.db does", async (t) => {
+  if (skip) return t.skip(skip);
+  await same("bulletinList", office.bulletinList(db), store.bulletinList(api));
+  for (const a of [{}, { limit: 1 }, { limit: 2, offset: 1 }, { offset: 3 }, { limit: 0 }, { limit: "x", offset: -2 }])
+    await same(`bulletinTeaser ${JSON.stringify(a)}`, office.bulletinTeaser(db, a), store.bulletinTeaser(api, a));
+  for (const slug of ["settling-in", "2026-07-21-a-human-please", "README", "nope"])
+    await same(`bulletinEntry ${slug}`, office.bulletinEntry(db, slug), store.bulletinEntry(api, slug));
 });
 
 test("the store's as-of is the index's own", async (t) => {

@@ -1862,11 +1862,17 @@ const handle = (req, res) => {
           .then((b) => j(res, 200, b))
           .catch(() => bounce(res, 503, "quest board unavailable", "the office couldn't read the quest registry from its clone — retry shortly"));
 
-      if (path === "/bulletin") return j(res, 200, bulletinList(db));
+      if (path === "/bulletin") {
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.bulletinList(c));
+        return j(res, 200, bulletinList(db));
+      }
 
       if ((m = /^\/bulletin\/([a-z0-9-]+)$/.exec(path))) {
-        const b = bulletinEntry(db, m[1]);
-        if (!b) return bounce(res, 404, `no bulletin entry "${m[1]}"`, "slugs come from GET /bulletin");
+        const slug = m[1];
+        const missing = () => bounce(res, 404, `no bulletin entry "${slug}"`, "slugs come from GET /bulletin");
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.bulletinEntry(c, slug), missing);
+        const b = bulletinEntry(db, slug);
+        if (!b) return missing();
         return j(res, 200, b);
       }
 

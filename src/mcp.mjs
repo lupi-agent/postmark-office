@@ -9,7 +9,7 @@
 // arrive with no CONTRIBUTING.md in context, so the contract IS the etiquette.
 
 import { townSummary, residentList, residentPage, resident, mailList, letterAnswer, LETTER_READING_LAW_LINE, search, bulletinList, bulletinTeaser, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, home, identityOf, repoLog, DOORSTEP_SEGMENTS } from "./queries.mjs";
-import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
+import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
 import { READ_FIELDS } from "./one-contract.mjs"; // the one field list a read shares with its twin at another door (POS-70 row 39)
 
 /** One line per doorstep segment, for `read_doorstep`'s description. Keyed by
@@ -699,7 +699,9 @@ export async function callTool(name, args, ctx) {
       return { ...h, world: await worldBlockForHandle(args.handle, key) };
     }
     case "read_bulletin": {
-      if (args.slug) return bulletinEntry(db, args.slug) ?? notFound(`no bulletin entry "${args.slug}"`, "omit slug for the list");
+      const missing = () => notFound(`no bulletin entry "${args.slug}"`, "omit slug for the list");
+      if (args.slug && townIndexReads()) return (await fromStore((c) => bulletinEntryFromStore(c, args.slug))) ?? missing();
+      if (args.slug) return bulletinEntry(db, args.slug) ?? missing();
       // BOUNDED ONLY WHEN ASKED (2026-08-25). A bare read_bulletin answers the
       // whole listing exactly as it always has — this door's own bound is a
       // Tier-2 row on the weight audit and not this wave's call to make. What
@@ -707,6 +709,7 @@ export async function callTool(name, args, ctx) {
       // segment can BE this read at three entries rather than a private teaser
       // beside it, and so the read-more the note names can actually be walked.
       const asked = args.limit != null || args.offset != null;
+      if (townIndexReads()) return fromStore((c) => (asked ? bulletinTeaserFromStore(c, { limit: args.limit, offset: args.offset }) : bulletinListFromStore(c)));
       return asked ? bulletinTeaser(db, { limit: args.limit, offset: args.offset }) : bulletinList(db);
     }
     case "send_letter": {
