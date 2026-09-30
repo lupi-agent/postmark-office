@@ -30,6 +30,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { asPaper } from "./paperwork.mjs";
+import { probeOf } from "./index-probe.mjs";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -134,25 +135,26 @@ export const sweepClaims = (odb) =>
 // every resident's row on every authenticated request, ~10% of the office's
 // thread in the live profile. The login -> handles map is built once per change
 // of the residents table (a cheap count-and-length stamp, no JSON parsed) and of
-// the pins, per db handle. Everything else below, the harbor stamp included,
+// the pins, per index. Everything else below, the harbor stamp included,
 // is still recomputed on every lookup, so it falls off the moment the
 // Registrar lands a handle ashore, exactly as before.
-const loginIndexes = new WeakMap(); // db -> { stamp, map }
+// The index is office.db's or, with TOWN_INDEX_READS=store, the store's probe
+// (index-probe.mjs; its stamp is the store's head).
+const loginIndexes = new WeakMap(); // probe -> { stamp, map }
 function loginIndex(db, pinnedHandles) {
-  const st = db.prepare("SELECT count(*) AS n, total(length(json)) AS l, max(rowid) AS r FROM residents").get();
-  const stamp = `${st.n}:${st.l}:${st.r}:${[...pinnedHandles].sort().join(",")}`;
-  const hit = loginIndexes.get(db);
+  const ix = probeOf(db);
+  const stamp = `${ix.loginStamp()}:${[...pinnedHandles].sort().join(",")}`;
+  const hit = loginIndexes.get(ix);
   if (hit && hit.stamp === stamp) return hit.map;
   const map = new Map();
-  for (const r of db.prepare("SELECT handle, json FROM residents").all()) {
+  for (const r of ix.loginRows()) {
     if (pinnedHandles.has(r.handle)) continue; // pins are authoritative
-    const d = JSON.parse(r.json);
-    const bound = (d.github ?? d.address?.data?.github ?? "").toLowerCase();
+    const bound = r.github.toLowerCase();
     if (!bound) continue;
     if (!map.has(bound)) map.set(bound, []);
     map.get(bound).push(r.handle);
   }
-  loginIndexes.set(db, { stamp, map });
+  loginIndexes.set(ix, { stamp, map });
   return map;
 }
 
@@ -179,8 +181,8 @@ export function householdFor(clone, db, ghId, ghLogin) {
   // Registrar lands a handle ashore.
   let settled = false;
   try {
-    const q = db.prepare("SELECT 1 FROM residents WHERE handle = ?");
-    for (const h of handles) if (q.get(h)) { settled = true; break; }
+    const ix = probeOf(db);
+    for (const h of handles) if (ix.hasResident(h)) { settled = true; break; }
   } catch { settled = true; /* an unreadable index must never widen the gate */ }
   return { household: ghLogin ?? String(ghId), handles, ...(settled ? {} : { harbor: true }) };
 }

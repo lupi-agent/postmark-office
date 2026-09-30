@@ -17,6 +17,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
+import { indexSwitched, UNREACHABLE_DEFECT, UNREACHABLE_HINT } from "./index-probe.mjs";
 import { bindUnderLock } from "./join-bind.mjs";
 import { penTransaction } from "./write.mjs";
 
@@ -40,14 +41,21 @@ async function main() {
   answer(await penTransaction(CLONE, async () => {
     if (process.env.TOWN_PUSH === "1")
       execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
-    const db = new DatabaseSync(dbPath ?? process.env.OFFICE_DB ?? resolve(HERE, "..", "office.db"), { readOnly: true });
+    // with TOWN_INDEX_READS=store the handle check reads the store's residents,
+    // loaded now under the lock, never office.db (POS-268)
+    let db = null;
+    if (indexSwitched()) {
+      const { refreshStoreProbe } = await import("./town-index-store.mjs");
+      if (!(await refreshStoreProbe({ letters: false, logins: false })))
+        return { error: { code: 503, field: null, defect: UNREACHABLE_DEFECT, hint: UNREACHABLE_HINT } };
+    } else db = new DatabaseSync(dbPath ?? process.env.OFFICE_DB ?? resolve(HERE, "..", "office.db"), { readOnly: true });
     try {
       return await bindUnderLock({ args, key, clone: CLONE, db, date: townDate() });
     } catch (e) {
       if (typeof e?.code !== "number") throw e;
       return { error: { code: e.code, field: e.field ?? null, defect: e.defect ?? String(e.message), hint: e.hint ?? null } };
     } finally {
-      db.close();
+      db?.close();
     }
   }));
 }

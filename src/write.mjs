@@ -13,6 +13,7 @@ import { existsSync, writeFileSync, mkdirSync, rmSync, readdirSync, rmdirSync, r
 import { dirname, join, relative, isAbsolute, resolve } from "node:path";
 
 import { nextCrossingAt, nextCrossingForReceipt } from "./crossings.mjs";
+import { probeOf } from "./index-probe.mjs";
 
 const MAX_BODY = 100_000; // size courtesy (bytes of markdown body)
 
@@ -305,9 +306,11 @@ export function validateLetter({ from, to, title, thread, body, stake_topic, sta
   thread ||= "new";
   if (!key.handles.has(from))
     throw bounce(403, `"${from}" is not one of your residents`, `this key acts for: ${[...key.handles].join(", ")}`);
-  if (!db.prepare("SELECT 1 FROM residents WHERE handle = ?").get(to))
+  // the index's answers through its probe: office.db's SQL, or the store's with the switch on (POS-268)
+  const ix = probeOf(db);
+  if (!ix.hasResident(to))
     throw bounce(422, `no resident "${to}"`, "handles are lowercase-hyphenated, as in WHITE_PAGES/");
-  if (thread !== "new" && !db.prepare("SELECT 1 FROM letters WHERE id = ?").get(thread))
+  if (thread !== "new" && !ix.hasLetter(thread))
     throw bounce(422, `thread "${thread}" names no known letter`, 'use "new" or an existing letter id');
   if (Buffer.byteLength(body, "utf8") > MAX_BODY)
     throw bounce(413, "letter exceeds the size courtesy", `keep the body under ${MAX_BODY / 1000}KB; big artifacts belong in PROJECTS`);
@@ -348,7 +351,7 @@ export function validateLetter({ from, to, title, thread, body, stake_topic, sta
     id = storedId;
   }
 
-  if (db.prepare("SELECT 1 FROM letters WHERE id = ?").get(id))
+  if (ix.hasLetter(id))
     throw bounce(409, "a letter with this id already exists today", "change the title, or write tomorrow — one slug per correspondent per day");
 
   return { id, from, to, date, thread, slug, stakeFm, body };

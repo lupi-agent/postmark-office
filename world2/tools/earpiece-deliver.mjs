@@ -251,7 +251,13 @@ async function main(argv) {
   const { DatabaseSync } = await import("node:sqlite");
   const { penMailPort } = await import("../../src/earpiece-mail.mjs");
   const { townLogEnabled } = await import("../../src/town-journal.mjs");
-  const db = existsSync(dbPath) ? new DatabaseSync(dbPath) : null;
+  // With TOWN_INDEX_READS=store the recipient check reads the store's index,
+  // loaded here, and office.db is not opened (POS-268); a store that cannot
+  // answer leaves the pen's checks refusing, and each letter logs failed.
+  const { indexSwitched } = await import("../../src/index-probe.mjs");
+  let db = null;
+  if (indexSwitched()) await (await import("../../src/town-index-store.mjs")).refreshStoreProbe({ logins: false });
+  else db = existsSync(dbPath) ? new DatabaseSync(dbPath) : null;
   // A paper (POS-271): the store's town log when the office is switched, the
   // file otherwise — the same switch as the office's own.
   const { openPaper, paperworkStoreOn } = await import("../../src/paperwork.mjs");

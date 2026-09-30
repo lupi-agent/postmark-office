@@ -57,6 +57,7 @@ import {
   slugFromName, houseForAccount, houseForName,
 } from "./residency.mjs";
 import { loadRegistry, loadPins } from "./registry-store.mjs";
+import { probeOf } from "./index-probe.mjs";
 import { REFUSALS, refuse, slugIsWellFormed } from "./ceremony.mjs";
 
 // A SECOND SPELLING OF THE PIN FILE'S PATH, KEPT ONLY AS A RE-EXPORT (POS-158).
@@ -211,7 +212,7 @@ export const OWN_HANDLE_HINT =
 // the declared registry (a household may list a resident the index hasn't seen
 // yet). Three places, because a name taken in any of them is taken.
 export function handleTaken(handle, { db, registry, clone, pending = null }) {
-  if (db?.prepare("SELECT 1 FROM residents WHERE handle = ?").get(handle)) return "the town";
+  if (probeOf(db)?.hasResident(handle)) return "the town";
   // ── THE FOURTH REGISTER: names spoken for but not yet drained ──────────
   //
   // POS-44's first design-in, verbatim: "Pending-name uniqueness: the
