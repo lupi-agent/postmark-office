@@ -53,7 +53,7 @@ import { dirname, join } from "node:path";
 // Steps 6 and 7's law, extracted the day the REVIEW lane became a second tool
 // holding the same `clearing_job` pen (`review-rule.mjs`). One definition, two
 // callers — see materialize.mjs's header for why it is not a copy.
-import { materializeClaims, recomputeStanding, slugOf, ownerHouseholdFor } from "./materialize.mjs";
+import { materializeClaims, recomputeStanding, slugOf, ownerHouseholdFor, liveHouseOfVia } from "./materialize.mjs";
 // The escrow PRESENCE gate — the sweep's own rule, ported to the candle before
 // G1 deletes the path it lives on. See step 5.5. Step 3's sufficiency rule
 // lives there too (POS-411), reading the same escrow.
@@ -318,7 +318,7 @@ try {
       //   these candidates.
       const containment = await gistContainment(q);
       const tiers = computeStanding([...standingRows, ...candidates],
-        { only: new Set(candidates.map((c) => c.slug)), containment });
+        { only: new Set(candidates.map((c) => c.slug)), containment, houseOf: await liveHouseOfVia(q) });
       const escrowByMark = await escrowPresenceAt(q, { townSha });
       const verdict = escrowAbsentAmong(
         undecidedNamed.map((c) => ({ id: c.id, slug: slugOf(c) })),
