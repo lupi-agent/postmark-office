@@ -163,3 +163,33 @@ test("read_quests through callTool answers the same both ways", async (t) => {
     for (const [k, v] of Object.entries(keep)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
 });
+
+test("household { read: stamps | quests | fund } answers through the store when switched, and 503s when the store is gone", async (t) => {
+  if (skip) return t.skip(skip);
+  const { householdApex } = await import("../src/household-apex.mjs");
+  const KEY = { household: "keemin", handles: new Set(["wright", "limen"]) };
+  const CTX = { db, meta, clone: TOWN, asOf: "fixture" };
+  const asks = [{ read: "stamps" }, { read: "quests", handle: "wright" }, { read: "fund" }];
+  const keep = { TOWN_INDEX_READS: process.env.TOWN_INDEX_READS, WORLD2_PG: process.env.WORLD2_PG, WORLD2_PG_URL: process.env.WORLD2_PG_URL };
+  const { default: pg } = await import("pg");
+  const pool = new pg.Pool({ connectionString: s.url("office_api"), max: 2 });
+  const pen = await import("../src/world2-pen.mjs");
+  const norm = (o) => { const c = structuredClone(o); if (c?.today) c.today = { day: c.today.day }; return JSON.stringify(c); };
+  try {
+    const plain = [];
+    for (const a of asks) plain.push(norm(await householdApex(a, KEY, CTX)));
+    Object.assign(process.env, { TOWN_INDEX_READS: "store", WORLD2_PG: "1", WORLD2_PG_URL: s.url("office_api") });
+    pen.__setPoolForTest(pool);
+    for (const [i, a] of asks.entries()) assert.equal(norm(await householdApex(a, KEY, CTX)), plain[i], `household ${JSON.stringify(a)}`);
+    // the store gone: a pool whose every connect fails
+    pen.__setPoolForTest({ connect: async () => { throw new Error("ECONNREFUSED"); } });
+    for (const a of asks) {
+      const r = await householdApex(a, KEY, CTX);
+      assert.equal(r.code, 503, `household ${JSON.stringify(a)}: ${JSON.stringify(r).slice(0, 160)}`);
+      assert.match(r.defect, /town index \(the store\) cannot be reached/);
+    }
+  } finally {
+    pen.__setPoolForTest(null); await pool.end();
+    for (const [k, v] of Object.entries(keep)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
