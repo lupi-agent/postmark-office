@@ -1194,7 +1194,15 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
     if (what === "letter") {
       const id = String(f.id ?? "").trim();
       if (!id) return bounce(422, "which letter?", 'pass id: — ids come from household { read: "mail" } and your doorstep');
-      let l = null; try { l = letterAnswer(db, id); } catch { l = null; }
+      let l = null;
+      const { townIndexReads, storeAnswer, letterAnswer: letterAnswerFromStore } = await import("./town-index-store.mjs");
+      if (townIndexReads()) {
+        // THE SWITCH (POS-268): the letter from the store; a store that cannot be
+        // reached is the 503, never office.db's copy.
+        const r = await storeAnswer((c) => letterAnswerFromStore(c, id));
+        if (r.refused) return bounce(503, r.refused.defect, r.refused.hint);
+        l = r.out;
+      } else { try { l = letterAnswer(db, id); } catch { l = null; } }
       if (!l) return bounce(404, "no letter by that id", 'ids come from household { read: "mail" } and your doorstep — a letter still standing ahead of the crossing is not in the record yet (read: "mail", view: "pending")');
       const mine = new Set(held);
       if (!letterParties(l).some((h) => mine.has(h)))
@@ -1267,10 +1275,21 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
     if (what === "mail") {
       if (!handle) return whichResident("mail");
       const view = String(f.view ?? "inbox").trim();
+      // THE SWITCH (POS-268): with TOWN_INDEX_READS=store the four index views
+      // answer from the store, each in one READ ONLY transaction; a store that
+      // cannot be reached is the 503, never office.db's answer.
+      const tis = await import("./town-index-store.mjs");
+      const switched = tis.townIndexReads();
+      const fromStore = async (read) => {
+        const r = await tis.storeAnswer(read);
+        return r.refused ? bounce(503, r.refused.defect, r.refused.hint) : r.out;
+      };
+      const pageOpts = { since: f.since, until: f.until, limit: f.limit, offset: f.offset };
+      const awaitingOpts = { limit: f.limit, offset: f.offset, hide_bounces_older_than_days: f.hide_bounces_older_than_days };
       if (view === "inbox" || view === "outbox")
-        return mailList(db, handle, view, { since: f.since, until: f.until, limit: f.limit, offset: f.offset });
-      if (view === "awaiting") return mailAwaiting(db, handle, { limit: f.limit, offset: f.offset,
-        hide_bounces_older_than_days: f.hide_bounces_older_than_days });
+        return switched ? fromStore((c) => tis.mailList(c, handle, view, pageOpts)) : mailList(db, handle, view, pageOpts);
+      if (view === "awaiting")
+        return switched ? fromStore((c) => tis.mailAwaiting(c, handle, awaitingOpts)) : mailAwaiting(db, handle, awaitingOpts);
       // ── correspondents (walk #2 item 1, 2026-09-06) ───────────────────────
       //
       // WHO you have exchanged letters with. It is a PUBLIC-SHAPED fact — the
@@ -1281,7 +1300,10 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
       // and nothing else. It lives at THIS door rather than `town` because the
       // errand is "have I written to this person", and the answer a resident
       // wants is about their own correspondence.
-      if (view === "correspondents") return mailCorrespondents(db, handle, { limit: f.limit, offset: f.offset });
+      if (view === "correspondents") {
+        const listOpts = { limit: f.limit, offset: f.offset };
+        return switched ? fromStore((c) => tis.mailCorrespondents(c, handle, listOpts)) : mailCorrespondents(db, handle, listOpts);
+      }
       // ── the pending view (Hal's third point, 2026-08-26) ──────────────────
       //
       //   "Add a focused pending-mail read, e.g. household { read: "mail",
@@ -1326,6 +1348,12 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
         const { nextCrossing } = await import("./write.mjs");
         const block = await hotMailBlock(odb, key, { handle });
         const standing = block ? block.standing : [];
+        let settled;
+        if (switched) {
+          const r = await tis.storeAnswer((c) => tis.outboxSettled(c, handle));
+          if (r.refused) return bounce(503, r.refused.defect, r.refused.hint);
+          settled = { inOutbox: r.out, settledAsOf: r.asOf };
+        } else settled = { inOutbox: outboxSettled(db, handle), settledAsOf: indexAsOf(db) };
         return {
           handle, box: "pending", total: standing.length, shown: standing.length, complete: true,
           expected_crossing: nextCrossing(),
@@ -1333,9 +1361,10 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
           // settled count this view is the other half of, so the two tenses are
           // named side by side here exactly as they are on the morning page.
           freshness: outboxTense({
-            inOutbox: outboxSettled(db, handle),
+            // the settled half from the index the switch names (the store's own
+            // head beside its count, never office.db's as-of beside the store's rows)
+            ...settled,
             standing: standing.length,
-            settledAsOf: indexAsOf(db),
           }),
           standing,
           ...(block ? { note: block.note } : {
