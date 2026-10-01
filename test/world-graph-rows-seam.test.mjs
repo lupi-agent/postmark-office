@@ -70,6 +70,9 @@ test("A REFUSED FIXTURE STANDS ON THE STORE: outside node --test, WORLD_GRAPH_RO
   // The office's own path, end to end: an argument-less reload (what the main
   // thread's refresher does) checks the fixture first, then asks the store. A
   // stub stands in for the store's query here, so the child needs no Postgres.
+  // The stub is installed INSIDE the test context (the hook's own rule, the
+  // publish seam's too); then the child steps OUTSIDE it, as a stray office
+  // would be, and is handed the fixture there.
   const code = `const m = await import(${JSON.stringify(SNAPSHOT)});
     const rows = { meta: [{ key: "hydration_status", value: "OK" }, { key: "as_of_world", value: "storesha" }],
       nodes: [{ id: "the-town/quay", kind: "mark", subkind: "sited", tier: "constitution", by: "the-town", at_x: 0, at_y: 0, extent_w: 1, extent_h: 1, props: "{}" }],
@@ -78,13 +81,24 @@ test("A REFUSED FIXTURE STANDS ON THE STORE: outside node --test, WORLD_GRAPH_RO
     m.__setDefaultQueryForTest(async (sql) => sql === m.PIN_SQL
       ? { rows: [{ tag_sha: "storesha", office_sha: "office1", settlement: 7, built_at: new Date().toISOString() }] }
       : { rows: rows[byName[sql]] ?? [] });
+    delete process.env.NODE_TEST_CONTEXT;
+    process.env.WORLD_GRAPH_ROWS = ${JSON.stringify(ROWS)};
     const r = await m.reloadWorldGraph();
     console.log(JSON.stringify({ changed: r.changed, loaded: Boolean(m.worldGraphSnapshot()), nodes: m.worldGraphSnapshot()?.graph?.order ?? null, standing: m.worldGraphStanding() }));`;
-  const r = child(code, { inTest: false, rows: ROWS });
+  const r = child(code, { inTest: true });
   assert.equal(r.loaded, true, `a refused fixture left the office with NO world: ${JSON.stringify(r.standing)}`);
   assert.equal(r.standing.source, "store");
   assert.equal(r.standing.tag_sha, "storesha", "the world that published is the store's, not the fixture's");
   assert.equal(r.nodes, 1);
   assert.match(String(r.standing.refused), /WORLD_GRAPH_ROWS is a test fixture and is refused outside node --test/,
     "the refusal must stay disclosed after the store has published");
+});
+
+test("THE TEST-QUERY HOOK keeps the seam's one rule: it answers only under node --test", () => {
+  const code = `const m = await import(${JSON.stringify(SNAPSHOT)});
+    let threw = null;
+    try { m.__setDefaultQueryForTest(async () => ({ rows: [] })); } catch (e) { threw = e.message; }
+    console.log(JSON.stringify({ threw }));`;
+  assert.match(String(child(code, { inTest: false }).threw), /answers only under node --test/);
+  assert.equal(child(code, { inTest: true }).threw, null);
 });
