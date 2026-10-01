@@ -29,6 +29,7 @@ import { join } from "node:path";
 import {
   fixtureWorldCloneWithEngine, fixtureWorldDb, mainShaOf, scratchDir, crossingStart,
 } from "./dynamic-fixture.mjs";
+import { NO_WORLD_DB } from "./helpers/world-rows.mjs";
 import { rmSync } from "node:fs";
 
 const scratch = scratchDir("union");
@@ -72,8 +73,11 @@ const worldDbPath = join(scratch, "world.db");
 const dynPath = join(scratch, "dynamic.db");
 
 process.env.WORLD_CLONE = repo;
-process.env.WORLD_STORE_DB = worldDbPath;
+process.env.WORLD_STORE_DB = NO_WORLD_DB;   // the world is the published fixture (POS-270 lane W 3a), never the file
 process.env.WORLD_DYNAMIC_DB = dynPath;
+// Presence reads the position projection (POS-269): the entities table it read
+// without one went with dynamic.db.
+process.env.WORLD_POSITIONS = "1";
 delete process.env.WORLD_APEX;
 delete process.env.WORLD_EMISSIONS;
 
@@ -83,9 +87,6 @@ const WAYSTATION = { x: 1503, y: 4319 };     // jetto's walk-derived position, 4
 let world, apex;
 before(async () => {
   fixtureWorldDb(worldDbPath, { sha: SHA, departures: DEPARTURES });
-  const entities = await import("../src/dynamic-entities.mjs");
-  const r = await entities.refreshEntities({ dbPath: dynPath, repo, at: B });
-  assert.equal(r.ok, true, `seed refused: ${JSON.stringify(r.refused)}`);
   world = await import("../src/world.mjs");
   apex = await import("../src/world-apex.mjs");
   process.env.WORLD_PRESENCE = "1";
@@ -180,9 +181,17 @@ test("world_walkers and present name the same residents — one derivation, two 
 
 test("a presence read handed no fold says which half it is answering", async () => {
   const presence = await import("../src/dynamic-presence.mjs");
-  const blind = await presence.everyone({ dbPath: dynPath, repo, atMs: B });   // no `world`
+  const projected = { ...(await world.departuresAcrossEras(repo, { atMs: B })), built_at: new Date(B).toISOString() };
+  const blind = await presence.everyone({ repo, atMs: B, projected });   // no `world`
   assert.deepEqual(blind.residents.map((r) => r.handle).sort(), ["hal", "jetto"],
     "with no fold there is no ground half — which is exactly what must be disclosed");
   assert.ok((blind.disclosed ?? []).some((d) => d.startsWith("ground-not-read:")),
     "the walk-only answer passed itself off as the whole town");
+});
+
+test("a presence read handed no PROJECTION has no presence to give, and says why (POS-269)", async () => {
+  const presence = await import("../src/dynamic-presence.mjs");
+  const r = await presence.everyone({ dbPath: dynPath, repo, atMs: B });
+  assert.equal(r.error, "presence-needs-projection");
+  assert.match(r.detail, /dynamic\.db, which it read without one, is retired/);
 });

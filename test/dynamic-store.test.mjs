@@ -30,6 +30,7 @@ import {
   fixtureWorldClone, fixtureWorldDb, mainShaOf, scratchDir,
   crossingStart, DEFAULT_DIALS,
 } from "./dynamic-fixture.mjs";
+import { NO_WORLD_DB, clearWorld } from "./helpers/world-rows.mjs";
 
 const scratch = scratchDir("store");
 const repo = fixtureWorldClone({ label: "store" });
@@ -44,7 +45,9 @@ const worldDbPath = join(scratch, "world.db");
 const dynPath = join(scratch, "dynamic.db");
 
 process.env.WORLD_CLONE = repo;
-process.env.WORLD_STORE_DB = worldDbPath;
+// The office reads the world graph snapshot (POS-270 lane W 3a): buildWorld()
+// publishes the fixture as one, and world.db's path points nowhere.
+process.env.WORLD_STORE_DB = NO_WORLD_DB;
 process.env.WORLD_DYNAMIC_DB = dynPath;
 delete process.env.WORLD_EMISSIONS;
 
@@ -141,6 +144,7 @@ test("no class mark, no dials, a FAILED store, no store at all — each falls ba
     ["store-failed", { status: "FAILED: empty tables — nodes" }],
   ]) {
     rmSync(worldDbPath, { force: true });
+    clearWorld();
     buildWorld(opts);
     resetClassCache();
     const cls = soundClass({ repo });
@@ -149,6 +153,7 @@ test("no class mark, no dials, a FAILED store, no store at all — each falls ba
     assert.deepEqual(cls.disclosed.sort(), Object.keys(DEFAULT_DIALS).sort(), `${label}: every dial is disclosed`);
   }
   rmSync(worldDbPath, { force: true });
+  clearWorld();
   resetClassCache();
   const gone = soundClass({ repo });
   reasons.push(["no-store", gone.gate.reason]);
@@ -157,7 +162,9 @@ test("no class mark, no dials, a FAILED store, no store at all — each falls ba
   assert.deepEqual(reasons, [
     ["class-mark-absent", "class-mark-absent"],
     ["class-dials-absent", "class-dials-absent"],
-    ["store-failed", "store-failed"],
+    // A failed hydration is never published (the store is never given a failed
+    // snapshot), so what the office sees after one is NO world, said as such.
+    ["store-failed", "store-absent"],
     ["no-store", "store-absent"],
   ], "every fallback says which input was missing — no silent substitution anywhere");
 });
@@ -198,16 +205,24 @@ test("the flag is off by default and is read per call, never latched", async () 
 
 // ── 3. entities: the walk-ledger derivation ──────────────────────────────────
 
+// The entities TABLE went with dynamic.db (POS-269): nothing reads it, and the
+// save derives entities from the record at its own clock. What these tests
+// held of the derivation still holds, and is asked of the derivation itself —
+// `readDepartureEvents` (the ledger out of the store, with its gates and its
+// freshness) and `deriveEntities` (the pure half). The table's own tests (no
+// parent column, a refused refresh leaves the rows, dynamic:rebuild) retired
+// with it.
+
+const derive = async () => {
+  const { readDepartureEvents, deriveEntities, walkModule } = await import("../src/dynamic-entities.mjs");
+  const read = readDepartureEvents({ repo });
+  return { read, rows: read.refused ? null : deriveEntities(read.events, NOW, await walkModule({ repo })) };
+};
+
 test("entities derive from the ledger: latest wins, the vessel is not one, and the record travels", async () => {
   await fresh();
-  const { refreshEntities, readEntities } = await import("../src/dynamic-entities.mjs");
-  const { openDynamic } = await import("../src/dynamic-store.mjs");
-
-  const r = await refreshEntities({ dbPath: dynPath, repo, at: NOW });
-  assert.equal(r.ok, true);
-  const db = openDynamic(dynPath, { readOnly: true });
-  const rows = readEntities(db);
-  db.close();
+  const { read, rows } = await derive();
+  assert.equal(read.refused, undefined);
 
   assert.deepEqual(rows.map((e) => e.handle), ["iris", "jetto", "wright"],
     "the-post-office walks the ledger and is never an entity");
@@ -224,45 +239,21 @@ test("entities derive from the ledger: latest wins, the vessel is not one, and t
   assert.equal(jetto.derived_at, new Date(NOW).toISOString(), "and so does the instant it was evaluated at");
 });
 
-test("an entity row carries no parent, ever — the column does not exist to be filled", async () => {
+test("a store whose ledger gate is absent, or no store at all, REFUSES by name — an empty table by absence is not a still town", async () => {
   await fresh();
-  const { refreshEntities } = await import("../src/dynamic-entities.mjs");
-  const { openDynamic } = await import("../src/dynamic-store.mjs");
-  await refreshEntities({ dbPath: dynPath, repo, at: NOW });
-  const db = openDynamic(dynPath, { readOnly: true });
-  const cols = db.prepare("SELECT name FROM pragma_table_info('entities')").all().map((c) => c.name);
-  db.close();
-  assert.deepEqual(cols, ["handle", "x", "y", "derived_at", "provenance"]);
-  assert.equal(cols.includes("parent"), false, '"what am I within" is a query over position, never an edge');
-});
-
-test("a refused derivation leaves every existing row where it was — a refusal is not an outage", async () => {
-  await fresh();
-  const { refreshEntities, readEntities } = await import("../src/dynamic-entities.mjs");
-  const { openDynamic } = await import("../src/dynamic-store.mjs");
-  await refreshEntities({ dbPath: dynPath, repo, at: NOW });
-
   // the store's own walk-ledger gate was ABSENT: its events table is empty by
-  // absence, not by stillness, and crystallizing that would empty the town
+  // absence, not by stillness, and deriving from that would empty the town
   buildWorld({ departures: [], ledgerGate: "ABSENT" });
-  const bad = await refreshEntities({ dbPath: dynPath, repo, at: NOW });
-  assert.equal(bad.ok, false);
-  assert.equal(bad.refused.gate, "walk-ledger");
-
-  const db = openDynamic(dynPath, { readOnly: true });
-  assert.equal(readEntities(db).length, 3, "the three entities are still there");
-  db.close();
+  assert.equal((await derive()).read.refused.gate, "walk-ledger");
 
   rmSync(worldDbPath, { force: true });
-  const gone = await refreshEntities({ dbPath: dynPath, repo, at: NOW });
-  assert.equal(gone.ok, false);
-  assert.equal(gone.refused.gate, "world-store");
+  clearWorld();
+  assert.equal((await derive()).read.refused.gate, "world-store");
 });
 
 test("a commit that did not touch the ledger is NOT stale — freshness is about the ledger, not about main", async () => {
   await fresh();
   const { execFileSync } = await import("node:child_process");
-  const { refreshEntities } = await import("../src/dynamic-entities.mjs");
 
   // Exactly what the crossing-save's own commit does: advance main without
   // touching a single departure. Checking sha equality here would report the
@@ -272,74 +263,46 @@ test("a commit that did not touch the ledger is NOT stale — freshness is about
   g("add", "-A");
   g("-c", "user.name=f", "-c", "user.email=f@t.invalid", "commit", "-q", "-m", "not a departure");
 
-  const r = await refreshEntities({ dbPath: dynPath, repo, at: NOW });
-  assert.equal(r.ok, true);
-  assert.equal(r.source.fresh, true, "the walk ledger has not moved, so nothing about this derivation is behind");
-  assert.deepEqual(r.disclosed, []);
+  const { read } = await derive();
+  assert.equal(read.refused, undefined);
+  assert.equal(read.fresh, true, "the walk ledger has not moved, so nothing about this derivation is behind");
+  assert.deepEqual(read.disclosed, []);
 
   g("reset", "--hard", "-q", "HEAD~1");
 });
 
 test("a ledger that HAS moved discloses rather than refusing — missing movement is not wrong movement", async () => {
   await fresh();
-  const { refreshEntities } = await import("../src/dynamic-entities.mjs");
   buildWorld({ sha: "a".repeat(40) });
-  const r = await refreshEntities({ dbPath: dynPath, repo, at: NOW });
-  assert.equal(r.ok, true);
-  assert.equal(r.source.fresh, false);
-  assert.match(r.disclosed[0], /walk-ledger-moved/);
-});
-
-// ── 4. rebuild: the covenant, executable ─────────────────────────────────────
-
-test("dynamic:rebuild regenerates entities and leaves the un-derivable half alone", async () => {
-  await fresh();
-  const { openDynamic } = await import("../src/dynamic-store.mjs");
-  const { refreshEntities, declareAttachment } = await import("../src/dynamic-entities.mjs");
-
-  const db = openDynamic(dynPath);
-  await refreshEntities({ db, repo, at: NOW });
-  declareAttachment(db, { entity: "iris", target: "the-town/the-post-office", policy: "cascade", declaredBy: "iris", bornAt: new Date(T0).toISOString() });
-  db.prepare("INSERT INTO emissions (id, class, source, x, y, born_at, ttl_expires_at, props) VALUES (?,?,?,?,?,?,?,?)")
-    .run("sound:1:iris", "sound", "iris", 1, 2, new Date(T0).toISOString(), new Date(T0 + 300_000).toISOString(), "{}");
-  db.exec("DELETE FROM entities");
-  db.close();
-
-  const { execFileSync } = await import("node:child_process");
-  const out = execFileSync(process.execPath, ["tools/dynamic-rebuild.mjs", "--world", repo, "--db", dynPath, "--at", new Date(NOW).toISOString(), "--json"],
-    { encoding: "utf8", env: { ...process.env, WORLD_CLONE: repo, WORLD_STORE_DB: worldDbPath } });
-  const report = JSON.parse(out);
-
-  assert.equal(report.after.entities, 3, "entities come back from the ledger");
-  assert.equal(report.after.attachments, 1, "the attachment nobody could re-derive is untouched");
-  assert.equal(report.after.emissions, 1, "and so is presence — a rebuild is not a restart");
-  assert.equal(report.emissions.restored, 0);
-  assert.match(report.emissions.note, /presence is not restorable/);
+  const { read, rows } = await derive();
+  assert.equal(read.refused, undefined);
+  assert.equal(rows.length, 3, "and it still derives");
+  assert.equal(read.fresh, false);
+  assert.match(read.disclosed[0], /walk-ledger-moved/);
 });
 
 test("a dynamic store is not deleted and rebuilt like world.db — the health surface says which it is", async () => {
   await fresh();
   const { dynamicHealth, openDynamic } = await import("../src/dynamic-store.mjs");
-  const { refreshEntities } = await import("../src/dynamic-entities.mjs");
-  const db = openDynamic(dynPath);
-  await refreshEntities({ db, repo, at: NOW });
-  db.close();
+  openDynamic(dynPath).close();
 
   const h = dynamicHealth({ repo });
   assert.equal(h.enabled, false);
   assert.equal(h.db.present, true);
-  assert.equal(h.db.entities, 3);
   assert.equal(h.db.logged_through, null, "nothing has been crystallized yet, and the panel says so");
   assert.equal(h.sound_class.gate.status, "PRESENT");
   assert.deepEqual(h.sound_class.disclosed_fallbacks, []);
 });
 
-test("a world.db that is not a database at all discloses instead of throwing", async () => {
+test("a world that will not load discloses instead of throwing", async () => {
   const { soundClass, resetClassCache } = await fresh();
+  // Rows the one construction refuses are never published: what stands is NO
+  // world, and speech must still work.
   writeFileSync(worldDbPath, "this is not a database");
+  clearWorld();
   resetClassCache();
   const cls = soundClass({ repo });
   assert.equal(cls.gate.status, "ABSENT");
-  assert.equal(cls.gate.reason, "store-unreadable");
+  assert.equal(cls.gate.reason, "store-absent");
   assert.deepEqual(cls.dials, DEFAULT_DIALS, "speech must not be able to fail because an index is corrupt");
 });

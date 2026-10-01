@@ -26,7 +26,7 @@ import { isPrincipal } from "./ops.mjs";
 import { nextSettlementAttemptAt } from "./settlements.mjs";
 import { execUnderTownLock, lockTimedOut, LOCK_BUSY } from "./town-lock.mjs";
 import {
-  // draftDeltaForKey is reached through world-journal's draftsForKey, which unions it with the live log (POS-5 slice 1)
+  // draftDeltaForKey is reached through world2-guards' guardedDraftsForKey, which unions it with the record (POS-5 slice 1; the sqlite draftsForKey went with dynamic.db, POS-269)
   blessedRef,
   draftBranch,
   draftRefForKey,
@@ -65,7 +65,6 @@ import { worldGraphSnapshot } from "./world-graph-snapshot.mjs"; // stage 1: pub
 // `openDynamic` left with the doors' handles (POS-269): every act this file
 // writes goes to the record, and none of them opened the store for anything.
 import { emissionsEnabled } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's flag
-import { emissionFromVoice } from "./dynamic-emissions.mjs"; // stage 2: speech also becomes an emission instance
 import { world2Enabled } from "./world2-acts.mjs"; // the write-path closure: is the shadow mirror on at all
 import { VESSEL_HANDLE, ridesTheVessel } from "./dynamic-entities.mjs"; // the aboard test, one home for two readers
 import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, movementV2Enabled, roadTerms, storedDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
@@ -1198,16 +1197,13 @@ const voices = createVoices({
   // conforming to the sound class, in dynamic.db, whose occurrence rides the
   // crossing log into the town's public record.
   //
-  // Behind WORLD_EMISSIONS, checked on `emissionFromVoice`'s first line. With
-  // the flag off nothing is opened and the say path is what it was.
-  // TWO SECOND-CONSUMERS NOW, and the voices log is still the first pen and
-  // still untouched. `emissionFromVoice` gives the say a body in the world
-  // (dynamic.db/emissions, behind WORLD_EMISSIONS); `mirrorVoiceAct` gives it
-  // its line in World 2.0's event log (Postgres `acts`, behind WORLD2_PG),
-  // which is the gap the write-path closure exists to shut — see the function.
-  // Neither throws; a box that cannot write either still lets the town talk.
+  // ONE SECOND-CONSUMER NOW (POS-269). The emission instance this hook used to
+  // write into dynamic.db is gone with the store: the say's act IS the emission,
+  // and the crossing-save writes its emission lines from the acts
+  // (src/save-emissions.mjs). `mirrorVoiceAct` gives the voice its line in
+  // World 2.0's event log (Postgres `acts`, behind WORLD2_PG) — see the
+  // function. It never throws; a box that cannot write still lets the town talk.
   onSpoke: (voice, spoken) => {
-    emissionFromVoice(voice, { standAs: spoken?.standAs ?? null, repo: WORLD_CLONE });
     mirrorVoiceAct(voice, spoken);
   },
   // The flipped say lane's pen, before the log line (penVoiceAct above). Off
@@ -4736,8 +4732,9 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
     //     REVERSE-MIRROR copy G1 removes. Nothing reads it live any more:
     //     `storedDepartures` moved to `acts` in POS-154, `refreshEntities` and
     //     `crossing-save`'s `<N>.jsonl` half in POS-156 part 0. The table keeps
-    //     its frozen history and its historical readers (`tools/ledger-freeze`,
-    //     `tools/state-to-r2`); nothing adds to it.
+    //     its frozen history and its one historical reader (`tools/ledger-freeze`;
+    //     `tools/state-to-r2`'s live pass went with dynamic.db, POS-269);
+    //     nothing adds to it.
     //   · the FIRE-AND-FORGET mirror on the unflipped arm — `mirrorLaneAct` in
     //     a `void (async () => …)()`, which answered the resident before the act
     //     had reached anywhere durable. That was defensible while `movements`

@@ -862,6 +862,8 @@ export async function drain({
   // fixtures' default — a test must not reach for a bucket), omitted spawns the
   // proven tool.
   archiveR2 = false,
+  // THE STALE-JOURNAL OVERRIDE (below): the operator's reason, or none.
+  staleOk = process.env.SETTLEMENT_DRAIN_STALE_OK ?? null,
 } = {}) {
   if (!singleLogEnabled())
     return { refused: "flag-off", detail: "the drain runs only under WORLD_SINGLE_LOG=1 — the journal's pen and its drain are one switch" };
@@ -870,7 +872,10 @@ export async function drain({
 
   const whenIso = new Date(at).toISOString();
   const STATE = resolve(stateDir ?? join(repo, "STATE"));
-  const db = openDynamic(dbPath ?? undefined);
+  // THE LEGACY OPEN, NAMED (dynamic-store.mjs § RETIRED): the git road is the
+  // settlement's rollback and must be able to count the stale journal, and on
+  // its operator's word drain it, even where the store is retired.
+  const db = openDynamic(dbPath ?? undefined, { legacy: "the git-road drain" });
 
   try {
     const before = drainStatus(db);
@@ -878,6 +883,30 @@ export async function drain({
     if (!rows.length) {
       return { drained: 0, cursor: before.cursor, head: before.head, households: [], windows: [], at: whenIso, note: "nothing to drain — the cursor is the law" };
     }
+
+    // ── A NON-EMPTY JOURNAL IS STALE, AND THE DRAIN SAYS SO (POS-269) ────────
+    //
+    // Nothing has written this sqlite journal since G1 (2026-09-22) and the
+    // town's settlement reads the store (SETTLEMENT_SOURCE=store). This drain
+    // runs only on the git road, which is the rollback. On 2026-09-30 prod's own
+    // panel counted 5,197 rows here (head 6733, drained through 1536, newest
+    // 2026-09-27): a rollback would have poured all of them into sketchbooks at
+    // the next crossing, weeks late and under the git road's judgement. So any
+    // row found here refuses the drain, by count, before anything is written.
+    //
+    // THE OPERATOR OVERRIDE (our own guards never block a fix, Wright
+    // 2026-09-30): SETTLEMENT_DRAIN_STALE_OK="<reason>" drains them anyway. The
+    // reason is logged on stderr and carried in the report, so the choice is on
+    // the record beside what it did.
+    const reason = String(staleOk ?? "").trim();
+    if (!reason) {
+      return {
+        refused: "stale-journal",
+        count: rows.length,
+        detail: `${rows.length} undrained row(s) in the retired sqlite journal (seq ${rows[0].seq}–${rows.at(-1).seq}, the newest written ${rows.at(-1).writtenAt ?? rows.at(-1).written_at ?? "at an unknown instant"}). Nothing writes this journal since G1, so draining them now would publish weeks-old acts under today's crossing. To drain them anyway, set SETTLEMENT_DRAIN_STALE_OK="<your reason>" — the reason is logged and rides the report`,
+      };
+    }
+    console.error(`[world-drain] OVERRIDE SETTLEMENT_DRAIN_STALE_OK="${reason}" — draining ${rows.length} stale row(s) from the retired sqlite journal (seq ${rows[0].seq}–${rows.at(-1).seq})`);
 
     let asOfWorld = null;
     try { asOfWorld = git(repo, ["rev-parse", mainRef(repo)]).trim(); } catch { /* named absent below */ }
@@ -992,6 +1021,7 @@ export async function drain({
       state_dir: STATE,
       ledgers,
       ...(archive ? { archive } : {}),
+      override: { stale_journal: reason },
       state_commit: stateCommit,
       state_note: stateNote ?? (commitState ? null : "STATE written to the working set only — committing it is the settlement pass's act, or pass --commit-state"),
     };

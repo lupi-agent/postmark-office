@@ -321,12 +321,18 @@ test("§2c GET /world/holdings is a door and not a rumour (#2599)", async () => 
   // write-mode handle on the dynamic store, which is the handle DEC-4 forbids
   // this process. Waking the route without changing the mode would have made it
   // the sixth write-mode reader, so the door and the handle are one claim.
+  //
+  // THIS OFFICE KEEPS NO RECORD (no WORLD2_PG), and since POS-269 the holdings
+  // are the hold acts or there are none: dynamic.db, which answered this read
+  // for an unflipped office, is retired. So the keyed answer is the door's OWN
+  // refusal, by name — which is still the thing this leg exists to tell apart
+  // from the catch-all. The answer over a record is world-things.test.mjs §
+  // world_holdings, on the hold lane as prod runs it.
   const keyed = await call("/world/holdings");
   const body = await keyed.json().catch(() => ({}));
-  assert.equal(keyed.status, 200, `the manifest advertises this read: ${JSON.stringify(body).slice(0, 160)}`);
-  assert.equal(body.handle, "wright", "it answers for the key's own resident");
-  assert.ok(Array.isArray(body.holding), "and in the shape the tool describes: a list of things in hand");
-  assert.equal(typeof body.count, "number", "with the true count beside the page");
+  assert.equal(keyed.status, 503, `the door answers for itself, even with no record to read: ${JSON.stringify(body).slice(0, 160)}`);
+  assert.match(String(body.defect ?? ""), /holding things needs the hold lane's record/,
+    "and says which record it lacks, never the catch-all's 'no such door'");
 
   // The other pole. Without it a handler that answered 200 to everything would
   // pass the line above — and the point of the fix is that the request is
@@ -488,9 +494,9 @@ test("§3b ALL FOUR store readers ask for a READ handle, and the ask is load-bea
     ]) {
       const missing = join(tmp, `no-store-${name}`, "dynamic.db");
       process.env.WORLD_DYNAMIC_DB = missing;
-      let threw = null;
-      try { await drive(name); } catch (e) { threw = String(e?.message ?? e).slice(0, 80); }
-      results.push({ name, created: existsSync(missing), threw });
+      let threw = null, code = null;
+      try { await drive(name); } catch (e) { threw = String(e?.message ?? e).slice(0, 80); code = e?.code ?? null; }
+      results.push({ name, created: existsSync(missing), threw, code });
     }
   } finally {
     if (before === undefined) delete process.env.WORLD_DYNAMIC_DB;
@@ -501,7 +507,14 @@ test("§3b ALL FOUR store readers ask for a READ handle, and the ask is load-bea
   assert.equal(creators.length, 0,
     "THESE READS CREATED THE STORE — a write-mode open, which is the handle DEC-4 forbids a worker to hold: "
     + creators.map((r) => r.name).join(", "));
-  const throwers = results.filter((r) => r.threw);
+  // world_holdings is the one reader that REFUSES here, and by name: this
+  // office keeps no hold record, and since POS-269 there is no dynamic.db to
+  // answer "you hold nothing" in its place — an empty answer from nowhere is
+  // the untrue sentence §3c exists to forbid. It must still create nothing.
+  const holdings = results.find((r) => r.name === "callHoldTool-world_holdings");
+  assert.equal(holdings.code, 503, `world_holdings with no record must refuse by name: ${holdings.threw}`);
+  assert.match(holdings.threw, /holding things needs the hold lane's record/);
+  const throwers = results.filter((r) => r.threw && r !== holdings);
   assert.equal(throwers.length, 0,
     "a reader met an absent store and threw instead of answering empty: "
     + throwers.map((r) => `${r.name} (${r.threw})`).join(", "));

@@ -1,5 +1,5 @@
 [Unit]
-Description=Postmark office — rebuild the read indexes (office.db, world.db) and confirm the door took them
+Description=Postmark office — rebuild the read indexes (office.db, world.db + the world graph snapshot) and confirm the door took them
 
 [Service]
 Type=oneshot
@@ -10,6 +10,12 @@ Type=oneshot
 # rootward from the live unit.
 User=meepo
 EnvironmentFile=/etc/postmark-office.env
+# The law pen's credential, for the world graph snapshot's store write
+# (deploy/office-rehydrate.sh § ONE HYDRATION, TWO OUTPUTS). The same file the
+# law-ingest and town-index units read: root:root 0600, so systemd reads it and
+# hands the values in, and meepo never opens it. Read second, so a key both
+# files carry is this one's.
+EnvironmentFile=/etc/postmark-world2-dev.env
 WorkingDirectory=/srv/postmark-office
 # The chain lives in deploy/office-rehydrate.sh: a `git clone --local` snapshot
 # under the town lock (seconds), then hydrate + world-hydrate against the frozen

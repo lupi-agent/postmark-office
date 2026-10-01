@@ -1277,10 +1277,13 @@ test("F17b · --allow-floor renders, but the page itself carries the disclosure 
   assert.match(page, /standing on its floor/);
 });
 
-test("F17c · a GOOD store renders with NO warning — the stamp is a disclosure, not decoration", () => {
+test("F17c · a GOOD store renders with NO warning — the stamp is a disclosure, not decoration", async () => {
   const outFile = join(mkdtempSync(join(tmpdir(), "pm-foyer-roster-")), "OUT.md");
   trash.push(join(outFile, ".."));
-  const r = runRoster({ WORLD_STORE_DB: goodWorldStore() }, ["--out", outFile]);
+  // The roster tool reads the world graph as rows (POS-270 lane W 3a), never the file.
+  const { rowsEnv } = await import("./helpers/world-rows.mjs");
+  const world = goodWorldStore();
+  const r = runRoster(rowsEnv(world, join(world, "..")), ["--out", outFile]);
   assert.equal(r.status, 0, "a readable store renders without the flag");
   const page = readFileSync(outFile, "utf8");
   assert.equal(/is NOT the live roster/.test(page), false, "a page that always warned would be a page nobody reads the warning on");

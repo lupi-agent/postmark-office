@@ -70,7 +70,7 @@
 
 import { execFileSync } from "node:child_process";
 
-import { openDynamic, dynamicDbPath, singleLogEnabled } from "./dynamic-store.mjs";
+import { singleLogEnabled } from "./dynamic-store.mjs";
 import { mirrorAct, mirrorSettled, world2Enabled } from "./world2-acts.mjs";
 import { candleEnabled, claimEligible, claimHouseholdFor, claimTxFromJournal, docketSettled } from "./world2-claims.mjs";
 import { PenUnreachableError, laneFlipped, laneOf, penSettled, penWrite, shadowWrite } from "./world2-pen.mjs";
@@ -102,7 +102,6 @@ function privateDraftAct(row) {
     && candleEnabled()
     && (() => { try { return JSON.parse(row.payload ?? "{}")?.put_forward !== true; } catch { return false; } })();
 }
-import { draftDeltaForKey, mainRef, publishedState, resolvedWorldHousehold } from "./world-branches.mjs";
 
 export { singleLogEnabled };
 
@@ -1166,78 +1165,6 @@ export function filedPathOfAt(repo, sha) {
 /** Drop the cached path indexes — for tests that rewrite a repo in place at the same sha. */
 export function resetPathIndex() { _pathIndex = null; _frozen = null; }
 
-/**
- * THE §1c CONTRACT, over whichever store holds the drafts.
- *
- * Flag OFF: `draftDeltaForKey` verbatim, byte for byte — this function adds
- * nothing to that path, which is what makes the flag-off falsifier meaningful.
- *
- * Flag ON: the git delta UNIONED with the journal's replay, journal winning on
- * a shared id. Both halves, not one — §0's model has three sources and the
- * cutover retires none of them:
- *
- *   canon        published main (the caller's own read; the ids come from here)
- *   sketchbook   `draft/<household>`, still holding every draft written BEFORE
- *                the flag flipped. Dropping it would make a resident's existing
- *                work vanish from their overlay on the day of the cutover.
- *   journal      everything declared since, which is the only thing that moves
- *                between saves once the drain lands.
- *
- * The journal wins a collision because it is later by construction: a
- * declaration in the log was made after the sketchbook was last written to.
- *
- * The shape is unchanged, key for key, because the viewer half is untouched.
- * `draft` is the sketchbook's commit sha and stays exactly that — it does not
- * quietly start meaning something else when the flag is on. What the journal
- * contributes is disclosed in its own `log` block rather than smuggled into a
- * field that already means a commit.
- */
-export function draftsForKey(repo, key) {
-  const gitDelta = draftDeltaForKey(repo, key);
-  if (!singleLogEnabled() || gitDelta?.error) return gitDelta;
-
-  const household = resolvedWorldHousehold(key);
-  let head = 0, replayed = { marks: [], counts: { added: 0, modified: 0, deleted: 0 } };
-  try {
-    const state = publishedState(repo).state ?? {};
-    const publishedIds = new Set((state.marks ?? []).map((m) => m.id));
-    // LAZY, and that is the point of this whole ladder: the index costs an
-    // `ls-tree` over ~900 mark paths, and it is consulted for a withdrawal of a
-    // PUBLISHED mark and for gate A — both rare. Building it eagerly would put
-    // whole-tree work back on the request path, which is the class §0 exists to
-    // keep off it. The manifest arm inside `filedPathOfAt` is one JSON read and
-    // answers first, so the common gate-A case never reaches the `ls-tree`.
-    const sha = String(gitDelta.main ?? mainRef(repo));
-    const publishedPathOf = filedPathOfAt(repo, sha);
-    const canonById = new Map((state.marks ?? []).map((m) => [m.id, m]));
-    const publishedMarkOf = (id) => canonById.get(id) ?? null;
-
-    const db = openDynamic(dynamicDbPath(), { readOnly: true });
-    try {
-      head = journalHead(db);
-      replayed = replayDrafts(readJournal(db, { household, cls: CLASS_MARK }), { publishedIds, publishedPathOf, publishedMarkOf });
-    } finally { try { db.close(); } catch { /* already gone */ } }
-  } catch (e) {
-    // A live layer this door cannot read is a fact the caller must be told, not
-    // an empty overlay. The sketchbook half still answers; the block says what
-    // is missing from it.
-    return { ...gitDelta, log: { readable: false, reason: String(e?.message ?? e).slice(0, 200) } };
-  }
-
-  const byId = new Map();
-  for (const m of gitDelta.marks ?? []) if (m.id) byId.set(m.id, m);
-  for (const m of replayed.marks) if (m.id) byId.set(m.id, m);
-  const marks = [...byId.values()].sort((a, b) => String(a.path).localeCompare(String(b.path)));
-
-  return {
-    ...gitDelta,
-    exists: gitDelta.exists || marks.length > 0,
-    marks,
-    counts: {
-      added: marks.filter((m) => m.status === "added").length,
-      modified: marks.filter((m) => m.status === "modified").length,
-      deleted: marks.filter((m) => m.status === "deleted").length,
-    },
-    log: { readable: true, head, marks: replayed.marks.length },
-  };
-}
+// `draftsForKey` — the §1c overlay over the sqlite journal — is gone (POS-269):
+// no door called it, and world2-guards.mjs § guardedDraftsForKey answers the
+// same contract from the record.

@@ -2,7 +2,7 @@
 // world-hydrate.mjs — build world.db from the world clone at a sha.
 //
 //   node src/world-hydrate.mjs [--world <path>] [--ref <ref|sha>|blessed] [--office <path>]
-//                              [--db <path>] [--no-db] [--to-store] [--no-lints] [--no-gexf] [--json]
+//                              [--db <path>] [--no-db] [--to-store] [--rows-out <path>] [--no-lints] [--no-gexf] [--json]
 //
 // THE OUTPUTS (POS-270, lane W item 1). The hydration builds its rows in memory
 // (src/world-graph-rows.mjs) and writes each output FROM them:
@@ -10,8 +10,13 @@
 //                writer (PGHOST/PGDATABASE/PGUSER=law_ingester/PGPASSWORD);
 //   the file     world.db, as before, for the readers that still open it,
 //                unless --no-db. It goes when the last of them has moved.
+//   --rows-out   the rows themselves as one JSON file (world.db's tables by name),
+//                the fixture a test hands an office as WORLD_GRAPH_ROWS
+//                (world-graph-snapshot.mjs § THE TEST FIXTURE SEAM).
 // Nothing reads world.db to fill the store: graph-ingest --db is the manual
 // path for a file that already exists.
+// Exit 0 every asked-for output written · 1 refused, or stamped FAILED · 3 the
+// file was written and the store was NOT (the tick still swaps the file in).
 //
 // The pattern is src/hydrate.mjs's, extended from tables-per-thing to
 // nodes+edges: rebuild from scratch every run, stamp the as-of shas in `meta`,
@@ -49,8 +54,9 @@ import {
   SCHEMA, EDGE_TYPES, WORLD_CLONE, OFFICE_ROOT, DEFAULT_DB,
   git, materializeWorldAtSha, geometryIndex, graphFromTables,
 } from "./world-store.mjs";
-import { createGraphRows, graphTablesOf, graphCounts } from "./world-graph-rows.mjs";
+import { createGraphRows, graphTablesOf, graphCounts, writeRowsFile } from "./world-graph-rows.mjs";
 import { blessed } from "./world-branches.mjs";
+import { readReleaseStamp } from "./release.mjs";
 
 const argOf = (name, fallback) => { const i = process.argv.indexOf(name); return i !== -1 ? process.argv[i + 1] : fallback; };
 const flag = (name) => process.argv.includes(name);
@@ -62,6 +68,7 @@ const REF_ARG = argOf("--ref", null);
 const JSON_OUT = flag("--json");
 const WRITE_DB = !flag("--no-db");
 const TO_STORE = flag("--to-store");
+const ROWS_OUT = argOf("--rows-out", null);
 
 // `--ref blessed` (postmark#2934): the newest `settlement/S<n>` tag, peeled to
 // its commit — the same resolution the read tier's fold serves, so store and
@@ -152,6 +159,16 @@ try {
   if (resolve(top).toLowerCase() === resolve(OFFICE).toLowerCase()) { officeSha = head; gatePresent("office-git", OFFICE, `HEAD = ${head.slice(0, 12)}`); }
   else gateAbsent("office-git", OFFICE, `not a git checkout of its own (toplevel ${top}) — as_of_office left null`);
 } catch { gateAbsent("office-git", OFFICE, "no git sha — as_of_office left null"); }
+// THE DEPLOYED OFFICE IS NOT ALWAYS A CHECKOUT. The release train rsyncs a
+// `git archive` of its tag onto the box and ships the receipt beside it
+// (release.json, src/release.mjs): that receipt names the commit running, which
+// is what as_of_office means. Without one or the other the sha stays null and
+// the store refuses the snapshot by name (graph-ingest: half the key), which
+// the tick reports as a store miss rather than a silent write.
+if (officeSha == null) {
+  const stamp = readReleaseStamp(OFFICE);
+  if (stamp.deployed) { officeSha = stamp.sha; gatePresent("office-release", OFFICE, `release.json names ${stamp.tag} at ${stamp.sha.slice(0, 12)}`); }
+}
 
 // The tree is read AT THE SHA, never from the working directory: the world
 // clone is fetch-never-pull and the write pen parks it on household draft
@@ -1223,6 +1240,7 @@ if (empties.length) {
   // The file is still written, stamped FAILED, exactly as before: a reader
   // refuses it by name. The store is never given a failed snapshot.
   if (WRITE_DB) writeWorldDb(DB_PATH, graphTablesOf(T));
+  if (ROWS_OUT) writeRowsFile(resolve(ROWS_OUT), graphTablesOf(T));
   console.error(`\nGATE FAILED silent-empty-table — ${detail}`);
   console.error(`world.db is stamped FAILED and will not load; fix the input and rehydrate.`);
   process.exit(1);
@@ -1264,14 +1282,19 @@ putMeta.run("hydration_status", "OK");
 // ── THE OUTPUTS, each written from the rows ─────────────────────────────────
 const tables = graphTablesOf(T);
 if (WRITE_DB) writeWorldDb(DB_PATH, tables);
+if (ROWS_OUT) writeRowsFile(resolve(ROWS_OUT), tables);
 let stored = null;
 if (TO_STORE) {
   const { graphSnapshotFromTables, writeGraphSnapshot } = await import("../world2/tools/graph-ingest.mjs");
-  const snap = graphSnapshotFromTables(tables);
-  try { stored = await withStoreClient((client) => writeGraphSnapshot(client, snap)); }
+  // The snapshot is built inside the try: a store that refuses these rows (no
+  // office sha, say) is the same miss as one that will not connect.
+  try { const snap = graphSnapshotFromTables(tables); stored = await withStoreClient((client) => writeGraphSnapshot(client, snap)); }
   catch (e) {
     console.error(`the graph snapshot was NOT written to the store: ${String(e?.message ?? e).slice(0, 200)}`);
-    process.exit(1);
+    // 3, not 1, when the file is already written: the tick swaps a good file
+    // in whatever the store did (deploy/office-rehydrate.sh), and must be able
+    // to tell this from a hydration that built nothing.
+    process.exit(WRITE_DB ? 3 : 1);
   }
 }
 

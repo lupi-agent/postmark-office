@@ -71,7 +71,10 @@ process.env.TEMP = process.env.TMP = process.env.TMPDIR = tmpHome;
 after(() => rmSync(tmpHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
 process.env.WORLD_CLONE = repo;
-process.env.WORLD_STORE_DB = dbPath;
+// The world is the rows (test/helpers/world-rows.mjs, POS-270 lane W 3a): the
+// fixtures below are published as the world graph snapshot, and world.db's
+// path points nowhere, so no read here can stand on the file.
+process.env.WORLD_STORE_DB = join(repo, "no-world-db-here.db");
 process.env.VOICES_LOG = join(repo, "voices-log.jsonl");
 delete process.env.WORLD_APEX;
 delete process.env.WORLD_PRESENCE;
@@ -280,6 +283,8 @@ function buildStore(marks = MARKS, path = dbPath) {
 buildStore();
 const stageDPath = join(repo, "apex-world-stage-d.db");
 buildStore(STAGE_D_MARKS, stageDPath);
+const W = await import("./helpers/world-rows.mjs");   // after the TEMP redirect, like every ../src import
+W.publishWorld(dbPath);
 
 // ── the code under test ──────────────────────────────────────────────────────
 
@@ -309,11 +314,7 @@ const actions = (r) => (r.actions ?? []).map((a) => a.action);
 // Run a case against a different store — used for the Stage-D world, where the
 // wheelhouse's `board` affordance is restored and a SITED (non-ambient)
 // affordance therefore exists to test reach against.
-async function withStore(path, fn) {
-  const kept = process.env.WORLD_STORE_DB;
-  process.env.WORLD_STORE_DB = path;
-  try { return await fn(); } finally { process.env.WORLD_STORE_DB = kept; }
-}
+const withStore = (path, fn) => W.withWorld(path, fn);
 
 // ── a real office, for the falsifiers about ABSENCE ──────────────────────────
 //
@@ -351,7 +352,7 @@ async function withOffice(env, fn) {
   // to the office root), which is a live file the developer's own office holds:
   // a test must not write there, and two test offices must not write it at once.
   const child = spawn(process.execPath, [new URL("../src/server.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"), "--port", String(port), "--db", officeDb, "--oauth-db", join(dir, "oauth.db")], {
-    env: { ...process.env, ...env, OFFICE_KEYS: "apexkey=house-a:alpha", TOWN_CLONE: join(dir, "no-clone"), WORLD_CLONE: repo, WORLD_STORE_DB: dbPath, VOICES_LOG: join(dir, "voices.jsonl"), TOWN_PUSH: "", TEMP: dir, TMP: dir, TMPDIR: dir },
+    env: { ...process.env, ...env, OFFICE_KEYS: "apexkey=house-a:alpha", TOWN_CLONE: join(dir, "no-clone"), WORLD_CLONE: repo, ...W.rowsEnv(dbPath, dir), VOICES_LOG: join(dir, "voices.jsonl"), TOWN_PUSH: "", TEMP: dir, TMP: dir, TMPDIR: dir },
     stdio: ["ignore", "pipe", "pipe"],
   });
   try {
@@ -935,13 +936,13 @@ test("REST: the door answers anonymously over HTTP, and refuses to ACT over a GE
 
 test("the trust gate: the SQL and the predicate select the same marks, node for node", async () => {
   on();
-  const { loadWorldGraph, nodesWhere, isClassMark } = await import("../src/world-store.mjs");
+  const { nodesWhere, isClassMark } = await import("../src/world-store.mjs");
   for (const path of [dbPath, stageDPath]) {
     const db = new DatabaseSync(path, { readOnly: true });
     // ACTION_QUERY_ALL's shape: gate only, no reach restriction
     const bySql = new Set(db.prepare(`SELECT id FROM nodes WHERE ${(await import("../src/world-store.mjs")).CLASS_MARK_GATE_SQL}`).all().map((r) => r.id));
     db.close();
-    const byPredicate = new Set(nodesWhere(loadWorldGraph(path).graph, isClassMark).map((n) => n.id));
+    const byPredicate = new Set(nodesWhere(W.graphOf(path).graph, isClassMark).map((n) => n.id));
     assert.deepEqual([...bySql].sort(), [...byPredicate].sort(), path);
   }
   // and on main, the gate passes exactly one mark: the wheelhouse is law but
@@ -954,18 +955,18 @@ test("the trust gate: the SQL and the predicate select the same marks, node for 
 
 test("the ambient rule: the SQL and the predicate select the same marks, node for node", async () => {
   on();
-  const { loadWorldGraph, nodesWhere, isAmbient, AMBIENT_REACH_SQL } = await import("../src/world-store.mjs");
+  const { nodesWhere, isAmbient, AMBIENT_REACH_SQL } = await import("../src/world-store.mjs");
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const bySql = new Set(db.prepare(`SELECT id FROM nodes WHERE ${AMBIENT_REACH_SQL}`).all().map((r) => r.id));
   db.close();
-  const byPredicate = new Set(nodesWhere(loadWorldGraph(dbPath).graph, isAmbient).map((n) => n.id));
+  const byPredicate = new Set(nodesWhere(W.graphOf(dbPath).graph, isAmbient).map((n) => n.id));
   assert.deepEqual([...bySql].sort(), [...byPredicate].sort());
   assert.deepEqual([...bySql].sort(), ["the-town/sound"]);
 });
 
 test("the ambient rule is strict: only the boolean true widens reach", async () => {
   on();
-  const { loadWorldGraph, nodesWhere, isAmbient, AMBIENT_REACH_SQL } = await import("../src/world-store.mjs");
+  const { nodesWhere, isAmbient, AMBIENT_REACH_SQL } = await import("../src/world-store.mjs");
   // The shapes a careless frontmatter could produce, none of which are law.
   //
   // The STRING "true" is in this list on purpose, and it is not a hypothetical:
@@ -988,7 +989,7 @@ test("the ambient rule is strict: only the boolean true widens reach", async () 
   const bySql = db.prepare(`SELECT id FROM nodes WHERE ${AMBIENT_REACH_SQL}`).all().map((r) => r.id);
   db.close();
   assert.deepEqual(bySql.sort(), ["the-town/sound"]);
-  assert.deepEqual(nodesWhere(loadWorldGraph(path).graph, isAmbient).map((n) => n.id), ["the-town/sound"]);
+  assert.deepEqual(nodesWhere(W.graphOf(path).graph, isAmbient).map((n) => n.id), ["the-town/sound"]);
   // and they really are unreachable from far away, not merely un-flagged
   await withStore(path, async () => {
     const r = await worldApex({ ...FAR }, null);
@@ -999,7 +1000,7 @@ test("the ambient rule is strict: only the boolean true widens reach", async () 
 test("lint L6: the world as it stands is GREEN — one action exposed, and it dispatches", async () => {
   on();
   const { runLints } = await import("../src/world-lints.mjs");
-  const { lints } = await runLints({ dbPath, treePath: repo });
+  const { lints } = await runLints({ store: W.graphOf(dbPath), treePath: repo });
   const l6 = lints.find((l) => l.id === "L6");
   assert.equal(l6.verdict, "GREEN", l6.headline);
   // `for` rides every row since the actor-kind growth (2026-08-17): absent on
@@ -1023,7 +1024,7 @@ test("lint L6: the act-as-human red FLIPPED GREEN — the door resolves the huma
   const path = join(repo, "apex-l6-human.db");
   buildStore([...MARKS, ...humanLaw], path);
   const { runLints } = await import("../src/world-lints.mjs");
-  const { lints } = await runLints({ dbPath: path, treePath: repo });
+  const { lints } = await runLints({ store: W.graphOf(path), treePath: repo });
   const l6 = lints.find((l) => l.id === "L6");
   assert.equal(l6.verdict, "GREEN", "the human kind resolves at the door now — a RED here means the resolution was dropped");
   const humanRow = l6.rows.find((r) => r.action === "say" && r.for === "human");
@@ -1038,7 +1039,7 @@ test("lint L6: an action law exposes with no handler behind it is RED, and named
   // Stage D restores `board` — this is the world law declined to ship without
   // its handler, and the lint is what makes that refusal checkable rather than
   // a matter of remembering.
-  const { lints } = await runLints({ dbPath: stageDPath, treePath: repo });
+  const { lints } = await runLints({ store: W.graphOf(stageDPath), treePath: repo });
   const l6 = lints.find((l) => l.id === "L6");
   assert.equal(l6.verdict, "RED");
   assert.match(l6.headline, /board \(the-town\/the-wheelhouse\)/);
@@ -1050,9 +1051,7 @@ test("lint L6: an action law exposes with no handler behind it is RED, and named
 
 test("no store: the read says the law cannot be read, and the act refuses", async () => {
   on();
-  const kept = process.env.WORLD_STORE_DB;
-  process.env.WORLD_STORE_DB = join(repo, "no-such-store.db");
-  try {
+  await W.withNoWorld(async () => {
     const read = await worldApex({ ...A }, null);
     assert.deepEqual(read.actions, []);
     assert.match(read.law.unavailable, /no world store/);
@@ -1060,7 +1059,7 @@ test("no store: the read says the law cannot be read, and the act refuses", asyn
     assert.equal(act.error, "bounce");
     assert.equal(act.code, 503);
     assert.match(act.hint, /you were not shown at the door/);
-  } finally { process.env.WORLD_STORE_DB = kept; }
+  });
 });
 
 // ── the rename's transition seam (2026-08-15) ────────────────────────────────

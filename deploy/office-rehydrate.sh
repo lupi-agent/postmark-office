@@ -14,6 +14,8 @@
 # office swaps its read handle in place; the last step is a receipt, not an act.
 #
 # Env (from /etc/postmark-office.env via the unit): TOWN_CLONE, WORLD_CLONE.
+# And PG_LAW_INGESTER_PASSWORD (from /etc/postmark-world2-dev.env, read by
+# systemd and handed in): the world graph's store write takes the law pen.
 # Optional: OFFICE_DOOR (default http://127.0.0.1:4380 — the unit's --port).
 # Cwd: /srv/postmark-office (the unit's WorkingDirectory).
 
@@ -46,9 +48,32 @@ mv -f office.db.new office.db
 # can never be eligible. Non-fatal: the office.db rebuild is never
 # held hostage, and a stale-but-good world.db beats no world.db. Interim until
 # the read flip (POS-104) takes standing from the clearing's lock.
-( node src/world-hydrate.mjs --world "$WORLD_CLONE" --ref blessed --db world.db.new \
-    && mv -f world.db.new world.db ) \
-  || echo "[office-rehydrate] world hydrate FAILED (non-fatal) — world.db stays at its last good build" >&2
+#
+# ONE HYDRATION, TWO OUTPUTS (POS-270 lane W). world.db.new, the file the
+# office reads today, and --to-store: the world graph snapshot per settlement
+# (037/038), which the office reads once world.db's opener is deleted (lane W
+# 3b, which merges only after this has run on the box and the store is shown
+# fresh). The store write connects as the law pen (deploy/world2-lib.sh §
+# w2_pgenv — sed-read, never sourced; bash, for the lib). A failed store write
+# NEVER fails the swap: the hydrator exits 3 when the file is good and the
+# store is not, the file goes in, and the journal says so loudly. Unreadable
+# credentials hydrate the file alone, and say that too.
+WORLD_RC=0
+bash -c '
+  . deploy/world2-lib.sh
+  if w2_pgenv law_ingester PG_LAW_INGESTER_PASSWORD; then
+    exec node src/world-hydrate.mjs --world "$WORLD_CLONE" --ref blessed --db world.db.new --to-store
+  fi
+  echo "[office-rehydrate] the law pen'"'"'s credentials are unreadable — hydrating world.db alone, the store is NOT written" >&2
+  node src/world-hydrate.mjs --world "$WORLD_CLONE" --ref blessed --db world.db.new || exit $?
+  exit 3' || WORLD_RC=$?
+case "$WORLD_RC" in
+  0) mv -f world.db.new world.db
+     echo "[office-rehydrate] world.db swapped and the world graph snapshot written to the store" ;;
+  3) mv -f world.db.new world.db
+     echo "[office-rehydrate] WORLD STORE NOT WRITTEN (non-fatal) — world.db is swapped in, but the store's graph snapshot stays at its last write. The reason is in the hydrate's stderr above; once lane W 3b ships this is what the office reads." >&2 ;;
+  *) echo "[office-rehydrate] world hydrate FAILED (non-fatal, exit $WORLD_RC) — world.db stays at its last good build, and the store was not written" >&2 ;;
+esac
 
 # ── the receipt: the door is serving what we just built ──────────────────────
 # Non-fatal like the world hydrate above, and for the same reason:

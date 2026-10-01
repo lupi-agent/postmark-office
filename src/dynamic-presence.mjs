@@ -44,12 +44,8 @@
 //
 // Env: WORLD_PRESENCE=1
 
-import { existsSync } from "node:fs";
-
 import { WORLD_CLONE } from "./world-store.mjs";
-import { movementV2Enabled, openDynamic, getMeta, dynamicDbPath } from "./dynamic-store.mjs";
 import {
-  readEntities, toWalkRecord, entitiesStale,
   walkModule, worldToolModule, ridesTheVessel, VESSEL_HANDLE,
 } from "./dynamic-entities.mjs";
 import { everyonePlaced, withFrames } from "./positions.mjs";
@@ -71,17 +67,6 @@ export const PRESENCE_DIALS = Object.freeze({
   near_cap: 10,         // ✎ a crowd you can read, not a census
 });
 
-/** The governing departure per resident, from the store. Store-canon; latest-wins already settled. No store, no rows. */
-export function governingDepartures(db) {
-  const out = new Map();
-  if (!db) return out;
-  for (const e of readEntities(db)) {
-    const dep = e.provenance?.departure;
-    if (dep?.from && dep?.toward) out.set(e.handle, dep);
-  }
-  return out;
-}
-
 /**
  * Every resident's position AT AN INSTANT: the store's departures for whoever
  * has walked, their ground for everyone who has not.
@@ -96,16 +81,11 @@ export function governingDepartures(db) {
  * never in this list: she is a mark that moves, not a resident, and the entities
  * table she is excluded from is what feeds the departures below.
  */
-export function positionsAt(db, atMs, walk, vessel = null, { world = null, where = null, frames = null, stored = null, roll = [], projected = null, placed = null } = {}) {
-  const deps = governingDepartures(db);
-  deps.delete(VESSEL_HANDLE);   // belt and braces: she is not in this table to begin with
+// `_db` is kept in the signature for its callers' sake and never read: the
+// entities table it used to be is gone with dynamic.db (POS-269), and the
+// departures are the projection's (or, for a caller that has them, `stored`).
+export function positionsAt(_db, atMs, walk, vessel = null, { world = null, where = null, frames = null, stored = null, roll = [], projected = null, placed = null } = {}) {
   const at = walk.fractionalCrossing(atMs);
-
-  // The entities table's departures in the LEDGER'S own vocabulary, so the union
-  // reads them with exactly the arithmetic a walk-ledger departure gets.
-  // `toWalkRecord` is the one converter, already the crossing-save's; there is
-  // no second one.
-  const fromEntities = [...deps].map(([handle, dep]) => ({ handle, iso: dep.iso, ...toWalkRecord(dep) }));
 
   // ── ERA TWO, READ DIRECTLY ────────────────────────────────────────────────
   //
@@ -129,7 +109,7 @@ export function positionsAt(db, atMs, walk, vessel = null, { world = null, where
   // current by the walk door (`position-projection.mjs`). It replaces the two
   // halves above rather than joining them: it is already their union, one
   // record per resident, and it does not wait for a refresh.
-  const departures = (projected ?? (stored?.length ? [...fromEntities, ...stored] : fromEntities))
+  const departures = (projected ?? stored ?? [])
     .filter((d) => d.handle !== VESSEL_HANDLE);
 
   // THE GOVERNING RECORD MUST COME FROM THE SAME LIST THE POSITION DID.
@@ -274,89 +254,10 @@ async function readPresence({ dbPath = null, repo = WORLD_CLONE, atMs = Date.now
   // projection's build instant, and the entities table's staleness disclosures
   // do not apply to it.
   if (projected) return projectedPresence({ repo, atMs, walk, engine, world, where, roll, projected, placed });
-  const path = dbPath ?? dynamicDbPath();
-  if (!existsSync(path))
-    return { error: "store-absent", detail: `no dynamic store at ${path} — run: npm run dynamic:rebuild` };
-  let db;
-  try { db = openDynamic(path, { readOnly: true }); }
-  catch (e) { return { error: "store-unreadable", detail: String(e?.message ?? e).slice(0, 200) }; }
-
-  let asOf, moved, rows;
-  try {
-    asOf = getMeta(db, "entities_as_of");
-    moved = entitiesStale(db);
-    const w = walk ?? await walkModule({ repo });
-    const eng = engine ?? await worldToolModule("world-engine.mjs", { repo });
-    // The world's own position join, read at a ref like every other engine
-    // module. A clone that cannot answer it leaves `whereMod` null and the
-    // disclosure below says so — never a second join written here.
-    let whereMod = where;
-    if (!whereMod) {
-      try { whereMod = await worldToolModule("where-is.mjs", { repo }); } catch { whereMod = null; }
-    }
-    // The vessel is not in the entities table — she is a mark that moves — so
-    // her sailing line rides in meta, saved beside the rows it governs.
-    let vessel = null;
-    try { vessel = JSON.parse(getMeta(db, "vessel_departure") ?? "null"); } catch { vessel = null; }
-    // Stage D: the frame map is the riders' (below), handed down once. Flag-off
-    // or with no vehicle it is null and `withFrames` returns its input untouched.
-    let frames = null, stored = null, storeAbsent = null;
-    // A projection already holds era two; reading the store again for the same
-    // answer is the cost POS-264 exists to remove.
-    if (movementV2Enabled() && !projected) {
-      try {
-        const { storedDepartures } = await import("./world-movement.mjs");
-        // AWAITED (POS-154). The read is the record's now, and the un-awaited
-        // form is silent: `read.records` on a Promise is `undefined`, `stored`
-        // goes null, and every resident reads as never having walked.
-        const read = await storedDepartures({ atMs });
-        stored = read.records;
-        storeAbsent = read.absent;
-      } catch (e) { stored = null; storeAbsent = String(e?.message ?? e).slice(0, 160); }
-    }
-    // Gated on the fold: a world with no vehicle-class mark pays nothing and
-    // reads exactly as it did. Never throws, for the same reason the fold above
-    // does not — a ledger this office cannot read must not cost the town its
-    // presence answer.
-    if (world && (await import("./world-movement.mjs")).worldHasVehicle(world)) {
-      try { frames = await withVehicleRiders(frames, { world, repo, atMs }); }
-      catch { /* the riders read as ashore for this call, and nobody loses presence */ }
-    }
-    rows = positionsAt(db, atMs, w, vessel, { world, where: whereMod, frames, stored, roll, projected: projected?.departures ?? null, placed });
-    db.close();
-    return {
-      rows, engine: eng,
-      as_of: asOf,
-      evaluated_at: new Date(atMs).toISOString(),
-      ledger_moved: moved,
-      disclosed: [
-        ...(asOf ? [] : ["entities-never-derived: the presence table has never been filled — run dynamic:rebuild"]),
-        // The entities table's staleness describes this answer only when the
-        // answer was read from it. A projected answer was not.
-        ...(moved === true && !projected ? ["ledger-moved-since-refresh: someone has walked since these departures were read, and their leg here is the previous one"] : []),
-        // The gap that made issue #7 §1 possible, now named instead of silent.
-        // Half the union is GROUND, and ground needs the fold. A caller that
-        // cannot hand one over gets the walk half and is told which half it is.
-        // (Last in the list on purpose: the staleness disclosures above are the
-        // ones a reader has been trained to look for first.)
-        ...(world && whereMod ? [] : [`ground-not-read: only residents with a walk on record are in this answer — ${world ? "the world's position join could not be read" : "no world fold was handed to the presence read"}, so anyone who has never walked is missing`]),
-        // ERA TWO, NAMED WHEN IT IS ABSENT. The walk ledger is frozen; the
-        // store is where movement is recorded now. A presence answer derived
-        // from the founding era alone is a picture of the town as it stood on
-        // freeze day, and the one thing it must not do is look like the present.
-        ...(movementV2Enabled() && storeAbsent
-          ? [`era-two-unread: ${storeAbsent} — this answer is the frozen walk ledger alone, so anyone who has moved since the freeze is at their pre-freeze position`]
-          : []),
-        // The projection's own rebuild disclosure, carried whole — an unreadable
-        // record at its last rebuild is the same absence, said in the reader's
-        // words (`world.mjs § departuresAcrossEras`).
-        ...(projected?.disclosed ?? []),
-      ],
-    };
-  } catch (e) {
-    try { db.close(); } catch { /* already gone */ }
-    return { error: "presence-derivation-failed", detail: String(e?.message ?? e).slice(0, 200) };
-  }
+  // NO PROJECTION, NO PRESENCE (POS-269). Without one this read used to open
+  // dynamic.db's entities table; the store is retired, so an office that keeps
+  // no positions has no presence to give, and says so rather than guessing.
+  return { error: "presence-needs-projection", detail: "presence reads the position projection (WORLD_POSITIONS=1); dynamic.db, which it read without one, is retired (POS-269)" };
 }
 
 /** The projection-only read: `readPresence`'s own derivation with no store behind it. */

@@ -58,71 +58,87 @@ const count = (db, table) => Number(db.prepare(`SELECT count(*) AS n FROM ${tabl
 
 // ── C2 · hold ────────────────────────────────────────────────────────────────
 
-test("HOLD, FLIPPED, PEN UNREACHABLE: the door refuses with the ruled sentence and NOTHING is written — no attachments edge, no journal row", async () => {
+// THE FLIPPED HOLD HAS NO SQLITE ARM (POS-269). These three ran the flipped pen
+// with the guards off, so the holder check read dynamic.db's edge and the pen's
+// reverse mirror wrote its journal. Both went with the file: the hold acts are
+// the edge, read through the guards. So each test now hands the holder check
+// the record (a guard reader over a list of acts), and R2's question — after a
+// refused write, is there a row? — is asked of that record.
+const { useGuardReader } = await import("../src/world2-guards.mjs");
+const onRecord = (acts) => useGuardReader(async (fn) => fn({
+  query: async (sql, params) => {
+    if (!/FROM acts WHERE action = ANY/.test(String(sql))) throw new Error(`this stand-in answers the holder read only: ${String(sql).slice(0, 80)}`);
+    const want = new Set(params[0]);
+    return { rows: acts.filter((x) => want.has(x.action)) };
+  },
+}));
+const onActs = (over = {}) => stubDeps({ onActs: true, ...over });
+
+test("HOLD, FLIPPED, PEN UNREACHABLE: the door refuses with the ruled sentence and NOTHING is written", async () => {
   process.env.WORLD2_PG = "1"; process.env.WORLD2_PG_URL = DEAD_PEN; process.env.W2_PEN = "hold";
-  const db = openDynamic(join(tmp, "hold-refused.db"));
+  const acts = [];
+  const unread = onRecord(acts);
   try {
     let refused = null;
-    try { await declareHoldingFlipped({ db, thing: "maker/thing", actor: "alpha", deps: stubDeps() }); }
+    try { await declareHoldingFlipped({ db: null, thing: "maker/thing", actor: "alpha", deps: onActs() }); }
     catch (err) { refused = err; }
     assert.ok(refused, "an unreachable pen must refuse");
     assert.equal(refused.code, 503, `expected the ruled 503, got ${JSON.stringify({ code: refused.code, message: refused.message }).slice(0, 200)}`);
     assert.match(refused.message, /nothing was written, and nothing was lost/);
     assert.match(refused.hint, /W2_PEN=hold/);
-    // R2's forbidden state, asked directly of the 1.0 pen:
-    assert.equal(count(db, "attachments"), 0, "a refused take left an attachments edge — 1.0's pen holds a row the resident was told did not happen");
-    assert.equal(count(db, "journal"), 0, "a refused take left a journal row");
-    // and the transaction is closed — the next writer is not wedged behind it
-    db.exec("BEGIN"); db.exec("ROLLBACK");
-  } finally { db.close(); unflip(); }
+    // R2's forbidden state, asked of the record:
+    assert.equal(acts.length, 0, "a refused take left a holding act — the record holds a row the resident was told did not happen");
+  } finally { unread(); unflip(); }
 });
 
-test("HOLD, FLIPPED, PEN COMMITS: the attachments edge and the reverse-mirror row commit together, and the answer names the record", async () => {
+test("HOLD, FLIPPED, PEN COMMITS: the act is the record, in the one row shape, and the answer names it", async () => {
   process.env.WORLD2_PG = "1"; process.env.WORLD2_PG_URL = DEAD_PEN; process.env.W2_PEN = "hold";
-  const db = openDynamic(join(tmp, "hold-committed.db"));
+  const acts = [];
+  const unread = onRecord(acts);
   try {
-    // The pen, stood in for: it "commits" and writes the reverse-mirror row
-    // through the SAME sqlite handle, exactly as appendActFlipped does.
     const seen = [];
-    const penned = async (h, entry) => {
-      seen.push(entry);
-      h.prepare("INSERT INTO journal (crossing, actor, action, object, class, payload, written_at) VALUES (?,?,?,?,?,?,?)")
-        .run(entry.crossing, entry.actor, entry.action, entry.object, entry.cls, JSON.stringify(entry.payload), entry.writtenAt);
-      return { seq: 1, actId: 4242, flipped: true };
-    };
-    const did = await declareHoldingFlipped({ db, thing: "maker/thing", actor: "alpha", deps: stubDeps({ appendActFlipped: penned }) });
+    const penned = async (_db, entry) => { seen.push(entry); return { seq: null, actId: 4242, flipped: true }; };
+    const did = await declareHoldingFlipped({ db: null, thing: "maker/thing", actor: "alpha", deps: onActs({ appendActFlipped: penned }) });
     assert.equal(did.did, "take");
     assert.equal(did.holder, "alpha");
     assert.equal(did.log, "acts", "a flipped lane's answer says which store is the record");
-    assert.equal(count(db, "attachments"), 1);
-    assert.equal(count(db, "journal"), 1);
-    // ONE ROW SHAPE: what the pen saw is what the unflipped mirror would send.
-    const mirror = holdingEntry(did, { crossing: 168, at: seen[0].at, witnesses: null, cls: "holding", household: null });
-    assert.deepEqual(seen[0].payload, mirror.payload);
-    assert.equal(seen[0].action, mirror.action);
-    assert.equal(seen[0].writtenAt, mirror.writtenAt);
-  } finally { db.close(); unflip(); }
+    assert.equal(did.seq, 4242, "and names the act by its id");
+    assert.equal(seen.length, 1, "one act handed to the pen");
+    const shape = holdingEntry(did, { crossing: 168, at: seen[0].at, witnesses: null, cls: "holding", household: null });
+    assert.deepEqual(seen[0].payload, shape.payload);
+    assert.equal(seen[0].action, shape.action);
+    assert.equal(seen[0].writtenAt, shape.writtenAt);
+  } finally { unread(); unflip(); }
 });
 
 test("HOLD, FLIPPED, THE DOOR ITSELF REFUSES (give what you do not hold): the pen is never tried and nothing is written", async () => {
   process.env.WORLD2_PG = "1"; process.env.WORLD2_PG_URL = DEAD_PEN; process.env.W2_PEN = "hold";
-  const db = openDynamic(join(tmp, "hold-door-refused.db"));
+  // beta holds it, on the record; alpha tries to give it away — the door's own
+  // 403, before any pen.
+  const acts = [{ id: 1, at: new Date("2026-09-30T04:00:00Z"), actor: "beta", action: "take",
+    payload: { thing: "maker/thing", holder: "beta", previous_holder: null, made_by: "maker", policy: "cascade" } }];
+  const unread = onRecord(acts);
   try {
-    // beta holds it (seeded unflipped); alpha tries to give it away — the
-    // door's own 403, before any pen.
-    declareHolding({ db, thing: "maker/thing", actor: "beta", dials: {} });
     let tried = 0;
     let refused = null;
-    try { await declareHoldingFlipped({ db, thing: "maker/thing", to: "gamma", actor: "alpha", deps: stubDeps({ appendActFlipped: async () => { tried++; return { seq: 1 }; } }) }); }
+    try { await declareHoldingFlipped({ db: null, thing: "maker/thing", to: "gamma", actor: "alpha", deps: onActs({ appendActFlipped: async () => { tried++; return { seq: 1 }; } }) }); }
     catch (err) { refused = err; }
     assert.equal(refused?.code, 403, "giving a thing someone else holds is the door's own 403");
     assert.equal(tried, 0, "the pen must not be tried for an act the door refused");
-    assert.equal(count(db, "attachments"), 1, "beta's seeded edge, and nothing else");
-    assert.equal(count(db, "journal"), 0);
-  } finally { db.close(); unflip(); }
+    assert.equal(acts.length, 1, "beta's take, and nothing else");
+  } finally { unread(); unflip(); }
 });
 
-test("HOLD, UNFLIPPED: the door is what it was — declareHolding writes the edge with no pen in sight (the can-fail control)", () => {
+test("HOLD, OFF THE HOLD LANE: the flipped pen refuses by name before it reads or writes anything (dynamic.db no longer stands in)", async () => {
+  let tried = 0, refused = null;
+  try { await declareHoldingFlipped({ db: null, thing: "maker/thing", actor: "alpha", deps: stubDeps({ onActs: false, appendActFlipped: async () => { tried++; return { seq: 1 }; } }) }); }
+  catch (err) { refused = err; }
+  assert.equal(refused?.code, 503);
+  assert.match(refused.message, /holding things needs the hold lane's record/);
+  assert.equal(tried, 0);
+});
+
+test("HOLD, THE ADJUDICATOR ALONE: declareHolding, the pure library the door calls, still adjudicates a hand-built store with no pen in sight (not the door: the door has no unflipped pen since POS-269)", () => {
   unflip();
   const db = openDynamic(join(tmp, "hold-unflipped.db"));
   try {
