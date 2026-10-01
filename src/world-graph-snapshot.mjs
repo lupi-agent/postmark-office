@@ -24,6 +24,7 @@
 // SWITCH). `worldGraphStanding()` says which, with the key.
 
 import { readFileSync, statSync } from "node:fs";
+import { workerData } from "node:worker_threads";
 import { graphFromTables, EDGE_TYPES } from "./world-store.mjs";
 
 /** The newest snapshot's key. Newest by settlement, then by build. */
@@ -55,7 +56,7 @@ export async function graphTablesAt(query, { tag_sha, office_sha }) {
   return out;
 }
 
-const state = { snap: null, key: null, inflight: null, lastError: null, timer: null, rowsRefused: null };
+const state = { snap: null, key: null, inflight: null, lastError: null, timer: null, rowsRefused: null, atImport: null };
 
 /** One assignment: a reader sees the old graph or the new one. */
 function publish(tables, pin, key, source) {
@@ -124,11 +125,14 @@ export const worldGraphSnapshot = () => state.snap;
 export function worldGraphStanding() {
   const s = state.snap;
   const refused = state.rowsRefused ? { refused: state.rowsRefused } : {};
-  if (s) return { source: "store", settlement: s.pin.settlement, tag_sha: s.pin.tag_sha, office_sha: s.pin.office_sha, ...refused };
+  // How this process came to stand where it stands: the load at import, with
+  // the role it read as and what it cost (null where none was tried).
+  const atImport = state.atImport ? { loaded_at_import: state.atImport } : {};
+  if (s) return { source: "store", settlement: s.pin.settlement, tag_sha: s.pin.tag_sha, office_sha: s.pin.office_sha, ...refused, ...atImport };
   return {
     source: "floor",
     disclosed: `the world graph snapshot has not loaded${state.lastError ? ` (${state.lastError})` : ""}${state.rowsRefused ? ` (${state.rowsRefused})` : ""}; graph reads stand on their floors, each saying so`,
-    ...refused,
+    ...refused, ...atImport,
   };
 }
 
@@ -143,8 +147,11 @@ async function storeQuery(sql, params) {
 // actually takes — the fixture check, then the store — is driven end to end,
 // including outside node --test, where the fixture must be refused.
 let defaultQuery = storeQuery;
-/** Tests only: what an argument-less reload asks; null puts the store back. */
-export function __setDefaultQueryForTest(fn) { defaultQuery = fn ?? storeQuery; }
+/** Tests only (node --test, the publish seam's one rule): what an argument-less reload asks; null puts the store back. */
+export function __setDefaultQueryForTest(fn) {
+  if (!inNodeTest()) throw new Error("__setDefaultQueryForTest is a test seam and answers only under node --test");
+  defaultQuery = fn ?? storeQuery;
+}
 
 /**
  * Ask whether a newer snapshot has been copied in, and if so load it and
@@ -212,5 +219,62 @@ export async function worldGraphForTool({ rows = null } = {}) {
 /** Tests only: forget everything, stop the timer. */
 export function resetWorldGraph() {
   if (state.timer) clearInterval(state.timer);
-  Object.assign(state, { snap: null, key: null, inflight: null, lastError: null, timer: null, rowsRefused: null });
+  Object.assign(state, { snap: null, key: null, inflight: null, lastError: null, timer: null, rowsRefused: null, atImport: null });
+}
+
+// ── THE LOAD AT IMPORT (POS-270 lane W 3b, Keemin-ruled 2026-09-30) ──────────
+//
+// world.db was a file every process could open the moment it needed it, and
+// some read it the moment they LOADED: voices.mjs computes speech's seven dials
+// at import, and child processes read before any refresher could tick — the
+// walk pen's pace (walk-exec), the crossing save's ledger and sound dial, the
+// earpiece's earshot. So the snapshot loads HERE, as this module evaluates,
+// and every module that imports it (directly or through world-graph-db) waits
+// for it: a top-level await. This module's own static imports reach nothing
+// that imports it back (world-store.mjs only), so the await cannot close a
+// cycle; world2-serve.mjs, the office's pool, would — it reaches this module
+// through world-classes — so this load opens its OWN client.
+//
+// THE PEN IS A READER. WORLD_GRAPH_PG_URL names a read-only role
+// (snapshot_reader: SELECT on every table, 037/038 included, writes nothing).
+// Where it is not set, the office's own WORLD2_PG_URL is used — the role the
+// main thread's refresher already reads with — and the standing names the role
+// either way. Never the law pen: that is the tick's credential, not a reader's.
+//
+// SOFT, AND NEVER SILENT. A connection that does not come in 2s, or a query
+// that does not answer in 2s, leaves the process on its floor; the standing
+// says so (loaded_at_import), and so does one line on stderr naming the
+// process. Not tried at all: a test's rows (already published above), or an
+// office told to serve no world (WORLD_GRAPH_NONE=1).
+const graphPgUrl = (env = process.env) => env.WORLD_GRAPH_PG_URL
+  || (env.WORLD2_PG === "1" && env.WORLD2_PG_URL ? env.WORLD2_PG_URL : null);   // world2-serve.mjs § world2ServeEnabled, spelled here for the cycle above
+const roleOf = (url) => { try { return decodeURIComponent(new URL(url).username) || "(no role named)"; } catch { return "(an unparseable url)"; } };
+const processName = () => `${String(process.argv[1] ?? "node").split(/[\\/]/).pop()}${workerData?.readWorker ? ` (read worker ${workerData.slot})` : ""}`;
+
+async function loadAtImport(url) {
+  const t0 = performance.now();
+  const role = roleOf(url);
+  const via = process.env.WORLD_GRAPH_PG_URL ? "WORLD_GRAPH_PG_URL" : "WORLD2_PG_URL (WORLD_GRAPH_PG_URL unset: the office's own role)";
+  let client = null;
+  try {
+    const { default: pg } = await import("pg");
+    client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 2000, query_timeout: 2000 });
+    await client.connect();
+    await reloadWorldGraph({ query: (sql, params) => client.query(sql, params) });
+  } catch (e) {
+    state.lastError = `the load at import failed: ${String(e?.message ?? e).slice(0, 140)}`;
+  } finally {
+    try { await client?.end(); } catch { /* the connection is already gone */ }
+  }
+  state.atImport = { role, via, ms: Math.round(performance.now() - t0), published: Boolean(state.snap) };
+}
+
+if (!state.snap && process.env.WORLD_GRAPH_NONE !== "1") {
+  const url = graphPgUrl();
+  if (url) await loadAtImport(url);
+  // The one boot line. Under node --test a floor is the ordinary state of a
+  // fixture-less test and its standing already says so; anywhere else, and in
+  // any process that TRIED the store, the floor is announced.
+  if (!state.snap && (url || !inNodeTest()))
+    console.error(`[world-graph] ${processName()} stands on its floor, not the world: ${worldGraphStanding().disclosed}`);
 }

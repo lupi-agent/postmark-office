@@ -64,7 +64,7 @@ async function main() {
   const p = JSON.parse(process.argv[2] ?? "{}");
   if (!existsSync(join(CLONE, "WORLD"))) return err(409, "not-yet-open", "the office has no world clone");
 
-  const { formatDeparture, parseWalkLedger, positionAt, fractionalCrossing } =
+  const { formatDeparture, parseWalkLedger, positionAt, fractionalCrossing, WALK_KM_PER_CROSSING } =
     await import(pathToFileURL(join(CLONE, "tools", "walk.mjs")));
 
   // The walk ledger is PUBLIC record on main. The pens share this clone and a
@@ -91,6 +91,13 @@ async function main() {
   // "departure" was the second body of the 2026-08-21 slow-walk bug.
   const pace = departurePace();
   const dialFallback = pace == null;
+  // THE RECORD SAYS WHICH PACE IT WALKED AT (POS-270 lane W 3b). On a fallback
+  // the line goes out unstamped and the engine walks at its own legacy constant;
+  // the act names that constant and why, so a walk on the floor is never read
+  // as one at the law's pace (the 2026-08-22 slow-walk class).
+  const paceWalked = dialFallback
+    ? { pace_walked: WALK_KM_PER_CROSSING ?? null, pace_source: "the engine's legacy constant: the resident class's dial could not be read" }
+    : { pace_walked: pace, pace_source: "the resident class's dial, stamped on the line" };
 
   const line = formatDeparture({
     handle: p.handle, from: p.from, toward: p.toward, at,
@@ -127,7 +134,7 @@ async function main() {
     const entry = {
       crossing: at, actor: p.handle, action: "walk", object: p.targetMarkId ?? null,
       cls: CLASS_MOVE, at: null, witnesses: null,
-      payload: { ledger: LEDGER_NAME, lines: [line], toward: p.toward, pace },
+      payload: { ledger: LEDGER_NAME, lines: [line], toward: p.toward, pace, ...paceWalked },
       effect: "the walk is declared; the record receives it at the save",
     };
     {
@@ -155,7 +162,7 @@ async function main() {
       }
     }
     return answer({ line, at, position: positionAt(mine, at), commit: null, pushed: false, push_error: null,
-                    pace, ...(dialFallback ? { dial_fallback: true } : {}),
+                    pace, ...paceWalked, ...(dialFallback ? { dial_fallback: true } : {}),
                     log: "acts", seq,
                     settles: "at the save — this walk spends no commit of its own (WORLD_SINGLE_LOG)",
                     ledger_lines: dep.length, ledger_unrecognized: unrec.length });
@@ -179,7 +186,7 @@ async function main() {
   }
 
   return answer({ line, at, position, commit, pushed, push_error,
-           pace, ...(dialFallback ? { dial_fallback: true } : {}),
+           pace, ...paceWalked, ...(dialFallback ? { dial_fallback: true } : {}),
            ledger_lines: departures.length,
            ledger_unrecognized: unrecognized.length });
 }

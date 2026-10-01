@@ -271,6 +271,7 @@ function walkClone(label) {
   writeFileSync(join(clone, "tools", "walk.mjs"), [
     'export const CROSSING_EPOCH_UTC = Date.UTC(2026, 5, 12);',
     'export const CROSSING_MS = 12 * 3600 * 1000;',
+    'export const WALK_KM_PER_CROSSING = 15;',
     'export function fractionalCrossing(ms = Date.now()) { return Math.max(0, (ms - CROSSING_EPOCH_UTC) / CROSSING_MS); }',
     'export function formatDeparture({ handle, from, toward, at }) {',
     '  return `- FIXED · ${handle} · from ${from.x},${from.y} · toward ${toward.x},${toward.y} · at ${at.toFixed(5)}`;',
@@ -418,3 +419,27 @@ test("§5 — A FAILED UPLOAD IS DISCLOSED AND DOES NOT BLOCK: the record is git
 // would have been decoration. (It was: an earlier version of this test drove a
 // drain with an empty journal, which returns before the archive is ever
 // considered. The can-fail flip caught it.)
+
+test("THE WALK SAYS WHICH PACE IT WALKED AT: on the floor, the engine's legacy constant, named; on the world, the resident class's dial (POS-270 lane W 3b)", () => {
+  // The 2026-08-22 slow-walk class: a walk at the legacy constant that reads
+  // like one at the law's pace. With world.db retired, a walk pen that cannot
+  // read the world graph is exactly that walk, so its own answer says so.
+  const floor = walkClone("pace-floor");
+  const onFloor = runWalk(floor.clone, { handle: "lucien", from: { x: 0, y: 0 }, toward: { x: 9, y: 9 }, at: 145.2 }, { WORLD_SINGLE_LOG: "", WORLD_GRAPH_ROWS: "" });
+  assert.equal(onFloor.dial_fallback, true);
+  assert.equal(onFloor.pace_walked, 15, "the floor walk must name the constant it actually walked at");
+  assert.match(onFloor.pace_source, /legacy constant/);
+
+  const world = walkClone("pace-world");
+  const rows = join(world.clone, "..", "pace-world-rows.json");
+  writeFileSync(rows, JSON.stringify({
+    meta: [{ key: "hydration_status", value: "OK" }, { key: "as_of_world", value: "pacefixture" }],
+    nodes: [{ id: "the-town/resident", kind: "mark", subkind: "sited", tier: "constitution", by: "the-town", at_x: 0, at_y: 0, extent_w: 1, extent_h: 1,
+      props: JSON.stringify({ class: "resident", in_works: 1, dials: { pace_km_per_crossing: 60 } }) }],
+    edges: [], events: [], geometryVersions: [], lintFindings: [],
+  }));
+  const onWorld = runWalk(world.clone, { handle: "lucien", from: { x: 0, y: 0 }, toward: { x: 9, y: 9 }, at: 145.2 }, { WORLD_SINGLE_LOG: "", WORLD_GRAPH_ROWS: rows });
+  assert.equal(onWorld.dial_fallback, undefined);
+  assert.equal(onWorld.pace_walked, 60);
+  assert.match(onWorld.pace_source, /resident class's dial/);
+});
