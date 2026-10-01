@@ -355,15 +355,20 @@ export async function claimTxFromJournal(client, row, seq, { household, actId = 
       const bbox = placed ? boxOf(at, extent) : null;
       const status = put_forward === true ? "pending" : "draft";
 
-      // amend → the supersession chain: the clearing computes head-of-chain
-      // (its transition 2), so the new claim names the pending one it amends.
+      // ONE PENDING CLAIM PER MARK PER WINDOW (POS-241 phase 1, ruling 1,
+      // 2026-09-26: "a second amend in one window replaces the first"). A claim
+      // going pending retracts the author's earlier pending claim on the same
+      // mark in this window, reason `replaced`, so no in-window chain ever forms.
+      // The chain was the 212 failure: the head superseded the prior PENDING
+      // claim, step 1 compared that to the standing mark's id, and neither
+      // applied. A private draft replaces nothing: it is not on the docket yet.
+      if (status === "pending") await retractReplaced(client, { windowId: win.id, slug, claimant: row.actor });
+
+      // amend → the standing mark it continues, directly. No pending prior is
+      // left to name: the line above has just retracted it.
       let supersedes = null;
       if (row.action === "amend") {
-        const { rows: [prior] } = await client.query(
-          `SELECT id FROM claims WHERE window_id = $1 AND status = 'pending'
-           AND geometry->>'slug' = $2 AND claimant = $3 ORDER BY submitted_at DESC LIMIT 1`,
-          [win.id, slug, row.actor]);
-        // NO PENDING PRIOR IN THIS WINDOW → THE STANDING MARK IS WHAT IT AMENDS
+        // THE STANDING MARK IS WHAT IT AMENDS
         // (2026-09-14, #2806). This used to leave `supersedes` null with the note
         // "amending a published mark: no in-window chain, fresh claim", and the
         // clearing's step 1 read that null as a duplicate — "a standing mark
@@ -374,12 +379,9 @@ export async function claimTxFromJournal(client, row, seq, { household, actId = 
         // gets a new locked claim whose `supersedes` points back at this id" —
         // the same row the clearing reads (`FROM marks WHERE slug … standing`).
         // The replay path always set it; the live drain now does too.
-        if (prior?.id) supersedes = prior.id;
-        else {
-          const { rows: [standing] } = await client.query(
-            "SELECT id::text FROM marks WHERE slug = $1 AND status = 'standing' LIMIT 1", [slug]);
-          supersedes = standing?.id ?? null; // a fresh slug amends nothing: null, as before
-        }
+        const { rows: [standing] } = await client.query(
+          "SELECT id::text FROM marks WHERE slug = $1 AND status = 'standing' LIMIT 1", [slug]);
+        supersedes = standing?.id ?? null; // a fresh slug amends nothing: null, as before
       }
 
       // THE DEFERRED ACT rides on the draft it belongs to (world2-acts.mjs
@@ -544,6 +546,32 @@ export async function retractPendingClaim(q, { windowId, slug, claimant, env = p
 }
 
 /**
+ * THE NEWER PENDING CLAIM REPLACES THE OLDER (POS-241 phase 1, ruling 1).
+ *
+ * Retracts the author's pending claims on `slug` in `windowId`, except `except`,
+ * with the reason on the row. A retraction is the one transition an office pen
+ * may make on a pending claim (007 § the transition guard: "pending ->
+ * retracted, fields untouched"), and `refusal_check` is not one of the fields it
+ * guards, so the reason is lawful without a migration. The row stays, as every
+ * retraction's does: the public docket carried it.
+ *
+ * Two callers, one rule: a claim filed pending (`claimTxFromJournal`), and a
+ * draft put forward by a stake (`promoteDraftOnStake`). Either way the newest
+ * declaration on the docket is the one the clearing rules on.
+ */
+export const REPLACED_CHECK = "replaced: a later claim on this mark in the same window replaces this one";
+
+export async function retractReplaced(client, { windowId, slug, claimant, except = null }) {
+  const { rows } = await client.query(
+    `UPDATE claims SET status = 'retracted', decided_at = now(), refusal_check = $4
+      WHERE window_id = $1 AND status = 'pending' AND geometry->>'slug' = $2 AND claimant = $3
+        AND ($5::uuid IS NULL OR id <> $5::uuid)
+      RETURNING id::text`,
+    [windowId, slug, claimant, REPLACED_CHECK, except]);
+  return rows.map((r) => r.id);
+}
+
+/**
  * A later `world_stake` on a draft: the boundary act, arriving on its own.
  *
  * The ruling's plainest case -- you composed something, slept on it, and now
@@ -618,6 +646,9 @@ export async function promoteDraftOnStake({ actor, householdName, slug, stamps =
         WHERE status = 'draft' AND claimant = $1 AND slug = $2 AND household = ANY($3)`,
       [actor, slug, keys]);
     if (!draft) return null;
+    // Put forward, it replaces the author's earlier pending claim on this mark
+    // (ruling 1): the same rule the filing arm keeps.
+    await retractReplaced(c, { windowId: win.id, slug, claimant: actor, except: draft.id });
     // The released deferred act, in the SAME transaction (F3 closed): dated at
     // the putting-forward exactly as before — the world witnessed the resident
     // put it forward, not think about it — and journal_seq carried from the
