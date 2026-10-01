@@ -20,7 +20,12 @@ import { BIND_REFUSALS } from "../src/join-bind.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 43831;
-const GH_PORT = 43832;
+// THE PORT IS ASKED FOR, NEVER CHOSEN (join-pr-at-the-cosign.test.mjs § the
+// port): this fake GitHub was fixed at 43832, a door every pool tree on the box shares.
+// It listens on 0, and the port the OS handed back is what the office dials;
+// every answer says `connection: close`, so no idle keep-alive socket is
+// left for the office's next fetch to reuse and die on mid-request.
+let GH_PORT = null;
 const BASE = `http://127.0.0.1:${PORT}`;
 const REDIRECT = "https://mock-client.example/callback";
 const s256 = (v) => createHash("sha256").update(v).digest("base64url");
@@ -92,6 +97,7 @@ before(async () => {
 
   // one mock GitHub: OAuth login/user AND the pen's repo API
   ghServer = createServer(async (req, res) => {
+    res.setHeader("connection", "close");
     const url = new URL(req.url, `http://127.0.0.1:${GH_PORT}`);
     const p = url.pathname;
     const json = (code, obj) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); };
@@ -142,7 +148,8 @@ before(async () => {
       return json(201, { html_url: "https://github.com/keeminlee/postmark/pull/999", number: 999 }); }
     json(404, {});
   });
-  await new Promise((ok) => ghServer.listen(GH_PORT, ok));
+  await new Promise((ok) => ghServer.listen(0, "127.0.0.1", ok));
+  GH_PORT = ghServer.address().port;
 
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT),
     "--db", dbPath, "--oauth-db", join(tmp, "oauth.db")], {

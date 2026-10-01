@@ -32,7 +32,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // derive a small port berth from the runner PID so parallel lanes do not collide.
 // Adjacent PIDs land seven ports apart; this file occupies only two.
 const PORT = 44000 + ((process.pid * 7) % 1500);
-const GH_PORT = PORT + 1;
+// THE PORT IS ASKED FOR, NEVER CHOSEN (join-pr-at-the-cosign.test.mjs § the
+// port): this fake GitHub was PORT + 1, a pid-derived guess at a door every
+// pool tree on the box shares. It listens on 0, and the port the OS handed
+// back is what the office dials;
+// every answer says `connection: close`, so no idle keep-alive socket is
+// left for the office's next fetch to reuse and die on mid-request.
+let GH_PORT = null;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const QUARANTINED = "ledger-quarantined";
@@ -85,6 +91,7 @@ before(async () => {
     `- 2026-09-01 · quarantine · ${QUARANTINED} · by: registrar · reason: an open question about who is writing\n`);
 
   ghServer = createServer((req, res) => {
+    res.setHeader("connection", "close");
     const url = new URL(req.url, `http://127.0.0.1:${GH_PORT}`);
     if (url.pathname === "/login/oauth/authorize") {
       const back = new URL(url.searchParams.get("redirect_uri"));
@@ -103,7 +110,8 @@ before(async () => {
     }
     res.writeHead(404); res.end();
   });
-  await new Promise((ok) => ghServer.listen(GH_PORT, ok));
+  await new Promise((ok) => ghServer.listen(0, "127.0.0.1", ok));
+  GH_PORT = ghServer.address().port;
 
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT),
     "--db", dbPath, "--oauth-db", (OAUTH_DB.path = join(tmp, "oauth.db"))], {

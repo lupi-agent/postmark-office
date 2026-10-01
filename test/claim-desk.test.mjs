@@ -31,7 +31,12 @@ import { awaitListening } from "./spawn-office.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 43881;
-const GH_PORT = 43882;
+// THE PORT IS ASKED FOR, NEVER CHOSEN (join-pr-at-the-cosign.test.mjs § the
+// port): this fake GitHub was fixed at 43882, a door every pool tree on the box shares.
+// It listens on 0, and the port the OS handed back is what the office dials;
+// every answer says `connection: close`, so no idle keep-alive socket is
+// left for the office's next fetch to reuse and die on mid-request.
+let GH_PORT = null;
 const BASE = `http://127.0.0.1:${PORT}`;
 const KEY = "statickey";
 
@@ -107,6 +112,7 @@ before(async () => {
   }));
 
   ghServer = createServer((req, res) => {
+    res.setHeader("connection", "close");
     const url = new URL(req.url, `http://127.0.0.1:${GH_PORT}`);
     if (url.pathname === "/login/oauth/authorize") {
       const back = new URL(url.searchParams.get("redirect_uri"));
@@ -125,7 +131,8 @@ before(async () => {
     }
     res.writeHead(404); res.end();
   });
-  await new Promise((ok) => ghServer.listen(GH_PORT, ok));
+  await new Promise((ok) => ghServer.listen(0, "127.0.0.1", ok));
+  GH_PORT = ghServer.address().port;
 
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT),
     "--db", dbPath, "--oauth-db", (OAUTH_DB.path = join(tmp, "oauth.db"))], {
