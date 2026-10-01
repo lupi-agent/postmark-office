@@ -51,6 +51,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import { mcpWorkerTakes, startReadPool, workerTakes } from "../src/read-workers.mjs";
 import { WORLD_CLONE } from "../src/world-store.mjs";
 import { publishedSettlementAt } from "../src/hearing-window.mjs";
@@ -253,22 +254,19 @@ test("§ 3 an agent's MCP read is answered by a worker, and anything else handed
 });
 
 test("§ 4 a real office hands the agents' reads to its worker and keeps the acts", { skip: !haveClone && `needs the world clone at ${WORLD_CLONE}` }, async () => {
-  const port = 47000 + ((process.pid * 11) % 1500);
-  const proc = spawn(process.execPath, [
+  // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+  // asked for); it was a berth derived from the pid, a guess at a door every
+  // pool tree on the box shares.
+  const { child: proc, port } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
   ], {
     env: { ...process.env, OFFICE_READ_WORKERS: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
       WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
     stdio: ["ignore", "pipe", "pipe"],
-  });
+  }), { budgetMs: 30_000 });
   const gone = new Promise((ok) => proc.on("exit", ok));
   try {
-    let out = "";
-    await new Promise((ok, no) => {
-      const t = setTimeout(() => no(new Error(`the office never listened: ${out}`)), 30_000);
-      proc.stdout.on("data", (d) => { out += String(d); if (out.includes("listening")) { clearTimeout(t); ok(); } });
-    });
     const base = `http://127.0.0.1:${port}`;
     let ready = 0;
     for (let i = 0; i < 300 && ready !== 1; i++) {
@@ -306,8 +304,10 @@ test("§ 5 the REST listen is answered by the main thread and hears the say befo
   // The listen's card is the class layer's answer, so this office has a world store.
   const worldDb = join(tmp, "world.db");
   execFileSync(process.execPath, [join(ROOT, "src", "world-hydrate.mjs"), "--world", WORLD_CLONE, "--no-db", "--rows-out", `${worldDb}.rows.json`, "--no-gexf", "--no-lints"], { stdio: "ignore" });
-  const port = 48500 + ((process.pid * 13) % 1000);
-  const proc = spawn(process.execPath, [
+  // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+  // asked for); it was a berth derived from the pid, a guess at a door every
+  // pool tree on the box shares.
+  const { child: proc, port } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
   ], {
@@ -316,14 +316,9 @@ test("§ 5 the REST listen is answered by the main thread and hears the say befo
       VOICES_LOG: join(tmp, "voices-5.jsonl"),
       WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
     stdio: ["ignore", "pipe", "pipe"],
-  });
+  }), { budgetMs: 30_000 });
   const gone = new Promise((ok) => proc.on("exit", ok));
   try {
-    let out = "";
-    await new Promise((ok, no) => {
-      const t = setTimeout(() => no(new Error(`the office never listened: ${out}`)), 30_000);
-      proc.stdout.on("data", (d) => { out += String(d); if (out.includes("listening")) { clearTimeout(t); ok(); } });
-    });
     const base = `http://127.0.0.1:${port}`;
     let ready = 0;
     for (let i = 0; i < 300 && ready !== 1; i++) {
@@ -362,8 +357,10 @@ test("§ 6 a `before:` page is answered by the main thread; at the door a voice 
   const worldDb = join(tmp, "world-6.db");
   execFileSync(process.execPath, [join(ROOT, "src", "world-hydrate.mjs"), "--world", WORLD_CLONE, "--no-db", "--rows-out", `${worldDb}.rows.json`, "--no-gexf", "--no-lints"], { stdio: "ignore" });
   const voicesLog = join(tmp, "voices-6.jsonl");
-  const port = 49600 + ((process.pid * 7) % 300);
-  const proc = spawn(process.execPath, [
+  // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+  // asked for); it was a berth derived from the pid, a guess at a door every
+  // pool tree on the box shares.
+  const { child: proc, port } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
   ], {
@@ -372,14 +369,9 @@ test("§ 6 a `before:` page is answered by the main thread; at the door a voice 
       VOICES_LOG: voicesLog,
       WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
     stdio: ["ignore", "pipe", "pipe"],
-  });
+  }), { budgetMs: 30_000 });
   const gone = new Promise((ok) => proc.on("exit", ok));
   try {
-    let out = "";
-    await new Promise((ok, no) => {
-      const t = setTimeout(() => no(new Error(`the office never listened: ${out}`)), 30_000);
-      proc.stdout.on("data", (d) => { out += String(d); if (out.includes("listening")) { clearTimeout(t); ok(); } });
-    });
     const base = `http://127.0.0.1:${port}`;
     let ready = 0;
     for (let i = 0; i < 300 && ready !== 1; i++) {
@@ -433,24 +425,20 @@ test("§ 6 a `before:` page is answered by the main thread; at the door a voice 
 // test/unread.test.mjs (§ 7, through the stub) and against a real Postgres in
 // the lane's paperwork; this office has no store, so it proves the ROUTING.
 test("§ 7 a keyed full letter read stays on the main thread; a keyless one goes to the worker, and the bytes agree", async () => {
-  // Clear of § 6's 49600–49899 (POS-226), which this range overlapped until the rebase.
-  const port = 50500 + ((process.pid * 17) % 400);
   const KEY2 = "read-workers-test-key-limen";
   const env = { ...process.env, OFFICE_READ_WORKERS: "1", WORLD_APEX: "1",
     OFFICE_KEYS: `${KEY}=keemin:wright;${KEY2}=limen-house:limen`,
     WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") };
   delete env.WORLD2_PG; delete env.WORLD2_PG_URL;
-  const proc = spawn(process.execPath, [
+  // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+  // asked for); it was a berth derived from the pid, a guess at a door every
+  // pool tree on the box shares.
+  const { child: proc, port } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
-  ], { env, stdio: ["ignore", "pipe", "pipe"] });
+  ], { env, stdio: ["ignore", "pipe", "pipe"] }), { budgetMs: 30_000 });
   const gone = new Promise((ok) => proc.on("exit", ok));
   try {
-    let out = "";
-    await new Promise((ok, no) => {
-      const t = setTimeout(() => no(new Error(`the office never listened: ${out}`)), 30_000);
-      proc.stdout.on("data", (d) => { out += String(d); if (out.includes("listening")) { clearTimeout(t); ok(); } });
-    });
     const base = `http://127.0.0.1:${port}`;
     let ready = 0;
     for (let i = 0; i < 300 && ready !== 1; i++) {

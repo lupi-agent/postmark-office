@@ -61,6 +61,7 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { callTool, TOOLS } from "../src/mcp.mjs";
 import { mailAwaiting } from "../src/queries.mjs";
@@ -369,8 +370,10 @@ test("F12 · the sentences are the resident's terms, and each names its own stri
 // the source. The hint rides here deliberately — see src/server.mjs § POS-101
 // for why this departs from `verify`'s MCP-only precedent one door over.
 
-const PORT = 43877;
-const BASE = `http://127.0.0.1:${PORT}`;
+// The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+// asked for); it was the fixed 43877, a door every pool tree on the box shares.
+let PORT;
+let BASE;
 const REST_KEY = "thread-test-key";
 let child, restTmp;
 
@@ -378,16 +381,12 @@ before(async () => {
   restTmp = mkdtempSync(join(tmpdir(), "pm-thread-rest-"));
   const p = join(restTmp, "fixture.db");
   fixtureDb(p).close();
-  child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", p], {
+  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", p], {
     env: { ...process.env, OFFICE_KEYS: `${REST_KEY}=keemin:wright`, TOWN_CLONE: mailClone(),
       WORLD_CLONE: join(restTmp, "no-world-clone") },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  await new Promise((ok, no) => {
-    const t = setTimeout(() => no(new Error("server never listened")), 15_000);
-    child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-    child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-  });
+  })));
+  BASE = `http://127.0.0.1:${PORT}`;
 });
 
 after(async () => {

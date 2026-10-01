@@ -8,10 +8,12 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 43855;
-const BASE = `http://127.0.0.1:${PORT}`;
+// The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+// asked for); it was the fixed 43855, a door every pool tree on the box shares.
+let PORT, BASE;
 const KEY = "bouncer-test-key";
 const FROZEN_BOUNCER_NOW_MS = String(Date.parse("2026-09-14T07:00:00Z"));
 
@@ -21,9 +23,9 @@ before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-office-bouncer-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
-  child = spawn(process.execPath, [
+  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"),
-    "--port", String(PORT),
+    "--port", String(port),
     "--db", dbPath,
     "--bouncer-now-ms", FROZEN_BOUNCER_NOW_MS,
   ], {
@@ -37,17 +39,8 @@ before(async () => {
       WORLD_CLONE: join(tmp, "no-world-clone"),
     },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  await new Promise((ok, no) => {
-    const timeout = setTimeout(() => no(new Error("server never listened")), 10_000);
-    child.stdout.on("data", (data) => {
-      if (String(data).includes("listening")) {
-        clearTimeout(timeout);
-        ok();
-      }
-    });
-    child.on("exit", (code) => no(new Error(`server exited early (${code})`)));
-  });
+  })));
+  BASE = `http://127.0.0.1:${PORT}`;
 });
 
 after(async () => {
@@ -138,26 +131,18 @@ test("REST and MCP middleware return exact 429s with independent key and househo
 // it true, so load can only make the number smaller, never flaky. A frozen
 // clock answers exactly 30 and nothing else can.
 //
-// Its own server, on its own port, derived from the pid the way
-// test/read-worker.test.mjs derives its berth — and in a band clear of every
-// other one in test/, which is the half of that house rule that is easy to get
-// wrong. The fixed ports live in 43821..43922; claim-ledger takes 44000..45499
-// and read-worker 46000..47999. So this one sits above all three, and takes one
-// port in it. (read-worker's own note that "nothing in test/ sits above 44000"
-// is now out of date, and nothing in the suite reads that invariant — worth a
-// guard of its own, which is not this change's instance.)
-//
-// (This file's own PORT is still a fixed 43855 — the same class as office issue
-// #19 — left alone here for the same reason.)
-const LIVE_PORT = 48000 + ((process.pid * 13) % 1500);
+// Its own server, on its own port, asked of the OS like every office in test/
+// (spawn-office.mjs § the port, asked for). It was a pid-derived berth in a band
+// kept clear of every other file's by hand — a guess, and a ledger of bands
+// nothing in the suite checked.
 
 test("with no --bouncer-now-ms the office keeps Date.now — the seam is a test affordance, never a new default", async () => {
   const dir = mkdtempSync(join(tmpdir(), "postmark-office-liveclock-"));
   const dbPath = join(dir, "fixture.db");
   fixtureDb(dbPath).close();
-  const live = spawn(process.execPath, [
+  const { child: live, port: LIVE_PORT } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"),
-    "--port", String(LIVE_PORT),
+    "--port", String(port),
     "--db", dbPath,
     // no --bouncer-now-ms: this is the production composition
   ], {
@@ -171,17 +156,9 @@ test("with no --bouncer-now-ms the office keeps Date.now — the seam is a test 
       WORLD_CLONE: join(dir, "no-world-clone"),
     },
     stdio: ["ignore", "pipe", "pipe"],
-  });
+  }));
 
   try {
-    await new Promise((ok, no) => {
-      const timeout = setTimeout(() => no(new Error("live-clock server never listened")), 10_000);
-      live.stdout.on("data", (data) => {
-        if (String(data).includes("listening")) { clearTimeout(timeout); ok(); }
-      });
-      live.on("exit", (code) => no(new Error(`live-clock server exited early (${code})`)));
-    });
-
     const hit = (path) => fetch(`http://127.0.0.1:${LIVE_PORT}${path}`, {
       headers: { authorization: `Bearer ${KEY}` },
     });

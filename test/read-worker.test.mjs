@@ -31,41 +31,26 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort, freePort } from "./spawn-office.mjs";
 import { workerSafe, penTokenFor } from "../src/role.mjs";
 import { openOauthDb } from "../src/oauth.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-// ⚑ THE PORTS ARE DERIVED FROM THE PID, and this comment says so because the
-// last one did not. It read "THE PORTS ARE ASKED FOR ... the kernel is asked for
-// three free ports" — describing an approach I wrote, found broken
-// (`server.listen(0)` does not know its port until the 'listening' event, so
-// `.address()` reads null) and replaced with this one, WITHOUT rewriting the
-// prose above it. A comment describing the approach you ABANDONED is worse than
-// none: it tells a reviewer to stop reading at the line that is actually there.
-//
-// Why derived at all: this file boots up to three servers, and an earlier draft
-// pinned them at 43861-43863. 43861 is `hot-reload.test.mjs`'s port — safe only
-// because the suite runs at concurrency 1 — and this file failed all ten legs
-// against a second concurrent run of ITSELF, which for a minute read like a real
-// defect. A reviewer runs this file once per flip while other lanes' suites share
-// the machine, so a fixed port here is a flake I would be handing them.
-//
-// The base is 46000, ABOVE the neighbourhood: sixteen fixed ports live between
-// 43000 and 43999 across twelve other test files, and the previous derivation
-// (43000 + pid*7 % 2000) landed squarely inside them. Nothing in test/ sits above
-// 44000. The stride of 7 keeps two adjacent pids seven apart, which is more than
-// the three ports this file uses. Not a guarantee — a collision is still
-// possible — but it is a small chance where a fixed port was a certainty.
-const PORT = 46000 + ((process.pid * 7) % 2000);
-const BASE = `http://127.0.0.1:${PORT}`;
+// THE PORTS ARE ASKED OF THE OS (spawn-office.mjs § the port, asked for). They
+// were derived from the pid — 46000 + pid*7 % 2000, a berth above the fixed
+// ports, and this file's own note said "a collision is still possible — but it
+// is a small chance". Every office in test/ now asks instead, so there is no
+// neighbourhood left to keep clear of. The worker's port is read back from its
+// boot; the control writer and the two refusal legs each ask for their own.
+let PORT, BASE;
 const KEY = "read-worker-test-key";
 const PEN = "ghp_a_token_a_read_worker_must_not_hold";
 const WRITER = "https://postmark.town/api";
 
 let child, tmp, dynPath;
 
-const boot = (extraArgs, extraEnv = {}) => new Promise((ok, no) => {
+const boot = async (extraArgs, extraEnv = {}) => {
   // The env is built ONCE and handed back with the process, so §4 can assert
   // about the environment THIS WORKER was started with. Reading
   // `process.env` there would have been an assertion about the test runner —
@@ -80,22 +65,22 @@ const boot = (extraArgs, extraEnv = {}) => new Promise((ok, no) => {
     WORLD_CLONE: join(tmp, "no-world-clone"),
     ...extraEnv,
   };
-  const proc = spawn(process.execPath, [
-    join(ROOT, "src", "server.mjs"),
-    "--port", String(PORT),
-    "--db", join(tmp, "fixture.db"),
-    "--oauth-db", join(tmp, "oauth.db"),
-    "--roles-db", join(tmp, "roles.db"),
-    ...extraArgs,
-  ], { env, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
-  const t = setTimeout(() => no(new Error(`server never listened; stdout was: ${out}`)), 20_000);
-  proc.stdout.on("data", (d) => {
-    out += String(d);
-    if (out.includes("listening")) { clearTimeout(t); ok({ proc, line: out, env }); }
-  });
-  proc.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-});
+  const { child: proc, port } = await bootOnFreePort((port) => {
+    out = "";
+    const p = spawn(process.execPath, [
+      join(ROOT, "src", "server.mjs"),
+      "--port", String(port),
+      "--db", join(tmp, "fixture.db"),
+      "--oauth-db", join(tmp, "oauth.db"),
+      "--roles-db", join(tmp, "roles.db"),
+      ...extraArgs,
+    ], { env, stdio: ["ignore", "pipe", "pipe"] });
+    p.stdout.on("data", (d) => { out += String(d); });
+    return p;
+  }, { budgetMs: 20_000 });
+  return { proc, line: out, env, port };
+};
 
 before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-read-worker-"));
@@ -114,6 +99,8 @@ before(async () => {
 
   const booted = await boot(["--role", "read", "--writer", WRITER]);
   child = booted.proc;
+  PORT = booted.port;
+  BASE = `http://127.0.0.1:${PORT}`;
   globalThis.__bootLine = booted.line;
   globalThis.__bootEnv = booted.env;
 });
@@ -173,7 +160,7 @@ test("§0 a read worker refuses to boot without the writer's key store", async (
   // the file it was missing.
   const absent = join(tmp, "no-such-oauth.db");
   const p = spawn(process.execPath, [
-    join(ROOT, "src", "server.mjs"), "--port", String(PORT + 2),
+    join(ROOT, "src", "server.mjs"), "--port", String(await freePort()),
     "--db", join(tmp, "fixture.db"), "--oauth-db", absent,
     "--roles-db", join(tmp, "roles.db"), "--role", "read",
   ], { env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, WORLD_DYNAMIC_DB: dynPath,
@@ -200,7 +187,7 @@ test("§0b a read worker refuses to boot on an ABSENT dynamic store", async () =
   // traffic. Same rule and same exit code as the key store's.
   const absent = join(tmp, "no-such-dir", "dynamic.db");
   const p = spawn(process.execPath, [
-    join(ROOT, "src", "server.mjs"), "--port", String(PORT + 3),
+    join(ROOT, "src", "server.mjs"), "--port", String(await freePort()),
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"),
     "--roles-db", join(tmp, "roles.db"), "--role", "read",
   ], { env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, WORLD_DYNAMIC_DB: absent,
@@ -257,23 +244,17 @@ test("§1b the refusal is the ROLE's, not the router's — a writer answers thes
   // (the oauth trio) are GETs a writer really does serve, so the difference is
   // the whole claim. Booted on a second port so the worker under test is
   // untouched.
-  const proc = await new Promise((ok, no) => {
-    const p = spawn(process.execPath, [
-      join(ROOT, "src", "server.mjs"), "--port", String(PORT + 1),
-      "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth-w.db"),
-      "--roles-db", join(tmp, "roles-w.db"),
-    ], {
-      env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, POSTMARK_PEN_TOKEN: PEN,
-        WORLD_DYNAMIC_DB: dynPath, TOWN_CLONE: join(ROOT, "town-clone"), WORLD_CLONE: join(tmp, "no-world-clone") },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let out = "";
-    const t = setTimeout(() => no(new Error("control server never listened")), 20_000);
-    p.stdout.on("data", (d) => { out += String(d); if (out.includes("listening")) { clearTimeout(t); ok(p); } });
-    p.on("exit", (c) => no(new Error(`control exited early (${c})`)));
-  });
+  const { child: proc, port: WRITER_PORT } = await bootOnFreePort((port) => spawn(process.execPath, [
+    join(ROOT, "src", "server.mjs"), "--port", String(port),
+    "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth-w.db"),
+    "--roles-db", join(tmp, "roles-w.db"),
+  ], {
+    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, POSTMARK_PEN_TOKEN: PEN,
+      WORLD_DYNAMIC_DB: dynPath, TOWN_CLONE: join(ROOT, "town-clone"), WORLD_CLONE: join(tmp, "no-world-clone") },
+    stdio: ["ignore", "pipe", "pipe"],
+  }), { budgetMs: 20_000 });
   try {
-    const res = await fetch(`http://127.0.0.1:${PORT + 1}/.well-known/openid-configuration`);
+    const res = await fetch(`http://127.0.0.1:${WRITER_PORT}/.well-known/openid-configuration`);
     assert.notEqual(res.status, 405, "the writer must SERVE oauth discovery — otherwise §1 proves nothing about the role");
     await res.text();
 
@@ -282,7 +263,7 @@ test("§1b the refusal is the ROLE's, not the router's — a writer answers thes
     // because false is the TRUE answer for a worker — an assertion that only
     // ever reads the read role cannot tell a disclosure from a constant. The
     // writer must say the opposite through the same line of code.
-    const rel = await (await fetch(`http://127.0.0.1:${PORT + 1}/release`)).json();
+    const rel = await (await fetch(`http://127.0.0.1:${WRITER_PORT}/release`)).json();
     assert.equal(rel.role, "write");
     assert.equal(rel.write_grant, true,
       "the WRITER holds a pen and must say so — otherwise `write_grant` is a constant wearing a disclosure's clothes");

@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { giftViaOffice, isPrincipal } from "../src/ops.mjs";
 import { identityOf } from "../src/queries.mjs";
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 
 delete process.env.TOWN_PUSH; // belt and braces: the mint must stay local
 
@@ -137,24 +138,22 @@ test("giftViaOffice: a non-kebab slug is refused 422 before it ever reaches the 
 
 // ── the HTTP wall: a non-principal key can never reach the mint ───────────────
 
-const PORT = 43878; // was 43877 — town-bridge.test.mjs binds that one; the pair collided only under a parallel run (2026-09-12)
-const BASE = `http://127.0.0.1:${PORT}`;
+// The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+// asked for); it was the fixed 43878, a door every pool tree on the box shares.
+let PORT;
+let BASE;
 let child, tmp;
 
 before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-ops-srv-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
-  child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath], {
+  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath], {
     // a static key (no ghId → never principal) + the principal pin + no clone
     env: { ...process.env, OFFICE_KEYS: "shellkey=keemin:wright", PRINCIPAL_GH_ID: PRINCIPAL_ID, TOWN_CLONE: join(tmp, "no-clone"), TOWN_PUSH: "" },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  await new Promise((ok, no) => {
-    const t = setTimeout(() => no(new Error("server never listened")), 10_000);
-    child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-    child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-  });
+  })));
+  BASE = `http://127.0.0.1:${PORT}`;
 });
 
 after(async () => {

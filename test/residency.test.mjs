@@ -15,13 +15,21 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import { serializeRegistry, slugFromName, houseForAccount, houseForName, planRegistryJoin } from "../src/residency.mjs";
 import { BIND_REFUSALS } from "../src/join-bind.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 43831;
-const GH_PORT = 43832;
-const BASE = `http://127.0.0.1:${PORT}`;
+// The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+// asked for); it was the fixed 43831, a door every pool tree on the box shares.
+let PORT;
+// THE PORT IS ASKED FOR, NEVER CHOSEN (join-pr-at-the-cosign.test.mjs § the
+// port): this fake GitHub was fixed at 43832, a door every pool tree on the box shares.
+// It listens on 0, and the port the OS handed back is what the office dials;
+// every answer says `connection: close`, so no idle keep-alive socket is
+// left for the office's next fetch to reuse and die on mid-request.
+let GH_PORT = null;
+let BASE;
 const REDIRECT = "https://mock-client.example/callback";
 const s256 = (v) => createHash("sha256").update(v).digest("base64url");
 
@@ -92,6 +100,7 @@ before(async () => {
 
   // one mock GitHub: OAuth login/user AND the pen's repo API
   ghServer = createServer(async (req, res) => {
+    res.setHeader("connection", "close");
     const url = new URL(req.url, `http://127.0.0.1:${GH_PORT}`);
     const p = url.pathname;
     const json = (code, obj) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); };
@@ -142,15 +151,16 @@ before(async () => {
       return json(201, { html_url: "https://github.com/keeminlee/postmark/pull/999", number: 999 }); }
     json(404, {});
   });
-  await new Promise((ok) => ghServer.listen(GH_PORT, ok));
+  await new Promise((ok) => ghServer.listen(0, "127.0.0.1", ok));
+  GH_PORT = ghServer.address().port;
 
-  child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT),
+  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", dbPath, "--oauth-db", join(tmp, "oauth.db")], {
     env: {
       ...process.env,
       OFFICE_KEYS: "statickey=keemin:wright",
       TOWN_CLONE: clone, TOWN_PUSH: "",
-      PUBLIC_BASE: BASE,
+      PUBLIC_BASE: `http://127.0.0.1:${port}`,
       POSTMARK_OAUTH_GITHUB_CLIENT_ID: "mock-gh-app",
       POSTMARK_OAUTH_GITHUB_CLIENT_SECRET: "mock-gh-secret",
       GITHUB_AUTH_URL: `http://127.0.0.1:${GH_PORT}/login/oauth/authorize`,
@@ -161,12 +171,8 @@ before(async () => {
       POSTMARK_TOWN_BRANCH: "main",
     },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  await new Promise((ok, no) => {
-    const t = setTimeout(() => no(new Error("server never listened")), 10_000);
-    child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-    child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-  });
+  })));
+  BASE = `http://127.0.0.1:${PORT}`;
 });
 
 after(async () => {
