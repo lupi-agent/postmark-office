@@ -568,7 +568,11 @@ const flatRequiredMap = () => {
 // probe must be built out of the same function the world calls, not out of the
 // pieces that function calls.)
 /** The office's residents index as a set of handles, or null when this door has no readable index. */
-const rollOf = (db) => { try { return db ? new Set(residentList(db).map((r) => r.handle)) : null; } catch { return null; } };
+const rollOf = (db) => {
+  // with the switch on (POS-268), the store's roll as the office last loaded it; null until then
+  if (townIndexReads()) { const h = townIndexStore.storeRollHandles(); return h ? new Set(h) : null; }
+  try { return db ? new Set(residentList(db).map((r) => r.handle)) : null; } catch { return null; }
+};
 
 // A read switched to the store's town index: its answer, or the store's fixed
 // refusal (the MCP door has no status code, so the sentence is the signal).
@@ -586,7 +590,10 @@ export async function callTool(name, args, ctx) {
       // so its bounces are the flat verbs' bounces and want the same envelope.
       // THE TOWN ROLL, from the office's own reader — never a second resolver.
       // `residentList` is what /residents and list_residents already answer with.
-      const rollFor = () => { try { return residentList(db).map((r) => r.handle); } catch { return null; } };
+      const rollFor = () => {
+        if (townIndexReads()) return townIndexStore.storeRollHandles(); // POS-268: the store's roll, as last loaded
+        try { return residentList(db).map((r) => r.handle); } catch { return null; }
+      };
       const r = name === "world" ? await worldApex(args, key, { roll: rollFor() }) : await callWorldTool(name, args, key, { roll: rollFor() });
       if (r !== null) return r;
     } catch (e) {
@@ -600,10 +607,16 @@ export async function callTool(name, args, ctx) {
     }
   }
   switch (name) {
-    case "read_town": return townSummary(db, meta);
-    case "list_residents": return residentPage(db, args ?? {});
+    case "read_town": return townIndexReads() ? fromStore((c) => townIndexStore.townSummary(c)) : townSummary(db, meta);
+    case "list_residents": return townIndexReads() ? fromStore((c) => townIndexStore.residentPage(c, args ?? {})) : residentPage(db, args ?? {});
     case "read_resident": {
-      const r = resident(db, args.handle, await freshFor(args.handle, { odb, clone, asOf }));
+      const fresh = await freshFor(args.handle, { odb, clone, asOf });
+      let r;
+      if (townIndexReads()) {
+        const got = await storeAnswer((c) => townIndexStore.resident(c, args.handle, fresh));
+        if (got.refused) return got.refused;
+        r = got.out;
+      } else r = resident(db, args.handle, fresh);
       if (!r) return notFound(`no resident "${args.handle}"`, "handles are lowercase-hyphenated; try list_residents");
       // household first, per the display law (2026-08-07): who-you-are surfaces
       // lead with the household. Garnish-shaped — a missing registry never 500s a read.
@@ -655,8 +668,12 @@ export async function callTool(name, args, ctx) {
     // call now, so they cannot fall out of step — which is the same thing the
     // bundle's `serves:` pointers do for the segments one level down.
     case "read_doorstep": {
-      const d = await doorstepBundle(args.handle, { db, key, meta, asOf, clone, odb, canWrite,
-        conversationsOffset: args.correspondence_offset, slim: true });
+      let d;
+      try {
+        d = await doorstepBundle(args.handle, { db, key, meta, asOf, clone, odb, canWrite,
+          ix: townIndexReads() ? townIndexStore.storeIndexPooled(clone) : null,
+          conversationsOffset: args.correspondence_offset, slim: true });
+      } catch (e) { if (e instanceof townIndexStore.TownIndexUnreachable) return e.refused; throw e; }
       return d ?? notFound(`no resident "${args.handle}"`, "try town { read: \"residents\" }");
     }
     case "list_mail": {

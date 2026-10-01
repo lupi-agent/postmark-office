@@ -93,7 +93,7 @@ test("a switched door whose store cannot be read refuses with a 503, and never a
     assert.match(body.defect, /town index \(the store\) cannot be reached/, door);
   }
   // an unmoved door on the same office still answers from office.db
-  assert.equal((await fetch(offices["cut-off"].base + "/town")).status, 200);
+  assert.equal((await fetch(offices["cut-off"].base + "/release")).status, 200); // a door that reads no town index
 });
 
 test("the MCP twins (list_commits, list_regions, read_bulletin, read_home, read_stamps) answer through the store when switched", async (t) => {

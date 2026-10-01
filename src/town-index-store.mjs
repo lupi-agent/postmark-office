@@ -34,7 +34,9 @@ import {
   potBoardOf, questBoardWith,
   excerpt, LETTER_READING_LAW_LINE, MAIL_PAGE, SEARCH_LETTERS, SEARCH_RESIDENTS,
   mailListOf, letterListNoRegion, letterListPage, correspondentsOf, mailAwaitingOf, searchPage, metricsMailOf,
+  rollEntry, residentPageOf, townSummaryOf, residentOf, windowReadOf, psaFoldOf, doorstepOf, DOORSTEP_SIZES, PSA_SLUG, CARD_MAIL,
 } from "./queries.mjs";
+import { isResidentHandle } from "./residency.mjs"; // the door's admission grammar, as readRoll filters by it
 
 // The row SHAPES are queries.mjs's own exported functions, the ones its office.db
 // readers call; only the SQL is written twice. A port that restated the shape
@@ -42,7 +44,8 @@ import {
 import { freshnessFor, composeHome } from "./paper-fresh.mjs"; // the freshness ladder, as queries.home uses it
 
 export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home", "stampsRoster", "stampsDetail", "potBoard", "questBoardFor", "standingFor", "townQuestBoard",
-  "letter", "letterAnswer", "letterList", "mailList", "mailCorrespondents", "mailAwaiting", "search", "metricsMail", "outboxSettled"]);
+  "letter", "letterAnswer", "letterList", "mailList", "mailCorrespondents", "mailAwaiting", "search", "metricsMail", "outboxSettled",
+  "residentList", "residentPage", "resident", "townSummary", "officeHandles", "windowRead", "psaFold", "doorstep"]);
 
 /** Is the switch on? Only the exact value `store` turns it on. */
 export const townIndexReads = (env = process.env) => env.TOWN_INDEX_READS === "store";
@@ -251,6 +254,18 @@ export function storeIndexPooled(clone, { env = process.env } = {}) {
     stampsDetail: via((c, handle) => stampsDetail(c, handle)),
     questBoard: via((c, handle, opts) => questBoardFor(c, handle, clone, opts)),
     potBoard: via((c, extraInvalid) => potBoard(c, extraInvalid)),
+    // the doorstep's and the house's reads (group 3)
+    asOf: via((c) => townIndexAsOf(c)),
+    doorstep: via((c, handle, asOf, opts) => doorstep(c, handle, asOf, opts)),
+    residentSegments: via((c, handle, fresh) => residentSegments(c, handle, fresh)),
+    hasResident: via((c, handle) => hasResident(c, handle)),
+    lastActive: via((c, handle) => lastActive(c, handle)),
+    mailAwaiting: via((c, handle, opts) => mailAwaiting(c, handle, opts)),
+    standing: via((c, handle) => standingFor(c, handle)),
+    home: via((c, handle, fresh) => home(c, handle, fresh)),
+    deliveredTo: via((c, handle) => deliveredTo(c, handle)),
+    resident: via((c, handle, fresh) => resident(c, handle, fresh)),
+    windowRead: via((c, handle, fresh) => windowRead(c, handle, fresh)),
   };
 }
 
@@ -275,7 +290,12 @@ export async function letterAnswer(q, id) {
 }
 
 /** queries.mailList, from the store: one box, newest first, paged. */
-export async function mailList(q, handle, box = "inbox", { since, until, limit, offset } = {}) {
+export async function mailList(q, handle, box = "inbox", opts = {}) {
+  return mailListOf(handle, box, await mailPage(q, handle, box, opts));
+}
+
+/** queries.mailPage, from the store: { total, limit, offset, letters } for one box. */
+export async function mailPage(q, handle, box, { since, until, limit, offset } = {}) {
   const where = [`${box === "outbox" ? "from_h" : "to_h"} = $1`];
   if (box !== "outbox") where.push("(box = 'inbox' OR box IS NULL)");
   const params = [handle];
@@ -287,7 +307,7 @@ export async function mailList(q, handle, box = "inbox", { since, until, limit, 
   const total = await count(q, `SELECT COUNT(*) AS n FROM town_letters ${clause}`, params);
   const rows = (await q.query(`SELECT ${LETTER_COLS} FROM town_letters ${clause} ORDER BY ${NEWEST} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     [...params, n, start])).rows;
-  return mailListOf(handle, box, { total, limit: n, offset: start, letters: rows.map(excerpt) });
+  return { total, limit: n, offset: start, letters: rows.map(excerpt) };
 }
 
 /** queries.outboxSettled, from the store: the letters in a resident's outbox. */
@@ -301,12 +321,171 @@ export async function regionResidents(q, slugOrName) {
   return row ? (JSON.parse(row.json).residents ?? []) : [];
 }
 
-// queries.mjs § isOffice, the same three spellings of the office flag.
-const isOffice = (d) => d.is_office === true || d.address?.data?.office === true || d.address?.data?.office === "true";
-
-/** queries.officeHandles, from the store: every resident whose card says office. */
+/** queries.officeHandles, from the store: every resident whose card says office (the roster's flag). */
 export async function officeHandles(q) {
-  return (await q.query("SELECT handle, json FROM town_residents")).rows.filter((r) => isOffice(JSON.parse(r.json))).map((r) => r.handle);
+  return (await roster(q)).filter((e) => e.is_office).map((e) => e.handle);
+}
+
+// ── THE ROSTER, READ ONCE PER INGEST (group 3) ──────────────────────────────
+//
+// Every resident's card is ~125 KB (it carries their boxes), 26 MB in all, and
+// half the office wants only the roll's line from each: the roll memo behind
+// the position doors, the roster, the town card's offices, the doorstep's
+// arrivals. So the lines are kept, keyed on the store's own head (town_meta
+// as_of, one row): a new ingest moves the head and the next read re-reads the
+// cards once. office.db's residentList memo keyed on its handle's change stamp
+// for exactly this reason; this is the same memo on the store's clock.
+// Entries hold rollEntry's line for EVERY row (the admission grammar is applied
+// by the readers that want it, as office.db's are), never a card.
+let _roster = { asOf: undefined, entries: null };
+export async function roster(q) {
+  const asOf = await townIndexAsOf(q);
+  if (_roster.entries && _roster.asOf === asOf) return _roster.entries;
+  const rows = (await q.query(`SELECT handle, json FROM town_residents ORDER BY handle COLLATE "C"`)).rows;
+  const entries = rows.map((r) => rollEntry(r.handle, JSON.parse(r.json)));
+  _roster = { asOf, entries };
+  return entries;
+}
+// THE ROLL'S HANDLES, HELD FOR THE SYNC READERS. The position doors
+// (server.mjs § townRoll) and the MCP roll (mcp.mjs § rollOf) ask for the roll
+// synchronously, on every call. With the switch on they read this: the store's
+// roll as the office last loaded it, refreshed by the office's own reload poll
+// (refreshStoreRoll) and at boot. Null until the first load, and null is what
+// those readers already disclose as "the roll could not be read", never an
+// empty town.
+let _rollHandles = null;
+export const storeRollHandles = () => _rollHandles;
+export async function refreshStoreRoll({ env = process.env } = {}) {
+  const r = await storeAnswer((c) => residentList(c), { env }).catch(() => ({ refused: UNREACHABLE }));
+  if (!r.refused) _rollHandles = r.out.map((e) => e.handle);
+  return _rollHandles;
+}
+
+/** Test seam: forget the roster memo (a suite that rewrites rows under one head). */
+export function __resetRosterForTest() { _roster = { asOf: undefined, entries: null }; }
+
+/** queries.residentList, from the store: the roll, admission grammar applied, each caller its own copies. */
+export async function residentList(q) {
+  return (await roster(q)).filter((e) => isResidentHandle(e.handle)).map((e) => ({ ...e }));
+}
+
+/** queries.residentPage, from the store. */
+export async function residentPage(q, opts = {}) {
+  return residentPageOf(await residentList(q), opts);
+}
+
+/** The index meta the town card reads, from the store's own town_meta. */
+async function storeMeta(q) {
+  return Object.fromEntries((await q.query("SELECT key, value FROM town_meta")).rows.map((r) => [r.key, r.value]));
+}
+
+/** queries.townSummary, from the store: its own meta, never a caller's. */
+export async function townSummary(q) {
+  const all = (await roster(q)).filter((e) => e.is_office).map((e) => e.handle).sort();
+  return townSummaryOf(await storeMeta(q), all, (await residentList(q)).length);
+}
+
+/** A resident's stored card, parsed, or null. */
+async function card(q, handle) {
+  const row = (await q.query("SELECT json FROM town_residents WHERE handle = $1", [handle])).rows[0];
+  return row ? JSON.parse(row.json) : null;
+}
+
+/** The freshness context for a row the STORE answered: dated by the store's head (home's rule). */
+async function storeFresh(q, handle, fresh) {
+  return freshnessFor(handle, { ...fresh, asOf: await townIndexAsOf(q) });
+}
+
+/** queries.resident, from the store: the composed address card. */
+export async function resident(q, handle, fresh = null) {
+  const d = await card(q, handle);
+  if (!d) return null;
+  const ctx = await storeFresh(q, handle, fresh);
+  const pages = {};
+  for (const box of ["inbox", "outbox"]) pages[box] = await mailPage(q, handle, box, { limit: CARD_MAIL });
+  return residentOf(d, pages, handle, ctx);
+}
+
+/** queries.windowRead, from the store. */
+export async function windowRead(q, handle, fresh = null) {
+  const d = await card(q, handle);
+  if (!d) return null;
+  return windowReadOf(d.window_state ?? null, handle, await storeFresh(q, handle, fresh));
+}
+
+/** queries.psaFold, from the store. */
+export async function psaFold(q, opts = {}) {
+  const row = (await q.query("SELECT json FROM town_bulletin WHERE slug = $1", [PSA_SLUG])).rows[0];
+  return psaFoldOf(row?.json ?? null, opts);
+}
+
+/** house-bundle § residentSegments, from the store: one resident's own segments, at the house read's bounds. */
+export async function residentSegments(q, handle, fresh) {
+  const { residentSegmentsOf, DOORSTEP_INBOX: HOUSE_INBOX } = await import("./house-bundle.mjs");
+  const one = (sql, params) => count(q, sql, params);
+  return residentSegmentsOf({
+    mail: await mailList(q, handle, "inbox", { limit: HOUSE_INBOX }),
+    awaiting: await mailAwaiting(q, handle, { offset: 0 }),
+    stamps: await stampsDetail(q, handle),
+    window: await windowRead(q, handle, fresh),
+    pendingOutbox: await outboxSettled(q, handle),
+    counts: {
+      received: await one("SELECT COUNT(*) AS n FROM town_ledger WHERE kind = 'delivery' AND to_h = $1", [handle]),
+      sent: await one("SELECT COUNT(*) AS n FROM town_ledger WHERE kind = 'delivery' AND from_h = $1", [handle]),
+    },
+  }, handle);
+}
+
+/** Is there a resident row for this handle? (house-bundle's ashore test) */
+export async function hasResident(q, handle) {
+  return (await q.query("SELECT 1 FROM town_residents WHERE handle = $1", [handle])).rows.length > 0;
+}
+
+/** A resident's last_active from their card, or null (house-bundle § lastActiveOf). */
+export async function lastActive(q, handle) {
+  try { return (await card(q, handle))?.last_active ?? null; } catch { return null; }
+}
+
+/** unread-store § deliveredTo, from the store: the resident's deliveries, newest first. */
+export async function deliveredTo(q, handle) {
+  return (await q.query(`SELECT d.id, d.from_h AS "from", d.date, l.delivered_at
+       FROM town_ledger d LEFT JOIN town_letters l ON l.id = d.id
+      WHERE d.kind = 'delivery' AND d.to_h = $1
+      ORDER BY d.seq DESC`, [handle])).rows;
+}
+
+/**
+ * queries.doorstep, from the store: every segment read by its store twin and
+ * composed by the same doorstepOf. The bundle's `as_of` is the STORE's head,
+ * whatever the caller passes: the segments came from this index.
+ */
+export async function doorstep(q, handle, _asOf, opts = {}) {
+  const { nowMs = Date.now(), conversationsOffset = 0, fresh = null, slim = false } = opts;
+  if (!(await hasResident(q, handle))) return null;
+  const asOf = await townIndexAsOf(q);
+  const offset = Math.max(Number(conversationsOffset) || 0, 0);
+  const one = (sql, params = []) => count(q, sql, params);
+  const parts = {
+    arrivals: (await roster(q)).map((e) => ({ handle: e.handle, joined: e.joined, is_office: e.is_office })),
+    awaiting: await mailAwaiting(q, handle, { offset }),
+    mail: await mailList(q, handle, "inbox", { limit: slim ? DOORSTEP_SIZES.inboxSlim : DOORSTEP_SIZES.inbox }),
+    stamps: await stampsDetail(q, handle),
+    bulletin: await bulletinTeaser(q, { limit: DOORSTEP_SIZES.bulletin }),
+    pulse: await metricsMail(q, { days: DOORSTEP_SIZES.pulseDays }),
+    window: await windowRead(q, handle, fresh),
+    psa: await psaFold(q, { now: nowMs }),
+    pendingOutbox: await outboxSettled(q, handle),
+    counts: {
+      received: await one("SELECT COUNT(*) AS n FROM town_ledger WHERE kind = 'delivery' AND to_h = $1", [handle]),
+      sent: await one("SELECT COUNT(*) AS n FROM town_ledger WHERE kind = 'delivery' AND from_h = $1", [handle]),
+    },
+    town: {
+      residents: await one("SELECT COUNT(*) AS n FROM town_residents"),
+      deliveries: await one("SELECT COUNT(*) AS n FROM town_ledger WHERE kind = 'delivery'"),
+      lastDelivery: (await q.query(`SELECT MAX(date COLLATE "C") AS d FROM town_ledger WHERE kind = 'delivery'`)).rows[0]?.d ?? null,
+    },
+  };
+  return doorstepOf(parts, handle, asOf, opts);
 }
 
 /** queries.letterList, from the store: the filtered list, newest first, paged. */
