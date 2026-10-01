@@ -3458,8 +3458,13 @@ async function journalWithdraw({ by, slug, household }, { crossing = currentCros
     // stranding check both read the live layer (runbook §4 B1).
     const live = await guardedLiveMarks(null, { household });
     const wasPublished = canon.ids.has(id);
-    if (!live.some((m) => m.id === id) && !wasPublished)
+    if (!live.some((m) => m.id === id) && !wasPublished) {
+      // A retired mark is named as one (POS-241 phase 1), not as a mark that never was.
+      const { markStandingStatus, withdrawRetiredRefusal } = await import("./world2-claims.mjs");
+      const retired = withdrawRetiredRefusal(id, await markStandingStatus({ slug: id }).catch(() => null));
+      if (retired) throw bounce(retired.code, retired.defect, retired.hint);
       throw bounce(404, `no mark "${id}" in your world`, "ids are <by>/<slug> — you can withdraw your drafts and your published marks; check world_my_marks");
+    }
 
     // The store's answer to `holdsChildren`: a withdrawal may not strand what
     // stands on it. Canon's children count too — a published description of
