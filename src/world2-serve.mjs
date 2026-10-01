@@ -100,6 +100,7 @@ import { backedRow } from "./world-stake.mjs";
 // rather than restated; see § THE SETTLEMENTS TWIN below.
 import { settlementsFrom } from "./settlements.mjs";
 import { CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
+import { myMarksRefused } from "./claim-effects.mjs";
 import { actorRoster } from "./human-actor.mjs";
 import { stopDepartures } from "./world-movement.mjs";
 // The class every reader IS — 1.0's own constant, so the two apexes name the
@@ -207,7 +208,7 @@ export async function world2MyDrafts(key) {
  * `tree_only`; see that module's header for why each is absent rather than
  * approximated.
  */
-export async function world2MyMarks(key, { offset = 0, p: injected = null } = {}) {
+export async function world2MyMarks(key, { offset = 0, p: injected = null, refusedReader = myMarksRefused } = {}) {
   const p = injected ?? await pool();
   const household = await householdKeyForKey(p, key);
 
@@ -282,6 +283,9 @@ export async function world2MyMarks(key, { offset = 0, p: injected = null } = {}
 
   return {
     ...body,
+    // 1.0's own `refused`, from the same one derivation (claim-effects.mjs §
+    // myMarksRefused), handed this door's roster as 1.0 is handed its own.
+    refused: await refusedReader(residents, { key }),
     // NAMED, NOT SILENT — and `backed` says which absence it is, because a
     // refusal and an empty ledger are different facts.
     ...(stakeRows == null ? { backed_unavailable:

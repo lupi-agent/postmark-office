@@ -92,6 +92,7 @@ export const WORLD_CLONE = process.env.WORLD_CLONE
 // always read `currentCrossing` from `world.mjs` still does.
 export { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs";
 import { CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
+import { myMarksRefused } from "./claim-effects.mjs"; // POS-241 part 5: my-marks hears what the candle refused
 
 // ── engine + world cache ─────────────────────────────────────────────────────
 let _mods = null;         // { verbs, build }
@@ -2568,6 +2569,12 @@ export async function worldMyMarks(key = null, { offset = 0 } = {}) {
     docket: k.page,
     published: p.page,
     backed: b.page,
+    // WHAT THE CANDLE REFUSED (POS-241 part 5): your own claims refused in the
+    // last two crossings, each with its window and the check that refused it.
+    // Before this a refused amend simply left the docket and the page fell
+    // silent about it. claim-effects.mjs § myMarksRefused is the one derivation
+    // (the doorstep's `outcomes`, kept to yours), and the twin calls it too.
+    refused: await myMarksRefused(stake.residents, { key }),
     // THE TWO LABELS, on the page rather than in a doc nobody reads beside it.
     // The walk's sentence was "either the town leaks, or the word 'draft' means
     // something I was not told" — a resident who reads these two lines cannot

@@ -41,7 +41,10 @@
 // lines up). Naming one and printing the other is the R4 finding.
 
 import { currentCrossing } from "./crossings.mjs";
-import { causeOf } from "./mark-receipt.mjs";
+import { causeOf, refusalCheckOf } from "./mark-receipt.mjs";
+
+/** How many ferry crossings back the doorstep's `outcomes` and my-marks' `refused` look. */
+export const RULINGS_SINCE_CROSSINGS = 2;
 
 /**
  * The events a set of `claims` rows implies for one resident, in cursor order.
@@ -230,7 +233,7 @@ export async function readClaimEffects({ key, handles = [], sinceCrossing, nowCr
  * laid over ground you hold", and one question must not have two derivations
  * that disagree (#1044's lesson, and `stances_awaiting`'s two counts).
  */
-export async function doorstepRulings(handle, { key = null, sinceCrossings = 2, repo = null, nowMs = Date.now() } = {}) {
+export async function doorstepRulings(handle, { key = null, sinceCrossings = RULINGS_SINCE_CROSSINGS, repo = null, nowMs = Date.now() } = {}) {
   // `nowMs` is the INSTANT (POS-168); `now` below is the crossing NUMBER that
   // instant falls in. The doorstep hands one instant to every clock read on the
   // page so the whole page names one boat; a caller that passes nothing reads
@@ -242,7 +245,7 @@ export async function doorstepRulings(handle, { key = null, sinceCrossings = 2, 
   // The floor stays at 0 — `Math.max(0, …)` below bounds the cursor anyway, and
   // a zero-width window is a lawful question with an honest empty answer.
   const asked = Number(sinceCrossings);
-  const back = Number.isFinite(asked) && asked >= 0 ? Math.floor(asked) : 2;
+  const back = Number.isFinite(asked) && asked >= 0 ? Math.floor(asked) : RULINGS_SINCE_CROSSINGS;
   const since = Math.max(0, now - back);
   const handles = handle ? [handle] : [...(key?.handles ?? [])];
 
@@ -289,6 +292,48 @@ export async function doorstepRulings(handle, { key = null, sinceCrossings = 2, 
       read_the_rest: 'world { since: <crossing> } is the whole backlog; world { mark: "<by>/<slug>" } is one mark\'s receipt',
     }),
     events,
+  };
+}
+
+// ── MY-MARKS' `refused` (POS-241 part 5) ──────────────────────────────────
+//
+// Keemin, 2026-09-26: "does the office tell you that the second amend failed?
+// or was it silent?" SILENT on my-marks: the door answers every amend 'ok' at
+// write time, the clearing refuses it hours later, and the portfolio lists only
+// what is pending, so a refused claim simply vanished from it. The doorstep's
+// `outcomes` already carried the refusal; the portfolio did not.
+//
+// ONE DERIVATION: the same `readClaimEffects` the doorstep reads, over the same
+// two crossings, kept to `yours` (a portfolio is what the household authored,
+// not what was laid on its ground). Both my-marks doors call this one function,
+// so 1.0 and its twin cannot answer the question two ways.
+
+/** The `claim-refused` events that are the household's own, as my-marks rows. Pure. */
+export function refusedRowsFrom(events = []) {
+  return events
+    .filter((e) => e.kind === "claim-refused" && e.yours)
+    .map((e) => {
+      const check = refusalCheckOf(e.cause_row);
+      return {
+        mark: e.mark, window: e.window, at: e.at, cause: e.cause, refusal_check: check,
+        says: `refused at window ${e.window ?? "?"}: ${check ?? "(no check recorded)"}`,
+      };
+    });
+}
+
+/**
+ * The household's own claims refused in the last two crossings. `readable:
+ * false` is carried as `unavailable`, never as an empty list: "nothing was
+ * refused" and "the docket could not be read" are different sentences.
+ */
+export async function myMarksRefused(handles = [], { key = null, nowMs = Date.now() } = {}) {
+  const now = currentCrossing(nowMs);
+  const since = Math.max(0, now - RULINGS_SINCE_CROSSINGS);
+  const effects = await readClaimEffects({ key, handles: [...handles], sinceCrossing: since, nowCrossing: now });
+  const rows = refusedRowsFrom(effects.events ?? []);
+  return {
+    since_crossing: since, through_crossing: now, count: rows.length, rows,
+    ...(effects.readable === false ? { unavailable: effects.reason ?? "the docket store could not be read — that is not the same as nothing refused" } : {}),
   };
 }
 
