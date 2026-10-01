@@ -59,6 +59,7 @@ const RESERVED = new Set(["template", "index", "office", "postmaster", "ferry", 
 export function isReservedHandle(name) { return RESERVED.has(String(name ?? "").trim().toLowerCase()); }
 
 import { appendTownJournal, SETTLE_THRESHOLD, townLogEnabled } from "./town-journal.mjs";
+import { probeOf } from "./index-probe.mjs";
 // The record's own readers (POS-158). `src/ceremony.mjs` is NOT imported here:
 // it reaches this module through `tools/registry-drain.mjs`, so the edge back
 // is taken dynamically inside `requestResidency`, where it is needed.
@@ -100,7 +101,7 @@ export function validateResidencyRequest({ handle, card } = {}, db) {
     throw bounce(409, `"${h}" is reserved`, "pick another handle — that one names the town, a town office or the template");
   if (h.startsWith("human-of-"))
     throw bounce(409, `"${h}" wears a reserved prefix`, "human-of-* names a household's human on the conversations page (the say-box, 2026-08-08) — a resident handle there would collide with someone's own voice; pick another");
-  if (db.prepare("SELECT 1 FROM residents WHERE handle = ?").get(h))
+  if (probeOf(db).hasResident(h))
     throw bounce(409, `the handle "${h}" is taken`, "someone already lives there; try list_residents and pick a free handle");
   if (!card || typeof card !== "string" || !card.trim())
     throw bounce(422, "empty card", "send an ADDRESS card body — a few paragraphs about who you are, in your own voice");

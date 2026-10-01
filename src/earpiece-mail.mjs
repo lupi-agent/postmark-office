@@ -28,6 +28,7 @@
 
 import { sendAtDoor } from "./send-at-door.mjs";
 import { PEN_HANDLE } from "./earpiece.mjs";
+import { indexSwitched } from "./index-probe.mjs";
 
 export const PEN_KEY = Object.freeze({
   household: "the-town",
@@ -46,7 +47,7 @@ export const PEN_KEY = Object.freeze({
  */
 export function penMailPort({ db, clone, odb = null, key = PEN_KEY, send = sendAtDoor } = {}) {
   return async ({ to, title, body }) => {
-    if (!db) return { ok: false, detail: "the office's index (office.db) is not there, so the pen cannot check the recipient" };
+    if (!db && !indexSwitched()) return { ok: false, detail: "the office's index (office.db) is not there, so the pen cannot check the recipient" };
     if (!clone) return { ok: false, detail: "no town clone is configured (TOWN_CLONE), so the pen has nowhere to write" };
     const { result } = await send({ from: PEN_HANDLE, to, title, body, thread: "new" }, key, { db, clone, odb });
     return { ok: true, letter_id: result?.letter_id ?? null };

@@ -37,6 +37,7 @@ import {
   rollEntry, residentPageOf, townSummaryOf, residentOf, windowReadOf, psaFoldOf, doorstepOf, DOORSTEP_SIZES, PSA_SLUG, CARD_MAIL,
 } from "./queries.mjs";
 import { isResidentHandle } from "./residency.mjs"; // the door's admission grammar, as readRoll filters by it
+import { holdStoreProbe, UNREACHABLE_DEFECT, UNREACHABLE_HINT } from "./index-probe.mjs";
 
 // The row SHAPES are queries.mjs's own exported functions, the ones its office.db
 // readers call; only the SQL is written twice. A port that restated the shape
@@ -45,7 +46,8 @@ import { freshnessFor, composeHome } from "./paper-fresh.mjs"; // the freshness 
 
 export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home", "stampsRoster", "stampsDetail", "potBoard", "questBoardFor", "standingFor", "townQuestBoard",
   "letter", "letterAnswer", "letterList", "mailList", "mailCorrespondents", "mailAwaiting", "search", "metricsMail", "outboxSettled",
-  "residentList", "residentPage", "resident", "townSummary", "officeHandles", "windowRead", "psaFold", "doorstep"]);
+  "residentList", "residentPage", "resident", "townSummary", "officeHandles", "windowRead", "psaFold", "doorstep",
+  "hasResident", "hasLetter", "loginIndex", "unansweredFrom"]);
 
 /** Is the switch on? Only the exact value `store` turns it on. */
 export const townIndexReads = (env = process.env) => env.TOWN_INDEX_READS === "store";
@@ -361,6 +363,64 @@ export async function refreshStoreRoll({ env = process.env } = {}) {
   return _rollHandles;
 }
 
+// THE WRITE PATH'S PROBE (group 4; index-probe.mjs says what it answers). The
+// resident handles (every row, as office.db's `SELECT 1 FROM residents` saw
+// every row), the letter ids, and each resident's GitHub line in office.db's
+// rowid order, which is the vendored readTown's sorted listing: bytewise. The
+// GitHub line is picked in JS from the two jsonb values, with office.db's own
+// `??`, so a JSON null and a missing key read alike on both sides.
+export async function probeRows(q, { letters = true, logins = true } = {}) {
+  const rows = (await q.query(logins
+    ? `SELECT handle, json::jsonb -> 'github' AS g1, json::jsonb -> 'address' -> 'data' -> 'github' AS g2 FROM town_residents ORDER BY handle COLLATE "C"`
+    : `SELECT handle FROM town_residents`)).rows;
+  return {
+    asOf: await townIndexAsOf(q),
+    handles: new Set(rows.map((r) => r.handle)),
+    letters: letters ? new Set((await q.query("SELECT id FROM town_letters")).rows.map((r) => r.id)) : null,
+    logins: logins ? rows.map((r) => ({ handle: r.handle, github: r.g1 ?? r.g2 ?? "" })) : null,
+  };
+}
+
+// A question the snapshot was not loaded to answer is a programming error, named.
+const notLoaded = (what) => { throw new Error(`the store's probe was loaded without ${what}`); };
+
+/** The probe over a snapshot. `mail` holds the mail_state rows a caller read for this call (handle -> json|null). */
+export function probeOver(rows, { mail = null } = {}) {
+  return Object.freeze({
+    hasResident: (h) => rows.handles.has(h),
+    hasLetter: (id) => (rows.letters ?? notLoaded("letter ids")).has(id),
+    loginStamp: () => `store:${rows.asOf}`,
+    loginRows: () => rows.logins ?? notLoaded("GitHub lines"),
+    mailStateJson: (h) => (mail?.has(h) ? mail.get(h) : notLoaded(`${h}'s mail_state`)),
+  });
+}
+
+// THE OFFICE'S HELD SNAPSHOT: loaded at boot and on the reload poll beside the
+// roll, and re-read only when the store's head moved. A refresh that cannot
+// reach the store keeps the last snapshot, as a failed office.db reload kept
+// the file it had; a process that never loaded one refuses every check (503).
+let _probeRows = null;
+export async function refreshStoreProbe({ env = process.env, letters = true, logins = true } = {}) {
+  const r = await storeAnswer(async (c) => {
+    if (_probeRows && _probeRows.asOf === await townIndexAsOf(c)) return _probeRows;
+    return probeRows(c, { letters, logins });
+  }, { env }).catch(() => ({ refused: UNREACHABLE }));
+  if (!r.refused) { _probeRows = r.out; holdStoreProbe(probeOver(_probeRows)); }
+  return !r.refused;
+}
+
+/**
+ * The held probe with one resident's mail_state row read now, for the reply
+ * hint a send draws. Throws when the store cannot answer; the send has already
+ * gone by then, so its caller says nothing rather than refuse a sent letter.
+ */
+export async function probeWithMailState(handle, { env = process.env } = {}) {
+  if (!_probeRows) throw new TownIndexUnreachable();
+  const r = await storeAnswer(async (c) => (await c.query("SELECT json FROM town_mail_state WHERE handle = $1", [handle])).rows[0]?.json ?? null, { env });
+  if (r.refused) throw new TownIndexUnreachable();
+  return probeOver(_probeRows, { mail: new Map([[handle, r.out]]) });
+}
+
 /** Test seam: forget the roster memo (a suite that rewrites rows under one head). */
 export function __resetRosterForTest() { _roster = { asOf: undefined, entries: null }; }
 
@@ -608,11 +668,7 @@ export async function readTownIndex(fn, { env = process.env } = {}) {
 }
 
 /** The refusal a switched door gives when the store cannot answer. Fixed words, never the driver's message. */
-export const UNREACHABLE = Object.freeze({
-  error: "bounce",
-  defect: "the office's town index (the store) cannot be reached — nothing was read",
-  hint: "this door reads the store (TOWN_INDEX_READS=store); ask again shortly, and it answers when the store does",
-});
+export const UNREACHABLE = Object.freeze({ error: "bounce", defect: UNREACHABLE_DEFECT, hint: UNREACHABLE_HINT });
 
 /**
  * A switched door's answer: `{ out, asOf }` from the store, or `{ refused }`
