@@ -223,7 +223,44 @@ test("the twin's answer is field-for-field 1.0's own, minus the named tree-only 
   assert.deepEqual(mine, oracle("wright/the-trueing-house"));
   assert.ok(tree_only["receipt.crossing · receipt.settlement_sha · receipt.published_at"],
     "an absent field that says nothing is an absent field nobody can act on");
-  assert.ok(tree_only.stands);
+  assert.ok(!("stands" in tree_only), "stands is wired (POS-142 S3 item 5) and no longer declared tree-only");
+});
+
+// ── WHERE THE THING STANDS: 1.0's own block on the twin (POS-142 S3 item 5) ──
+//
+// `world.mjs § thingStandsBlock` already reads the store for both halves, so
+// the twin calls it with the world it assembled from rows and the engine's
+// answer. The oracle is the SAME function over the SAME world assembled the
+// fold's way: a divergence is about what the twin handed it, never a second
+// composition. A holding act is planted through `useGuardReader`
+// (stands-store-fixture.mjs), so the block is read off `acts` with no Postgres.
+
+test("A HELD THING: the twin carries `stands`, and it is 1.0's own block over the same world", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const { holdingAct, withActs } = await import("./stands-store-fixture.mjs");
+  const { thingStandsBlock } = await import("../src/world.mjs");
+  const id = "wright/the-trueing-house";
+  const HELD = [holdingAct({ id: 101, at: "2026-09-07T21:53:00Z", actor: "wright", action: "take", thing: id, holder: "wright" })];
+  let body, expected, reads = 0;
+  await withActs(HELD, async (c) => {
+    ({ body } = await investigate(`mark=${id}`, fixturePool()));
+    reads = c.reads;
+    const world = ENGINE.build.assembleWorld({ worldState: apex.worldStateFromMarkRows(ROWS), skeleton: apex.skeletonFromLawRows(SKELETON_ROWS ?? []) });
+    expected = await thingStandsBlock(id, world, oracle(id));
+  });
+  assert.ok(body.stands, "a holding edge stands in `acts` and the twin carried no block");
+  assert.equal(body.stands.source, "holder");
+  assert.equal(body.stands.holder, "wright");
+  assert.deepEqual(body.stands, expected);
+  assert.ok(reads >= 1, "the block was read off the guard reader, i.e. the store");
+});
+
+test("A THING NEVER HELD: no `stands` on the twin, absent rather than present-and-empty, as on 1.0", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const { withActs } = await import("./stands-store-fixture.mjs");
+  let body;
+  await withActs([], async () => { ({ body } = await investigate("mark=wright/the-trueing-house", fixturePool())); });
+  assert.ok(!("stands" in body));
 });
 
 test("`depth` reaches the engine — the door does not silently answer depth 1 to every ask", async (t) => {

@@ -2184,7 +2184,9 @@ export async function worldFind(args = {}, key = null, { words } = {}) {
  * Never throws: a store that will not open yields no block, exactly as an
  * unreadable receipt is absent rather than empty.
  */
-async function thingStandsBlock(id, w, r) {
+// Exported for `/world2/investigate` (POS-142): the twin hands it the world it
+// assembled from rows and the engine's answer, and the block is this one.
+export async function thingStandsBlock(id, w, r) {
   try {
     // ⚑ IT READS THE STORE (POS-162, Everything Reads the Store). Both halves —
     // who holds it and where it was set down — come from `acts`, in ONE read-only
