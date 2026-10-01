@@ -38,12 +38,13 @@ import { bindUnderLock, BIND_REFUSALS } from "../src/join-bind.mjs";
 import { penTransaction } from "../src/write.mjs";
 import { rowsFromRegistry } from "../src/registry-rows.mjs";
 
-// 43943 — CHOSEN, NOT GUESSED. The first pick, 43861, was already
-// `test/hot-reload.test.mjs`'s and `test/read-worker.test.mjs`'s, and the suite
-// runs eight files at a time: the collision showed up in one full run and not
-// the next, which is exactly how a port clash presents. Checked against every
-// port literal in `test/` before this line was written.
-const GH_PORT = 43943;
+// THE PORT IS ASKED FOR, NEVER CHOSEN (world-apex.test.mjs § the port). This
+// was 43943, "checked against every port literal in test/" — and still a lock
+// on a door the whole box shares: the file lives in all five pool trees, and on
+// 2026-10-01 another lane running it at the same moment took the port, so this
+// file's before hook failed and all twenty tests went red together. The fake
+// GitHub listens on 0, and the port the OS handed back is what the pen dials.
+let GH_PORT = null;
 const ENV_ON = { WORLD2_PG: "1", WORLD2_PG_URL: "postgres://stub/none" };
 
 // ── the fixture town's registry, as the record holds it ─────────────────────
@@ -76,8 +77,12 @@ let captured = { trees: [], commits: [], refs: [], pulls: [] };
 let openPulls = [];
 let server;
 
+// `connection: close` on every answer: a pooled keep-alive socket the server
+// closes between two tests is reused by the next fetch and dies mid-request
+// (ECONNRESET, "fetch failed" — the gangway's red, 2026-10-01). One socket per
+// call, and there is nothing idle to race.
 const json = (res, code, body) => {
-  res.writeHead(code, { "content-type": "application/json" });
+  res.writeHead(code, { "content-type": "application/json", connection: "close" });
   res.end(JSON.stringify(body));
 };
 
@@ -102,7 +107,8 @@ before(async () => {
       return json(res, 418, { message: `the pen asked GitHub for ${req.method} ${p}, which the record now answers` });
     });
   });
-  await new Promise((ok) => server.listen(GH_PORT, "127.0.0.1", ok));
+  await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+  GH_PORT = server.address().port;
 });
 after(async () => { await new Promise((ok) => server.close(ok)); });
 
