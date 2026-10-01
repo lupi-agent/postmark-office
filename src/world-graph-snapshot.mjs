@@ -21,6 +21,7 @@
 // is null and each reader answers exactly as it did before: from world.db
 // where there is one. `worldGraphStanding()` says which, with the key.
 
+import { readFileSync, statSync } from "node:fs";
 import { graphFromTables, EDGE_TYPES } from "./world-store.mjs";
 
 /** The newest snapshot's key. Newest by settlement, then by build. */
@@ -54,6 +55,56 @@ export async function graphTablesAt(query, { tag_sha, office_sha }) {
 
 const state = { snap: null, key: null, inflight: null, lastError: null, timer: null };
 
+/** One assignment: a reader sees the old graph or the new one. */
+function publish(tables, pin, key, source) {
+  const built = graphFromTables(tables, { source });
+  // `tables` rides along for the readers that ask the graph questions in
+  // SQL's shape (world-graph-db.mjs § graphDb): one set of rows, two views.
+  state.snap = { ...built, tables, pin };
+  state.key = key;
+  state.lastError = null;
+}
+
+// ── THE TEST FIXTURE SEAM (POS-270 lane W 3a, Keemin-ruled 2026-09-30) ──────
+//
+// A test's world comes from rows, never from a world.db: in process it
+// publishes them (`publishWorldGraphForTest`), and an office it spawns reads
+// them from WORLD_GRAPH_ROWS (a JSON file of world.db's tables by name, which
+// `world-hydrate.mjs --rows-out` writes). Both answer only under `node --test`
+// (NODE_TEST_CONTEXT): an office pointed at a rows file anywhere else refuses
+// it by name and stands on the store, so a fixture can never become prod's world.
+const inNodeTest = () => Boolean(process.env.NODE_TEST_CONTEXT);
+const testPin = (tables) => ({
+  tag_sha: tables.meta?.find((m) => m.key === "as_of_world")?.value ?? "test-rows",
+  office_sha: "test-rows",
+  settlement: null,
+});
+
+/** Tests only: publish these rows as the world graph snapshot. */
+export function publishWorldGraphForTest(tables, { label = "test rows" } = {}) {
+  if (!inNodeTest()) throw new Error("publishWorldGraphForTest is a test seam and answers only under node --test");
+  const t = { ...tables, edgeTypes: tables.edgeTypes ?? EDGE_TYPES.map(([type, note]) => ({ type, note })) };
+  publish(t, testPin(t), `test:${label}:${Date.now()}:${Math.random()}`, label);
+}
+
+/** WORLD_GRAPH_ROWS, read once per change of the file. True when the variable is set. */
+function loadRowsFixture() {
+  const path = process.env.WORLD_GRAPH_ROWS;
+  if (!path) return false;
+  if (!inNodeTest()) { state.lastError = `WORLD_GRAPH_ROWS is a test fixture and is refused outside node --test (${path})`; return true; }
+  try {
+    const st = statSync(path);
+    const key = `rows:${path}:${st.mtimeMs}:${st.size}`;
+    if (state.snap && state.key === key) return true;
+    const tables = JSON.parse(readFileSync(path, "utf8"));
+    const t = { ...tables, edgeTypes: tables.edgeTypes ?? EDGE_TYPES.map(([type, note]) => ({ type, note })) };
+    publish(t, testPin(t), key, `WORLD_GRAPH_ROWS ${path}`);
+  } catch (e) { state.lastError = `WORLD_GRAPH_ROWS would not load: ${String(e?.message ?? e).slice(0, 160)}`; }
+  return true;
+}
+// At import, synchronously, so an office spawned on a fixture answers its first read from it.
+loadRowsFixture();
+
 /** The published snapshot (`loadWorldGraph`'s shape plus `pin`), or null. Synchronous. */
 export const worldGraphSnapshot = () => state.snap;
 
@@ -79,6 +130,7 @@ async function defaultQuery(sql, params) {
  * Resolves `{ changed, standing }`; never throws into a caller.
  */
 export function reloadWorldGraph({ query = defaultQuery, force = false } = {}) {
+  if (query === defaultQuery && loadRowsFixture()) return Promise.resolve({ changed: false, standing: worldGraphStanding() });
   if (state.inflight) return state.inflight;
   state.inflight = (async () => {
     try {
@@ -87,13 +139,8 @@ export function reloadWorldGraph({ query = defaultQuery, force = false } = {}) {
       const key = `${pin.tag_sha}/${pin.office_sha}`;
       if (!force && state.snap && key === state.key) { state.lastError = null; return { changed: false, standing: worldGraphStanding() }; }
       const tables = await graphTablesAt(query, pin);
-      const built = graphFromTables(tables, { source: `world_graphs@S${pin.settlement ?? "?"}:${pin.tag_sha}` });
-      // THE PUBLISH. One assignment: a reader sees the old graph or the new one.
-      // `tables` rides along for the readers that ask the graph questions in
-      // SQL's shape (world-graph-db.mjs § graphDb): one set of rows, two views.
-      state.snap = { ...built, tables, pin: { tag_sha: pin.tag_sha, office_sha: pin.office_sha, settlement: pin.settlement } };
-      state.key = key;
-      state.lastError = null;
+      publish(tables, { tag_sha: pin.tag_sha, office_sha: pin.office_sha, settlement: pin.settlement }, key,
+        `world_graphs@S${pin.settlement ?? "?"}:${pin.tag_sha}`);
       return { changed: true, standing: worldGraphStanding() };
     } catch (e) {
       state.lastError = String(e?.message ?? e).slice(0, 160);

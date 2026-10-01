@@ -2,7 +2,7 @@
 // world-hydrate.mjs — build world.db from the world clone at a sha.
 //
 //   node src/world-hydrate.mjs [--world <path>] [--ref <ref|sha>|blessed] [--office <path>]
-//                              [--db <path>] [--no-db] [--to-store] [--no-lints] [--no-gexf] [--json]
+//                              [--db <path>] [--no-db] [--to-store] [--rows-out <path>] [--no-lints] [--no-gexf] [--json]
 //
 // THE OUTPUTS (POS-270, lane W item 1). The hydration builds its rows in memory
 // (src/world-graph-rows.mjs) and writes each output FROM them:
@@ -10,6 +10,9 @@
 //                writer (PGHOST/PGDATABASE/PGUSER=law_ingester/PGPASSWORD);
 //   the file     world.db, as before, for the readers that still open it,
 //                unless --no-db. It goes when the last of them has moved.
+//   --rows-out   the rows themselves as one JSON file (world.db's tables by name),
+//                the fixture a test hands an office as WORLD_GRAPH_ROWS
+//                (world-graph-snapshot.mjs § THE TEST FIXTURE SEAM).
 // Nothing reads world.db to fill the store: graph-ingest --db is the manual
 // path for a file that already exists.
 //
@@ -41,7 +44,7 @@
 //   over historical events never re-decides history when a mark moves.
 
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, rmSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, rmSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -62,6 +65,7 @@ const REF_ARG = argOf("--ref", null);
 const JSON_OUT = flag("--json");
 const WRITE_DB = !flag("--no-db");
 const TO_STORE = flag("--to-store");
+const ROWS_OUT = argOf("--rows-out", null);
 
 // `--ref blessed` (postmark#2934): the newest `settlement/S<n>` tag, peeled to
 // its commit — the same resolution the read tier's fold serves, so store and
@@ -1223,6 +1227,7 @@ if (empties.length) {
   // The file is still written, stamped FAILED, exactly as before: a reader
   // refuses it by name. The store is never given a failed snapshot.
   if (WRITE_DB) writeWorldDb(DB_PATH, graphTablesOf(T));
+  if (ROWS_OUT) writeFileSync(resolve(ROWS_OUT), JSON.stringify(graphTablesOf(T)));
   console.error(`\nGATE FAILED silent-empty-table — ${detail}`);
   console.error(`world.db is stamped FAILED and will not load; fix the input and rehydrate.`);
   process.exit(1);
@@ -1264,6 +1269,7 @@ putMeta.run("hydration_status", "OK");
 // ── THE OUTPUTS, each written from the rows ─────────────────────────────────
 const tables = graphTablesOf(T);
 if (WRITE_DB) writeWorldDb(DB_PATH, tables);
+if (ROWS_OUT) writeFileSync(resolve(ROWS_OUT), JSON.stringify(tables));
 let stored = null;
 if (TO_STORE) {
   const { graphSnapshotFromTables, writeGraphSnapshot } = await import("../world2/tools/graph-ingest.mjs");
