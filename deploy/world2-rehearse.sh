@@ -10,7 +10,11 @@
 #                   BEFORE the clearing — the falsifier's door
 #                   (world2/tools/rehearsal-falsifier-212.sql).
 #     --seed-registry   after the migrations, the household registry's one-time
-#                   fill — tools/registry-seed.mjs --apply, then
+#                   fill. ONLY FOR A STORE WITHOUT THE REGISTRY: the seed
+#                   REFUSES on tables that already hold rows, and every copy of
+#                   prod since the w40 ship does (households 136…), so a
+#                   rehearsal of a current copy runs WITHOUT this flag. It is
+#                   tools/registry-seed.mjs --apply, then
 #                   tools/registry-drain.mjs --check, which must exit 0 — from
 #                   the rehearsal's own town clone. This is the w40 INSTALL order
 #                   (POS-187: "019 -> seed -> --check green"), and the clearing
@@ -41,6 +45,25 @@
 # clone or a fetch.
 
 set -uo pipefail
+
+# ── THE SEED, AND THE WHOLE OF WHAT IT SAYS WHEN IT REFUSES ─────────────────
+# This was `pen … 2>&1 | sed -n '1p' || exit 1`, and line 1 is node's SQLite
+# ExperimentalWarning: on 2026-10-01 every refusal ("the registry tables are not
+# empty — households 136…") exited 1 showing only the warning. So the output is
+# kept whole, the whole of it is printed when the seed does not exit 0, and a
+# clean seed prints its first line that is not node's own warning. It uses the
+# caller's `pen`; a function so the test can source this file and hold it.
+seed_registry() { # <log path>
+  echo "   (--seed-registry fills an EMPTY registry and REFUSES on one that holds rows — every copy of prod since w40 does; rehearse that without --seed-registry)"
+  if ! pen tools/registry-seed.mjs --apply > "$1" 2>&1; then
+    echo "registry-seed --apply did not exit 0 — its whole output (also kept at $1):" >&2
+    cat "$1" >&2
+    return 1
+  fi
+  grep -v -E 'ExperimentalWarning|--trace-warnings' "$1" | sed -n '1p'
+}
+# Sourced by the test: define, do nothing.
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_ROOT="$(cd "$HERE/.." && pwd)"
 REHEARSAL_DIR="${REHEARSAL_DIR:-/srv/world2-lab/rehearsal}"
@@ -113,7 +136,7 @@ if [ "$SEED" = true ]; then
   pen() { ( cd "$T" && unset $(compgen -e | grep -E '^(PG|WORLD2_|DATABASE_URL)') ;
             TOWN_CLONE="$REHEARSAL_DIR/town" WORLD2_PG=1 WORLD2_PG_URL="$URL" node "$@" ); }
   say "== registry: seed --apply, then drain --check (the w40 INSTALL order)"
-  pen tools/registry-seed.mjs --apply 2>&1 | sed -n '1p' || exit 1
+  seed_registry "$REHEARSAL_DIR/seed-$(date -u +%Y%m%dT%H%M%SZ).log" || exit 1
   pen tools/registry-drain.mjs --check 2>&1 | tail -1
   [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "registry-drain --check did not exit 0 — the clearing is not run on a registry that disagrees with the town" >&2; exit 1; }
 fi
