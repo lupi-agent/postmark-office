@@ -4,7 +4,7 @@
 //   node world2/tools/rehearse.mjs --tree <office checkout at the train ref> \
 //        --db world2_rehearsal --password-file <runner.pw> \
 //        --town-repo <town checkout> [--world-repo <world checkout>] \
-//        [--arm <sql file>] [--no-clear] [--json <receipt.json>]
+//        [--arm <sql file>] [--no-clear] [--dry-dir <dir>] [--json <receipt.json>]
 //   (or --url postgres://rehearsal_runner:…@host:port/<db> in place of --db/--password-file)
 //
 // Against the copy `deploy/world2-rehearsal-copy.sh` makes, it
@@ -13,8 +13,11 @@
 //       migrations table — as the copy's owner, each with its result;
 //   (b) runs the NEXT window's clearing with the tree's own `clearing-job.mjs`,
 //       as `clearing_job`, its stamp-ingest first step as `law_ingester`;
-//   (c) prints ONE receipt: migrations applied, cleared / locked / refused with
-//       the refusal reasons, and the settlement's dry leg — see § THE DRY LEG.
+//   (c) crosses the window it just cleared: the tree's own settlement-auto.sh
+//       with SETTLEMENT_DRY=1, reading the copy — see § THE DRY LEG;
+//   (d) prints ONE receipt: migrations applied, cleared / locked / refused with
+//       the refusal reasons, and the crossing's own receipt — published, quiet
+//       or refused — with every write it withheld.
 //
 // ── WHY --tree AND NOT "THIS CHECKOUT" ──────────────────────────────────────
 // The runner and the code under test are different things. The runner is this
@@ -40,17 +43,35 @@
 // `current_user = 'clearing_job'` passes exactly as on prod and every grant and
 // row policy is the copy's (= prod's) own.
 //
-// ── THE DRY LEG ─────────────────────────────────────────────────────────────
-// Not run. `deploy/settlement-auto.sh` is one script from the registry refresh
-// to the push, and the parts that are the fold cannot be reached without it:
-// see `SETTLEMENT_COUPLING` below, which the receipt prints in full.
+// ── THE DRY LEG (POS-242 item 2, ruled 2026-10-01) ──────────────────────────
+// The crossing is not re-composed here: the TREE's `deploy/settlement-auto.sh`
+// runs whole, under SETTLEMENT_DRY=1, which withholds every write that leaves
+// the run and names each on its receipt (that script's § THE DRY LEG). This
+// replaces the coupling list the receipt used to print in its place: a second
+// copy of the crossing's order is exactly how the box's shadow drifted from it.
 //
-// EXIT: 0 every missing migration landed and the clearing ran · 1 a migration
-// failed or the clearing did not run (the receipt says which and why) · 2 refused.
+//   · the window: `await-clearing --rehearse`, the newest CLOSED window — the
+//     one (b) just cleared, since the clearing closes it ahead of its time;
+//   · the store: the copy, as `office_api` — the crossing's own read on the box
+//     is the office env's WORLD2_PG_URL, the office's pen. The copy script
+//     grants the runner that membership for this step;
+//   · prod's modes: SETTLEMENT_SOURCE=store and STATE_LOG_SOURCE=store, the
+//     box's env (read 2026-10-01);
+//   · its own clone and receipt under --dry-dir, an environment built from
+//     nothing (no TOWN_PUSH, no token, no inherited WORLD2_*);
+//   · a receipt that does not say `dry: true` is not a rehearsal and fails the run.
+//
+// Without --dry-dir, or on a tree whose script predates SETTLEMENT_DRY, the
+// receipt says the settlement was not rehearsed and why.
+//
+// EXIT: 0 every missing migration landed, the clearing ran, and the dry crossing
+// published or was quiet · 1 a migration failed, the clearing did not run, or
+// the dry crossing refused or could not run (the receipt says which and why) ·
+// 2 refused.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, writeFileSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, realpathSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as RUNNER_PROBES from "./migrations-landed.mjs";
 
@@ -110,17 +131,55 @@ export function clearingRefusal(output) {
   return { reason: constraint ?? msg, detail: msg.slice(0, 400) };
 }
 
-// ── THE COUPLING, WRITTEN DOWN (brief POS-242 part 2c) ──────────────────────
-// What stands between the clearing and a dry run of the fold, read from
-// deploy/settlement-auto.sh at the w40 train (11eddfc).
-export const SETTLEMENT_COUPLING = [
-  "ONE SCRIPT, NO DRY FLAG: settlement-auto.sh runs registry refresh -> docket -> photograph -> fold input -> write-down -> sweep -> harm gate -> push main (publish_main, unconditional after the gate) -> retire -> suite -> escalate; there is no switch that stops it before the push.",
-  "PUBLISH IS A GIT PUSH TO GITHUB: publish_main pushes the sweep clone's main to origin (postmark-town/postmark-world); the only way to switch it off from outside is to hand the script a sweep clone whose origin is a local bare repo — a redirect of the script's own clone, not a mode it has.",
-  "THE REGISTRY STEP COMMITS INTO THE SWEEP CLONE before the fold (WORLD/households.json), and the sweep refuses a dirty checkout, so the fold cannot run without that commit landing in some clone.",
-  "ESCALATE FILES GITHUB ISSUES: deploy/settlement-escalate.mjs reads a token from /srv/postmark-office/.git-credentials by default (SETTLEMENT_ESCALATE_CRED overrides) on a race or a red suite.",
-  "THE FOLD'S READ IS TIED TO A FRESH CLEAR: await-clearing.mjs waits for a window cleared at or after the crossing's start (or --by-hand / --rehearse), fold-input-cli.mjs reads the store at WORLD2_PG_URL, and store-writedown.mjs writes sketchbook refs into the sweep clone — all three separable, but only by re-composing the script's order by hand, which is a second copy of the crossing that would drift from the first.",
-  "THE SUITE AND THE HARM GATE ARE THE WORLD'S (tools/harm-gate.mjs, npm run test:candle in the sweep clone): a dry leg needs a world checkout with its own node_modules — a second install per rehearsal.",
-];
+// ── THE DRY LEG'S PARTS, HELD FROM OUTSIDE ─────────────────────────────────
+
+/** The dry crossing's environment, built from nothing. `url` is the runner's. */
+export function dryLegEnv({ tree, url, townRepo, worldRepo, dryDir, path = process.env.PATH, home = process.env.HOME ?? "/tmp" }) {
+  return {
+    PATH: path, HOME: home,
+    OFFICE_ROOT: tree,
+    TOWN_CLONE: townRepo,
+    WORLD_CLONE: worldRepo,
+    SETTLEMENT_CLONE: join(dryDir, "sweep"),
+    SETTLEMENT_REPORT: join(dryDir, "settlement-dry.json"),
+    SETTLEMENT_DRY: "1",
+    SETTLEMENT_SOURCE: "store",
+    STATE_LOG_SOURCE: "store",
+    WORLD2_PG: "1",
+    WORLD2_PG_URL: asPen(url, "office_api"),
+  };
+}
+
+/**
+ * Run the tree's crossing dry and read its receipt. Never throws: every way it
+ * cannot answer comes back as `{ ran: false, reason }` or `ok: false`.
+ */
+export function runDryLeg({ tree, env, spawn = spawnSync }) {
+  const script = join(tree, "deploy", "settlement-auto.sh");
+  if (!existsSync(script)) return { ran: false, ok: false, reason: "the tree carries no deploy/settlement-auto.sh" };
+  if (!readFileSync(script, "utf8").includes("SETTLEMENT_DRY")) {
+    return { ran: false, ok: false, reason: "the tree's settlement-auto.sh predates the dry leg (no SETTLEMENT_DRY)" };
+  }
+  // A receipt left by the last rehearsal must not be read as this one's.
+  rmSync(env.SETTLEMENT_REPORT, { force: true });
+  mkdirSync(dirname(env.SETTLEMENT_REPORT), { recursive: true });
+  const t0 = Date.now();
+  const r = spawn("sh", [script], { cwd: tree, env, encoding: "utf8", timeout: 3_600_000 });
+  let receipt = null;
+  try { receipt = JSON.parse(readFileSync(env.SETTLEMENT_REPORT, "utf8")); } catch { /* none written */ }
+  const tail = `${r.stderr ?? ""}`.trim().split("\n").filter(Boolean).slice(-6);
+  if (!receipt) return { ran: true, ok: false, exit: r.status, ms: Date.now() - t0, reason: "the crossing wrote no receipt", tail };
+  if (receipt.dry !== true) return { ran: true, ok: false, exit: r.status, ms: Date.now() - t0, reason: "the receipt does not say dry: true — this was not a rehearsal", tail };
+  return {
+    ran: true,
+    ok: r.status === 0 && (receipt.status === "published" || receipt.status === "quiet"),
+    exit: r.status, ms: Date.now() - t0, receipt_path: env.SETTLEMENT_REPORT,
+    status: receipt.status, detail: receipt.detail, withheld: receipt.withheld ?? [],
+    channels: receipt.channels ?? null, retired: receipt.retired ?? null,
+    harm: receipt.harm ?? null, suite: receipt.suite ?? null, tail,
+  };
+}
+
 
 // ── the CLI tail ────────────────────────────────────────────────────────────
 const isMain = process.argv[1]
@@ -129,7 +188,7 @@ const isMain = process.argv[1]
 if (isMain) {
   const arg = (n) => { const i = process.argv.indexOf(n); return i === -1 ? null : process.argv[i + 1]; };
   const has = (n) => process.argv.includes(n);
-  const usage = "usage: rehearse.mjs --tree <office checkout> (--db <name> --password-file <f> | --url <postgres url>) --town-repo <checkout> [--world-repo <checkout>] [--arm <sql>] [--no-clear] [--json <out>]";
+  const usage = "usage: rehearse.mjs --tree <office checkout> (--db <name> --password-file <f> | --url <postgres url>) --town-repo <checkout> [--world-repo <checkout>] [--arm <sql>] [--no-clear] [--dry-dir <dir>] [--json <out>]";
 
   const tree = arg("--tree");
   let url = arg("--url");
@@ -152,7 +211,7 @@ if (isMain) {
   };
 
   const receipt = { at: new Date().toISOString(), tree: null, db: dbName, runner: null, migrations: [], clearing: null,
-    settlement: { rehearsed: false, coupling: SETTLEMENT_COUPLING }, verdict: null };
+    settlement: { rehearsed: false, reason: "not reached" }, verdict: null };
   const lines = [];
   const say = (s) => { lines.push(s); console.log(s); };
   let exit = 0;
@@ -261,9 +320,32 @@ if (isMain) {
       }
     }
 
-    say("settlement dry leg: NOT REHEARSED — it does not separate from publish; the coupling:");
-    for (const c of SETTLEMENT_COUPLING) say(`  · ${c}`);
-    say(`published-or-would-refuse: not rehearsed (see coupling) · verdict: ${receipt.verdict}`);
+    // (c) the dry crossing, of the window (b) just cleared
+    if (receipt.verdict === "cleared" && !arg("--dry-dir")) {
+      receipt.settlement = { rehearsed: false, reason: "no --dry-dir was given" };
+      say("settlement: NOT REHEARSED — no --dry-dir was given");
+    } else if (receipt.verdict === "cleared") {
+      const { rows: [pen] } = await q("SELECT pg_has_role(current_user, 'office_api', 'MEMBER') AS ok");
+      if (!pen.ok) {
+        receipt.settlement = { rehearsed: false, reason: "this login holds no office_api membership — re-make the copy with a copy script that grants it" };
+        receipt.verdict = "settlement-did-not-run"; exit = 1;
+        say(`settlement: DID NOT RUN — ${receipt.settlement.reason}`);
+      } else {
+        const env = dryLegEnv({ tree, url, townRepo: arg("--town-repo"), worldRepo: arg("--world-repo"), dryDir: arg("--dry-dir"), path: baseEnv.PATH, home: baseEnv.HOME });
+        const d = runDryLeg({ tree, env });
+        receipt.settlement = { rehearsed: d.ran, ...d };
+        if (!d.ran || !d.ok) { receipt.verdict = d.ran && d.status ? `settlement-${d.status}` : "settlement-did-not-run"; exit = 1; }
+        else receipt.verdict = `settlement-${d.status}`;
+        say(`settlement (dry): ${d.status ?? "no receipt"}${d.reason ? ` — ${d.reason}` : ""}${d.detail ? ` — ${d.detail}` : ""} (exit ${d.exit}, ${d.ms} ms)`);
+        for (const w of d.withheld ?? []) say(`  withheld: ${w}`);
+        if (!d.ok) for (const l of d.tail ?? []) say(`  | ${l}`);
+        if (d.receipt_path) say(`  receipt: ${d.receipt_path}`);
+      }
+    } else {
+      receipt.settlement = { rehearsed: false, reason: `the clearing did not clear (${receipt.verdict})` };
+      say(`settlement: NOT REHEARSED — the clearing did not clear (${receipt.verdict})`);
+    }
+    say(`verdict: ${receipt.verdict}`);
   } finally {
     await client.end();
   }
