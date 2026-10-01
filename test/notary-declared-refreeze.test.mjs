@@ -251,8 +251,10 @@ test("END TO END · the 09-28 night replayed through runExport: certified, then 
     const ledger = JSON.parse(readFileSync(join(dir, "REFREEZES-CONSUMED.json"), "utf8"));
     assert.deepEqual(ledger.consumed.map((c) => [c.id, c.windows]).sort(), [[D025.id, [201]], [D220.id, [201]]].sort());
 
-    // spent: the same declarations do not excuse a later change of the same kind
-    const again = after.map((r) => (r.id === "7051" ? { ...r, payload: { via: "boat" } } : r)).concat([{ ...act(7054, null) }].map(({ journal_seq, ...r }) => r));
+    // spent: the same declarations do not excuse a later change of the SAME kind —
+    // one more backfilled act, which an unspent rows-added would excuse
+    const again = [...after, ...[act(7054, null)].map(({ journal_seq, ...r }) => r)];
+    assert.equal(verifyDeclared(DERIVED_0928, file(again), [D220]).ok, true, "control: unspent, rows-added would excuse it");
     await assert.rejects(runExport(store({ acts: again }), { target: dir, now: NOW, manifestText: manifest }),
       (e) => e instanceof Red, "consumed ids excuse nothing again");
     assert.equal(readFileSync(join(dir, "archives/acts/201.jsonl"), "utf8"), DERIVED_0928, "and the archive is untouched");
