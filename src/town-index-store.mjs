@@ -423,6 +423,8 @@ export async function probeWithMailState(handle, { env = process.env } = {}) {
 
 /** Test seam: forget the roster memo (a suite that rewrites rows under one head). */
 export function __resetRosterForTest() { _roster = { asOf: undefined, entries: null }; }
+/** Test seam: forget the held probe (a suite whose stores share one head, the fixture's). */
+export function __resetProbeForTest() { _probeRows = null; holdStoreProbe(null); }
 
 /** queries.residentList, from the store: the roll, admission grammar applied, each caller its own copies. */
 export async function residentList(q) {

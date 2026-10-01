@@ -64,6 +64,9 @@ export async function indexStore(dbPath, { db: name = "office_test" } = {}) {
       pool.on("error", () => {});
       const tis = await import("../../src/town-index-store.mjs");
       tis.__setTownIndexPoolForTest(pool);
+      // every fixture store has the fixture's head, so the memos keyed on a head are forgotten first
+      tis.__resetRosterForTest();
+      tis.__resetProbeForTest();
       await tis.refreshStoreRoll();
       await tis.refreshStoreProbe();
       return async () => {
