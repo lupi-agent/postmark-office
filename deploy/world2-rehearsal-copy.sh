@@ -39,7 +39,10 @@
 #                       trigger passes only this current_user)
 #       law_ingester  — the clearing's first step, stamp-ingest.mjs (PG* +
 #                       PGOPTIONS), which writes the stamp/roll/escrow projections
-#     office_api, snapshot_reader, stance_reader and world2_owner are NOT granted:
+#       office_api    — the settlement's dry leg (POS-242 item 2): the crossing
+#                       reads the store through the office env's WORLD2_PG_URL,
+#                       the office's pen, and runs unchanged except for its URL
+#     snapshot_reader, stance_reader and world2_owner are NOT granted:
 #     no step of the runner runs as them. A later step that needs one adds it
 #     here, with its step (Wright's ruling, 2026-09-26);
 #   · INHERIT FALSE means none of their privileges count for rehearsal_runner
@@ -113,7 +116,7 @@ while [ $# -gt 0 ]; do
 done
 
 RUNNER="rehearsal_runner"
-PENS="clearing_job law_ingester"   # each with its step — see § WHO OWNS THE COPY
+PENS="clearing_job law_ingester office_api"   # each with its step — see § WHO OWNS THE COPY
 REHEARSAL_DIR="${REHEARSAL_DIR:-/srv/world2-lab/rehearsal}"
 
 rehearsal_target_ok "$TARGET" "$SOURCE" || exit 2

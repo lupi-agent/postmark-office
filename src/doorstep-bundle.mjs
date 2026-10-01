@@ -65,8 +65,11 @@ export async function doorstepBundle(handle, ctx = {}) {
   // The one behaviour delta on the live door, and it is a repair: a
   // composition that straddles a crossing could previously name boat N in
   // `rulings` and boat N+1 in `next_crossing`. It cannot now.
-  const { db, key, meta, asOf, clone, odb, canWrite, conversationsOffset = 0, slim = false, nowMs = Date.now() } = ctx;
-  const core = doorstep(db, handle, asOf, { conversationsOffset, slim, fresh: await freshFor(handle, { odb, clone, asOf }), nowMs });
+  const { db, key, meta, asOf, clone, odb, canWrite, conversationsOffset = 0, slim = false, nowMs = Date.now(), ix = null } = ctx;
+  // `ix` is the index the door picked (POS-268): absent, office.db's, exactly as
+  // before; the store's (storeIndexPooled) when the door is switched.
+  const opts = { conversationsOffset, slim, fresh: await freshFor(handle, { odb, clone, asOf }), nowMs };
+  const core = ix ? await ix.doorstep(handle, asOf, opts) : doorstep(db, handle, asOf, opts);
   if (!core) return null;
 
   // ── THE HEADER'S CLOCK (postmark#2922) ─────────────────────────────────────
@@ -261,7 +264,7 @@ export async function doorstepBundle(handle, ctx = {}) {
   // walks `segments` to find them, so it must name all ten or none.
   d.segments = [...DOORSTEP_SEGMENTS];
 
-  await ownerGate(d, handle, { db, clone, key, odb, meta });
+  await ownerGate(d, handle, { db, clone, key, odb, meta, ix });
 
   // ── the civic pointer (2026-09-01, the clarity round) ─────────────────────
   //
@@ -321,7 +324,7 @@ export async function doorstepBundle(handle, ctx = {}) {
 // `unread` is the house read's prefetch (`{ rows: Map }` or `{ error }`, from
 // one unreadFor over the house); a doorstep passes none and asks for its one
 // resident.
-export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = null, unread = null } = {}) {
+export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = null, unread = null, ix = null } = {}) {
   const own = key?.handles?.has?.(handle) === true;
   // THE COUNTER'S TENSE (Vex of the Drift, 2026-08-26). `pending_outbox` is a
   // COUNT(*) over the settled index, so under the town log it could read 0 for
@@ -367,14 +370,14 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
     // and it is the only count on the page called new. An unreadable record
     // is said, never a zero.
     try {
-      const got = unread ?? await unreadFor(db, [handle]).then((rows) => ({ rows }), (error) => ({ error }));
+      const got = unread ?? await unreadFor(db, [handle], { ix }).then((rows) => ({ rows }), (error) => ({ error }));
       d.unread = got.error ? unreadBlock(null, got.error) : unreadBlock(got.rows.get(handle) ?? []);
     } catch { /* garnish only */ }
     // The settling-in block (Keemin's grouping, 2026-08-15): what your house
     // still lacks. It retires itself the day the list empties.
     try {
       const { paperGaps } = await import("./household-apex.mjs");
-      const gaps = await paperGaps(handle, { db, clone, key });
+      const gaps = await paperGaps(handle, { db, clone, key, ix });
       if (gaps.length) d.settling_in = {
         note: "your house is still settling in — this block disappears as the list empties",
         next: gaps,
@@ -394,7 +397,7 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
   // itself rides every read — it is what the public bundle already publishes —
   // but its gap-shaped half is gated on the same ownership test above.
   try {
-    const ns = await nextStepsFor(db, meta, handle, clone, { own, key });
+    const ns = await nextStepsFor(db, meta, handle, clone, { own, key, ix });
     if (ns?.steps?.length) d.next_steps = ns;
   } catch { /* garnish only */ }
   return d;

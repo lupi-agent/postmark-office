@@ -606,10 +606,11 @@ export const householdDispatchToolFor = (act) => ACTS[String(act ?? "").trim()]?
  *  the town's onboarding row already speaks for (2026-08-21): one obligation,
  *  one voice, rather than the same missing paper worded twice by two surfaces.
  *  The ids are the town quest-registry's own row ids, deliberately. */
-export async function paperGapRows(handle, { db, clone, worldBlock = worldBlockForHandle, key = null, parcelClaim = parcelClaimForHandle } = {}) {
+export async function paperGapRows(handle, { db, clone, worldBlock = worldBlockForHandle, key = null, parcelClaim = parcelClaimForHandle, ix = null } = {}) {
   const gaps = [];
   let home = null;
-  try { home = homeQ(db, handle); } catch { home = null; }
+  try { home = ix ? await ix.home(handle) : homeQ(db, handle); }
+  catch (e) { if (e?.name === "TownIndexUnreachable") throw e; home = null; }
   if (!home || !home.description)
     gaps.push({ id: "tend-your-home", text: `tend your HOME page — household { do: "home", args: { handle: "${handle}", body: … } }` });
   // No region gap: regions are a closed founders-legacy surface (the-regions.md
@@ -718,7 +719,7 @@ const berthRow = async (odb, slug) => {
  * The whole standing, tier-shaped. Every tier's `next` names the exact act
  * that moves it — the checklist IS the read.
  */
-export async function householdStanding(key, { db, clone, odb, worldBlock = worldBlockForHandle, worldWriteBudget = null } = {}) {
+export async function householdStanding(key, { db, clone, odb, worldBlock = worldBlockForHandle, worldWriteBudget = null, ix = null } = {}) {
   if (!key) {
     return {
       tier: "anonymous",
@@ -772,13 +773,14 @@ export async function householdStanding(key, { db, clone, odb, worldBlock = worl
   const harbor = [];
   for (const h of handles) {
     let r = null;
-    try { r = residentQ(db, h); } catch { r = null; }
+    if (ix) r = (await ix.hasResident(h)) ? true : null; // TownIndexUnreachable passes to the door's 503
+    else { try { r = residentQ(db, h); } catch { r = null; } }
     (r ? settled : harbor).push(h);
   }
   const papers = {};
   const next = [];
   for (const h of settled) {
-    const gaps = await paperGaps(h, { db, clone, worldBlock, key });
+    const gaps = await paperGaps(h, { db, clone, worldBlock, key, ix });
     // AWAITED, same defect as paperGaps' and with a louder symptom: an
     // un-awaited Promise spread into this object serialized as `"world": {}`,
     // so the household door has been publishing an empty object where it
@@ -1031,6 +1033,21 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
   // it — see the note above about `meta`, which is why this one is passed by
   // exactly one call site on purpose rather than by omission.
   const { db, clone, odb, dbPath, pen, schemas, schemaRequired, meta, asOf, canWrite, channel, slim = false } = ctx;
+  // THE INDEX, PICKED ONCE (POS-268). With TOWN_INDEX_READS=store the resident,
+  // window, house and doorstep reads below answer from the store through `ix`
+  // (each index read its own short transaction); a store that cannot be
+  // reached answers 503 from the catch at this function's foot. Unset, `ix`
+  // is null and every read is office.db's, exactly as before.
+  const tis = await import("./town-index-store.mjs");
+  const ix = tis.townIndexReads() ? tis.storeIndexPooled(clone) : null;
+  try { return await householdApexRead(args, key, { ...ctx, ix }, { db, clone, odb, dbPath, pen, schemas, schemaRequired, meta, asOf, canWrite, channel, slim, ix }); }
+  catch (e) {
+    if (e instanceof tis.TownIndexUnreachable) return bounce(503, e.refused.defect, e.refused.hint);
+    throw e;
+  }
+}
+
+async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, schemas, schemaRequired, meta, asOf, canWrite, channel, slim, ix }) {
   const doing = args.do != null && args.do !== "";
   const reading = args.read != null && args.read !== "";
   if (doing && reading) return bounce(422, "one call does one thing — do: performs, read: observes", "they never ride together; call twice");
@@ -1155,12 +1172,16 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
       : bounce(422, `whose ${noun}?`, "pass handle: — or call with a key that holds a resident");
     if (what === "address") {
       if (!handle) return whichResident("address");
-      let r = null; try { r = residentQ(db, handle); } catch { r = null; }
+      let r = null;
+      if (ix) r = await ix.resident(handle, await freshFor(handle, { odb, clone, asOf }));
+      else { try { r = residentQ(db, handle); } catch { r = null; } }
       return r ? shadowReadAnswer("address", { read: "address", of: handle, address: r }, { read: "address", of: handle }, r, ctx) : bounce(404, `no settled address for "${handle}"`, "a harbor resident has no white-pages address yet — that comes with settling");
     }
     if (what === "home") {
       if (!handle) return whichResident("home");
-      let h = null; try { h = homeQ(db, handle); } catch { h = null; }
+      let h = null;
+      if (ix) h = await ix.home(handle);
+      else { try { h = homeQ(db, handle); } catch { h = null; } }
       return h ? shadowReadAnswer("home", { read: "home", of: handle, home: h }, { read: "home", of: handle }, h, ctx)
         // ── THE BOUNCE CARRIES THE CARD (#2889, kogane's third) ──────────────
         //
@@ -1382,7 +1403,8 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
     // there was no way to ask what your window currently says.
     if (what === "window") {
       if (!handle) return whichResident("window");
-      const w = windowRead(db, handle, await freshFor(handle, { odb, clone, asOf }));
+      const wf = await freshFor(handle, { odb, clone, asOf });
+      const w = ix ? await ix.windowRead(handle, wf) : windowRead(db, handle, wf);
       // the domain is `w` ENTIRE — the same object the doorstep segment carries,
       // so the two cannot drift into two renderings of one read.
       if (w) return shadowReadAnswer("window", w, { read: "window", of: handle }, w, ctx);
@@ -1475,8 +1497,8 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
     if (what === "house" || what === "needs-you") {
       const { houseBundle, needsYou } = await import("./house-bundle.mjs");
       const r = what === "house"
-        ? await houseBundle({ household: f.household }, { db, key, meta, asOf, clone, odb })
-        : await needsYou({ household: f.household }, { db, key, clone, odb, asOf });
+        ? await houseBundle({ household: f.household }, { db, key, meta, asOf, clone, odb, ix })
+        : await needsYou({ household: f.household }, { db, key, clone, odb, asOf, ix });
       return r?.refused ? bounce(...r.refused) : r;
     }
     // ── the house's posts (POS-293) · src/household-posts.mjs ──────────────
@@ -1502,7 +1524,7 @@ export async function householdApex(args = {}, key = null, ctx = {}) {
     // on down the manifest.
     if (what === "doorstep") {
       if (!handle) return whichResident("doorstep");
-      const d = await doorstepBundle(handle, { db, key, meta, asOf, clone, odb, canWrite, slim,
+      const d = await doorstepBundle(handle, { db, key, meta, asOf, clone, odb, canWrite, slim, ix,
         conversationsOffset: f.correspondence_offset ?? f.offset ?? 0 });
       return d ?? bounce(404, `no resident "${handle}"`, "handles are lowercase-hyphenated; try town { read: \"residents\" }");
     }
