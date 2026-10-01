@@ -17,7 +17,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -124,5 +124,24 @@ test("THE OUTPUTS: --no-db writes no world.db, and its counts are the file's", (
       assert.deepStrictEqual(meta, withFile.counts, "the counts in the file are not the counts reported");
       assert.equal(db.prepare("SELECT value FROM meta WHERE key = 'hydration_status'").get().value, "OK");
     } finally { db.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("A STORE MISS AFTER A GOOD FILE EXITS 3, so the tick still swaps the file in; with no file asked for, it is a plain failure", (t) => {
+  if (NO_WORLD) return t.skip(NO_WORLD);
+  const dir = mkdtempSync(join(tmpdir(), "hydrator-store-miss-"));
+  try {
+    // A store that refuses the connection at once (port 1): the write fails
+    // after the rows are built, which is the case the tick must survive.
+    const env = { ...process.env, TMP: dir, TEMP: dir, TMPDIR: dir, PGHOST: "127.0.0.1", PGPORT: "1", PGUSER: "law_ingester", PGDATABASE: "nowhere", PGPASSWORD: "x", PGCONNECT_TIMEOUT: "3" };
+    // The real office tree, so the snapshot carries an office sha and the miss
+    // is the connection itself.
+    const hydrate = (args) => spawnSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"), "--world", CLONE, "--office", OFFICE_ROOT, "--no-gexf", "--no-lints", "--to-store", ...args], { encoding: "utf8", env });
+    const withFile = hydrate(["--db", join(dir, "world.db")]);
+    assert.equal(withFile.status, 3, `exit ${withFile.status}: ${withFile.stderr.slice(-300)}`);
+    assert.match(withFile.stderr, /the graph snapshot was NOT written to the store/);
+    assert.equal(existsSync(join(dir, "world.db")), true, "exit 3 promises the file was written");
+    const storeOnly = hydrate(["--no-db"]);
+    assert.equal(storeOnly.status, 1, "with no file asked for, a store miss built nothing usable");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

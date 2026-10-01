@@ -12,6 +12,8 @@
 //                unless --no-db. It goes when the last of them has moved.
 // Nothing reads world.db to fill the store: graph-ingest --db is the manual
 // path for a file that already exists.
+// Exit 0 every asked-for output written · 1 refused, or stamped FAILED · 3 the
+// file was written and the store was NOT (the tick still swaps the file in).
 //
 // The pattern is src/hydrate.mjs's, extended from tables-per-thing to
 // nodes+edges: rebuild from scratch every run, stamp the as-of shas in `meta`,
@@ -1267,11 +1269,15 @@ if (WRITE_DB) writeWorldDb(DB_PATH, tables);
 let stored = null;
 if (TO_STORE) {
   const { graphSnapshotFromTables, writeGraphSnapshot } = await import("../world2/tools/graph-ingest.mjs");
-  const snap = graphSnapshotFromTables(tables);
-  try { stored = await withStoreClient((client) => writeGraphSnapshot(client, snap)); }
+  // The snapshot is built inside the try: a store that refuses these rows (no
+  // office sha, say) is the same miss as one that will not connect.
+  try { const snap = graphSnapshotFromTables(tables); stored = await withStoreClient((client) => writeGraphSnapshot(client, snap)); }
   catch (e) {
     console.error(`the graph snapshot was NOT written to the store: ${String(e?.message ?? e).slice(0, 200)}`);
-    process.exit(1);
+    // 3, not 1, when the file is already written: the tick swaps a good file
+    // in whatever the store did (deploy/office-rehydrate.sh), and must be able
+    // to tell this from a hydration that built nothing.
+    process.exit(WRITE_DB ? 3 : 1);
   }
 }
 
