@@ -157,10 +157,13 @@ trap 'rm -rf "$SNAP"' EXIT
 # a moved tag is REFUSED with its number and nothing partial lands. NON-FATAL
 # like the mint and the world hydrate — the tick's real work never waits on
 # the store — and its one receipt line lands in this journal either way.
+# The same run then records which settlement carried each newly published mark
+# (049, `mark_carried`) and adds a `carried:` line; a refusal there exits 1 with
+# the settlement rows already committed, so the failure line names both tables.
 if settled="$(node world2/tools/settlements-backfill.mjs --apply --prod --quiet --world-repo "$WORLD_CLONE" 2>&1)"; then
   echo "[office-keep] settlements: $settled"
 else
-  echo "[office-keep] settlements row NOT written (non-fatal) — $settled — the next tick tries again; world2/tools/settlements-backfill.mjs --verify says where the table stands" >&2
+  echo "[office-keep] settlements or carried rows NOT written (non-fatal) — $settled — the next tick tries again; world2/tools/settlements-backfill.mjs --verify and mark-carried-backfill.mjs --verify say where the tables stand" >&2
 fi
 
 # ── outside the lock: the panes, from the frozen snapshot ────────────────────

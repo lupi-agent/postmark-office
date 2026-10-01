@@ -85,7 +85,7 @@ const householdKeys = new Map();
  * THE ONE RESOLVER, called by BOTH halves of the private-draft lane.
  *
  * The write path resolves the household from the journal row's `household`
- * (which is the office key's household name); `/world2/my-drafts` resolves it
+ * (the acting handle's house); `/world2/my-drafts` resolves it
  * from the same key. If those two ever spelled the household differently, a
  * resident would save a draft and then be told they have none — the row policy
  * would be working perfectly and the answer would still be wrong. Routing both
@@ -111,11 +111,40 @@ const householdKeys = new Map();
  * notion of who you are in this town, which is what makes this function's
  * single-resolver discipline the right shape rather than a shared weakness:
  * one fact, one place to be wrong, one place to fix.
+ *
+ * ── THROUGH THE KEY'S HANDLES, AS 1.0 DOES (POS-142, agreed 2026-10-01) ────
+ *
+ * This read `key.household` first, and that is a LABEL: the GitHub login an
+ * OAuth key resolved to, or a keys-file slug ("darko"). Neither is a handle
+ * the registry pins, so an OAuth resident whose login is not one of their
+ * residents' handles resolved to `solo:<login>` and read an empty portfolio
+ * and none of their own drafts, while the write path, which resolves from the
+ * acting HANDLE (`world-apex.mjs § worldHouseholdOf`), had filed those drafts
+ * under their house. 1.0 already answers this (`world-stake.mjs §
+ * worldPortfolioStakeSlice`): "the household a caller belongs to is the
+ * pins-household of their own handles". So: the first of the key's handles
+ * the registry places in a house names it. Only when none does is the label
+ * asked, and `keyHouseholdOf` says so on `disclosure`.
  */
-export async function householdKeyForKey(p, key) {
+export async function keyHouseholdOf(p, key) {
   const named = String(key?.household ?? "").trim();
   const handles = [...(key?.handles ?? [])];
-  return householdKeyFor(p, named || handles[0] || null);
+  for (const handle of handles) {
+    const household = await householdKeyFor(p, handle);
+    if (household && !household.startsWith("solo:")) return { household, via: handle };
+  }
+  const label = named || handles[0] || null;
+  const household = await householdKeyFor(p, label);
+  return {
+    household, via: null,
+    disclosure: handles.length
+      ? `none of this key's handles (${handles.join(", ")}) is pinned to a house, so its household is read from the key's own name "${label}"${household?.startsWith("solo:") ? ", which names no house either: this answer holds only what was filed under that name" : ""}`
+      : `this key carries no handles, so its household is read from the key's own name "${label}"`,
+  };
+}
+
+export async function householdKeyForKey(p, key) {
+  return (await keyHouseholdOf(p, key)).household;
 }
 
 /**
@@ -794,7 +823,7 @@ export function withdrawRetiredRefusal(id, status) {
  */
 export async function readDraftClaims(key, env = process.env) {
   const p = await pool(env);
-  const household = await householdKeyForKey(p, key);
+  const { household, disclosure } = await keyHouseholdOf(p, key);
   // `= ANY(keys)` and not `= household`: the store never re-spells a row, so a
   // draft composed under this house's OLD key is still this house's draft and
   // the door must ask for it by every name the house has worn. The WHERE and
@@ -803,7 +832,7 @@ export async function readDraftClaims(key, env = process.env) {
   const rows = await withHousehold(p, household, (c, keys) => c.query(
     `SELECT id, slug, class, claimant, body, geometry, stake, submitted_at AS composed_at
        FROM claims WHERE status = 'draft' AND household = ANY($1) ORDER BY slug`, [keys]));
-  return { household, drafts: rows.rows };
+  return { household, drafts: rows.rows, ...(disclosure ? { disclosure } : {}) };
 }
 
 export function docketStatus() {

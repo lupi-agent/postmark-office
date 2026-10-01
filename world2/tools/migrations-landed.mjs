@@ -74,6 +74,8 @@ export const LANDED = {
   // 037/038 (POS-270): the world graph's snapshot per settlement, and its walk ledger.
   "037_world_graph.sql":           { probe: `${rel("world_graphs")} AND ${rel("world_graph_nodes")} AND ${rel("world_graph_edges")} AND ${rel("world_graph_geometry")} AND ${rel("world_graph_lints")} AND ${col("world_graph_nodes", "ord")}` },
   "038_world_graph_events.sql":    { probe: rel("world_graph_events") },
+  // 049 (POS-142 Proposal B): which settlement first carried each mark.
+  "049_mark_carried.sql":          { probe: rel("mark_carried") },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */
