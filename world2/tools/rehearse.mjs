@@ -49,9 +49,29 @@
 // failed or the clearing did not run (the receipt says which and why) · 2 refused.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
-import { LANDED, landedIn, schemaOrder } from "./migrations-landed.mjs";
+import { existsSync, readFileSync, readdirSync, writeFileSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import * as RUNNER_PROBES from "./migrations-landed.mjs";
+
+// ── THE PROBES ARE THE TREE'S, LIKE ITS MIGRATIONS ──────────────────────────
+// A migration and the probe that says it landed ship in the same commit, so the
+// table that judges a train's migrations is the train's own. The runner's copy
+// is the RELEASE's on the box, and it knows nothing past what that release
+// shipped: on 2026-10-01 the box's runner (release/2026-w40.8, probes through
+// 027) refused the w41 train at "028_posts.sql NO PROBE" while the train itself
+// carried probes for 028-038. The runner's own table is only the fallback, for
+// a tree that predates the file.
+export async function probeTableFor(tree) {
+  const file = resolve(tree, "world2/tools/migrations-landed.mjs");
+  if (existsSync(file)) {
+    const m = await import(pathToFileURL(file).href);
+    if (m.LANDED && typeof m.landedIn === "function" && typeof m.schemaOrder === "function") {
+      return { LANDED: m.LANDED, landedIn: m.landedIn, schemaOrder: m.schemaOrder, from: "tree" };
+    }
+  }
+  return { LANDED: RUNNER_PROBES.LANDED, landedIn: RUNNER_PROBES.landedIn, schemaOrder: RUNNER_PROBES.schemaOrder, from: "runner" };
+}
 
 const PROD = "world2_dev";
 
@@ -156,10 +176,12 @@ if (isMain) {
     say(`REHEARSAL — tree ${receipt.tree.slice(0, 12)} on ${who.db} as ${who.me} (CONNECT on ${PROD}: ${who.reaches_prod ?? "no such database"})`);
 
     // (a) migrations
+    const { LANDED, landedIn, schemaOrder, from: probesFrom } = await probeTableFor(tree);
+    receipt.probes_from = probesFrom;
     const schemaDir = join(tree, "world2/schema");
     const names = schemaOrder(readdirSync(schemaDir));
     const before = await landedIn(q, names);
-    say("migrations:");
+    say(`migrations (landed-probes from the ${probesFrom === "tree" ? "tree under test" : "runner's own checkout — the tree has none"}):`);
     let failed = null;
     for (const m of before) {
       if (m.state === "unknown") { failed = m; receipt.migrations.push({ ...m, result: "no-probe" }); say(`  ${m.file}  NO PROBE — ${m.detail}`); break; }

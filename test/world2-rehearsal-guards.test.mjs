@@ -118,3 +118,49 @@ test("the copy script, run against world2_dev, refuses with exit 2 before any su
   assert.match(r.stderr, /refused: target 'world2_dev' does not name 'rehearsal'/);
   assert.doesNotMatch(r.stderr + r.stdout, /sudo|psql/);
 });
+
+// ── THE PROBES ARE THE TREE'S (2026-10-01) ──────────────────────────────────
+// The box's runner is the deployed release's checkout, and its probe table
+// stopped at 027 while the w41 train carried 028-038 and their probes: the
+// rehearsal refused "028_posts.sql NO PROBE" on a train that had one. The tree
+// under test brings its own table now. A fixture tree whose table knows a file
+// the runner's does not is the whole case.
+test("the runner judges a tree's migrations by the TREE's probe table, and falls back to its own only when the tree has none", async () => {
+  const { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { probeTableFor } = await import("../world2/tools/rehearse.mjs");
+  const RUNNER_PROBES = await import("../world2/tools/migrations-landed.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "rehearse-probes-"));
+  try {
+    const FUTURE = "999_from_a_later_train.sql";
+    assert.equal(RUNNER_PROBES.LANDED[FUTURE], undefined, "the runner's own table must not know the fixture's file");
+    const src = readFileSync(join(ROOT, "world2/tools/migrations-landed.mjs"), "utf8");
+    const anchor = "export const LANDED = {\n";
+    assert.equal(src.split(anchor).length - 1, 1, "the table's opening line is the fixture's anchor");
+    const tree = join(dir, "tree");
+    mkdirSync(join(tree, "world2/tools"), { recursive: true });
+    writeFileSync(join(tree, "world2/tools/migrations-landed.mjs"),
+      src.replace(anchor, `${anchor}  "${FUTURE}": { probe: "true" },\n`));
+
+    const names = ["027_act_nonce.sql", FUTURE];
+    const query = async () => ({ rows: [{ landed: true }] });
+
+    // the box's shape, as a control: the runner's own table cannot judge the file
+    const own = await RUNNER_PROBES.landedIn(query, names);
+    assert.equal(own.find((m) => m.file === FUTURE).state, "unknown");
+
+    const t = await probeTableFor(tree);
+    assert.equal(t.from, "tree");
+    assert.equal(t.LANDED[FUTURE].probe, "true");
+    const judged = await t.landedIn(query, names);
+    assert.deepEqual(judged.map((m) => [m.file, m.state]), [["027_act_nonce.sql", "landed"], [FUTURE, "landed"]]);
+
+    const bare = join(dir, "bare");
+    mkdirSync(bare);
+    const f = await probeTableFor(bare);
+    assert.equal(f.from, "runner");
+    assert.equal(f.LANDED, RUNNER_PROBES.LANDED);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
