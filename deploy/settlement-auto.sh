@@ -197,8 +197,8 @@ fi
 #   the sketchbook lease pushes  none to withhold: `$WORK/tips` is empty on the
 #                                store path by construction, and DRY is store-only
 #   the photograph's commit      state-log-write --write gets --dry-run; its
-#                                penCommit pushes when TOWN_PUSH=1, which the
-#                                office env sets, and it runs BEFORE the gate
+#                                commit is local in every crossing and rides
+#                                main's push, which is withheld above
 #   the store's retirement       retire-unpublished --dry-run: it names the marks
 #                                and opens no connection
 #   every escalation             no GitHub issue, and no lookup either — the
@@ -948,14 +948,22 @@ if [ "$SOURCE" = "store" ]; then
     esac
     STATE_LOG_JSON="$WORK/state-log.json"
     if [ "$STATE_LOG_MODE" = "store" ]; then
-      # DRY renders the photograph and writes nothing: penCommit pushes world
-      # main when TOWN_PUSH=1, and here that is before the harm gate has spoken.
+      # THE PHOTOGRAPH IS COMMITTED HERE AND PUSHED BY publish_main, OR NOWHERE.
+      # penCommit pushes world main when TOWN_PUSH=1, which the office env sets,
+      # and this line is before the harm gate has spoken: a refused crossing
+      # used to move origin anyway, carrying the registry commit with it. So the
+      # pen is told TOWN_PUSH=0 and the commit stays in the sweep clone. A
+      # refusal leaves it there; the next crossing checks main out from origin
+      # again and photographs afresh, and writeJournalWindow merges by seq, so
+      # no act is written twice (test/settlement-push-after-gate.test.mjs).
+      #
+      # DRY renders the photograph and writes nothing.
       STATE_LOG_DRY_FLAG=""
       if [ "$DRY" = "1" ]; then
         STATE_LOG_DRY_FLAG="--dry-run"
         withheld "the photograph's commit and push (STATE/log, window $DOCKET_WINDOW): rendered, not written"
       fi
-      if (cd "$OFFICE" && node "$OFFICE/world2/tools/state-log-write.mjs" \
+      if (cd "$OFFICE" && TOWN_PUSH=0 node "$OFFICE/world2/tools/state-log-write.mjs" \
             --world "$SWEEP" --window "$DOCKET_WINDOW" --write $STATE_LOG_DRY_FLAG \
             --last-drained "${STATE_LOG_LAST_DRAINED:-182.2538}" \
             --as-of-world "$WORLD_FROM") > "$STATE_LOG_JSON" 2>"$WORK/state-log.err"; then
