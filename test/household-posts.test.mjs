@@ -91,7 +91,11 @@ const WORLD_DB = join(DIR, "world.db");
 }
 
 process.env.TOWN_CLONE = TOWN;
-process.env.WORLD_STORE_DB = WORLD_DB;
+// The Think Tank is read off the world graph snapshot (POS-270 lane W 3a): the
+// store above is published as one, and world.db's path points nowhere.
+const { NO_WORLD_DB, publishWorld, withNoWorld } = await import("./helpers/world-rows.mjs");
+publishWorld(WORLD_DB);
+process.env.WORLD_STORE_DB = NO_WORLD_DB;
 const { householdPosts, POSTS_CAP } = await import("../src/household-posts.mjs");
 
 // ── the registry: Starforge holds wright, rei and mari ──────────────────────
@@ -156,7 +160,7 @@ let pen;
 before(async () => { Object.assign(process.env, RECORD_ON); pen = await penWith(); });
 after(() => { uninstallActsPen(); delete process.env.WORLD2_PG; delete process.env.WORLD2_PG_URL; });
 
-const read = (handle, now = NOW) => householdPosts(handle, { now, townClone: TOWN, worldDb: WORLD_DB, readers: REGISTRY });
+const read = (handle, now = NOW) => householdPosts(handle, { now, townClone: TOWN, readers: REGISTRY });
 const row = (list, id) => list.rows.find((r) => r.id === id) ?? null;
 
 test("1 · the house's own event is put up, and its state is the clock's: announced, then live, then ended", async () => {
@@ -295,13 +299,13 @@ test("a class the office cannot read is named, and its rows are left out rather 
   uninstallActsPen();
   delete process.env.WORLD2_PG; delete process.env.WORLD2_PG_URL;
   try {
-    const a = await householdPosts("wright", { now: NOW, townClone: TOWN, worldDb: join(DIR, "no-such-world.db"), readers: REGISTRY });
+    const a = await withNoWorld(() => householdPosts("wright", { now: NOW, townClone: TOWN, readers: REGISTRY }));
     assert.deepEqual(a.unavailable, [
       "the events could not be read from the office's record",
       "the Think Tank could not be read from the world record",
     ]);
     assert.deepEqual([a.put_up.total, a.taking_part.total], [0, 0]);
-    const noRegistry = await householdPosts("wright", { now: NOW, townClone: TOWN, worldDb: WORLD_DB, clone: join(DIR, "no-such-town") });
+    const noRegistry = await householdPosts("wright", { now: NOW, townClone: TOWN, clone: join(DIR, "no-such-town") });
     assert.match(noRegistry.unavailable[0], /registry could not be read/);
     assert.deepEqual(noRegistry.residents, ["wright"]);
   } finally {

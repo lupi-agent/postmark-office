@@ -331,7 +331,6 @@ let LAW_SHA = arg("--law-sha");
 // small — and a run where it swallows the whole sample is visibly a run that
 // tested nothing.
 const DRIFTED = new Set();
-const BAKE_LAG = new Set();   // handles the 1.0 presence bake has not caught up to
 let driftDetail = { pg: 0, one: 0 };
 {
   const live = await import("./live-reads.mjs");
@@ -347,40 +346,16 @@ let driftDetail = { pg: 0, one: 0 };
   const a = latest(oneList), b = latest(pgRecords);
   for (const h of new Set([...a.keys(), ...b.keys()])) if (a.get(h) !== b.get(h)) DRIFTED.add(h);
 
-  // ── AND THE SECOND SOURCE, WHICH IS THE ONE THE APEX ACTUALLY READS ───────
+  // ── THE SECOND SOURCE IS GONE (POS-269) ──────────────────────────────
   //
-  // 1.0's apex `present` does NOT read the walk ledger. `dynamic-presence.mjs`
-  // :99 opens the DYNAMIC STORE — `const deps = governingDepartures(db)` over
-  // the crystallized `entities` table, merged with that store's own
-  // `movements` — and the file says what that costs: "The entities table is a
-  // CRYSTALLIZATION, refreshed on a tick … between the freeze and the next
-  // refresh it was answering from a table that predated the record."
-  //
-  // So a handle can have the SAME governing departure in both records above and
-  // still be placed differently, because the bake has not caught up. Found this
-  // way: `postmaster`, whose journal departure to their own waiting-room parcel
-  // stands identically in the frozen ledger and in `acts`, and whom 1.0's apex
-  // placed at the parcel centre (source `parcel`) while the port placed at the
-  // walk's arrival point (source `walk`).
-  //
-  // Those rows are excluded and NAMED. They are not an acknowledged field —
-  // every other rendered field of every other resident still has to match, so
-  // A6 can still fail — and the 2.0 answer is the fresher of the two, which is
-  // gold §2's whole direction ("freshness as a QUERY, not a pipeline").
-  try {
-    const { openDynamic, dynamicDbPath, movementV2Enabled } = await import("../../src/dynamic-store.mjs");
-    const { governingDepartures } = await import("../../src/dynamic-presence.mjs");
-    const db = openDynamic(dynamicDbPath(), { readOnly: true });
-    const baked = new Set([...governingDepartures(db)].map(([h]) => h));
-    if (movementV2Enabled()) {
-      const { storedDepartures } = await import("../../src/world-movement.mjs");
-      for (const d of storedDepartures({ db, atMs: Date.now() }).records ?? []) baked.add(d.handle);
-    }
-    db.close();
-    for (const h of b.keys()) if (!baked.has(h)) { DRIFTED.add(h); BAKE_LAG.add(h); }
-  } catch (e) {
-    die(`the 1.0 presence store cannot be read (${String(e.message).slice(0, 140)}) — without it A6 cannot tell a stale bake from a broken port, and a comparison that cannot tell them apart is not a receipt`);
-  }
+  // A6 used to read 1.0's presence BAKE too — `governingDepartures` over
+  // dynamic.db's crystallized `entities` table — and excluded, by name, the
+  // handles that bake had not caught up to (found on `postmaster`: the same
+  // departure in both records, placed differently because the bake lagged).
+  // Presence reads the position projection now, which keeps every departure
+  // current in the step it is written; there is no bake to lag, so there is no
+  // bake-lag exclusion. Only a governing departure that DIFFERS between the
+  // two records is drift.
 }
 
 // ── the comparator ──────────────────────────────────────────────────────────
@@ -732,7 +707,6 @@ if (JSON_OUT) {
   const reach = scope.reduce((a, s) => ({ one: a.one + s.one, two: a.two + s.two, shared: a.shared + s.shared, one_only: a.one_only + s.one_only.length, drifted: a.drifted + s.drifted.length }), { one: 0, two: 0, shared: 0, one_only: 0, drifted: 0 });
   console.log(`\n  A6's scope: ${reach.shared} of 1.0's ${reach.one} rendered residents compared across ${scope.length} standpoints (2.0 named ${reach.two}).`);
   console.log(`         the drift set: ${DRIFTED.size} handles (${driftDetail.one} departure records in the frozen 1.0 clone, ${driftDetail.pg} in acts) — ${reach.drifted} rendered rows skipped for it.`);
-  console.log(`         of those, ${BAKE_LAG.size} are the 1.0 PRESENCE BAKE lagging the record, not the record differing: ${[...BAKE_LAG].slice(0, 8).join(", ")}${BAKE_LAG.size > 8 ? " …" : ""}`);
   if (reach.one_only) console.log(`         handles 1.0 named and 2.0 did not: ${[...new Set(scope.flatMap((s) => s.one_only))].join(", ")}`);
   if (totalAmber) {
     console.log("\n  acknowledged divergences, and the 1.0 line that produces each:");

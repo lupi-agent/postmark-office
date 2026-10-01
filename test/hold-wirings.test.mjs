@@ -46,13 +46,16 @@ async function storeWithThings(file) {
   return path;
 }
 
-/** Run `fn` with the store and dynamic env pointed at a fresh temp pair. */
+/** Run `fn` with the world published from a fresh store and the dynamic env at a temp pair.
+ *  The world is the rows (POS-270 lane W 3a): world.db's path points nowhere. */
 async function withStore(file, fn) {
   const prev = { store: process.env.WORLD_STORE_DB, dyn: process.env.WORLD_DYNAMIC_DB };
   const dir = mkdtempSync(join(TMP, "run-"));
-  process.env.WORLD_STORE_DB = await storeWithThings(file);
+  const { NO_WORLD_DB, withWorld } = await import("./helpers/world-rows.mjs");
+  const world = await storeWithThings(file);
+  process.env.WORLD_STORE_DB = NO_WORLD_DB;
   process.env.WORLD_DYNAMIC_DB = join(dir, "dynamic.db");
-  try { return await fn(); }
+  try { return await withWorld(world, fn); }
   finally {
     for (const [k, v] of [["WORLD_STORE_DB", prev.store], ["WORLD_DYNAMIC_DB", prev.dyn]])
       if (v === undefined) delete process.env[k]; else process.env[k] = v;

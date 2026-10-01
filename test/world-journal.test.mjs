@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import { openDynamic } from "../src/dynamic-store.mjs";
 import {
   ACTION_AMEND, ACTION_LEAVE, ACTION_WITHDRAW, CLASS_FRAME, CLASS_MARK, WORLD_ANCHOR,
-  anchorAt, composeAnchor, draftsForKey, journalHead, liveChildrenOf,
+  anchorAt, composeAnchor, journalHead, liveChildrenOf,
   liveMarks, pathFor, pinWitnesses, readJournal, replayDrafts, resetPathIndex,
 } from "../src/world-journal.mjs";
 // ── THE ROWS ARE SEEDED, NOT WRITTEN BY A DOOR (G1 / POS-156) ───────────────
@@ -583,64 +583,12 @@ test("the guards read the STORE — the live layer answers slug collision and ho
 });
 
 // ── the flag ─────────────────────────────────────────────────────────────────
-
-test("FLAG OFF — the §1c door is byte-identical to the git delta, and nothing reaches the log", () => {
-  // The plan's own bar, and Stage D's before it: "FLAG OFF = byte-identical
-  // behavior, provably: that is a falsifier, same as Stage D's."
-  assert.equal(process.env.WORLD_SINGLE_LOG, undefined, "the switch is off — what follows is today's behaviour");
-
-  // a journal that is not empty, so the test can only pass by ignoring it
-  withDb((db) => { leave(db, { id: "alpha/in-the-log" }); });
-
-  const viaJournalDoor = draftsForKey(repo, houseA);
-  const viaGit = draftDeltaForKey(repo, houseA);
-  assert.deepEqual(viaJournalDoor, viaGit,
-    "same object, key for key — the composed door adds nothing at all when the flag is off");
-  assert.equal("log" in viaJournalDoor, false, "not even the disclosure block, which would be a new key on an untouched contract");
-  assert.equal(viaJournalDoor.marks.some((m) => m.id === "alpha/in-the-log"), false,
-    "and the live layer is invisible: a store with rows in it changes nothing until the operator says so");
-});
-
-test("FLAG ON — the sketchbook and the journal BOTH answer, and the journal wins a shared id", () => {
-  // §0's three sources, at the one door. Dropping the sketchbook half would
-  // erase every draft written before the cutover on the day it shipped.
-  process.env.WORLD_SINGLE_LOG = "1";
-  withDb((db) => {
-    leave(db, { id: "alpha/from-the-log", body: "written the new way" });
-    leave(db, { id: "alpha/sketchbook-draft", action: ACTION_AMEND, body: "the log said it later" });
-  });
-
-  const delta = draftsForKey(repo, houseA);
-  const byId = Object.fromEntries(delta.marks.map((m) => [m.id, m]));
-  assert.ok(byId["alpha/from-the-log"], "the live layer is served");
-  assert.equal(byId["alpha/only-in-the-sketchbook"]?.body, "the log has never heard of this",
-    "and a draft written before the cutover, that the log has never seen, still reaches its author — dropping the sketchbook half would erase a resident's work on the day this shipped");
-  assert.equal(byId["alpha/sketchbook-draft"].body, "the log said it later",
-    "on a shared id the journal wins — it is later by construction");
-  assert.equal(delta.log.readable, true);
-  assert.equal(delta.log.head, 2, "and the head is disclosed in its own block, never smuggled into `draft`, which still means a commit");
-  assert.equal(delta.draft, draftDeltaForKey(repo, houseA).draft, "`draft` is the sketchbook's sha under both flag positions");
-});
-
-test("FLAG ON — another household's live layer stays invisible", () => {
-  process.env.WORLD_SINGLE_LOG = "1";
-  withDb((db) => { leave(db, { id: "alpha/private", body: "alpha's alone" }); });
-  const theirs = draftsForKey(repo, houseB);
-  assert.equal(theirs.error, undefined);
-  assert.equal((theirs.marks ?? []).some((m) => m.id === "alpha/private"), false,
-    "you cannot see what you cannot back — the sketchbook's scoping is the journal's scoping, by the household column");
-});
-
-test("FLAG ON — an unreadable live layer discloses; it does not serve an empty overlay", () => {
-  process.env.WORLD_SINGLE_LOG = "1";
-  process.env.WORLD_DYNAMIC_DB = join(scratch, "nope", "not-a-store.db");
-  try {
-    const delta = draftsForKey(repo, houseA);
-    assert.equal(delta.log.readable, false, "the door says the live layer could not be read");
-    assert.ok(delta.marks.some((m) => m.id === "alpha/sketchbook-draft"),
-      "and the sketchbook half still answers — half an answer that says which half");
-  } finally { process.env.WORLD_DYNAMIC_DB = dbPath; }
-});
+//
+// The four `draftsForKey` tests that stood here — flag off byte-identical to
+// the git delta, flag on the union with the journal winning, another house's
+// layer invisible, an unreadable layer disclosed — went with the function
+// (POS-269): no door called it, and the same contract over the record is
+// world2-guards.mjs § guardedDraftsForKey, held by leave-mark-drafts-and-docket.
 
 // ── the door itself ──────────────────────────────────────────────────────────
 //

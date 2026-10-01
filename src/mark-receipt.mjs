@@ -232,6 +232,8 @@ export function checkNameOf(refusalCheck) {
   return (i === -1 ? raw : raw.slice(0, i)).trim().toLowerCase() || null;
 }
 
+const CAUSE_ROW_PREFIX = "claims.refusal_check = ";
+
 export function causeOf(refusalCheck) {
   const raw = String(refusalCheck ?? "").trim();
   if (!raw) return { cause: null, cause_row: null };
@@ -239,7 +241,19 @@ export function causeOf(refusalCheck) {
   const word = CAUSE_OF_CHECK[key]
     ?? CAUSE_WORDS.find((w) => key === w)
     ?? null;
-  return { cause: word, cause_row: `claims.refusal_check = ${JSON.stringify(raw)}` };
+  return { cause: word, cause_row: `${CAUSE_ROW_PREFIX}${JSON.stringify(raw)}` };
+}
+
+/**
+ * `causeOf`'s inverse: the stored `refusal_check` a `cause_row` quotes, or null.
+ * Beside its writer so the two cannot drift; a row this did not write reads as
+ * null rather than as a guess (POS-241 part 5 reads it for my-marks' `refused`).
+ */
+export function refusalCheckOf(causeRow) {
+  const s = String(causeRow ?? "");
+  if (!s.startsWith(CAUSE_ROW_PREFIX)) return null;
+  try { const v = JSON.parse(s.slice(CAUSE_ROW_PREFIX.length)); return typeof v === "string" ? v : null; }
+  catch { return null; }
 }
 
 /**

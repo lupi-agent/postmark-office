@@ -16,13 +16,14 @@
 import test, { after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { SCHEMA } from "../src/world-store.mjs";
 import { worldGraphView, worldGraphPayload, resetGraphCache, CONVERGENCE_KINDS } from "../src/world-graph.mjs";
 import { worldStoreFixture, AS_OF_WORLD as AS_OF } from "./world-graph-fixture.mjs";
+import { clearWorld, publishWorld } from "./helpers/world-rows.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "postmark-world-graph-"));
 after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
@@ -31,12 +32,15 @@ after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDela
 beforeEach(() => resetGraphCache());
 
 const fixtureStore = (name = "world.db", opts) => worldStoreFixture(join(dir, name), opts);
+// The window reads the world graph snapshot (POS-270 lane W 3a): a fixture is
+// built as world.db's rows, published, and the view asked with no file named.
+const viewOf = (path, opts = {}) => { publishWorld(path); resetGraphCache(); return worldGraphView(opts); };
 
 const byId = (view, id) => view.elements.nodes.find((n) => n.data.id === id)?.data;
 const lintOf = (view, id) => view.lints.find((l) => l.lint === id);
 
 test("the payload is what cytoscape({ elements }) takes, with the store's own As-Of on it", () => {
-  const view = worldGraphView({ dbPath: fixtureStore() });
+  const view = viewOf(fixtureStore());
   assert.equal(view.error, undefined);
   assert.equal(view.as_of.world, AS_OF);
   assert.equal(view.as_of.hydration_status, "OK");
@@ -53,7 +57,7 @@ test("the payload is what cytoscape({ elements }) takes, with the store's own As
 });
 
 test("a mark ships the sentence its author wrote, and the keys they wrote it under", () => {
-  const view = worldGraphView({ dbPath: fixtureStore() });
+  const view = viewOf(fixtureStore());
   const quay = byId(view, "the-town/the-quay");
   assert.equal(quay.body, "Six bollards, and the water slapping at them.");
   assert.deepEqual(quay.keys, ["kind", "by", "tier", "at", "extent", "date", "sea_state"]);
@@ -68,7 +72,7 @@ test("a mark ships the sentence its author wrote, and the keys they wrote it und
 });
 
 test("a record whose frontmatter would not parse ships no key list, and no body it never had", () => {
-  const view = worldGraphView({ dbPath: fixtureStore() });
+  const view = viewOf(fixtureStore());
   const far = byId(view, "the-town/the-far-landing");
   // `keys: null` is "not read". It must not arrive as `[]`, which a reader would
   // count as a record that carries nothing — the opposite finding.
@@ -80,7 +84,7 @@ test("a record whose frontmatter would not parse ships no key list, and no body 
 });
 
 test("positions pass through unnegated — south stays positive, so a y-down renderer draws north up", () => {
-  const view = worldGraphView({ dbPath: fixtureStore() });
+  const view = viewOf(fixtureStore());
   const quay = view.elements.nodes.find((n) => n.data.id === "the-town/the-quay");
   assert.deepEqual(quay.position, { x: -30, y: 40 });
   // the GEXF exporter negates for Gephi; this one must not, or the town opens mirrored
@@ -90,7 +94,7 @@ test("positions pass through unnegated — south stays positive, so a y-down ren
 });
 
 test("L1 paints the mark, the mechanic and the `implements` edge between them", () => {
-  const view = worldGraphView({ dbPath: fixtureStore() });
+  const view = viewOf(fixtureStore());
   const l1 = lintOf(view, "L1");
   assert.equal(l1.verdict, "RED");
   assert.deepEqual(l1.implicates.nodes.map((n) => n.id).sort(), ["code:world/tools/vessel.mjs", "mechanic:timetable", "the-town/the-wheelhouse"]);
@@ -105,7 +109,7 @@ test("L1 paints the mark, the mechanic and the `implements` edge between them", 
 });
 
 test("L2 paints only the departure that missed, and the stop it missed", () => {
-  const view = worldGraphView({ dbPath: fixtureStore() });
+  const view = viewOf(fixtureStore());
   const l2 = lintOf(view, "L2");
   const ids = l2.implicates.nodes.map((n) => n.id);
   assert.ok(ids.includes("the-town/the-far-landing"));
@@ -117,7 +121,7 @@ test("L2 paints only the departure that missed, and the stop it missed", () => {
 });
 
 test("L4 paints the non-conforming parcel and its instance-of edge; a conforming one is left alone", () => {
-  const view = worldGraphView({ dbPath: fixtureStore() });
+  const view = viewOf(fixtureStore());
   const l4 = lintOf(view, "L4");
   assert.ok(l4.implicates.nodes.some((n) => n.id === "someone/their-parcel"));
   const edge = view.elements.edges.find((e) => e.data.id === l4.implicates.edges[0].id);
@@ -126,7 +130,7 @@ test("L4 paints the non-conforming parcel and its instance-of edge; a conforming
 });
 
 test("a finding about an id the store has no node for is REPORTED, never swallowed", () => {
-  const view = worldGraphView({ dbPath: fixtureStore() });
+  const view = viewOf(fixtureStore());
   const l4 = lintOf(view, "L4");
   assert.deepEqual(l4.implicates.unmatched.map((n) => n.id), ["the-town/nowhere-parcel"]);
   // and it is not counted as painted
@@ -134,7 +138,7 @@ test("a finding about an id the store has no node for is REPORTED, never swallow
 });
 
 test("a lint that addresses nothing says so rather than reading as a clean bill of health", () => {
-  const view = worldGraphView({ dbPath: fixtureStore() });
+  const view = viewOf(fixtureStore());
   const l6 = lintOf(view, "L6");
   assert.equal(l6.verdict, "N/A");
   assert.equal(l6.implicates.paints, false);
@@ -151,7 +155,7 @@ test("L6's three shapes are three different silences, and only one of them paint
   // GREEN: every exposed action dispatches. Nothing is wrong, so nothing is
   // red — but the panel must say that rather than showing the N/A sentence,
   // which would claim the check never ran.
-  const green = worldGraphView({ dbPath: fixtureStore("l6-green.db", { l6: "green" }) });
+  const green = viewOf(fixtureStore("l6-green.db", { l6: "green" }));
   const g6 = lintOf(green, "L6");
   assert.equal(g6.verdict, "GREEN");
   assert.equal(g6.implicates.paints, false);
@@ -160,7 +164,7 @@ test("L6's three shapes are three different silences, and only one of them paint
   resetGraphCache();
   // the real finding: law minted a verb nothing implements, and the CLASS MARK
   // that minted it is what goes red
-  const bad = worldGraphView({ dbPath: fixtureStore("l6-bad.db", { l6: "unhandled" }) });
+  const bad = viewOf(fixtureStore("l6-bad.db", { l6: "unhandled" }));
   const b6 = lintOf(bad, "L6");
   assert.deepEqual(b6.implicates.nodes.map((n) => n.id), ["the-town/parcel-class"]);
   assert.match(b6.implicates.nodes[0].why, /board/);
@@ -173,7 +177,7 @@ test("L6's three shapes are three different silences, and only one of them paint
 });
 
 test("evidence rides as HEADS with the totals named; the structured rows ride too, capped", () => {
-  const view = worldGraphView({ dbPath: fixtureStore() });
+  const view = viewOf(fixtureStore());
   const l1 = lintOf(view, "L1");
   assert.equal(l1.evidence.length, 1);
   assert.equal(l1.evidence_total, 1);
@@ -189,8 +193,8 @@ test("evidence rides as HEADS with the totals named; the structured rows ride to
 
 test("?kinds= narrows nodes AND the edges that hung off them; every count is recomputed", () => {
   const path = fixtureStore();
-  const all = worldGraphView({ dbPath: path });
-  const conv = worldGraphView({ dbPath: path, kinds: CONVERGENCE_KINDS });
+  const all = viewOf(path);
+  const conv = viewOf(path, { kinds: CONVERGENCE_KINDS });
   assert.deepEqual(conv.filter.kinds, CONVERGENCE_KINDS);
   assert.equal(conv.elements.nodes.every((n) => CONVERGENCE_KINDS.includes(n.data.kind)), true);
   assert.equal(conv.counts.nodes, conv.elements.nodes.length);
@@ -204,44 +208,46 @@ test("?kinds= narrows nodes AND the edges that hung off them; every count is rec
 
 test("?types= narrows edges; drop-unresolved takes the placeholder ends out", () => {
   const path = fixtureStore();
-  const only = worldGraphView({ dbPath: path, types: ["implements"] });
+  const only = viewOf(path, { types: ["implements"] });
   assert.deepEqual(Object.keys(only.counts.by_edge_type), ["implements"]);
-  const solid = worldGraphView({ dbPath: path, dropUnresolved: true });
+  const solid = viewOf(path, { dropUnresolved: true });
   assert.equal(solid.counts.unresolved, 0);
   assert.equal(solid.elements.edges.some((e) => e.data.target === "code:world/tools/vessel.mjs"), false);
 });
 
 test("no store is an error the route can SAY, not a throw and not an empty world", () => {
-  const missing = worldGraphView({ dbPath: join(dir, "nothing-here.db") });
+  clearWorld();
+  resetGraphCache();
+  const missing = worldGraphView({});
   assert.equal(missing.error, "no world store");
   assert.equal(missing.elements, undefined);   // an empty graph would read as a clean world
 });
 
-test("a store stamped FAILED is refused rather than served as a small world", () => {
+test("a world stamped FAILED is refused rather than served as a small world", () => {
   const path = join(dir, "failed.db");
   const db = new DatabaseSync(path);
   db.exec(SCHEMA);
   db.prepare("INSERT INTO meta VALUES (?, ?)").run("hydration_status", "FAILED: empty tables — nodes");
   db.close();
-  const view = worldGraphView({ dbPath: path });
-  assert.equal(view.error, "the world store would not load");
-  assert.match(view.detail, /FAILED/);
+  // The store never holds a failed hydration, and the one construction refuses
+  // it: the window is left with no world to show, which it says.
+  clearWorld();
+  assert.throws(() => publishWorld(path), /FAILED/);
+  resetGraphCache();
+  assert.equal(worldGraphView({}).error, "no world store");
 });
 
-test("the payload is cached on the file, and a rewrite in place invalidates it", () => {
+test("the payload is cached on the snapshot, and a new snapshot invalidates it", () => {
   const path = fixtureStore("cached.db");
-  const first = worldGraphPayload(path);
-  assert.equal(worldGraphPayload(path), first, "same file, same object — the cache is doing its job");
-  // A rehydration rewrites the file at the SAME path, which is the invalidation
-  // that has to work: a snapshot that outlived its file would be a cache nobody
-  // could clear. The store loses its lints here, so the two answers cannot be
-  // confused for one another. The mtime is pushed forward explicitly rather than
-  // trusted to differ — two writes inside one filesystem tick would otherwise
-  // make this pass or fail on timing rather than on the cache key.
-  fixtureStore("cached.db", { lints: false });
-  const ahead = new Date(Date.now() + 60_000);
-  utimesSync(path, ahead, ahead);
-  const second = worldGraphPayload(path);
+  publishWorld(path);
+  const first = worldGraphPayload();
+  assert.equal(worldGraphPayload(), first, "same snapshot, same object — the cache is doing its job");
+  // A new settlement publishes a new snapshot, which is the invalidation that
+  // has to work: a payload that outlived its snapshot would be a cache nobody
+  // could clear. The world loses its lints here, so the two answers cannot be
+  // confused for one another.
+  publishWorld(fixtureStore("cached.db", { lints: false }));
+  const second = worldGraphPayload();
   assert.notEqual(second, first);
   assert.equal(second.lints.length, 0);
   assert.equal(first.lints.length > 0, true);

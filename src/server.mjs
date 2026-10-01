@@ -61,7 +61,7 @@ import { worldStakeViaOffice, worldUnstakeViaOffice, worldStakeRead } from "./wo
 import { resetStoreSnapshot, storeDbPath, storeEngaged, storeSnapshot, worldStoreHealth } from "./world-serve.mjs"; // stage 1: the serving flag's instrument panel
 import { resetGraphCache, worldGraphView, NODE_KINDS, gexfPath } from "./world-graph.mjs"; // stage E: the window
 import { resetClassFieldsCache } from "./world-frames.mjs"; // the frame law's class read, dropped on a world.db swap
-import { dynamicHealth, dynamicDbPath, resetClassCache } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's instrument panel
+import { dynamicHealth, dynamicDbPath, dynamicRetired, resetClassCache } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's instrument panel
 import { servedEnterExitLedger, DEPRECATED_DOOR } from "./enter-exit-ledger.mjs"; // the passages, derived from the frozen era + the journal (2026-08-26)
 import { Bouncer, keyIdForToken, worldWriteVerbForRest } from "./bouncer.mjs";
 import { loopLag } from "./loop-lag.mjs"; // POS-267: how long the one thread keeps a caller waiting
@@ -191,7 +191,9 @@ try {
 // wrong file while the workers serve a null block. A guard must ask the
 // question in the words of the thing it guards.
 const DYNAMIC_DB_PATH = dynamicDbPath();
-if (READ_ONLY_ROLE && !existsSync(DYNAMIC_DB_PATH)) {
+// Retired on this office's flags (POS-269), the store is not a thing a worker
+// may be missing: nothing reads it, and `openDynamic` refuses anyway.
+if (READ_ONLY_ROLE && !dynamicRetired() && !existsSync(DYNAMIC_DB_PATH)) {
   refuseBoot(`--role read needs an existing dynamic store at ${DYNAMIC_DB_PATH}, and a read worker will not create one.`,
     "Start the writer first, or point WORLD_DYNAMIC_DB at the writer's file (npm run dynamic:rebuild creates it).",
     "Booting anyway would serve 200s with the hold-effects and held-things readings silently missing, which nginx cannot tell from a good answer.");

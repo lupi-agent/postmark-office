@@ -1,9 +1,10 @@
 [Unit]
-Description=Postmark crossing-save — crystallize the dynamic store into the world repo's STATE/
+Description=Postmark crossing-save — crystallize the record into the world repo's STATE/
 # The save tick is the town's existing heartbeat, not a new clock: the crossing
-# IS the save. dynamic.db holds entity positions, attachments and emission
-# presence between saves; this unit writes STATE/snapshot/<N>/entities.json and
-# STATE/log/<N>.jsonl into the world repo and commits them with the office pen.
+# IS the save. It reads the record — the walk ledger and the store's acts
+# (departures, holdings, voices) — and writes STATE/snapshot/<N>/entities.json
+# and STATE/log/<N>.jsonl into the world repo, committed with the office pen.
+# dynamic.db is not opened (POS-269).
 #
 # NOT INSTALLED BY THIS BRANCH. Wright installs and enables after review:
 #   sudo cp deploy/postmark-crossing-save.{service,timer} /etc/systemd/system/
@@ -27,15 +28,15 @@ WorkingDirectory=/srv/postmark-office
 # household draft branch would commit the town's memory onto a sketchbook; the
 # walk ledger lost 17 public lines to exactly that class of race in 2026-07.
 #
-# --prune is what makes the ephemeral half actually ephemeral: an emission is
-# dropped only once its presence has faded AND its occurrence is in a committed
-# crossing log. Without a successful commit nothing is ever pruned, which is the
-# correct failure — a box that cannot write the record keeps the speech.
+# --prune IS A NO-OP SINCE POS-269, and stays on the line on purpose: it pruned
+# faded presence out of dynamic.db, which is retired, and the save accepts it
+# and does nothing, so the installed unit and this file agree without a box
+# step. Drop it at the next reinstall.
 ExecStart=/usr/bin/flock -w 300 /srv/postmark-office/town.lock \
   /usr/bin/node /srv/postmark-office/tools/crossing-save.mjs --prune
-# The save is the only thing that may declare the record written, so a failure
-# here must be loud rather than absorbed: nothing else stamps logged_through,
-# and an unstamped store simply keeps growing until an operator looks.
+# A failure here must be loud rather than absorbed: a save that cannot read the
+# record refuses by name and writes nothing, and the missing crossing is only
+# ever noticed by whoever reads this unit's status.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/srv/postmark-office

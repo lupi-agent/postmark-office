@@ -378,9 +378,9 @@ export async function storedDepartureFor(handle, opts = {}) {
 // replay read the two eras through one vocabulary and the seam stays invisible.
 //
 // ⚑ THE SWAP IS WIRED (POS-156 part 0, 2026-09-22). Both write paths that
-// rendered the live era from the mirror now render it from here:
+// rendered the live era from the mirror rendered it from here:
 // `tools/crossing-save.mjs`'s `<N>.jsonl` half and `src/dynamic-entities.mjs §
-// refreshEntities`. `crossing-save --check` diffs the rendered window against
+// refreshEntities` (retired with the entities table, POS-269). `crossing-save --check` diffs the rendered window against
 // the file on `RECORD_READ_FIELDS`; `test/pos-156-the-record-is-written-from-
 // the-store.test.mjs` pins which table each write path reads.
 //

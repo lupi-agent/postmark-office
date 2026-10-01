@@ -51,7 +51,7 @@
 
 import { test, before, after, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -59,7 +59,6 @@ import { WORLD_CLONE } from "../src/world-store.mjs";
 import { useGuardReader } from "../src/world2-guards.mjs";
 import { normalizeRow } from "../src/world-journal.mjs";
 import { worldToolModule } from "../src/dynamic-entities.mjs";
-import { openDynamic } from "../src/dynamic-store.mjs";
 import { positionsAt } from "../src/dynamic-presence.mjs";
 import { everyonePlaced } from "../src/positions.mjs";
 import { heardFromV2, vesselPositionAt } from "../src/world-movement.mjs";
@@ -190,7 +189,7 @@ test("a walk recorded while a rebuild is reading is not lost to it", async () =>
   assert.deepEqual(await p.departures(), [{ handle: "a", iso: "2" }]);
 });
 
-test("PRESENCE: positionsAt over the projection equals positionsAt over the entities table + the store", async (t) => {
+test("PRESENCE: positionsAt over the projection equals positionsAt over the ledger's governing legs + the store", async (t) => {
   if (needsClone(t)) return;
   install();
   const { departuresAcrossEras } = await import("../src/world.mjs");
@@ -203,32 +202,25 @@ test("PRESENCE: positionsAt over the projection equals positionsAt over the enti
   const ledger = derived.departures.filter((d) => d.source !== "store");
   const stored = derived.departures.filter((d) => d.source === "store");
 
-  // The entities table as a refresh leaves it: each ledger resident's governing
-  // leg, in the store's column names.
-  const dir = mkdtempSync(join(tmpdir(), "positions-presence-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const db = openDynamic(join(dir, "dynamic.db"));
-  const put = db.prepare("INSERT INTO entities (handle, x, y, derived_at, provenance) VALUES (?, ?, ?, ?, ?)");
-  for (const [handle, d] of governingOf(ledger)) {
-    put.run(handle, d.toward.x, d.toward.y, new Date(B).toISOString(), JSON.stringify({ departure: {
-      iso: d.iso, from: d.from, toward: d.toward, at: d.at, within: d.targetExtent, to: d.targetMarkId, pace: d.pace } }));
-  }
+  // What the entities table used to hold — each ledger resident's governing leg
+  // — handed in directly, ahead of the store's records: the two halves the
+  // projection is the union of. (The table itself went with dynamic.db, POS-269.)
+  const halves = [...governingOf(ledger).values(), ...stored];
   const projected = [...governingOf(derived.departures).values()];
   // KEPT, through the presence layer: the hook the office hands it.
   const kept = createPlacement();
   const placed = (args) => kept.rows({ key: "one-epoch", at: args.at, place: (only, at) => everyonePlaced({ ...args, at, only }) });
   for (const atMs of [B + 30_000, B + 20 * 60_000, LATE]) {
-    const table = positionsAt(db, atMs, walk, null, { world: WORLD, where, stored, roll: ROLL });
+    const table = positionsAt(null, atMs, walk, null, { world: WORLD, where, stored: halves, roll: ROLL });
     assert.deepEqual(
-      positionsAt(db, atMs, walk, null, { world: WORLD, where, projected, roll: ROLL }),
+      positionsAt(null, atMs, walk, null, { world: WORLD, where, projected, roll: ROLL }),
       table,
       `at ${new Date(atMs).toISOString()}: presence over the projection disagrees with presence over the table`);
     assert.deepEqual(
-      positionsAt(db, atMs, walk, null, { world: WORLD, where, projected, roll: ROLL, placed }),
+      positionsAt(null, atMs, walk, null, { world: WORLD, where, projected, roll: ROLL, placed }),
       table,
       `at ${new Date(atMs).toISOString()}: presence over the kept placement disagrees with presence over the table`);
   }
-  db.close();
 });
 
 test("KEPT: the placement answers what everyonePlaced answers at every instant, placing the town once", async (t) => {

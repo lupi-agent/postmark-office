@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { worldClone, NO_WORLD, OFFICE_ROOT } from "./fixture-paths.mjs";
+import { publishWorld } from "./helpers/world-rows.mjs";
 import { loadPglite, storeFloor } from "./helpers/pglite-store.mjs";
 import { materializeWorldAtSha } from "../src/world-store.mjs";
 import { deriveLaw, writeLaw } from "../world2/tools/law-ingest.mjs";
@@ -57,9 +58,13 @@ before(async () => {
   blessing = newestBlessing(CLONE);
   dir = mkdtempSync(join(tmpdir(), "law-parity-"));
   worldDb = join(dir, "world.db");
+  // The world side is the hydration's ROWS, published as the world graph snapshot
+  // (POS-270 lane W 3a): the class readers answer from it, never from a file. The
+  // law snapshot is not published in this process, so the graph is what answers.
   execFileSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"),
-    "--world", CLONE, "--ref", blessing.sha, "--db", worldDb, "--no-gexf", "--no-lints"],
-  { stdio: "ignore", env: { ...process.env, WORLD_STORE_DB: worldDb } });
+    "--world", CLONE, "--ref", blessing.sha, "--no-db", "--rows-out", `${worldDb}.rows.json`, "--no-gexf", "--no-lints"],
+  { stdio: "ignore", env: { ...process.env, TMP: dir, TEMP: dir, TMPDIR: dir } });
+  publishWorld(`${worldDb}.rows.json`, "the blessed hydration");
   resetClassRosterCache();
 
   const lawRepo = materializeWorldAtSha(CLONE, blessing.sha, ["WORLD", "tools", "LOGOS"], join(dir, "law"));
@@ -83,7 +88,7 @@ test("the store pins the blessing the world.db was hydrated at", (t) => {
 
 test("the roster: the same class names, from both sources", (t) => {
   if (why) return t.skip(why);
-  const file = classRoster({ worldDb });
+  const file = classRoster();
   assert.equal(file.source, "store", `world.db did not answer the roster (${file.disclosed}) — the fixture is broken, not the port`);
   assert.deepEqual([...rosterOf(snap)].sort(), [...file.roster].sort());
 });
@@ -103,15 +108,15 @@ test("every class's frontmatter dials, predicate children and predicate nodes ar
   // change its bytes, not its meaning, and must name that when it lands.
   const canon = (v) => JSON.stringify(v, (_, x) => (x && typeof x === "object" && !Array.isArray(x)
     ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x));
-  for (const name of [...classRoster({ worldDb }).roster].sort()) {
-    const a = canon(classDials(name, { worldDb })), b = canon(dialsOf(snap, name));
+  for (const name of [...classRoster().roster].sort()) {
+    const a = canon(classDials(name)), b = canon(dialsOf(snap, name));
     if (a !== b) diffs.push(`${name} dials: world.db ${a} / store ${b}`);
-    const pa = classPredicates(name, { worldDb }), pb = predicatesOf(snap, name);
+    const pa = classPredicates(name), pb = predicatesOf(snap, name);
     const sorted = (o) => JSON.stringify(Object.entries(o).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
     if (sorted(pa) !== sorted(pb)) diffs.push(`${name} predicates: world.db ${sorted(pa)} / store ${sorted(pb)}`);
     for (const slot of Object.keys(pa)) {
       slots++;
-      const na = dialNode(name, slot, { worldDb }), nb = predicateNodeOf(snap, name, slot);
+      const na = dialNode(name, slot), nb = predicateNodeOf(snap, name, slot);
       if (na !== nb) diffs.push(`${name}/${slot} node: world.db ${na} / store ${nb}`);
     }
   }

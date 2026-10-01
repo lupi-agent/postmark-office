@@ -36,7 +36,10 @@ const dbPath = join(repo, "fixture-world.db");
 const logPath = join(repo, "shadow.jsonl");
 
 process.env.WORLD_CLONE = repo;
-process.env.WORLD_STORE_DB = dbPath;
+// The world is the rows (test/helpers/world-rows.mjs, POS-270 lane W 3a):
+// buildStore() publishes the fixture as the world graph snapshot, and world.db's
+// path points nowhere, so no read here can stand on the file.
+process.env.WORLD_STORE_DB = join(repo, "no-world-db-here.db");
 process.env.WORLD_STORE_SHADOW_LOG = logPath;
 delete process.env.WORLD_STORE_READS;
 delete process.env.WORLD_STORE_SHADOW;
@@ -129,6 +132,7 @@ git("branch", "draft/house-a", "main");
 // serving layer's behaviour over a store, not the hydrator's derivation.
 
 const { SCHEMA } = await import("../src/world-store.mjs");
+const W = await import("./helpers/world-rows.mjs");
 
 function buildStore({ sha = MAIN_SHA, marks = MARKS, status = "OK" } = {}) {
   if (existsSync(dbPath)) rmSync(dbPath);
@@ -157,6 +161,9 @@ function buildStore({ sha = MAIN_SHA, marks = MARKS, status = "OK" } = {}) {
   edge.run("the-town/town-square", "alpha/well", "contains", "{}", null);
   edge.run("alpha/well", "alpha/well-name", "describes", "{}", null);
   db.close();
+  // The store never holds a FAILED snapshot (world-hydrate.mjs): a failed
+  // hydration leaves no graph to stand on, which is what the readers see.
+  if (status === "OK") W.publishWorld(dbPath); else W.clearWorld();
 }
 buildStore();
 
@@ -188,6 +195,7 @@ test("flags off — a corrupt store changes nothing and is never opened", async 
   // Replace the store with bytes no sqlite can open. If any read path touched
   // it, this would throw or fall through — both are visible below.
   writeFileSync(dbPath, "this is not a database");
+  W.clearWorld();   // the store unreadable: no graph to stand on
   serve.resetStoreSnapshot();
 
   assert.equal(await placeWords({ x: 101, y: 101 }), "The Old Well, Town Square");
@@ -373,6 +381,7 @@ test("a FAILED-stamped store is unavailable, not silently empty", async () => {
 
 test("a missing store falls through rather than throwing", async () => {
   rmSync(dbPath);
+  W.clearWorld();
   serve.resetStoreSnapshot();
   serveOnly();
   assert.equal(await serve.servedRead("probe", { repo, key: null, fold: () => "fold", store: () => "store" }), "fold");

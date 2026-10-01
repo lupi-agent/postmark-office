@@ -338,3 +338,19 @@ test("an UN-INGESTED town says `backed` is UNKNOWN, not empty", async () => {
   assert.match(body.backed_unavailable, /UNKNOWN — not nothing/);
   assert.ok(!("escrow_at_town_sha" in body), "a freshness stamp with no source is worse than none");
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// POS-241 part 5 · what the candle refused reaches the twin as it reaches 1.0
+// ═════════════════════════════════════════════════════════════════════════════
+
+test("`refused` is the one derivation, handed THIS door's own residents", async () => {
+  const calls = [];
+  const refusedReader = async (handles) => {
+    calls.push([...handles]);
+    return { since_crossing: 10, through_crossing: 12, count: 1, rows: [{ mark: "pos104-wright/x", window: 212, says: "refused at window 212: harm: y" }] };
+  };
+  const body = await world2MyMarks(KEY, { p: fixturePool(), refusedReader });
+  assert.equal(calls.length, 1, "asked once");
+  assert.deepEqual(calls[0], body.residents, "the reader was handed the twin's own roster");
+  assert.equal(body.refused.rows[0].says, "refused at window 212: harm: y");
+});

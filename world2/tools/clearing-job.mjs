@@ -146,14 +146,31 @@ try {
   //     it WITHIN the window. A claim that supersedes a claim from an EARLIER
   //     window is an amendment of what that claim locked, and it is exactly the
   //     one case where a slug that already stands is not a collision.
+  //
+  //     A RETIRED ROW NEVER HOLDS A NAME (POS-241 phase 1, ruled 2026-09-26). A mark
+  //     keeps one id for life, so a claim on a slug whose row is RETIRED is not a
+  //     new mark: it is the author leaving their own mark again, and step 6
+  //     REVIVES that row — the same id, standing again — rather than INSERTing a
+  //     second row under a unique slug. That INSERT is what rolled window 212 back
+  //     whole on 09-26 (`marks_slug_key`). A retired row of ANOTHER resident is
+  //     refused here by name: one claim never takes a whole window down with it.
   const amends = new Map();   // claim id -> the standing mark it continues
+  const revives = new Map();  // claim id -> the author's own retired mark it revives
   for (const c of pending) {
     const slug = slugOf(c);
     if (!slug) continue;
     const { rows } = await q(
       "SELECT id::text, locked_window FROM marks WHERE slug = $1 AND status = 'standing' AND id <> $2",
       [slug, c.id]);
-    if (!rows.length) continue;
+    if (!rows.length) {
+      const { rows: [gone] } = await q(
+        "SELECT id::text, owner, locked_window, retired_window FROM marks WHERE slug = $1 AND status = 'retired'",
+        [slug]);
+      if (!gone) continue;
+      if (gone.owner === c.claimant) revives.set(String(c.id), gone);
+      else decide(c.id, "refused", `duplicate: a retired mark of ${gone.owner} carries this slug — only its author may leave it again`);
+      continue;
+    }
     if (c.supersedes && String(c.supersedes) === rows[0].id) { amends.set(String(c.id), rows[0]); continue; }
     decide(c.id, "refused",
       c.supersedes
@@ -416,7 +433,13 @@ try {
     materialize.push(c);
   }
 
-  await materializeClaims(q, { claims: materialize, amends, windowId, label: `window ${windowId}` });
+  await materializeClaims(q, { claims: materialize, amends, revives, windowId, label: `window ${windowId}` });
+  // What each revive overwrote, on the window's own record: the row now says what
+  // is true today, and this is where its retirement stays readable.
+  const revived = materialize.filter((c) => revives.has(String(c.id))).map((c) => {
+    const was = revives.get(String(c.id));
+    return { slug: slugOf(c), id: was.id, retired_window: was.retired_window, locked_window_before: was.locked_window };
+  });
 
   const { rows: [{ count: retracted }] } = await q(
     "SELECT COUNT(*)::int AS count FROM claims WHERE window_id = $1 AND status = 'retracted'", [windowId]);
@@ -483,6 +506,7 @@ try {
       // nobody kept. `world_sha` is here because a gate that refuses a resident's
       // ground has to name the law-as-of it refused against.
       ...(capSeen ? { parcel_cap: capSeen } : {}),
+      ...(revived.length ? { revived } : {}),
       standing: {
         recomputed: standing.length, moved: moved.length,
         // Capped, because the receipt is evidence and not an export: the first

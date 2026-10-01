@@ -356,3 +356,53 @@ export async function withRecordOn(fn) {
     if (was.url == null) delete process.env.WORLD2_PG_URL; else process.env.WORLD2_PG_URL = was.url;
   }
 }
+
+/**
+ * THE GUARD READER, answered from a pen (POS-269). With the guards on, the
+ * hold door's holder check reads the holding acts through the guard reader, and
+ * that read orders by the holding's own instant, which the pen's acts handler
+ * (id order only) refuses to answer. So it is answered here, from the same
+ * `state.acts`, and every other guard query goes to the pen unchanged. Returns
+ * the reader's restore.
+ */
+export async function readHoldsFrom(pen) {
+  const { useGuardReader } = await import("../src/world2-guards.mjs");
+  const when = (r) => Date.parse(r.payload?.at ?? r.at) || 0;
+  return useGuardReader(async (fn) => fn({
+    query: async (sql, params = []) => {
+      if (!/^SELECT id, at, actor, action, payload FROM acts WHERE action = ANY\(\$1\)/i.test(norm(sql))) return pen.query(sql, params);
+      const want = new Set(params[0]);
+      const target = params[1];
+      const rows = pen.rows()
+        .filter((r) => want.has(r.action))
+        .map((r) => ({ ...r, at: r.at instanceof Date ? r.at : new Date(r.at), payload: typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload }))
+        .filter((r) => target == null || (r.payload?.payload?.target ?? r.payload?.thing) === target)
+        .sort((a, b) => (when(a) - when(b)) || (a.id - b.id));
+      return { rows, rowCount: rows.length };
+    },
+  }));
+}
+
+/**
+ * THE HOLD LANE ON A FRESH PEN, as prod runs it (POS-269). The holding edge is
+ * the hold acts or there is none — dynamic.db, which held it for an unflipped
+ * office, is retired and the hold door refuses there — so a suite that drives
+ * the door flips the hold lane under the guards, and the holder check reads
+ * back exactly what this pen filed. `restore` puts the env, the reader and both
+ * pools back.
+ */
+export async function installHoldRecord(opts = {}) {
+  const FLAGS = { ...RECORD_ON, W2_PEN: "hold", W2_GUARDS: "1" };
+  const was = Object.fromEntries(Object.keys(FLAGS).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, FLAGS);
+  const pen = installActsPen(opts);
+  const unread = await readHoldsFrom(pen);
+  return {
+    pen,
+    restore() {
+      unread();
+      uninstallActsPen();
+      for (const [k, v] of Object.entries(was)) { if (v == null) delete process.env[k]; else process.env[k] = v; }
+    },
+  };
+}
