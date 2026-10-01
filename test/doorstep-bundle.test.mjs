@@ -42,6 +42,7 @@ import { callTool } from "../src/mcp.mjs";
 import { ACT_SHADOW_READS } from "../src/household-apex.mjs";
 import { TOWN_READABLE } from "../src/town-apex.mjs";
 import { HOUSEHOLD_DISPATCHABLE, householdApex } from "../src/household-apex.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 const AS_OF = "bundlefixture000000000000000000000000000";
 const HANDLE = "r000";
@@ -92,7 +93,9 @@ function bundleDb() {
 
   const insLedger = db.prepare("INSERT INTO ledger (kind, date, id, from_h, to_h, json) VALUES (?,?,?,?,?,?)");
   for (let i = 0; i < 12; i++) {
-    insLedger.run("delivery", `2026-07-${String((i % 28) + 1).padStart(2, "0")}`, `l${i}`, "r001", HANDLE, null);
+    // json is the event itself, as the hydrator writes every ledger line (town-index.mjs § ledgerLines); the store refuses a null
+    const date = `2026-07-${String((i % 28) + 1).padStart(2, "0")}`;
+    insLedger.run("delivery", date, `l${i}`, "r001", HANDLE, JSON.stringify({ kind: "delivery", date, id: `l${i}`, from: "r001", to: HANDLE }));
   }
 
   db.prepare("INSERT INTO stamps VALUES (?,?,?,?)").run(HANDLE, 12, 30, 3);
@@ -116,6 +119,11 @@ function bundleDb() {
 }
 
 const db = bundleDb();
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(db);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 // A real (empty) directory rather than a path that does not exist: the paper
 // acts that FOUND a page will happily mkdir their way toward one, and a
 // throwaway temp dir keeps that off the filesystem the developer lives on.

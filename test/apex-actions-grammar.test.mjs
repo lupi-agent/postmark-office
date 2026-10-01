@@ -32,6 +32,13 @@ import { readFileSync } from "node:fs";
 import { householdApex, HOUSEHOLD_DISPATCHABLE, HOUSEHOLD_TOOL } from "../src/household-apex.mjs";
 import { actionFields, STANDPOINT_PARAMS } from "../src/world-apex.mjs";
 import { TOOLS } from "../src/mcp.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
+
+// The doors below run in this process. They never had a town index, and the
+// office will not run without one (POS-268): this file's is an empty store.
+const IX = await indexStore(null);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 const PROTO = readFileSync(new URL("../ops/mcp-prototype/mcp-proto.js", import.meta.url), "utf8");
 

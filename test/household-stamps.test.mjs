@@ -19,6 +19,13 @@ import { clipPotStake } from "../src/pot-stake-exec.mjs";
 import { intakeDisclosure, INTAKE } from "../src/fund.mjs";
 import { readIntakeMap } from "../src/intake-map.mjs";
 import { HOUSEHOLD_DISPATCHABLE, HOUSEHOLD_READS, householdDispatchToolFor } from "../src/household-apex.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
+
+// The doors below run in this process. They never had a town index, and the
+// office will not run without one (POS-268): this file's is an empty store.
+const IX = await indexStore(null);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 // A town whose WHITE_PAGES holds exactly the pot shapes the law now allows.
 function tempTown(pots) {

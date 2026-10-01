@@ -32,10 +32,16 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { householdApex } from "../src/household-apex.mjs";
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "postmark-home-bounce-"));
 const dbPath = join(dir, "fixture.db");
 fixtureDb(dbPath).close();
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(dbPath);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 const db = new DatabaseSync(dbPath, { readOnly: true });
 after(() => { db.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
