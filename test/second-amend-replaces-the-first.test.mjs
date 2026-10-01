@@ -107,18 +107,20 @@ test("two amends of a standing mark in one window: the second locks, the first r
     await file(mod, pool, { body: "A bench and a lamp.", seq: 1 });
     await file(mod, pool, { body: "A bench, a lamp, and a rug.", seq: 2 });
   });
-  const claims = await read(
-    "SELECT body, status, refusal_check, supersedes::text FROM claims WHERE slug = $1 AND window_id = 212 ORDER BY submitted_at", [SLUG]);
-  assert.equal(claims.length, 2);
-  assert.deepEqual(claims.map((c) => c.status), ["retracted", "pending"], "replaced at filing, before any clearing");
-  assert.match(claims[0].refusal_check, /^replaced: /);
-  assert.equal(claims[1].supersedes, MARK_ID, "the second supersedes the STANDING mark directly");
+  // Replaced AT FILING, before any clearing: the docket carries one live claim.
+  const filed = await read("SELECT status FROM claims WHERE slug = $1 AND window_id = 212 ORDER BY submitted_at", [SLUG]);
 
   const run = clear();
   assert.equal(run.code, 0, run.out);
-  const after = await read("SELECT body, status, refusal_check FROM claims WHERE slug = $1 AND window_id = 212 ORDER BY submitted_at", [SLUG]);
+  const after = await read(
+    "SELECT status, refusal_check, supersedes::text FROM claims WHERE slug = $1 AND window_id = 212 ORDER BY submitted_at", [SLUG]);
+  // Asserted after the clearing, so a red names what the clearing did — on 09-26:
+  // "duplicate: a standing mark carries this slug, and this claim supersedes …".
   assert.deepEqual(after.map((c) => c.status), ["retracted", "locked"],
-    `on 09-26 both were refused: ${after.map((c) => c.refusal_check).join(" | ")}`);
+    `filed ${filed.map((c) => c.status).join("/")}; ruled: ${after.map((c) => `${c.status} (${c.refusal_check})`).join(" | ")}`);
+  assert.deepEqual(filed.map((c) => c.status), ["retracted", "pending"], "replaced at filing, before any clearing");
+  assert.match(after[0].refusal_check, /^replaced: /);
+  assert.equal(after[1].supersedes, MARK_ID, "the second supersedes the STANDING mark directly");
   const [m] = await read("SELECT id::text, body, locked_window FROM marks WHERE slug = $1", [SLUG]);
   assert.deepEqual(m, { id: MARK_ID, body: "A bench, a lamp, and a rug.", locked_window: 212 }, "the resident's latest word is the mark");
   const [w] = await read("SELECT status, receipts->'six_count' AS six FROM windows WHERE id = 212");
