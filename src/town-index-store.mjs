@@ -663,9 +663,23 @@ export async function home(q, handle, fresh = null) {
  * pen's own error, which its door turns into the 503.
  */
 export async function readTownIndex(fn, { env = process.env } = {}) {
+  const read = async (client) => ({ out: await fn(client), asOf: await townIndexAsOf(client) });
+  if (_indexPoolForTest) {
+    const client = await _indexPoolForTest.connect();
+    try { await client.query("BEGIN READ ONLY"); const out = await read(client); await client.query("COMMIT"); return out; }
+    catch (e) { await client.query("ROLLBACK").catch(() => {}); throw e; }
+    finally { client.release(); }
+  }
   const { officeRead } = await import("./world2-pen.mjs");
-  return officeRead(async (client) => ({ out: await fn(client), asOf: await townIndexAsOf(client) }), { env });
+  return officeRead(read, { env });
 }
+
+// TEST SEAM: the town index's own pool. A suite that stubs the record's pen (a
+// JS stand-in for the acts tables, test/acts-pen-stub.mjs) still reads its town
+// index from a real Postgres through this; the office never sets it, and with
+// it unset every read goes through the pen exactly as above.
+let _indexPoolForTest = null;
+export function __setTownIndexPoolForTest(pool) { _indexPoolForTest = pool; }
 
 /** The refusal a switched door gives when the store cannot answer. Fixed words, never the driver's message. */
 export const UNREACHABLE = Object.freeze({ error: "bounce", defect: UNREACHABLE_DEFECT, hint: UNREACHABLE_HINT });
