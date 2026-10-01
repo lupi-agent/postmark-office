@@ -26,6 +26,11 @@ import { causeOf, refusalCheckOf } from "../src/mark-receipt.mjs";
 import { refusedRowsFrom, myMarksRefused, RULINGS_SINCE_CROSSINGS } from "../src/claim-effects.mjs";
 import { CROSSING_EPOCH_UTC, CROSSING_MS, currentCrossing } from "../src/crossings.mjs";
 import { __setPoolForTest } from "../src/world2-claims.mjs";
+// Imported HERE, before any test registers: a top-level `await import()` of
+// world.mjs further down let the door test register after the file's before/after
+// hooks had run, so it ran with no docket store engaged (#294: world.mjs's import
+// now awaits the world graph snapshot's load at import).
+import { WORLD_CLONE, worldMyMarks } from "../src/world.mjs";
 
 // The real clock: both doors read now, so the fixture is dated against it.
 const NOW = Date.now();
@@ -123,7 +128,6 @@ test("an unreadable docket is UNAVAILABLE, never an empty list that reads as not
 
 // ── both doors ────────────────────────────────────────────────────────────
 
-const { WORLD_CLONE, worldMyMarks } = await import("../src/world.mjs");
 const TOWN_CLONE = process.env.TOWN_CLONE ?? join(WORLD_CLONE, "..", "town-clone");
 const HAVE = existsSync(join(WORLD_CLONE, "WORLD", "world-state.json"))
   && existsSync(join(TOWN_CLONE, "tools", "stamp-mint.mjs"));
