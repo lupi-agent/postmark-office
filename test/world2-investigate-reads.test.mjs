@@ -168,7 +168,10 @@ function fixturePool({ rows = ROWS, law = undefined, claims = [], settlements = 
     asked,
     query: async (sql, params) => {
       asked.push({ sql: String(sql).replace(/\s+/g, " ").trim(), params });
-      if (/FROM settlements/i.test(sql)) return { rows: settlements };
+      if (/FROM settlements/i.test(sql)) {
+        if (settlements == null) throw new Error("the settlements table will not answer");
+        return { rows: settlements };
+      }
       if (/FROM claims WHERE slug/i.test(sql)) {
         if (claimsThrow) throw new Error("the docket is down");
         return { rows: claims.filter((c) => c.slug === params[0]) };
@@ -336,6 +339,24 @@ test("RECEIPT · locked beyond the newest settled window: LOCKED, not published,
   assert.equal(body.receipt.window, 210);
   assert.ok(body.tree_only["receipt.crossing.sha · receipt.crossing.date · receipt.settlement_sha"],
     "git's short sha and committer zone are declared; the number is compared");
+});
+
+test("RECEIPT · settlements unreadable: a standing mark locked at its newest claim is UNDECIDABLE, never published (Wright's #305 review)", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const id = "wright/the-trueing-house";
+  const claims = [claimRow({ slug: id, status: "locked", window_id: 200 })];
+  const unreadable = (await investigate(`mark=${id}`, fixturePool({ claims, settlements: null }))).body;
+  assert.notEqual(unreadable.receipt.status, "published", "carried is proven, never assumed");
+  assert.deepEqual(unreadable.receipt.settlements, { readable: false, reason: "the settlements table could not be read" });
+  assert.match(unreadable.receipt.says, /cannot be told/);
+  // a table that names no closed window is the same absence of proof
+  const windowless = (await investigate(`mark=${id}`, fixturePool({ claims, settlements: SETTLEMENTS.map((s) => ({ ...s, window_id: null })) }))).body;
+  assert.notEqual(windowless.receipt.status, "published");
+  assert.equal(windowless.receipt.settlements.readable, true);
+  // and a mark with no locked claim needs no proof: it stands, it is published
+  const seed = (await investigate(`mark=${id}`, fixturePool({ settlements: null }))).body;
+  assert.equal(seed.receipt.status, "published");
+  assert.ok(!("settlements" in seed.receipt));
 });
 
 test("RECEIPT · on the docket and not in the rows: answered with its tense, never bounced like a typo (1.0's own branch)", async (t) => {

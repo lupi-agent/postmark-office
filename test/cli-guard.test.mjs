@@ -203,6 +203,8 @@ const ROSTER = {
   "world2/tools/falsifier-review-closure.mjs": { args: [], env: NO_PG, code: 2, needle: "WORLD2_PG_URL missing" },
   // No --base: stops on usage before any HTTP (POS-142).
   "world2/tools/falsifier-twins-equality.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: falsifier-twins-equality.mjs" },
+  // No --world-repo: stops on usage before any git read or Postgres connect (POS-142 S3 item 3).
+  "world2/tools/prod-flip-falsifiers.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: prod-flip-falsifiers.mjs" },
   "world2/tools/law-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: law-ingest.mjs" },
   "world2/tools/graph-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: graph-ingest.mjs" },
   "tools/arena-archive.mjs": { args: [], env: {}, code: 2, needle: "usage: arena-archive.mjs" },

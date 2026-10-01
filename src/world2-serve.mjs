@@ -542,12 +542,26 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
   let settled = null;
   try { settled = await storeSettlements(p); } catch { settled = null; }
   const newest = Array.isArray(claims) ? (claims.find((c) => c?.slug === id) ?? null) : null;
-  const notYetCarried = newest?.status === "locked" && settled
-    && Number.isFinite(settled.settledWindow) && Number(newest.window_id) > settled.settledWindow;
+  // CARRIED IS PROVEN, NEVER ASSUMED (Wright's #305 review). A standing mark
+  // whose newest claim is locked is carried only when a settlement is known to
+  // have closed its window. With no settled window to compare (the table could
+  // not be read, or names no window), whether it was carried is UNDECIDABLE, and
+  // the receipt says so rather than calling it published.
+  const lockedNewest = newest?.status === "locked";
+  const windowKnown = Boolean(settled) && Number.isFinite(settled.settledWindow);
+  const notYetCarried = lockedNewest && windowKnown && Number(newest.window_id) > settled.settledWindow;
+  const carriedUndecidable = standing && lockedNewest && !windowKnown;
   const receipt = receiptFrom({
-    id, canon: standing && !notYetCarried ? { id } : null, published_at: null,
+    id, canon: standing && !notYetCarried && !carriedUndecidable ? { id } : null, published_at: null,
     claims, settlement: settled?.current ?? null, site_pin: null,
   });
+  if (carriedUndecidable) {
+    const reason = settled ? "the settlements table names no window a settlement closed" : "the settlements table could not be read";
+    Object.assign(receipt, {
+      settlements: { readable: Boolean(settled), reason },
+      says: `standing in the store, its newest claim locked at window ${newest.window_id}; whether a settlement has carried it cannot be told: ${reason}`,
+    });
+  }
   if (receipt.status === "published") {
     Object.assign(receipt, { crossing: null, settlement_sha: null,
       says: "published — the store holds this mark standing; which settlement carried it is not recorded in the store (see tree_only)" });
