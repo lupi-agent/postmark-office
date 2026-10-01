@@ -70,6 +70,17 @@ const CHANNELS = ["published", "unpublished", "left_drafted", "withdrawn", "quar
 // read the same constant rather than the env twice.
 const SOURCE = env("SETTLEMENT_SOURCE_MODE") ?? "git";
 
+// The dry leg's withheld acts, one per line, written by settlement-auto.sh's
+// `withheld`. Absent is "none yet", not an error: a dry crossing that refused
+// before its first write withheld nothing.
+const DRY = env("SETTLEMENT_DRY") === "1";
+const withheldLines = (() => {
+  const p = env("SETTLEMENT_WITHHELD");
+  if (!p) return [];
+  try { return readFileSync(p, "utf8").split("\n").map((l) => l.trim()).filter(Boolean); }
+  catch { return []; }
+})();
+
 const sweep = readJson(env("SETTLEMENT_SWEEP_JSON"));
 const drain = readJson(env("SETTLEMENT_DRAIN_JSON"));
 const isolate = readJson(env("SETTLEMENT_ISOLATE_JSON"));
@@ -171,6 +182,16 @@ const receipt = {
   // by-hand crossing that REFUSED before it reached a docket still has to say it
   // was a person's act, or the journal and the receipt disagree about what ran.
   by_hand: env("SETTLEMENT_BY_HAND") === "1",
+
+  // ── AND WHETHER ANYTHING LEFT THE RUN (POS-242, the dry leg) ───────────────
+  //
+  // `true` when SETTLEMENT_DRY=1: the crossing ran to this receipt and every
+  // write that leaves the run — main's push, the photograph's push, the store's
+  // retirement, the escalations, the history line — was withheld and is named
+  // in `withheld`, one sentence each, in the order the crossing reached them.
+  // On every receipt, `false` and `[]` included, for `source`'s reason above.
+  dry: DRY,
+  withheld: DRY ? withheldLines : [],
 
   // ── WHAT A ROLLBACK CROSSING SWEPT UP BEFORE IT LOOKED (repair 1) ──────────
   //
@@ -470,6 +491,11 @@ const receipt = {
   retired: retire
     ? (retire.ran === false
         ? { ran: false, reason: retire.reason ?? "the retire step did not run for this crossing" }
+        : retire.dry_run === true
+          // A dry crossing's retirement names its marks and writes none. Not
+          // `ran: true` with a count: that would read as the store told.
+          ? { ran: false, dry_run: true, would_retire: retire.would_retire ?? [],
+              reason: "dry run — the store was not written" }
         : {
             ran: true,
             count: retire.count ?? (retire.retired ?? []).length,
@@ -556,7 +582,7 @@ const receipt = {
       }
     : null,
 
-  detail: env("SETTLEMENT_DETAIL") ?? "",
+  detail: DRY ? `DRY RUN, nothing written — ${env("SETTLEMENT_DETAIL") ?? ""}` : (env("SETTLEMENT_DETAIL") ?? ""),
 };
 
 process.stdout.write(`${JSON.stringify(receipt, null, 1)}\n`);
