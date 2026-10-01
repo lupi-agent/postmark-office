@@ -230,6 +230,8 @@ const ROSTER = {
   // The earpiece's deliverer (POS-209): bare, it is usage and opens nothing —
   // the timer passes --run, and even then W2_EARPIECE=1 gates every read.
   "world2/tools/earpiece-deliver.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: earpiece-deliver.mjs --run" },
+  // No --world-repo: stops on usage before any git or Postgres (POS-142 Proposal B).
+  "world2/tools/mark-carried-backfill.mjs": { args: [], env: NO_PG, code: 2, needle: "--world-repo <checkout> is required" },
   "world2/tools/review-rule.mjs": { args: [], env: NO_PG, code: 2, needle: "review-rule.mjs: which claim?" },
   "world2/tools/roll-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: roll-ingest.mjs" },
   "world2/tools/seed-import.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: seed-import.mjs" },
