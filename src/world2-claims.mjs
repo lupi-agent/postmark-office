@@ -726,6 +726,28 @@ export async function markStandingStatus({ slug }, env = process.env) {
 }
 
 /**
+ * A WITHDRAW OF A RETIRED MARK IS REFUSED BY NAME (POS-241 phase 1, ruled
+ * 2026-09-26: "a withdraw of a retired mark is refused by name — already retired
+ * at window N"). Asked only where the door would otherwise say "no mark in your
+ * world": a withdrawn mark is in neither the sketchbook nor canon, and that 404
+ * told the author nothing about the mark they once had. A mark the 09-16 move
+ * returned to the sketchbook never reaches here, because withdrawing a draft is
+ * the discard. A pending re-leave on the open docket is not retired in any sense
+ * the author means, so it is not refused here either.
+ *
+ * Pure, so the falsifier holds the rule without a store. `status` is
+ * `markStandingStatus`'s answer. Returns `{ code, defect, hint }`, or null.
+ */
+export function withdrawRetiredRefusal(id, status) {
+  if (!status?.found || !status.retired || status.docket_window != null) return null;
+  return {
+    code: 409,
+    defect: `"${id}" is already retired at window ${status.retired_window ?? "?"}`,
+    hint: "there is nothing standing to withdraw — leave it again to bring it back: the same mark, the same id, ruled at the next crossing",
+  };
+}
+
+/**
  * One household's own drafts — the whole of what `/world2/my-drafts` answers.
  *
  * `submitted_at` comes back as `composed_at`, and `window_id` does not come
@@ -833,8 +855,8 @@ export async function docketSettled() {
  // lane already use. Resolving it at the call site would be a second notion of
  // whose drafts these are, which is the exact drift that function's own header
  // forbids ("do not inline either half").
-export async function claimRowsForSlug(slug, { key = null, env = process.env } = {}) {
-  const p = await pool(env);
+export async function claimRowsForSlug(slug, { key = null, env = process.env, p: injected = null } = {}) {
+  const p = injected ?? await pool(env);
   const sql = `SELECT id, slug, class, claimant, household, status, window_id,
                       submitted_at, decided_at, refusal_check, stake, supersedes
                  FROM claims WHERE slug = $1

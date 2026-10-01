@@ -155,12 +155,25 @@ before(async () => {
   } catch { SKELETON_ROWS = FALLBACK_SKELETON; }
 });
 
-function fixturePool({ rows = ROWS, law = undefined } = {}) {
+// The receipt's three store sources (POS-142 S3 item 4): `settlements`, the
+// docket's rows for a slug, and the world-marks head. Defaults are a store
+// whose newest settlement S79 closed window 208 and whose docket is empty.
+const SETTLEMENTS = [
+  { number: 79, tag_sha: "3493e940402acbd9abf90ce0ac04c379ab4ec873", published_at: new Date("2026-09-24T06:00:27Z"), window_id: 208, blessed_at: null },
+  { number: 78, tag_sha: "7c616d9c14c20e4dfd45411fc46a2546a1847f46", published_at: new Date("2026-09-23T18:00:37Z"), window_id: 207, blessed_at: null },
+];
+function fixturePool({ rows = ROWS, law = undefined, claims = [], settlements = SETTLEMENTS, marksHead = null, claimsThrow = false } = {}) {
   const asked = [];
   return {
     asked,
     query: async (sql, params) => {
       asked.push({ sql: String(sql).replace(/\s+/g, " ").trim(), params });
+      if (/FROM settlements/i.test(sql)) return { rows: settlements };
+      if (/FROM claims WHERE slug/i.test(sql)) {
+        if (claimsThrow) throw new Error("the docket is down");
+        return { rows: claims.filter((c) => c.slug === params[0]) };
+      }
+      if (/projection_heads WHERE repo = 'world-marks'/i.test(sql)) return { rows: marksHead ? [{ sha: marksHead }] : [] };
       if (/FROM windows/i.test(sql)) return { rows: /status = 'open'/.test(sql) ? [] : [{ id: 194, law_sha: LAW_SHA }] };
       if (/FROM projection_heads/i.test(sql)) return { rows: [{ sha: LAW_SHA }] };
       if (/FROM law_projection/i.test(sql)) return { rows: law === undefined ? (SKELETON_ROWS ?? []) : law };
@@ -219,11 +232,152 @@ test("the twin's answer is field-for-field 1.0's own, minus the named tree-only 
   if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
   const { code, body } = await investigate("mark=wright/the-trueing-house", fixturePool());
   assert.equal(code, 200);
-  const { tree_only, ...mine } = body;
+  const { tree_only, receipt: _r, ...mine } = body;
   assert.deepEqual(mine, oracle("wright/the-trueing-house"));
-  assert.ok(tree_only["receipt.crossing · receipt.settlement_sha · receipt.published_at"],
+  assert.ok(tree_only["receipt.crossing · receipt.settlement_sha · receipt.says"],
     "an absent field that says nothing is an absent field nobody can act on");
-  assert.ok(tree_only.stands);
+  assert.ok(!("stands" in tree_only), "stands is wired (POS-142 S3 item 5) and no longer declared tree-only");
+});
+
+// ── WHERE THE THING STANDS: 1.0's own block on the twin (POS-142 S3 item 5) ──
+//
+// `world.mjs § thingStandsBlock` already reads the store for both halves, so
+// the twin calls it with the world it assembled from rows and the engine's
+// answer. The oracle is the SAME function over the SAME world assembled the
+// fold's way: a divergence is about what the twin handed it, never a second
+// composition. A holding act is planted through `useGuardReader`
+// (stands-store-fixture.mjs), so the block is read off `acts` with no Postgres.
+
+test("A HELD THING: the twin carries `stands`, and it is 1.0's own block over the same world", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const { holdingAct, withActs } = await import("./stands-store-fixture.mjs");
+  const { thingStandsBlock } = await import("../src/world.mjs");
+  const id = "wright/the-trueing-house";
+  const HELD = [holdingAct({ id: 101, at: "2026-09-07T21:53:00Z", actor: "wright", action: "take", thing: id, holder: "wright" })];
+  let body, expected, reads = 0;
+  await withActs(HELD, async (c) => {
+    ({ body } = await investigate(`mark=${id}`, fixturePool()));
+    reads = c.reads;
+    const world = ENGINE.build.assembleWorld({ worldState: apex.worldStateFromMarkRows(ROWS), skeleton: apex.skeletonFromLawRows(SKELETON_ROWS ?? []) });
+    expected = await thingStandsBlock(id, world, oracle(id));
+  });
+  assert.ok(body.stands, "a holding edge stands in `acts` and the twin carried no block");
+  assert.equal(body.stands.source, "holder");
+  assert.equal(body.stands.holder, "wright");
+  assert.deepEqual(body.stands, expected);
+  assert.ok(reads >= 1, "the block was read off the guard reader, i.e. the store");
+});
+
+// The world the twin hands over is load-bearing here and nowhere in the held
+// case: a set-down anchored on a mark stands at that mark's CENTRE plus the
+// offset, and the centre is read off the world the block is given. A twin that
+// handed it no world (or a different one) would answer a different `where`.
+test("A THING SET DOWN ON A MARK: `where` is the anchor's centre in the twin's own world, as on 1.0", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const { holdingAct, withActs } = await import("./stands-store-fixture.mjs");
+  const { thingStandsBlock } = await import("../src/world.mjs");
+  const id = "wright/the-trueing-house";
+  const SET_DOWN = [
+    holdingAct({ id: 201, at: "2026-09-07T21:53:00Z", actor: "wright", action: "take", thing: id, holder: "wright" }),
+    holdingAct({ id: 202, at: "2026-09-07T22:10:00Z", actor: "wright", action: "drop", thing: id, holder: null,
+      anchor: HOUSE.slug, dx: 5, dy: 7 }),
+  ];
+  let body, expected;
+  await withActs(SET_DOWN, async () => {
+    ({ body } = await investigate(`mark=${id}`, fixturePool()));
+    const world = ENGINE.build.assembleWorld({ worldState: apex.worldStateFromMarkRows(ROWS), skeleton: apex.skeletonFromLawRows(SKELETON_ROWS ?? []) });
+    expected = await thingStandsBlock(id, world, oracle(id));
+  });
+  assert.ok(body.stands, "a set-down stands in `acts` and the twin carried no block");
+  assert.equal(body.stands.source, "set-down");
+  assert.deepEqual(body.stands.where, { x: 105, y: 107 }, "the anchor is the house, centred at (100, 100)");
+  assert.deepEqual(body.stands, expected);
+});
+
+// ── THE RECEIPT FROM ROWS (POS-142 S3 item 4, option A) ──────────────────────
+//
+// The twin hands 1.0's own `receiptFrom` the store's records. These cases pin
+// what it hands over: the docket's rows, whether the mark is CARRIED (standing
+// AND not locked beyond the newest settled window), the newest settlement, and
+// the head that names `read_at`. The derivation is 1.0's, so the oracle is
+// `receiptFrom` over the same records.
+
+const claimRow = ({ slug, status, window_id, refusal_check = null }) => ({
+  id: `c-${slug}-${window_id}`, slug, class: "sited", claimant: slug.split("/")[0], household: "gh:1",
+  status, window_id, submitted_at: new Date("2026-09-24T01:00:00Z"), decided_at: new Date("2026-09-24T06:00:00Z"),
+  refusal_check, stake: 1, supersedes: null,
+});
+
+test("RECEIPT · a carried mark: published, the docket read, and the three unrecorded fields declared, never derived", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const { receiptFrom } = await import("../src/mark-receipt.mjs");
+  const id = "wright/the-trueing-house";
+  const claims = [claimRow({ slug: id, status: "locked", window_id: 200 })];
+  const { code, body } = await investigate(`mark=${id}`, fixturePool({ claims }));
+  assert.equal(code, 200);
+  assert.equal(body.receipt.status, "published", "locked at 200, and S79 closed 208: carried");
+  assert.equal(body.receipt.crossing, null, "which settlement carried it is not in the store, so it is not answered");
+  assert.equal(body.receipt.settlement_sha, null);
+  assert.match(body.receipt.says, /not recorded in the store/);
+  const oneOf = receiptFrom({ id, canon: { id }, claims, settlement: null, site_pin: null });
+  for (const k of ["id", "window", "site_pin", "cause", "cause_row", "clock", "sources", "status"])
+    assert.deepEqual(body.receipt[k], oneOf[k], `receipt.${k} is receiptFrom's own`);
+  assert.match(body.tree_only["receipt.crossing · receipt.settlement_sha · receipt.says"], /3 agree \/ 5 differ \/ 14 underivable/);
+  assert.ok(body.tree_only["receipt.disclosed · receipt.qualified"]);
+});
+
+test("RECEIPT · locked beyond the newest settled window: LOCKED, not published, with the newest settlement's number", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const id = "wright/the-trueing-house";
+  const { body } = await investigate(`mark=${id}`, fixturePool({ claims: [claimRow({ slug: id, status: "locked", window_id: 210 })] }));
+  assert.equal(body.receipt.status, "locked", "the clearing materialized it into marks, and no settlement has carried window 210");
+  assert.deepEqual(body.receipt.sources, ["claims"], "canon is not claimed for a mark no settlement carried — 1.0's own sources for a locked mark");
+  assert.equal(body.receipt.crossing.n, 79);
+  assert.equal(body.receipt.window, 210);
+  assert.ok(body.tree_only["receipt.crossing.sha · receipt.crossing.date · receipt.settlement_sha"],
+    "git's short sha and committer zone are declared; the number is compared");
+});
+
+test("RECEIPT · on the docket and not in the rows: answered with its tense, never bounced like a typo (1.0's own branch)", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const id = "wright/a-pending-shed";
+  const { code, body } = await investigate(`mark=${id}`, fixturePool({ claims: [claimRow({ slug: id, status: "refused", window_id: 208, refusal_check: "harm: overlaps" })] }));
+  assert.equal(code, 200);
+  assert.equal(body.standing, false);
+  assert.equal(body.receipt.status, "refused");
+  assert.equal(body.note, body.receipt.says);
+  assert.match(body.receipt.says, /refused at window 208/);
+});
+
+test("RECEIPT · never seen: 404 with the receipt that says so", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const { code, body } = await investigate("mark=nobody/never-was", fixturePool());
+  assert.equal(code, 404);
+  assert.equal(body.receipt.status, "never-was");
+});
+
+test("RECEIPT · read_at is named by the settlement whose tag the world-marks head IS, and absent when none is", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const id = "wright/the-trueing-house";
+  const named = (await investigate(`mark=${id}`, fixturePool({ marksHead: SETTLEMENTS[0].tag_sha }))).body;
+  assert.deepEqual(named.receipt.read_at, { ref: "refs/tags/settlement/S79", sha: SETTLEMENTS[0].tag_sha });
+  const unnamed = (await investigate(`mark=${id}`, fixturePool({ marksHead: "f".repeat(40) }))).body;
+  assert.ok(!("read_at" in unnamed.receipt), "a head no settlement names gets no guessed ref");
+});
+
+test("RECEIPT · an unreadable docket is DISCLOSED, never read as an empty one", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const { body } = await investigate("mark=wright/the-trueing-house", fixturePool({ claimsThrow: true }));
+  assert.equal(body.receipt.docket?.readable, false);
+  assert.ok(!body.receipt.sources.includes("claims"));
+});
+
+test("A THING NEVER HELD: no `stands` on the twin, absent rather than present-and-empty, as on 1.0", async (t) => {
+  if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
+  const { withActs } = await import("./stands-store-fixture.mjs");
+  let body;
+  await withActs([], async () => { ({ body } = await investigate("mark=wright/the-trueing-house", fixturePool())); });
+  assert.ok(!("stands" in body));
 });
 
 test("`depth` reaches the engine — the door does not silently answer depth 1 to every ask", async (t) => {
@@ -234,14 +388,14 @@ test("`depth` reaches the engine — the door does not silently answer depth 1 t
   // that the two depths differ (a fixture where they happen not to would make
   // that assertion silent).
   const three = await investigate("mark=wright/the-trueing-house&depth=3", fixturePool());
-  const { tree_only: _t, ...mine } = three.body;
+  const { tree_only: _t, receipt: _r, ...mine } = three.body;
   assert.deepEqual(mine, oracle("wright/the-trueing-house", { depth: 3 }));
 });
 
 test("a bad depth falls to 1 rather than poisoning the engine with NaN", async (t) => {
   if (!ENGINE) return t.skip(`no world engine: ${ENGINE_WHY}`);
   const { body } = await investigate("mark=wright/the-trueing-house&depth=banana", fixturePool());
-  const { tree_only: _t, ...mine } = body;
+  const { tree_only: _t, receipt: _r, ...mine } = body;
   assert.deepEqual(mine, oracle("wright/the-trueing-house", { depth: 1 }));
 });
 
