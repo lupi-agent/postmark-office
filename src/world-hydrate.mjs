@@ -530,6 +530,18 @@ for (const m of marks) {
       // shape on the dev stage today. `true` and `"true"` become the boolean,
       // everything else becomes null and is REPORTED.
       loot: (m.loot === true || m.loot === "true") ? true : null,
+      // A BOUNTY'S NOTICE: `ask`, `reward`, `status` (office#295, 2026-10-01).
+      // The THIRD instance of this block's one class (`dials:`, then `loot:`):
+      // never on the list, so the bounty board's json_extract(props, '$.ask' |
+      // '$.reward' | '$.status') read NULL and its default called every notice
+      // OPEN — wright/furnish-ferrys-waiting-room, closed on 09-26, read open
+      // with no ask and no reward. Carried as the record says them, as `class`
+      // is: the parser already makes `reward: 1` a number, and a notice that
+      // says no status gets none here — open is the board's default, the
+      // reader's to apply, not the hydrator's to stamp.
+      ask: m.ask ?? null,
+      reward: m.reward ?? null,
+      status: m.status ?? null,
       frontmatter_problems: problems.length ? problems : null,
       keys: rawKeys(m),               // see § what the AUTHOR wrote, above
     },
