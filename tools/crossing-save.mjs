@@ -67,7 +67,7 @@ import { dirname, join, resolve } from "node:path";
 
 import { penCommit } from "../src/write.mjs";
 import { WORLD_CLONE } from "../src/world-store.mjs";
-import { openDynamic, putMeta, getMeta, emissionsEnabled, soundClass, soundMs } from "../src/dynamic-store.mjs";
+import { openDynamic, putMeta, getMeta, emissionsEnabled, soundClass, soundMs, dynamicRetired } from "../src/dynamic-store.mjs";
 import { world2Enabled } from "../src/world2-acts.mjs";
 import {
   readDepartureEvents, governingAt, entityFromDeparture, byHandle,
@@ -475,18 +475,24 @@ async function main() {
     process.exit(out.clean ? 0 : 1);
   }
 
-  const db = openDynamic(DB_PATH ?? undefined);
+  // RETIRED (POS-269): on the record's flags the save opens no dynamic.db at
+  // all. Its entities refresh fed presence, which reads the position projection
+  // there; its attachments and emissions already come from the acts; its meta
+  // stamps and the emission prune kept a store nothing reads. STATE/ is written
+  // from the same sources either way, so the files are the files.
+  const retired = dynamicRetired();
+  const db = retired ? null : openDynamic(DB_PATH ?? undefined);
 
   // The store and the save must share ONE clock, or the replay check compares
   // two different worlds and calls the difference a finding.
   let refresh = null;
-  if (!flag("--no-refresh")) {
+  if (!flag("--no-refresh") && !retired) {
     refresh = await refreshEntities({ db, repo: CLONE, at: saveMs, walk });
-    if (!refresh.ok) { db.close(); return die(4, refresh.refused.gate, refresh.refused.detail); }
+    if (!refresh.ok) { db?.close(); return die(4, refresh.refused.gate, refresh.refused.detail); }
   }
 
   const read = readDepartureEvents({ repo: CLONE });
-  if (read.refused) { db.close(); return die(4, read.refused.gate, read.refused.detail); }
+  if (read.refused) { db?.close(); return die(4, read.refused.gate, read.refused.detail); }
 
   // STAGE D: the walk ledger is frozen with honor and `STATE/log/` becomes the
   // movement record, so a departure declared after the seam reaches the save
@@ -520,7 +526,7 @@ async function main() {
   let storeMovements = [];
   if (world2Enabled()) {
     const stored = await storedDepartureEvents({ atMs: saveMs });
-    if (stored.absent) { db.close(); return die(4, "register", stored.absent); }
+    if (stored.absent) { db?.close(); return die(4, "register", stored.absent); }
     storeMovements = stored.events;
   }
   const departureEvents = storeMovements.length ? mergedDepartureEvents(read.events, storeMovements) : read.events;
@@ -530,7 +536,7 @@ async function main() {
   // unreadable record is a refusal, never the stale file passed off as now.
   let attachments;
   try { attachments = await attachmentsForSave(db); }
-  catch (e) { db.close(); return die(4, "holdings", `the holding record could not be read: ${String(e?.message ?? e).slice(0, 160)}`); }
+  catch (e) { db?.close(); return die(4, "holdings", `the holding record could not be read: ${String(e?.message ?? e).slice(0, 160)}`); }
   // From the start of the crossing this run may close, to the save instant:
   // every window `buildSave` is handed below lies inside it.
   let allEmissions;
@@ -539,7 +545,7 @@ async function main() {
       fromIso: new Date(crossingStartMs(Math.max(0, crossing - 1))).toISOString(),
       toIso: new Date(saveMs).toISOString(),
     });
-  } catch (e) { db.close(); return die(4, "emissions", `the voices could not be read from the record: ${String(e?.message ?? e).slice(0, 200)}`); }
+  } catch (e) { db?.close(); return die(4, "emissions", `the voices could not be read from the record: ${String(e?.message ?? e).slice(0, 200)}`); }
 
   const written = [];
   const saves = [];
@@ -577,7 +583,7 @@ async function main() {
   // pen, which parks it on household draft branches; the walk ledger once lost
   // 17 public lines to exactly that.
   try { execFileSync("git", ["-C", CLONE, "switch", "-q", "main"], { encoding: "utf8" }); }
-  catch (e) { db.close(); return die(5, "world-main", `the world clone would not stand on main (${String(e?.message ?? e).slice(0, 160)})`); }
+  catch (e) { db?.close(); return die(5, "world-main", `the world clone would not stand on main (${String(e?.message ?? e).slice(0, 160)})`); }
   if (process.env.TOWN_PUSH === "1")
     try { execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" }); } catch { /* offline or behind — save locally */ }
 
@@ -658,7 +664,7 @@ async function main() {
   // in a working tree are not the town's memory, and a prune trusting them could
   // drop speech a `git clean` was about to erase.
   let prune = null;
-  if (committed) {
+  if (committed && db) {
     putMeta(db, "logged_through", new Date(saves.at(-1).meta.covers_to).toISOString());
     putMeta(db, "last_crossing_saved", String(saves.at(-1).meta.crossing));
     putMeta(db, "last_save_at", new Date(saveMs).toISOString());
@@ -678,7 +684,8 @@ async function main() {
     })),
     files_changed: written,
     commit, pushed, push_error,
-    logged_through: getMeta(db, "logged_through"),
+    logged_through: db ? getMeta(db, "logged_through") : null,
+    ...(retired ? { dynamic_db: "retired on this office's flags — nothing opened, nothing stamped, nothing pruned (POS-269)" } : {}),
     entities_refreshed: refresh ? { count: refresh.entities, mid_walk: refresh.mid_walk, as_of: refresh.as_of } : null,
     source: { as_of_world: read.as_of_world, hydrated_at: read.hydrated_at, fresh: read.fresh },
     disclosed: read.disclosed,
@@ -690,7 +697,7 @@ async function main() {
     enter_exit_ledger: { written: false, where: "derived at read time from the frozen era + the REGISTER (POS-194, `livePassageRows`); the committed copy is the frozen era by the world repo's own law (#2152). The `derived_acts` count this used to carry read the sqlite journal and went with G1 — ask the door, which owns that derivation" },
     prune,
   };
-  db.close();
+  db?.close();
 
   if (JSON_OUT) { console.log(JSON.stringify(report, null, 2)); return; }
   console.log(`crossing-save · crossing ${crossing}  (saved at ${report.saved_at})`);

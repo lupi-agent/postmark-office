@@ -51,7 +51,10 @@ const scratch = mkdtempSync(join(tmpdir(), "postmark-drain-"));
 after(() => sweep(scratch));
 
 process.env.WORLD_SINGLE_LOG = "1";
-after(() => { delete process.env.WORLD_SINGLE_LOG; });
+// These suites drain hand-built journals on purpose; the stale-journal guard
+// (POS-269) is its own test below, which takes the override away.
+process.env.SETTLEMENT_DRAIN_STALE_OK = "the suite drains a hand-built journal";
+after(() => { delete process.env.WORLD_SINGLE_LOG; delete process.env.SETTLEMENT_DRAIN_STALE_OK; });
 
 // The drain pins commit dates to its own instant. The SEED commits are pinned
 // too, or two worlds built from identical bytes would still differ at the base
@@ -600,6 +603,32 @@ test("the flag gate — the drain refuses with WORLD_SINGLE_LOG off", async () =
       "the pen that fills the journal and the drain that empties it are one switch");
     assert.deepEqual(snapshotWorld(w).store.rows, [1, 2, 3, 4], "and it refused before touching anything");
   } finally { process.env.WORLD_SINGLE_LOG = "1"; }
+});
+
+test("THE STALE JOURNAL — a non-empty journal refuses the drain by count, before anything is written (POS-269)", async () => {
+  const w = makeWorld("stale");
+  seedJournal(w.dbPath);
+  const r = await drain({ repo: w.repo, dbPath: w.dbPath, at: Date.parse(DRAIN_ISO), staleOk: "" });
+  assert.equal(r.refused, "stale-journal");
+  assert.equal(r.count, 4, "the refusal names how many rows are waiting");
+  assert.match(r.detail, /4 undrained row\(s\) in the retired sqlite journal \(seq 1–4/);
+  assert.match(r.detail, /SETTLEMENT_DRAIN_STALE_OK="<your reason>"/, "and names the override");
+  assert.deepEqual(snapshotWorld(w).store.rows, [1, 2, 3, 4], "nothing was drained, nothing truncated");
+});
+
+test("…and the operator's override drains them, logs the reason on stderr and carries it in the report", async () => {
+  const w = makeWorld("stale-override");
+  seedJournal(w.dbPath);
+  const lines = [];
+  const real = console.error;
+  console.error = (...a) => { lines.push(a.join(" ")); };
+  let r;
+  try { r = await drain({ repo: w.repo, dbPath: w.dbPath, at: Date.parse(DRAIN_ISO), staleOk: "a rollback Wright ruled on" }); }
+  finally { console.error = real; }
+  assert.equal(r.refused, undefined, JSON.stringify(r).slice(0, 300));
+  assert.equal(r.drained, 4);
+  assert.deepEqual(r.override, { stale_journal: "a rollback Wright ruled on" });
+  assert.ok(lines.some((l) => l.startsWith('[world-drain] OVERRIDE SETTLEMENT_DRAIN_STALE_OK="a rollback Wright ruled on" — draining 4 stale row(s)')), JSON.stringify(lines));
 });
 
 test("NO CHECKOUT — the drain never moves HEAD, never dirties the tree, never consults it", async () => {
