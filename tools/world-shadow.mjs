@@ -39,12 +39,17 @@
 
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { loadWorldGraph, containmentSpine, materializeWorldAtSha, DEFAULT_DB } from "../src/world-store.mjs";
+import { containmentSpine, materializeWorldAtSha } from "../src/world-store.mjs";
+import { worldGraphForTool } from "../src/world-graph-snapshot.mjs";
 
 const argOf = (n, d) => { const i = process.argv.indexOf(n); return i !== -1 ? process.argv[i + 1] : d; };
 const JSON_OUT = process.argv.includes("--json");
 
-const { graph, meta } = loadWorldGraph(argOf("--db", DEFAULT_DB));
+if (process.argv.includes("--db")) { console.error("world.db is retired (POS-270 lane W 3b): the shadow reads --rows <file> (a hydration's --rows-out) or the store's snapshot; drop --db."); process.exit(2); }
+// The store's snapshot (what the office reads), or a hydration's --rows.
+const w = await worldGraphForTool({ rows: argOf("--rows", null) });
+if (w.error) { console.error(`FATAL: no world graph: ${w.error}`); process.exit(2); }
+const { graph, meta } = w.loaded;
 const sha = meta.as_of_world;
 if (!sha) { console.error("FATAL: the store carries no as_of_world — nothing to shadow against."); process.exit(2); }
 

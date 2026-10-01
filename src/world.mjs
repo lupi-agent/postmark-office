@@ -19,7 +19,6 @@
 
 import { worldFreezeBounce } from "./freeze.mjs";
 import { existsSync, readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isPrincipal } from "./ops.mjs";
@@ -53,12 +52,12 @@ import { createHearingWindow } from "./hearing-window.mjs"; // earshot: speech a
 import { createSayPush, waitMsOf, serveSayStream } from "./say-push.mjs"; // POS-265: the waiters — a listen that waits, and the page's stream
 import { householdOf, humanHandFor, pinnedLoginOf } from "./households.mjs"; // the human speaker's label wears the town's name, never the login
 import { householdLockPath, poolEnabled, pushDraftBranch, withDraftLease } from "./world-pool.mjs";
-import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabled, storeDbPath } from "./world-serve.mjs";
+import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabled } from "./world-serve.mjs";
 // The portal ground's own stride (src/portal-ground.mjs): a walk that ends on a
 // ground declaring `walk_min_step` is snapped to it. Not the arena's.
 import { groundAt, groundAtPoint, strideOnGround } from "./portal-ground.mjs";
 import { graphDb } from "./world-graph-db.mjs";
-import { worldGraphSnapshot } from "./world-graph-snapshot.mjs"; // stage 1: published-main reads from world.db, behind a flag
+import { worldGraphSnapshot } from "./world-graph-snapshot.mjs"; // the world graph, from the store's snapshot per settlement (POS-270)
 // `openDynamicReadOnly` IS GONE FROM THIS IMPORT (POS-154): the walkers door's
 // frame map was its last caller here, and it opened the store for the departure
 // read alone.
@@ -2247,8 +2246,8 @@ async function thingStandsBlock(id, w, r) {
  * ONE STAMP FOR ONE ANSWER.
  *
  * The receipt names the ref and sha the world it sits beside was folded from,
- * and DISCLOSES when the class layer's store (`world.db`, hydrated `--ref
- * origin/main`) stands at a different world — the shape `dynamic-entities.mjs §
+ * and DISCLOSES when the class layer's store (the world graph snapshot, at the
+ * newest blessing) stands at a different world — the shape `dynamic-entities.mjs §
  * readDepartureEvents` already uses for `walk-ledger-moved`. Before this, the
  * apex printed `law.as_of_world` off `world.db` beside a focus folded from a
  * six-hour-old ref: a fresh stamp certifying a stale answer, with nothing in
@@ -2278,7 +2277,7 @@ async function markReceipt(id, key, w, { terrain = false } = {}) {
       const snap = storeSnapshot();
       const asOf = snap?.error ? null : (snap?.asOfWorld ?? null);
       if (read_at?.sha && asOf && asOf !== read_at.sha)
-        disclosed.push(`world-store-at-another-world: this answer was folded from ${read_at.ref} at ${String(read_at.sha).slice(0, 12)}, and the class layer (world.db) stands at ${String(asOf).slice(0, 12)} — the two do not name the same world`);
+        disclosed.push(`world-store-at-another-world: this answer was folded from ${read_at.ref} at ${String(read_at.sha).slice(0, 12)}, and the class layer (the world graph snapshot) stands at ${String(asOf).slice(0, 12)} — the two do not name the same world`);
     } catch { /* an unreadable store is not a claim about freshness */ }
     // ── THE DISCLOSURE REACHES THE FIELDS IT QUALIFIES (#2889, kogane's eighth) ─
     //
@@ -4577,17 +4576,15 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
   // second. A store that will not open answers null and the walk is untouched.
   // (The arena's placement beside an adversary closed with it, 2026-09-30.)
   const groundHere = (markId, aim) => {
-    // The store first (POS-270 lane W 2b): the snapshot's handle answers
-    // portal-ground's questions through their twins; world.db is the floor.
+    // The world graph snapshot's handle answers portal-ground's questions
+    // through their twins (POS-270 lane W). No snapshot, no ground: the walk is
+    // untouched, exactly as when the store would not open.
     const snap = worldGraphSnapshot();
-    const path = storeDbPath();
-    if (!snap?.tables && !existsSync(path)) return null;
-    let db = null;
+    if (!snap?.tables) return null;
     try {
-      db = snap?.tables ? graphDb(snap.tables) : new DatabaseSync(path, { readOnly: true });
+      const db = graphDb(snap.tables);
       return (markId ? groundAt(db, [markId]) : null) ?? groundAtPoint(db, aim);
     } catch { return null; }
-    finally { try { db?.close(); } catch { /* a reader that cannot close still read */ } }
   };
   const onGround = strideOnGround({ toward, targetFrom }, groundHere(targetMarkId, toward));
   if (onGround) {

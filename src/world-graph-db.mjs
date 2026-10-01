@@ -21,11 +21,6 @@
 // No sqlite is involved: the SQL text is the question's NAME here, nothing
 // runs it.
 
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-
-import { OFFICE_ROOT } from "./world-store.mjs";
 import { worldGraphSnapshot } from "./world-graph-snapshot.mjs";
 
 const TWINS = new Map();
@@ -139,8 +134,8 @@ function indexOf(tables) {
 const cache = new WeakMap();
 
 /**
- * A read-only handle over one snapshot's tables (`graphTablesAt`, or
- * `readWorldDbTables` for a test). `prepare(sql)` answers with the twin
+ * A read-only handle over one snapshot's tables (`graphTablesAt`, or a test's
+ * rows). `prepare(sql)` answers with the twin
  * registered for that exact statement, or throws.
  */
 export function graphDb(tables) {
@@ -170,26 +165,14 @@ export const metaIn = (g, keys) => g.meta.filter((r) => keys.includes(r.key))
   .map((r) => ({ key: r.key, value: r.value })).sort((a, b) => sqlCompare(a.key, b.key));
 
 /**
- * The store's handle alone, or null — for a reader that keeps its own file path
- * and only wants to know whether the snapshot can answer first. It never opens
- * the file, so it cannot leave one open.
+ * THE ONE OPENER (POS-270 lane W 3b): the world graph snapshot's handle, or
+ * null before one has loaded. There is no file behind it: world.db is retired,
+ * and a reader with no snapshot stands on its own floor and says so.
  */
 export function openWorldStore() {
   const snap = worldGraphSnapshot();
-  return snap?.tables ? { db: graphDb(snap.tables), path: null, source: "store", snap } : null;
+  return snap?.tables ? { db: graphDb(snap.tables), source: "store", snap } : null;
 }
 
-/**
- * THE ONE OPENER for a world.db reader (POS-270 lane W 2c). With no file named
- * and the world graph snapshot loaded, the snapshot's handle; otherwise the
- * file, read-only, or null when there is no file. `path` names what answered.
- */
-export function openWorldRead({ worldDb = null } = {}) {
-  if (worldDb == null) {
-    const snap = worldGraphSnapshot();
-    if (snap?.tables) return { db: graphDb(snap.tables), path: null, source: "store", snap };
-  }
-  const path = worldDb ?? process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db");
-  if (!existsSync(path)) return null;
-  return { db: new DatabaseSync(path, { readOnly: true }), path, source: "file" };
-}
+/** What a reader says when there is no world to read: no file is named, because there is none. */
+export const NO_WORLD = "no world store: the world graph snapshot has not loaded";

@@ -25,14 +25,12 @@
 // same discipline world.mjs's `engineDir()` uses — so the office cannot quietly
 // disagree with the world about where anyone is.
 
-import { DatabaseSync } from "node:sqlite";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { OFFICE_ROOT, WORLD_CLONE } from "./world-store.mjs";
-import { metaIn, openWorldStore, registerTwin } from "./world-graph-db.mjs";
+import { WORLD_CLONE } from "./world-store.mjs";
+import { metaIn, openWorldStore, registerTwin, NO_WORLD } from "./world-graph-db.mjs";
 import { freshestMainRef, materializeAtRef } from "./world-branches.mjs";
 import { servedCanonSha } from "./world-serve.mjs";
 
@@ -196,10 +194,6 @@ export const byHandle = (a, b) => (a.handle < b.handle ? -1 : a.handle > b.handl
 // DISCLOSES, because departures it has not seen yet are missing movement, not
 // wrong movement, and the save stamps which sha it read.
 
-export function worldDbPath() {
-  return process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db");
-}
-
 // The walk ledger's statements, named so the store's graph snapshot can answer
 // them too (POS-270 lane W 2c; 038 carries the events, and each twin is held
 // equal to its SQL by world-graph-db.test).
@@ -209,20 +203,14 @@ registerTwin(LEDGER_META_SQL, (g) => metaIn(g, ["as_of_world", "hydrated_at", "h
 registerTwin(DEPARTURES_SQL, (g) => g.events.filter((e) => e.type === "departure").slice().sort((a, b) => a.seq - b.seq)
   .map((e) => ({ seq: e.seq, at: e.at, actor: e.actor, type: e.type, payload: e.payload })));
 
-export function readDepartureEvents({ worldDb = null, repo = WORLD_CLONE } = {}) {
-  // THE STORE FIRST: with no file named, the world graph snapshot's handle.
-  let db;
-  const w = worldDb == null ? openWorldStore() : null;
-  // `path` names what answered: the file, or the store's graph snapshot.
-  let path = "the store's graph snapshot";
-  if (w) db = w.db;
-  else {
-    path = worldDb ?? worldDbPath();
-    if (!existsSync(path))
-      return { refused: { gate: "world-store", detail: `no world store at ${path} — run: npm run hydrate:world` } };
-    try { db = new DatabaseSync(path, { readOnly: true }); }
-    catch (e) { return { refused: { gate: "world-store", detail: `unreadable (${String(e?.message ?? e).slice(0, 160)})` } }; }
-  }
+export function readDepartureEvents({ repo = WORLD_CLONE } = {}) {
+  // The world graph snapshot's handle, or a refusal by name: world.db is
+  // retired (POS-270 lane W 3b), and a save must never crystallize a town it
+  // could not read.
+  const w = openWorldStore();
+  if (!w) return { refused: { gate: "world-store", detail: NO_WORLD } };
+  const db = w.db;
+  const path = "the store's graph snapshot";
   let meta, rows;
   try {
     meta = Object.fromEntries(

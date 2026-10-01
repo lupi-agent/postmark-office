@@ -488,7 +488,7 @@ async function runOne(sp, { breakage = null } = {}) {
   // A5 · terms
   const store = openStore();
   try {
-    if (!store.db) die(`the 1.0 world store cannot be opened (${store.unavailable}) — terms is the class layer's answer and the class layer lives there. Point WORLD_STORE_DB at the store this PG was seeded beside.`);
+    if (!store.db) die(`the 1.0 world store cannot be opened (${store.unavailable}) — terms is the class layer's answer and the class layer lives there. Run it where the world graph snapshot loads (WORLD2_PG_URL at the store this PG was seeded beside).`);
     const spineIds = (one.within ?? []).map((m) => m.id);
     const reachIds = (one.nearby ?? []).map((o) => o.id);
     const amb = gatherActions(store.db, { spineIds, reachIds });

@@ -18,8 +18,10 @@
 // ── THE FLOOR, NAMED ─────────────────────────────────────────────────────────
 // Before the first snapshot lands (a fresh process, an office not pointed at
 // the store, or a store the graph pen has never written), `worldGraphSnapshot()`
-// is null and each reader answers exactly as it did before: from world.db
-// where there is one. `worldGraphStanding()` says which, with the key.
+// is null and each reader stands on its own floor and says so: world.db, the
+// old floor, is retired (lane W 3b), and an office not pointed at the store
+// refuses to boot unless told to serve no world (server.mjs § THE WORLD GRAPH'S
+// SWITCH). `worldGraphStanding()` says which, with the key.
 
 import { readFileSync, statSync } from "node:fs";
 import { graphFromTables, EDGE_TYPES } from "./world-store.mjs";
@@ -87,6 +89,9 @@ export function publishWorldGraphForTest(tables, { label = "test rows" } = {}) {
   publish(t, testPin(t), `test:${label}:${Date.now()}:${Math.random()}`, label);
 }
 
+/** True when this process stands on a test's rows (WORLD_GRAPH_ROWS under node --test). */
+export const rowsFixtureActive = (env = process.env) => Boolean(env.WORLD_GRAPH_ROWS) && Boolean(env.NODE_TEST_CONTEXT);
+
 /** WORLD_GRAPH_ROWS, read once per change of the file. True when the variable is set. */
 function loadRowsFixture() {
   const path = process.env.WORLD_GRAPH_ROWS;
@@ -105,7 +110,7 @@ function loadRowsFixture() {
 // At import, synchronously, so an office spawned on a fixture answers its first read from it.
 loadRowsFixture();
 
-/** The published snapshot (`loadWorldGraph`'s shape plus `pin`), or null. Synchronous. */
+/** The published snapshot (`graphFromTables`' shape plus `tables` and `pin`), or null. Synchronous. */
 export const worldGraphSnapshot = () => state.snap;
 
 /** Which source the graph readers stand on, for a door or a health line. */
@@ -114,7 +119,7 @@ export function worldGraphStanding() {
   if (s) return { source: "store", settlement: s.pin.settlement, tag_sha: s.pin.tag_sha, office_sha: s.pin.office_sha };
   return {
     source: "floor",
-    disclosed: `the world graph snapshot has not loaded${state.lastError ? ` (${state.lastError})` : ""}; graph reads answer from world.db where there is one`,
+    disclosed: `the world graph snapshot has not loaded${state.lastError ? ` (${state.lastError})` : ""}; graph reads stand on their floors, each saying so`,
   };
 }
 
@@ -165,6 +170,26 @@ export function startWorldGraphRefresher({ intervalMs = Number(process.env.WORLD
   tick();
   state.timer = setInterval(tick, intervalMs);
   state.timer.unref?.();
+}
+
+/**
+ * The world graph for a command-line tool: a hydration's rows (`--rows <file>`,
+ * what `world-hydrate.mjs --rows-out` writes), or the store's newest snapshot.
+ * world.db, the tools' old default, is retired (POS-270 lane W 3b). Resolves
+ * `{ loaded, source }`, or `{ error }` naming why there is no world.
+ */
+export async function worldGraphForTool({ rows = null } = {}) {
+  if (rows) {
+    try {
+      const tables = JSON.parse(readFileSync(rows, "utf8"));
+      const t = { ...tables, edgeTypes: tables.edgeTypes ?? EDGE_TYPES.map(([type, note]) => ({ type, note })) };
+      return { loaded: { ...graphFromTables(t, { source: rows }), tables: t }, source: rows };
+    } catch (e) { return { error: `the rows at ${rows} would not load: ${String(e?.message ?? e).slice(0, 160)}` }; }
+  }
+  await reloadWorldGraph();
+  const snap = worldGraphSnapshot();
+  return snap ? { loaded: snap, source: `the store's snapshot (S${snap.pin.settlement ?? "?"} ${String(snap.pin.tag_sha).slice(0, 12)})` }
+    : { error: worldGraphStanding().disclosed };
 }
 
 /** Tests only: forget everything, stop the timer. */

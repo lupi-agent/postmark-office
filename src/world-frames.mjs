@@ -38,12 +38,8 @@
 // ledger (`dynamic-presence.mjs § withVehicleRiders`), and every read that
 // places people applies that one map.
 
-import { DatabaseSync } from "node:sqlite";
-import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
-
-import { OFFICE_ROOT, WORLD_CLONE } from "./world-store.mjs";
-import { graphDb, HYDRATION_STATUS, registerTwin } from "./world-graph-db.mjs";
+import { WORLD_CLONE } from "./world-store.mjs";
+import { graphDb, HYDRATION_STATUS, registerTwin, NO_WORLD } from "./world-graph-db.mjs";
 import { worldGraphSnapshot } from "./world-graph-snapshot.mjs";
 
 /** The world itself — the default frame, and the only one with no carrier. */
@@ -90,38 +86,21 @@ const MARK_PROPS = registerTwin("SELECT id, props FROM nodes WHERE kind='mark'",
 function subkindOrder(a, b) { return a === b ? 0 : a == null ? -1 : b == null ? 1 : a < b ? -1 : 1; }
 
 /**
- * `mark id -> { class, mobility }` for every mark the store knows. THE STORE
- * FIRST: with no file named, once the world graph snapshot has loaded, it is
- * read through the snapshot's handle and cached on the published snapshot;
- * otherwise world.db, cached on the file, as before.
+ * `mark id -> { class, mobility }` for every mark the store knows, read through
+ * the world graph snapshot's handle and cached on the published snapshot.
+ * Before one has loaded there is nothing to read (world.db is retired, POS-270
+ * lane W 3b), and the gate says so.
  */
-export function classFieldsFromStore({ worldDb = null } = {}) {
-  const snap = worldDb == null ? worldGraphSnapshot() : null;
-  if (snap?.tables) {
-    if (_classSnap?.from === snap) return _classSnap.out;
-    const out = classFieldsOf(graphDb(snap.tables), `the store's graph snapshot (S${snap.pin?.settlement ?? "?"} ${String(snap.pin?.tag_sha ?? "").slice(0, 12)})`);
-    _classSnap = { from: snap, out };
-    return out;
-  }
-  const path = worldDb ?? process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db");
-  let st;
-  try { st = statSync(path); }
-  catch { return { fields: null, gate: { status: "ABSENT", reason: "store-absent", detail: `no world store at ${path} — run: npm run hydrate:world` } }; }
-  if (_classSnap && _classSnap.path === path && _classSnap.mtimeMs === st.mtimeMs && _classSnap.size === st.size) return _classSnap.out;
-
-  let out;
-  let db = null;
-  try {
-    db = new DatabaseSync(path, { readOnly: true });
-    out = classFieldsOf(db, path);
-  } catch (e) {
-    out = { fields: null, gate: { status: "ABSENT", reason: "store-unreadable", detail: String(e?.message ?? e).slice(0, 200) } };
-  } finally { try { db?.close(); } catch { /* a reader that cannot close still read */ } }
-  _classSnap = { path, mtimeMs: st.mtimeMs, size: st.size, out };
+export function classFieldsFromStore() {
+  const snap = worldGraphSnapshot();
+  if (!snap?.tables) return { fields: null, gate: { status: "ABSENT", reason: "store-absent", detail: NO_WORLD } };
+  if (_classSnap?.from === snap) return _classSnap.out;
+  const out = classFieldsOf(graphDb(snap.tables), `the store's graph snapshot (S${snap.pin?.settlement ?? "?"} ${String(snap.pin?.tag_sha ?? "").slice(0, 12)})`);
+  _classSnap = { from: snap, out };
   return out;
 }
 
-/** The read itself, over either handle (the file's, or the snapshot's). */
+/** The read itself, over the snapshot's handle. */
 function classFieldsOf(db, source) {
   const status = db.prepare(HYDRATION_STATUS).get()?.value ?? null;
   if (String(status ?? "").startsWith("FAILED"))
@@ -136,20 +115,20 @@ function classFieldsOf(db, source) {
   return { fields, gate: { status: "PRESENT", reason: null, detail: `${fields.size} class-bearing marks from ${source}` } };
 }
 
-/** Drop the cached class read — for tests that rewrite world.db in place. */
+/** Drop the cached class read — for a test that republishes the same snapshot object. */
 export function resetClassFieldsCache() { _classSnap = null; }
 
 /**
  * Carriers, with the disclosure attached. This is what callers should use;
  * `carriersFrom` is the pure half beneath it.
  */
-export function carriersWithDisclosure(worldState, { worldDb = null } = {}) {
+export function carriersWithDisclosure(worldState) {
   const foldDeclares = (worldState?.marks ?? []).some((m) => m.mobility);
   if (foldDeclares) {
     const carriers = carriersFrom(worldState);
     return { carriers, source: "fold", disclosed: [] };
   }
-  const { fields, gate } = classFieldsFromStore({ worldDb });
+  const { fields, gate } = classFieldsFromStore();
   const carriers = carriersFrom(worldState, { classFields: fields });
   const disclosed = [];
   if (!fields)

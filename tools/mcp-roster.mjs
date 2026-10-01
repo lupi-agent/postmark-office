@@ -54,8 +54,8 @@ if (ROSTER.source === "floor" && !ALLOW_FLOOR) {
   console.error("REFUSING TO WRITE docs/MCP-ROSTER.md — the class roster is standing on its floor.");
   console.error(`  ${ROSTER.disclosed}`);
   console.error(`  The page would render ${ROSTER.roster.size} classes where the record holds many more,`);
-  console.error("  and nothing in it would say so. Hydrate a world store and run again:");
-  console.error("    npm run hydrate:world            (or --db / WORLD_STORE_DB at a store you trust)");
+  console.error("  and nothing in it would say so. Run it where the world graph snapshot loads");
+  console.error("  (WORLD2_PG=1 + WORLD2_PG_URL at the store the tick hydrates --to-store).");
   console.error("  To publish anyway WITH the disclosure printed on the page: --allow-floor");
   process.exit(1);
 }

@@ -1,4 +1,4 @@
-// world-graph.mjs — the window's read side (Stage E): world.db as one
+// world-graph.mjs — the window's read side (Stage E): the world graph as one
 // Cytoscape-ready payload, with the standing invariants' findings PAINTED ONTO
 // the graph rather than listed beside it.
 //
@@ -35,8 +35,8 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
 
-import { loadWorldGraph, OFFICE_ROOT } from "./world-store.mjs";
-import { storeDbPath } from "./world-serve.mjs";
+import { OFFICE_ROOT } from "./world-store.mjs";
+import { NO_WORLD } from "./world-graph-db.mjs";
 import { worldGraphSnapshot } from "./world-graph-snapshot.mjs";
 
 // ── the zero-build lane ──────────────────────────────────────────────────────
@@ -82,53 +82,30 @@ export const NODE_KINDS = ["mark", "class", "code", "doctrine", "unknown"];
 export const CONVERGENCE_KINDS = ["class", "code", "doctrine"];
 
 // ── the snapshot ─────────────────────────────────────────────────────────────
-// Same discipline as world-serve.mjs's: keyed on the FILE's mtime+size, because
-// a rehydration at the same sha still rewrites the file and a cache keyed on
-// as_of_world could not be invalidated by one. What is held is the built
-// PAYLOAD, not the graphology instance — the payload is the only thing this
-// route serves, and holding the graph as well would keep a second copy of the
-// world alive beside the serving path's own snapshot.
+// The payload is built from the world graph snapshot (POS-270) and cached on the
+// published object: a new settlement is a new object, so a payload can never
+// outlive its world. What is held is the built PAYLOAD, not the graphology
+// instance — the payload is the only thing this route serves.
 
-let _cached = null;
+let _fromSnap = null; // { snap, payload } — the snapshot object is the key: a new one is a new publish
 
-/** Drop the cached payload — for tests that rewrite world.db in place. */
-export function resetGraphCache() { _cached = null; _fromSnap = null; }
+/** Drop the cached payload — for a test that republishes the same snapshot object. */
+export function resetGraphCache() { _fromSnap = null; }
 
 /**
- * The window's payload for a store file, or an honest error.
+ * The window's payload, or an honest error.
  *
- * Never throws: a missing, half-built or FAILED-stamped store is something the
- * route must be able to SAY, and an operator opening the window on a box that
- * has not hydrated yet is the most likely first visit there will ever be.
+ * Never throws: an office whose world graph snapshot has not loaded is
+ * something the route must be able to SAY (world.db, the old floor, is retired:
+ * lane W 3b), and an empty graph would read as a clean world.
  */
-export function worldGraphPayload(dbPath = null) {
-  // THE STORE FIRST (POS-270, option A). With no file named, the window answers
-  // from the world graph snapshot once it has loaded; a caller that names a
-  // file (a test, a tool) gets that file, and before the snapshot lands the
-  // office's own world.db is the floor.
-  if (dbPath == null) {
-    const snap = worldGraphSnapshot();
-    if (snap) return payloadFromSnapshot(snap);
-    dbPath = storeDbPath();
-  }
-  let st;
-  try { st = statSync(dbPath); }
-  catch { return { error: "no world store", detail: `nothing at ${dbPath}`, dbPath }; }
-  if (_cached && _cached.dbPath === dbPath && _cached.mtimeMs === st.mtimeMs && _cached.size === st.size) return _cached.payload;
-  let payload;
-  try { payload = buildPayload(dbPath, st); }
-  catch (e) { return { error: "the world store would not load", detail: String(e?.message ?? e).slice(0, 200), dbPath }; }
-  _cached = { dbPath, mtimeMs: st.mtimeMs, size: st.size, payload };
-  return payload;
+export function worldGraphPayload() {
+  const snap = worldGraphSnapshot();
+  if (!snap) return { error: "no world store", detail: NO_WORLD };
+  return payloadFromSnapshot(snap);
 }
 
 const parse = (s, fallback = null) => { try { return JSON.parse(s ?? ""); } catch { return fallback; } };
-
-function buildPayload(dbPath, st) {
-  return worldGraphPayloadFrom(loadWorldGraph(dbPath), { bytes: st.size, mtime: new Date(st.mtimeMs).toISOString() });
-}
-
-let _fromSnap = null; // { snap, payload } — the snapshot object is the key: a new one is a new publish
 
 function payloadFromSnapshot(snap) {
   if (_fromSnap?.snap === snap) return _fromSnap.payload;
@@ -138,10 +115,10 @@ function payloadFromSnapshot(snap) {
 }
 
 /**
- * The window's payload from a loaded graph (`loadWorldGraph`'s shape, or the
- * store's snapshot of it). `store` describes where the graph came from: the
- * file's bytes and mtime, or the snapshot's settlement and key. It is the one
- * field that differs by source; nothing reads it but a person.
+ * The window's payload from a loaded graph (the store's snapshot, or a graph a
+ * test built from rows through `graphFromTables`). `store` describes where the
+ * graph came from: the snapshot's settlement and key, or what the caller says.
+ * It is the one field that differs by source; nothing reads it but a person.
  */
 export function worldGraphPayloadFrom(loaded, store = null) {
   const { graph, meta, counts, edgeTypes, lintFindings, placeholders } = loaded;
@@ -510,8 +487,8 @@ export function filterPayload(payload, { kinds = null, types = null, dropUnresol
  * The route's whole answer: the payload, filtered, with `elements` in the shape
  * `cytoscape({ elements })` takes directly.
  */
-export function worldGraphView({ dbPath = null, kinds = null, types = null, dropUnresolved = false } = {}) {
-  const base = worldGraphPayload(dbPath);
+export function worldGraphView({ kinds = null, types = null, dropUnresolved = false } = {}) {
+  const base = worldGraphPayload();
   if (base.error) return base;
   // The filter's output SHARES the cached element objects rather than cloning
   // them: nothing downstream writes to a payload, and cloning 700 nodes per

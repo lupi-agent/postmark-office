@@ -34,11 +34,11 @@ export const FIRST_IDEA_WINDOW_END = "2026-09-30";
  * Think Tank read; tests inject their own list. Returns
  * { mints: [{handle, mark, line}], skipped: [{mark, why}], refused? }.
  */
-export function planFirstIdeaSweep(clone, { date, ideas = null, windowEnd = FIRST_IDEA_WINDOW_END, worldDb = null } = {}) {
+export function planFirstIdeaSweep(clone, { date, ideas = null, windowEnd = FIRST_IDEA_WINDOW_END } = {}) {
   if (date > windowEnd)
     return { mints: [], skipped: [], note: `the first-idea window closed ${windowEnd} — the sweep plans nothing (lines already minted stay lawful)` };
 
-  const tank = ideas ?? ideasTank(worldDb ? { worldDb } : {}).ideas;
+  const tank = ideas ?? ideasTank().ideas;
   if (!tank.length) return { mints: [], skipped: [] };
 
   const engineDir = process.env.STAMP_ENGINE_DIR ?? join(clone, "tools");

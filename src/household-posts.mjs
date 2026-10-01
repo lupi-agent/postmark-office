@@ -230,9 +230,9 @@ async function backingOf(townClone) {
 }
 
 /** The ideas half: `{ rows }` or `{ unavailable }`. */
-async function ideaRows(members, whose, { worldDb, townClone }) {
+async function ideaRows(members, whose, { townClone }) {
   const house = new Set(members);
-  const tank = ideasTank({ worldDb });
+  const tank = ideasTank();
   if (tank.source !== "store") return { unavailable: "the Think Tank could not be read from the world record" };
   if (!tank.ideas.length) return { rows: [] };
   if (!existsSync(join(townClone, "tools", "world-stake.mjs")))
@@ -292,16 +292,16 @@ export function postOrder(a, b) {
  * `household { read: "posts", handle }`.
  *
  * @param {string} handle  any resident of the house; the answer is the house's
- * @param {{ now?: number, env?: object, clone?: string|null, worldDb?: string|null, townClone?: string, readers?: object }} ctx
+ * @param {{ now?: number, env?: object, clone?: string|null, townClone?: string, readers?: object }} ctx
  */
-export async function householdPosts(handle, { now = Date.now(), env = process.env, clone = null, worldDb = null, townClone = TOWN_CLONE, readers = {} } = {}) {
+export async function householdPosts(handle, { now = Date.now(), env = process.env, clone = null, townClone = TOWN_CLONE, readers = {} } = {}) {
   const h = String(handle ?? "").trim();
   const house = await houseOf(h, { clone, readers });
   const mine = house.resolve ? house.resolve(h) : { key: `solo:${h}`, members: [h] };
   const whose = (author) => (house.resolve ? house.resolve(author).key : author === h ? mine.key : null);
   const [events, ideas] = await Promise.all([
     eventRows(mine.members, now, { env }),
-    ideaRows(mine.members, whose, { worldDb, townClone }),
+    ideaRows(mine.members, whose, { townClone }),
   ]);
   const rows = [...(events.rows ?? []), ...(ideas.rows ?? [])].sort(postOrder);
   const list = (role) => {

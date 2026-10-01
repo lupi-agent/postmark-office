@@ -18,7 +18,6 @@
 // that must survive that. The columns below would have fitted them; the covenant
 // would not.
 
-import { DatabaseSync } from "node:sqlite";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -90,10 +89,9 @@ export const SCHEMA = `
   CREATE INDEX geometry_versions_from ON geometry_versions (valid_from_iso);
 
   -- The standing invariants' verdicts, written at the end of every hydration.
-  -- One row per lint per hydration; the DB is rebuilt from scratch, so this
+  -- One row per lint per hydration; the graph is rebuilt from scratch, so this
   -- table holds exactly THIS run. The delta against the previous run is read
-  -- off the old file before it is deleted and reported in meta.lint_delta —
-  -- an observation about this machine's last hydration, never town truth.
+  -- off the store's newest snapshot and reported in meta.lint_delta.
   CREATE TABLE lint_findings (
     lint TEXT PRIMARY KEY,
     verdict TEXT, headline TEXT, evidence TEXT,
@@ -306,8 +304,6 @@ export const WORLD_CLONE = process.env.WORLD_CLONE
   ?? [join(OFFICE_ROOT, "world-clone"), join(OFFICE_ROOT, "..", "postmark-world")].find(existsSync)
   ?? join(OFFICE_ROOT, "world-clone");
 
-export const DEFAULT_DB = join(OFFICE_ROOT, "world.db");
-
 // `encoding` governs stdin as well as stdout in execFileSync, and "buffer" is
 // only a legal OUTPUT encoding — a string `input` alongside it throws. Handing
 // stdin over as bytes keeps the one helper usable for both the text calls and
@@ -427,38 +423,11 @@ export function pruneWorldCache(cacheRoot = WORLD_CACHE, keepDir = null, keep = 
 
 const parse = (s, fallback = {}) => { try { return JSON.parse(s ?? "") ?? fallback; } catch { return fallback; } };
 
-export function loadWorldGraph(dbPath = DEFAULT_DB, { allowFailed = false } = {}) {
-  return graphFromTables(readWorldDbTables(dbPath), { allowFailed, source: dbPath });
-}
-
 /**
- * world.db's tables as plain rows, in the order the graph is built from them.
- * The one sqlite read of the file; `world2/tools/graph-ingest.mjs` copies
- * exactly these rows into the store's graph snapshot (037/038, POS-270), so
- * the store's copy and the file are one set of rows read one way.
- */
-export function readWorldDbTables(dbPath = DEFAULT_DB) {
-  if (!existsSync(dbPath)) throw new Error(`no world store at ${dbPath} — run: node src/world-hydrate.mjs`);
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  try {
-    const all = (sql) => db.prepare(sql).all();
-    return {
-      meta: all("SELECT key, value FROM meta"),
-      nodes: all("SELECT * FROM nodes"),
-      edges: all("SELECT * FROM edges ORDER BY seq"),
-      events: all("SELECT seq, at, actor, type, payload FROM events ORDER BY at"),
-      geometryVersions: all("SELECT * FROM geometry_versions ORDER BY mark_id, valid_from_iso"),
-      edgeTypes: all("SELECT type, note FROM edge_type_registry"),
-      lintFindings: all("SELECT * FROM lint_findings"),
-    };
-  } finally { db.close(); }
-}
-
-/**
- * THE ONE CONSTRUCTION: world.db's rows, or the store's snapshot of them, into
- * the graph and its companions. Both sources come through here, so "the
- * snapshot equals the file" is a claim about rows, and the parity test checks
- * it row for row.
+ * THE ONE CONSTRUCTION: the graph's rows (the store's snapshot, or a test's) into
+ * the graph and its companions. Every source comes through here, so "the
+ * snapshot equals the hydration" is a claim about rows, and the parity test
+ * checks it row for row.
  *
  * `source` names where the rows came from, for the errors and the `dbPath`
  * field the file's readers have always carried.
@@ -609,7 +578,13 @@ export function nodesWhere(graph, pred) {
 }
 
 if (process.argv[1]?.endsWith("world-store.mjs")) {
-  const { graph, meta, events, geometryVersions, counts } = loadWorldGraph();
+  // The store's snapshot, or --rows (POS-270): world.db is retired, so this
+  // summary reads what the office reads, and says so when there is none.
+  const { worldGraphForTool } = await import("./world-graph-snapshot.mjs");
+  const argOf = (n) => { const i = process.argv.indexOf(n); return i !== -1 ? process.argv[i + 1] : null; };
+  const w = await worldGraphForTool({ rows: argOf("--rows") });
+  if (w.error) { console.error(`no world graph: ${w.error}`); process.exit(1); }
+  const { graph, meta, events, geometryVersions, counts } = w.loaded;
   console.log(`world store · ${graph.order} nodes · ${graph.size} edges · ${events.length} events · ${geometryVersions.length} geometry versions`);
   console.log(`  as_of world ${(meta.as_of_world ?? "?").slice(0, 12)} · office ${(meta.as_of_office ?? "?").slice(0, 12)} · hydrated ${meta.hydrated_at}`);
   console.log(`  ${JSON.stringify(counts.nodes_by_kind)}`);

@@ -47,7 +47,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { loadWorldGraph, geometryIndex, geometryAsOf, rectOfVersion, reachable, out, inbound, nodesWhere, isClassMark, actionEntriesOf, DEFAULT_DB } from "./world-store.mjs";
+import { geometryIndex, geometryAsOf, rectOfVersion, reachable, out, inbound, nodesWhere, isClassMark, actionEntriesOf } from "./world-store.mjs";
 
 const RED = "RED", GREEN = "GREEN", NA = "N/A";
 
@@ -173,10 +173,11 @@ export function readLawPairing(treePath, law = LAW) {
  * and DISCLOSE if a path has gone (the materialised tree lives in a temp cache
  * and a machine may have swept it).
  */
-export async function runLints({ dbPath = DEFAULT_DB, store: loaded = null, sources = null, engineText = null, treePath = null } = {}) {
-  // `store`: a graph already loaded, from world.db or from the store's snapshot
-  // of it (src/world-graph-snapshot.mjs, POS-270); the lints read it the same way.
-  const store = loaded ?? loadWorldGraph(dbPath);
+export async function runLints({ store, sources = null, engineText = null, treePath = null } = {}) {
+  // `store`: a graph already loaded — the hydration's own rows, or the store's
+  // snapshot (src/world-graph-snapshot.mjs, POS-270); the lints read it the same
+  // way. world.db, the old default, is retired (lane W 3b).
+  if (!store?.graph) throw new Error("runLints needs a loaded graph (store): world.db is retired, so there is no file to fall back on");
   const { graph, meta, events, geometryVersions } = store;
   // The world's OWN pointInRect, imported live from the tree the store was
   // hydrated from, so "inside a stop" can never drift from how the world itself
@@ -840,7 +841,12 @@ export async function runLints({ dbPath = DEFAULT_DB, store: loaded = null, sour
 // ── CLI ──────────────────────────────────────────────────────────────────────
 if (process.argv[1]?.endsWith("world-lints.mjs")) {
   const argOf = (n, d) => { const i = process.argv.indexOf(n); return i !== -1 ? process.argv[i + 1] : d; };
-  const { lints, meta, store } = await runLints({ dbPath: argOf("--db", DEFAULT_DB) });
+  // Standalone, over the store's snapshot (what the office reads) or --rows.
+  if (process.argv.includes("--db")) { console.error("world.db is retired (POS-270 lane W 3b): the lints reads --rows <file> (a hydration's --rows-out) or the store's snapshot; drop --db."); process.exit(2); }
+  const { worldGraphForTool } = await import("./world-graph-snapshot.mjs");
+  const w = await worldGraphForTool({ rows: argOf("--rows", null) });
+  if (w.error) { console.error(`no world graph: ${w.error}`); process.exit(1); }
+  const { lints, meta, store } = await runLints({ store: w.loaded });
   if (process.argv.includes("--json")) {
     console.log(JSON.stringify({ meta, counts: store.counts, anomalies: store.anomalies, lints }, null, 2));
   } else {

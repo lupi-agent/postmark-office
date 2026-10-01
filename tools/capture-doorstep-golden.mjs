@@ -74,7 +74,6 @@ export const GOLDEN_NOW_MS = Date.parse("2026-09-21T09:00:00.000Z");
  * gets. A card leaking onto either is the regression this golden exists for.
  */
 export async function captureDoorstepGolden({ nowMs = GOLDEN_NOW_MS } = {}) {
-  process.env.WORLD_STORE_DB = join(tmpdir(), "pm-foyer-no-such-world-store.db");
   delete process.env.TOWN_PUSH;
   delete process.env.TOWN_SINGLE_LOG;
   // The fourth pinned input (POS-195): the stance credential, and a store that

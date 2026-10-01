@@ -1,30 +1,23 @@
-// graph-ingest.mjs — world.db's rows into the store's graph snapshot, one
+// graph-ingest.mjs — a hydration's rows into the store's graph snapshot, one
 // settlement at a time (037/038, POS-270; Wright-ruled 2026-09-30, option A).
 //
-//   node world2/tools/graph-ingest.mjs --db <world.db> [--keep 4] [--dry-run] [--json]
+//   node world2/tools/graph-ingest.mjs --rows <rows.json> [--keep 4] [--dry-run] [--json]
 //     PGHOST/PGDATABASE/PGUSER(=law_ingester)/PGPASSWORD, as law-ingest.mjs.
 //
-// Run after the blessed hydration (`world-hydrate.mjs --ref blessed`). It reads
-// the hydrated file's tables with the office's own reader
-// (world-store.mjs § readWorldDbTables, the same rows `loadWorldGraph` builds
-// from) and writes them, unchanged, as ONE snapshot keyed by (as_of_world,
-// as_of_office), in one transaction: an existing snapshot at that key is
-// replaced whole, and only the newest `--keep` snapshots stay.
-//
-// THE HYDRATOR WRITES THE SNAPSHOT ITSELF NOW (world-hydrate.mjs --to-store,
-// POS-270 lane W item 1), from the rows it built, through
-// `writeGraphSnapshot` below. This CLI's --db path is the manual one, for a
-// world.db that already exists.
+// THE HYDRATOR WRITES THE SNAPSHOT ITSELF (world-hydrate.mjs --to-store, POS-270
+// lane W item 1), from the rows it built, through `writeGraphSnapshot` below:
+// ONE snapshot keyed by (as_of_world, as_of_office), in one transaction, an
+// existing snapshot at that key replaced whole, and only the newest `--keep`
+// kept. This CLI is the manual path, for the rows a hydration wrote with
+// --rows-out. world.db, which it used to read, is retired (lane W 3b).
 //
 // A FAILED-stamped hydration is refused, never copied. A snapshot of a store
 // that said it was broken would be a broken store with a better address.
 
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { readWorldDbTables } from "../../src/world-store.mjs";
-
-/** The snapshot's key and the rows beneath it, from world.db's tables. */
+/** The snapshot's key and the rows beneath it, from a hydration's tables. */
 export function graphSnapshotFromTables(tables) {
   const meta = Object.fromEntries(tables.meta.map((r) => [r.key, r.value]));
   const status = String(meta.hydration_status ?? "");
@@ -102,7 +95,7 @@ export async function writeGraphSnapshot(client, snap, { keep = 4, batch = 400 }
 /**
  * The newest snapshot's lint verdicts, for the hydrator's delta when there is no
  * file to compare against. `{ as_of_world, hydrated_at, findings }` in the shape
- * the hydrator reads off an old world.db, or null with no snapshot.
+ * the hydrator reports its lint delta against, or null with no snapshot.
  */
 export async function previousGraphLints(client) {
   const { rows: [pin] } = await client.query(
@@ -120,12 +113,14 @@ const argOf = (name) => { const i = process.argv.indexOf(name); return i !== -1 
 const flag = (name) => process.argv.includes(name);
 
 async function main() {
-  const dbPath = argOf("--db");
-  if (!dbPath) {
-    console.error("usage: graph-ingest.mjs --db <world.db> [--keep 4] [--dry-run] [--json]");
+  // The manual path: a hydration's rows (world-hydrate.mjs --rows-out). world.db
+  // is retired (POS-270 lane W 3b); the tick writes the store itself (--to-store).
+  const rowsPath = argOf("--rows");
+  if (!rowsPath) {
+    console.error("usage: graph-ingest.mjs --rows <rows.json> [--keep 4] [--dry-run] [--json]");
     process.exit(2);
   }
-  const snap = graphSnapshotFromTables(readWorldDbTables(dbPath));
+  const snap = graphSnapshotFromTables(JSON.parse(readFileSync(rowsPath, "utf8")));
   const census = Object.fromEntries(Object.entries(SOURCE).map(([t, k]) => [t, snap.tables[k].length]));
   if (flag("--dry-run")) {
     const out = { dry_run: true, tag_sha: snap.tagSha, office_sha: snap.officeSha, settlement: snap.settlement, counts: census };

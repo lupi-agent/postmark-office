@@ -199,7 +199,7 @@ const SHELF = [
     // at one page (the page's own ruling), and the hub now says so with its
     // shape: one door, four handles.
     slug: null, href: "graph/", emblem: "⌗", kind: "Console", title: "The world graph",
-    line: "world.db as one picture — every node and edge, the standing invariants painted on in red, filters over the whole store, and the law's lenses as ways of looking at the one page.",
+    line: "the world graph as one picture — every node and edge, the standing invariants painted on in red, filters over the whole store, and the law's lenses as ways of looking at the one page.",
     lenses: [
       { href: "graph/", label: "standing" },
       { href: "graph/?paint=ideal", label: "LOGOS adherence" },

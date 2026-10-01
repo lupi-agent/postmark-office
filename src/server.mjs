@@ -48,8 +48,9 @@ import { fundVerifyViaOffice, intakeDisclosure, POT_RE as FUND_POT_RE, INTAKE as
 import { channelOf, countAct, actsByChannel } from "./channel.mjs";
 import { logAccess } from "./telemetry.mjs";
 import { settlements } from "./settlements.mjs";
-import { worldSummary, worldOrient, worldEyes, worldInvestigate, worldFind, worldStateRaw, worldSkeletonRaw, worldMyMarks, leaveMarkViaOffice, walkViaOffice, worldNoteViaOffice, worldWalkers, worldPresent, worldConversations, worldSay, worldSayHuman, worldSayStream, serveSayStream, whoami, worldBlockForHandle, resetPlaceWordsCache, WORLD_CLONE } from "./world.mjs";
+import { worldSummary, worldOrient, worldEyes, worldInvestigate, worldFind, worldStateRaw, worldSkeletonRaw, worldMyMarks, leaveMarkViaOffice, walkViaOffice, worldNoteViaOffice, worldWalkers, worldPresent, worldConversations, worldSay, worldSayHuman, worldSayStream, serveSayStream, whoami, worldBlockForHandle, WORLD_CLONE } from "./world.mjs";
 import { world2MyDrafts, world2MyMarks, world2Pool, world2Serve, world2ServeEnabled } from "./world2-serve.mjs";
+import { rowsFixtureActive } from "./world-graph-snapshot.mjs"; // POS-270 lane W 3b: the world graph's switch
 import { blessedSha } from "./world-branches.mjs";
 import { officeStoreFold, storeFingerprint, worldStateServed } from "./world2-fold.mjs"; // POS-142: /world/state from the store's rows, behind W2_FOLD
 // The rows fold needs the store engaged; a flag set on an office with no store falls through to the file, loudly.
@@ -57,10 +58,9 @@ const storePoolOrRefuse = async () => { if (!world2ServeEnabled()) throw new Err
 import { callHoldTool } from "./world-hold.mjs"; // curl parity: /world/hold + /world/holdings (2026-08-15)
 import { APEX_TOOL, apexEnabled, dispatchToolFor, worldApex } from "./world-apex.mjs"; // stage 3: the apex verb — keyless read half + the POST act door (08-17)
 import { worldStakeViaOffice, worldUnstakeViaOffice, worldStakeRead } from "./world-stake.mjs"; // P3 draft
-import { resetStoreSnapshot, storeDbPath, storeEngaged, storeSnapshot, worldStoreHealth } from "./world-serve.mjs"; // stage 1: the serving flag's instrument panel
-import { resetGraphCache, worldGraphView, NODE_KINDS, gexfPath } from "./world-graph.mjs"; // stage E: the window
-import { resetClassFieldsCache } from "./world-frames.mjs"; // the frame law's class read, dropped on a world.db swap
-import { dynamicHealth, dynamicDbPath, dynamicRetired, resetClassCache } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's instrument panel
+import { storeEngaged, storeSnapshot, worldStoreHealth } from "./world-serve.mjs"; // stage 1: the serving flag's instrument panel
+import { worldGraphView, NODE_KINDS, gexfPath } from "./world-graph.mjs"; // stage E: the window
+import { dynamicHealth, dynamicDbPath, dynamicRetired } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's instrument panel
 import { servedEnterExitLedger, DEPRECATED_DOOR } from "./enter-exit-ledger.mjs"; // the passages, derived from the frozen era + the journal (2026-08-26)
 import { Bouncer, keyIdForToken, worldWriteVerbForRest } from "./bouncer.mjs";
 import { loopLag } from "./loop-lag.mjs"; // POS-267: how long the one thread keeps a caller waiting
@@ -196,6 +196,24 @@ if (READ_ONLY_ROLE && !dynamicRetired() && !existsSync(DYNAMIC_DB_PATH)) {
   refuseBoot(`--role read needs an existing dynamic store at ${DYNAMIC_DB_PATH}, and a read worker will not create one.`,
     "Start the writer first, or point WORLD_DYNAMIC_DB at the writer's file (npm run dynamic:rebuild creates it).",
     "Booting anyway would serve 200s with the hold-effects and held-things readings silently missing, which nginx cannot tell from a good answer.");
+}
+
+// ── AND THE WORLD GRAPH'S SWITCH (POS-270 lane W 3b, Keemin-ruled 2026-09-30) ──
+//
+// world.db is retired. Every world read (the class layer, the apex's law, the
+// window, the walk's ground, the sound dial, the walk ledger) stands on the
+// world graph snapshot, which loads from the world 2.0 store, or on its own
+// floor. An office not pointed at the store would boot with NO world and answer
+// every one of those reads from its floor: each disclosed, all of them wrong in
+// the same quiet way, and nginx cannot tell that from a good answer. So it
+// refuses to boot, beside the two refusals above and with the same exit code,
+// unless an operator says plainly that this office serves no world graph
+// (WORLD_GRAPH_NONE=1: every world read then answers its floor and names why),
+// or a test hands it rows (WORLD_GRAPH_ROWS, under node --test only).
+if (!world2ServeEnabled() && process.env.WORLD_GRAPH_NONE !== "1" && !rowsFixtureActive()) {
+  refuseBoot("the world graph has no source: world.db is retired, and this office is not pointed at the world 2.0 store its snapshot loads from.",
+    "Set WORLD2_PG=1 and WORLD2_PG_URL (the store the tick's --to-store hydration writes), or WORLD_GRAPH_NONE=1 to boot an office that serves no world graph and says so on every world read.",
+    "Booting anyway would answer every world read from its floor: disclosed, and wrong in the same quiet way for a whole office.");
 }
 
 // roles.db — the subscription lane's registry (hand-kept; tools/roles.mjs is the
@@ -398,45 +416,14 @@ function sweepRetired(now = Date.now()) {
   }
 }
 
-// ── the world store, same tick, different discipline ─────────────────────────
-//
-// Nothing here holds a world.db HANDLE — every reader opens and closes per call
-// — but five module-level caches are folded out of its contents, and every one
-// of them was written for a world where a restart followed each swap. They all
-// re-stat the file on the way in, so this watcher is not what makes them
-// correct; it is what makes them PROMPT, and it is the one place an operator
-// can watch the world store turn over in the journal.
-//
-// Drops, never reloads. Each cache is rebuilt lazily by its own next reader,
-// which is also the reader that knows what to say when the new file is bad. An
-// eager reload here would need a second error path for five modules that
-// already have one.
-// `storeDbPath()` rather than a second `WORLD_STORE_DB ?? …/world.db` here: the
-// store owns where it lives, and a watcher pointed at a path the readers had
-// stopped using would be a drop that never fires and a log line that lies.
-let worldStamp = stampOf(storeDbPath());
-
-function reloadWorldCaches() {
-  const path = storeDbPath();
-  const stamp = stampOf(path);
-  if (stamp === worldStamp) return;      // includes null === null: still absent
-  worldStamp = stamp;
-  resetStoreSnapshot();      // world-serve.mjs  — the served graph snapshot (bumps storeGeneration)
-  resetGraphCache();         // world-graph.mjs  — the window's built payload
-  resetClassFieldsCache();   // world-frames.mjs — mark id -> { class, mobility }
-  resetClassCache();         // dynamic-store.mjs — the sound class's dials
-  resetPlaceWordsCache();    // world.mjs        — place words folded over the marks
-  journal.log(`[office] world store changed at ${path} — derived caches dropped`);
-  announce("world-store");
-}
-
-// POS-266: every thread polls both stamps on its own, and the main thread's
+// POS-266: every thread polls the index stamp on its own, and the main thread's
 // reload also tells the workers to look now, so a read handed to a worker after
 // the main thread swapped is not answered from the file before (read-workers.mjs).
+// The world has no stamp to poll: its caches key on the published world graph
+// snapshot, which the "world-graph" announcement below moves (POS-270 lane W 3b).
 onAnnounce("index", reloadIndex);
-onAnnounce("world-store", reloadWorldCaches);
 
-setInterval(() => { reloadIndex(); sweepRetired(); reloadWorldCaches(); }, RELOAD_POLL_MS).unref();
+setInterval(() => { reloadIndex(); sweepRetired(); }, RELOAD_POLL_MS).unref();
 
 // Keep the deterministic clock seam at the process boundary. Bouncer stays
 // environment-agnostic, while the HTTP integration test can pin only its clock.

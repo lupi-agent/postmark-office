@@ -1,26 +1,25 @@
 #!/usr/bin/env node
-// world-hydrate.mjs — build world.db from the world clone at a sha.
+// world-hydrate.mjs — build the world graph from the world clone at a sha.
 //
 //   node src/world-hydrate.mjs [--world <path>] [--ref <ref|sha>|blessed] [--office <path>]
-//                              [--db <path>] [--no-db] [--to-store] [--rows-out <path>] [--no-lints] [--no-gexf] [--json]
+//                              [--to-store] [--rows-out <path>] [--no-lints] [--no-gexf] [--json]
 //
-// THE OUTPUTS (POS-270, lane W item 1). The hydration builds its rows in memory
+// THE OUTPUTS (POS-270, lane W). The hydration builds its rows in memory
 // (src/world-graph-rows.mjs) and writes each output FROM them:
 //   --to-store   the store's graph snapshot, 037/038, through graph-ingest's own
-//                writer (PGHOST/PGDATABASE/PGUSER=law_ingester/PGPASSWORD);
-//   the file     world.db, as before, for the readers that still open it,
-//                unless --no-db. It goes when the last of them has moved.
-//   --rows-out   the rows themselves as one JSON file (world.db's tables by name),
+//                writer (PGHOST/PGDATABASE/PGUSER=law_ingester/PGPASSWORD) — what
+//                the office reads, and what the tick writes;
+//   --rows-out   the rows themselves as one JSON file (the graph's tables by name),
 //                the fixture a test hands an office as WORLD_GRAPH_ROWS
 //                (world-graph-snapshot.mjs § THE TEST FIXTURE SEAM).
-// Nothing reads world.db to fill the store: graph-ingest --db is the manual
-// path for a file that already exists.
+// world.db is retired (lane W 3b): `--db` is refused by name, and `--no-db`
+// is accepted and changes nothing, since writing no file is now the only way.
 //
 // The pattern is src/hydrate.mjs's, extended from tables-per-thing to
 // nodes+edges: rebuild from scratch every run, stamp the as-of shas in `meta`,
-// hold the DB to being an INDEX. Everything here is recomputable from the two
-// checkouts at the two shas named in `meta`, so world.db may be deleted at any
-// moment without losing a fact the town owns.
+// hold the graph to being an INDEX. Everything here is recomputable from the
+// two checkouts at the two shas named in `meta`, so a snapshot may be deleted at
+// any moment without losing a fact the town owns.
 //
 // Three rules shape the whole file:
 //
@@ -32,8 +31,8 @@
 //
 //   THE DERIVER'S GATE LAW (§5.2, decided). Every deriver refuses or discloses
 //   its absent inputs. Missing world clone, unreadable marks, a git history
-//   that cannot be walked: REFUSED, named, nonzero, and the previous world.db
-//   is left untouched. Anything else absent is DISCLOSED — recorded in
+//   that cannot be walked: REFUSED, named, nonzero, and the store's newest
+//   snapshot is left untouched. Anything else absent is DISCLOSED — recorded in
 //   meta.gates with the tables it leaves empty, printed loudly. And after the
 //   build, any table a passing gate promised to fill is checked: an index that
 //   silently served an empty table would be indistinguishable from an index
@@ -43,13 +42,12 @@
 //   mark's geometry with a validity window derived from git history, so a lint
 //   over historical events never re-decides history when a mark moves.
 
-import { DatabaseSync } from "node:sqlite";
-import { existsSync, rmSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve, dirname, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
-  SCHEMA, EDGE_TYPES, WORLD_CLONE, OFFICE_ROOT, DEFAULT_DB,
+  EDGE_TYPES, WORLD_CLONE, OFFICE_ROOT,
   git, materializeWorldAtSha, geometryIndex, graphFromTables,
 } from "./world-store.mjs";
 import { createGraphRows, graphTablesOf, graphCounts, writeRowsFile } from "./world-graph-rows.mjs";
@@ -60,10 +58,12 @@ const flag = (name) => process.argv.includes(name);
 
 const WORLD = resolve(argOf("--world", WORLD_CLONE));
 const OFFICE = resolve(argOf("--office", OFFICE_ROOT));
-const DB_PATH = resolve(argOf("--db", DEFAULT_DB));
+if (argOf("--db", null) != null) {
+  console.error("world.db is retired (POS-270 lane W 3b): --db writes nothing any more. Hydrate --to-store (the store's snapshot, what the office reads) or --rows-out <path>.");
+  process.exit(2);
+}
 const REF_ARG = argOf("--ref", null);
 const JSON_OUT = flag("--json");
-const WRITE_DB = !flag("--no-db");
 const TO_STORE = flag("--to-store");
 const ROWS_OUT = argOf("--rows-out", null);
 
@@ -143,7 +143,7 @@ try { worldSha = requiredGates(); }
 catch (e) {
   if (!(e instanceof GateRefusal)) throw e;
   console.error(`\nGATE REFUSED ${e.gate} — ${e.detail}`);
-  console.error(`world.db NOT rebuilt; any existing index at ${DB_PATH} is untouched.`);
+  console.error(`nothing written; the store's newest snapshot is untouched.`);
   process.exit(1);
 }
 
@@ -185,7 +185,7 @@ const marks = loadMarks(MARKS_DIR);
 if (!marks.length) {
   GATES.push({ gate: "marks-readable", input: MARKS_DIR, status: "REFUSED", detail: "loadMarks returned 0 marks" });
   console.error(`\nGATE REFUSED marks-readable — the world's own loader returned 0 marks from ${MARKS_DIR}`);
-  console.error(`world.db NOT rebuilt; any existing index at ${DB_PATH} is untouched.`);
+  console.error(`nothing written; the store's newest snapshot is untouched.`);
   process.exit(1);
 }
 gatePresent("marks-readable", MARKS_DIR, `${marks.length} marks loaded by the world's own loadMarks`);
@@ -266,31 +266,18 @@ const rawKeys = (m) => {
   }
 };
 
-// ── the previous run, read before it is destroyed ────────────────────────────
-// The store is rebuilt from scratch, so lint_findings holds exactly THIS run.
+// ── the previous run ─────────────────────────────────────────────────────────
+// The graph is rebuilt from scratch, so lint_findings holds exactly THIS run.
 // The alert surface is the DELTA, and that is the invariant family's own word
 // for it: every mechanic mark under
 // WORLD/marks/let-there-be-light/the-town-centre/the-keeping-works/postmark-invariant/<slug>/<slug>-mechanic
 // reads "the office runs this question over the rebuilt store at every
-// hydration; the delta between runs is the alert surface." So the outgoing
-// file's verdicts are read first and reported against the new ones. This is an
-// observation about this machine's last hydration — named as such in meta,
-// never town truth.
+// hydration; the delta between runs is the alert surface." So the store's
+// newest snapshot's verdicts are read first and reported against the new ones.
 let previous = null;
-if (WRITE_DB && existsSync(DB_PATH)) {
-  try {
-    const old = new DatabaseSync(DB_PATH, { readOnly: true });
-    previous = {
-      as_of_world: old.prepare("SELECT value FROM meta WHERE key='as_of_world'").get()?.value ?? null,
-      hydrated_at: old.prepare("SELECT value FROM meta WHERE key='hydrated_at'").get()?.value ?? null,
-      findings: old.prepare("SELECT lint, verdict, headline FROM lint_findings").all(),
-    };
-    old.close();
-  } catch { previous = null; }   // an unreadable or older-shape file is simply no baseline
-}
-if (!previous && TO_STORE) {
-  // No file to compare against: the store's newest snapshot is this machine's
-  // previous hydration. A store that will not answer is simply no baseline.
+if (TO_STORE) {
+  // The store's newest snapshot is the previous hydration. A store that will
+  // not answer is simply no baseline.
   try {
     const { previousGraphLints } = await import("../world2/tools/graph-ingest.mjs");
     previous = await withStoreClient((client) => previousGraphLints(client));
@@ -1224,12 +1211,11 @@ const empties = PROMISED.filter(([t]) => SIZE[t].size === 0);
 if (empties.length) {
   const detail = empties.map(([t, g]) => `${t} (promised by gate ${g})`).join(", ");
   putMeta.run("hydration_status", `FAILED: empty tables — ${detail}`);
-  // The file is still written, stamped FAILED, exactly as before: a reader
-  // refuses it by name. The store is never given a failed snapshot.
-  if (WRITE_DB) writeWorldDb(DB_PATH, graphTablesOf(T));
+  // The store is never given a failed snapshot. The rows, if asked for, are
+  // still written, stamped FAILED, so a test can see the refusal by name.
   if (ROWS_OUT) writeRowsFile(resolve(ROWS_OUT), graphTablesOf(T));
   console.error(`\nGATE FAILED silent-empty-table — ${detail}`);
-  console.error(`world.db is stamped FAILED and will not load; fix the input and rehydrate.`);
+  console.error(`nothing was written to the store; fix the input and rehydrate.`);
   process.exit(1);
 }
 
@@ -1268,7 +1254,6 @@ putMeta.run("hydration_status", "OK");
 
 // ── THE OUTPUTS, each written from the rows ─────────────────────────────────
 const tables = graphTablesOf(T);
-if (WRITE_DB) writeWorldDb(DB_PATH, tables);
 if (ROWS_OUT) writeRowsFile(resolve(ROWS_OUT), tables);
 let stored = null;
 if (TO_STORE) {
@@ -1297,10 +1282,10 @@ if (!flag("--no-gexf")) {
 
 // ── report ───────────────────────────────────────────────────────────────────
 if (JSON_OUT) {
-  console.log(JSON.stringify({ as_of_world: worldSha, as_of_office: officeSha, hydrated_at: hydratedAt, counts, anomalies, gates: GATES, lints: lintSummary?.lints.map((l) => ({ id: l.id, verdict: l.verdict, headline: l.headline })), gexf, db: WRITE_DB ? DB_PATH : null, store: stored }, null, 2));
+  console.log(JSON.stringify({ as_of_world: worldSha, as_of_office: officeSha, hydrated_at: hydratedAt, counts, anomalies, gates: GATES, lints: lintSummary?.lints.map((l) => ({ id: l.id, verdict: l.verdict, headline: l.headline })), gexf, store: stored, ...(ROWS_OUT ? { rows: resolve(ROWS_OUT) } : {}) }, null, 2));
 } else {
   for (const w of warn) console.warn(`WARN: ${w}`);
-  console.log(`hydrated ${[WRITE_DB ? DB_PATH : null, stored ? `the store (S${stored.settlement ?? "?"} ${stored.tag_sha.slice(0, 12)})` : null].filter(Boolean).join(" and ") || "nothing (--no-db, no --to-store)"} in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  console.log(`hydrated ${[stored ? `the store (S${stored.settlement ?? "?"} ${stored.tag_sha.slice(0, 12)})` : null, ROWS_OUT ? resolve(ROWS_OUT) : null].filter(Boolean).join(" and ") || "nothing (no --to-store, no --rows-out)"} in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   console.log(`  as_of world ${worldSha.slice(0, 12)} (${BLESSED ? `${BLESSED.tag ?? "main"}, blessed` : (REF ?? "HEAD")}) · office ${(officeSha ?? "?").slice(0, 12)}`);
   console.log(`  nodes ${counts.nodes_total} ${JSON.stringify(counts.nodes_by_kind)}`);
   console.log(`  edges ${counts.edges_total} ${JSON.stringify(counts.edges_by_type)}`);
@@ -1316,32 +1301,6 @@ if (JSON_OUT) {
 }
 
 // ── the writers ─────────────────────────────────────────────────────────────
-
-/** world.db from the rows: every table, in the rows' order, in one transaction. */
-function writeWorldDb(path, t) {
-  if (existsSync(path)) rmSync(path);
-  const db = new DatabaseSync(path);
-  try {
-    db.exec(SCHEMA);
-    db.exec("BEGIN");
-    const meta = db.prepare("INSERT INTO meta VALUES (?, ?)");
-    for (const r of t.meta) meta.run(r.key, r.value);
-    const node = db.prepare("INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?,?)");
-    for (const r of t.nodes) node.run(r.id, r.kind, r.subkind, r.tier, r.by, r.at_x, r.at_y, r.extent_w, r.extent_h, r.props);
-    const edge = db.prepare("INSERT INTO edges (seq, src, dst, type, props, born_at) VALUES (?,?,?,?,?,?)");
-    for (const r of t.edges) edge.run(r.seq, r.src, r.dst, r.type, r.props, r.born_at);
-    const ev = db.prepare("INSERT INTO events (seq, at, actor, type, payload) VALUES (?,?,?,?,?)");
-    for (const r of [...t.events].sort((a, b) => a.seq - b.seq)) ev.run(r.seq, r.at, r.actor, r.type, r.payload);
-    const type = db.prepare("INSERT INTO edge_type_registry VALUES (?, ?)");
-    for (const r of t.edgeTypes) type.run(r.type, r.note);
-    const geom = db.prepare("INSERT INTO geometry_versions (seq, mark_id, at_x, at_y, extent_w, extent_h, valid_from_iso, valid_to_iso, sha, path, subject, authored_iso, change) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
-    for (const r of [...t.geometryVersions].sort((a, b) => a.seq - b.seq))
-      geom.run(r.seq, r.mark_id, r.at_x, r.at_y, r.extent_w, r.extent_h, r.valid_from_iso, r.valid_to_iso, r.sha, r.path, r.subject, r.authored_iso, r.change);
-    const lint = db.prepare("INSERT INTO lint_findings (lint, verdict, headline, evidence, hydrated_at, as_of_world) VALUES (?,?,?,?,?,?)");
-    for (const r of t.lintFindings) lint.run(r.lint, r.verdict, r.headline, r.evidence, r.hydrated_at, r.as_of_world);
-    db.exec("COMMIT");
-  } finally { db.close(); }
-}
 
 /** One pg client for the store writes, from PGHOST/PGDATABASE/PGUSER/PGPASSWORD (as law-ingest's). */
 async function withStoreClient(fn) {

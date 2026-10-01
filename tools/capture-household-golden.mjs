@@ -42,7 +42,6 @@ import { fixtureDb } from "../test/fixture.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { TOOLS } from "../src/mcp.mjs";
 
-process.env.WORLD_STORE_DB = join(tmpdir(), "pm-foyer-no-such-world-store.db");
 delete process.env.TOWN_PUSH;
 delete process.env.TOWN_SINGLE_LOG;
 

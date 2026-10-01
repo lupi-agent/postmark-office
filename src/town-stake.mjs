@@ -106,8 +106,8 @@ export const ELSEWHERE =
  *   wrong class        422 — the class named, by name, and the two lanes named
  *                      beside it.
  */
-export function laneBounce(mark, { worldDb = null } = {}) {
-  const seen = markClass(mark, { worldDb });
+export function laneBounce(mark) {
+  const seen = markClass(mark);
   if (!seen.known)
     return bounce(503, "the town door could not read the record, so it could not check the lane",
       `${seen.disclosed}. Nothing was staked. ${ELSEWHERE}`);

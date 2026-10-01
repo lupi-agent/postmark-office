@@ -1,5 +1,6 @@
 // world-serve.mjs — Stage 1's serving layer: office world reads answered from
-// `world.db`, behind two flags, with the fold diffing beside them.
+// the world graph snapshot (POS-270), behind two flags, with the fold diffing
+// beside them.
 //
 //   WORLD_STORE_SHADOW=1   compute BOTH answers, serve the fold's, log every
 //                          disagreement. Zero behaviour change for residents.
@@ -14,7 +15,7 @@
 //
 // ── WHAT MAY BE SERVED, AND WHY THE GUARD IS IN CODE ────────────────────────
 //
-// world.db indexes PUBLISHED MAIN and nothing else — and since the world
+// The world graph indexes PUBLISHED MAIN and nothing else — and since the world
 // runtime ladder's §1c (2026-08-22) so does every read: the fold path serves
 // canon to anonymous, visitor and author alike, and a household's drafts reach
 // their own author as a delta instead. So the two paths index the same world by
@@ -49,7 +50,8 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
-import { DEFAULT_DB, OFFICE_ROOT, loadWorldGraph, containmentSpine } from "./world-store.mjs";
+import { OFFICE_ROOT, containmentSpine } from "./world-store.mjs";
+import { NO_WORLD } from "./world-graph-db.mjs";
 import { worldGraphSnapshot } from "./world-graph-snapshot.mjs";
 import { blessed, draftRefForKey, refExists } from "./world-branches.mjs";
 import { nextSettlementAttemptAt } from "./settlements.mjs";
@@ -66,7 +68,6 @@ export const storeMode = () => (storeReadsEnabled()
   ? (storeShadowEnabled() ? "serve+shadow" : "serve")
   : (storeShadowEnabled() ? "shadow" : "off"));
 
-export const storeDbPath = () => process.env.WORLD_STORE_DB ?? DEFAULT_DB;
 const shadowLogPath = () => process.env.WORLD_STORE_SHADOW_LOG ?? join(OFFICE_ROOT, "world-shadow-diff.jsonl");
 
 /** A query's own refusal: the store is present and fresh, and still cannot answer this. */
@@ -75,11 +76,10 @@ export const cannotAnswer = (why) => ({ [CANNOT_ANSWER]: true, why: String(why) 
 const refused = (v) => Boolean(v && typeof v === "object" && v[CANNOT_ANSWER]);
 
 // ── the snapshot ─────────────────────────────────────────────────────────────
-// world.db is small (686 nodes / 805 edges) and read-only by construction, so
-// the whole graph is held in memory and rebuilt when the FILE changes. Keyed on
-// mtime+size rather than on as_of_world: a rehydration at the same sha still
-// rewrites the file, and a snapshot that outlived its file would be a cache
-// nobody could invalidate.
+// The world graph is small (686 nodes / 805 edges) and read-only by
+// construction, so the served snapshot is built from the world graph snapshot
+// (POS-270) and keyed on the published object: a new settlement is a new
+// object, so a served snapshot can never outlive its world.
 //
 // Nothing here throws. A missing, half-built or FAILED-stamped store is a
 // fall-through reason, never an outage on a read path that has a working fold
@@ -117,50 +117,28 @@ export function storeEpoch() {
 }
 
 export function storeSnapshot() {
-  // THE STORE FIRST (POS-270, option A): once the world graph snapshot has
-  // loaded, the served snapshot is built from it, and world.db is not opened.
-  // Keyed on the published snapshot object, so a new publish is a new
-  // generation exactly as a rewritten file was. Before it loads, the file is
-  // the floor, as below.
+  // The world graph snapshot (POS-270): keyed on the published object, so a new
+  // publish is a new generation. Before one has loaded there is nothing to
+  // serve from (world.db is retired, lane W 3b), and the reads fall through to
+  // the fold, named.
   const g = worldGraphSnapshot();
-  if (g) {
-    if (_snap && _snap.from === g) return _snap;
-    _snap = {
-      from: g, dbPath: null,
-      source: { source: "store", settlement: g.pin.settlement ?? null, tag_sha: g.pin.tag_sha, office_sha: g.pin.office_sha },
-      graph: g.graph, meta: g.meta, counts: g.counts,
-      asOfWorld: g.meta.as_of_world ?? null,
-      marks: markRecords(g.graph),
-      loadedAt: new Date().toISOString(),
-    };
-    _snap.irregular = _snap.marks.filter((m) => m._ring_vertices != null && m.at);
-    _generation++;
-    return _snap;
-  }
-  const dbPath = storeDbPath();
-  let st;
-  try { st = statSync(dbPath); }
-  catch { return { error: `no world store at ${dbPath}`, dbPath }; }
-  if (_snap && _snap.dbPath === dbPath && _snap.mtimeMs === st.mtimeMs && _snap.size === st.size) return _snap;
-  try {
-    const loaded = loadWorldGraph(dbPath);
-    _snap = {
-      dbPath, mtimeMs: st.mtimeMs, size: st.size,
-      graph: loaded.graph, meta: loaded.meta, counts: loaded.counts,
-      asOfWorld: loaded.meta.as_of_world ?? null,
-      marks: markRecords(loaded.graph),
-      loadedAt: new Date().toISOString(),
-    };
-    // The rings the store does not carry (see pointAnswerable). Six marks today.
-    _snap.irregular = _snap.marks.filter((m) => m._ring_vertices != null && m.at);
-    _generation++;
-    return _snap;
-  } catch (e) {
-    return { error: String(e?.message ?? e).slice(0, 200), dbPath };
-  }
+  if (!g) return { error: NO_WORLD, dbPath: null };
+  if (_snap && _snap.from === g) return _snap;
+  _snap = {
+    from: g, dbPath: null,
+    source: { source: "store", settlement: g.pin.settlement ?? null, tag_sha: g.pin.tag_sha, office_sha: g.pin.office_sha },
+    graph: g.graph, meta: g.meta, counts: g.counts,
+    asOfWorld: g.meta.as_of_world ?? null,
+    marks: markRecords(g.graph),
+    loadedAt: new Date().toISOString(),
+  };
+  // The rings the store does not carry (see pointAnswerable). Six marks today.
+  _snap.irregular = _snap.marks.filter((m) => m._ring_vertices != null && m.at);
+  _generation++;
+  return _snap;
 }
 
-/** Drop the cached snapshot — for tests that rewrite world.db in place. */
+/** Drop the cached snapshot — for a test that republishes the same snapshot object. */
 export function resetStoreSnapshot() { _snap = null; _generation++; }
 
 // ── the projection: store rows → the shape the engine reads ──────────────────

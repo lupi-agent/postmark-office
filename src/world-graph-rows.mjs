@@ -16,9 +16,9 @@
 //     is what a rowid table does, and why `hydration_status` ends up last in meta;
 //   - an append table (`INSERT` into `seq INTEGER PRIMARY KEY AUTOINCREMENT`)
 //     numbers its rows 1, 2, 3 in insert order.
-// `toTables()` hands them back in `readWorldDbTables`' shape and ORDER BYs, so
-// the store's snapshot, the file, and the graph built from either are one set
-// of rows. The parity proof is docs/2026-09-30/rail/hydrator-emits-rows/.
+// `toTables()` hands them back in the order world.db's reader read them (the
+// file is retired, POS-270 lane W 3b; the order stands), so the store's snapshot
+// and the graph built from it are one set of rows. The parity proof is docs/2026-09-30/rail/hydrator-emits-rows/.
 
 import { writeFileSync } from "node:fs";
 
@@ -63,7 +63,7 @@ export function createGraphRows() {
 const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
- * The rows in `readWorldDbTables`' shape, and in its ORDER BYs: nodes, meta,
+ * The rows in the graph's table shape, in the old file reader's ORDER BYs: nodes, meta,
  * edge types and lints in table order; edges by seq; events by `at` (then seq);
  * geometry by mark, then valid-from (then seq).
  */

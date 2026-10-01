@@ -2246,8 +2246,8 @@ async function questTools(clone) {
  * daily pair has always had and costs the same as reading it. The rows no
  * longer read null on the bare board. See `standingFor` / `standingJoin` below.
  */
-export function injectedComplete(handle, { worldDb = null, house = null } = {}) {
-  const st = firstIdeaStanding(handle, { worldDb, house });
+export function injectedComplete(handle, { house = null } = {}) {
+  const st = firstIdeaStanding(handle, { house });
   return st ? { "first-idea": st.complete } : null;
 }
 
@@ -2264,9 +2264,9 @@ export function injectedComplete(handle, { worldDb = null, house = null } = {}) 
  * say "you have not published an idea" on the strength of a hydration blip,
  * and it is the row that PAYS.
  */
-export function firstIdeaStanding(handle, { worldDb = null, house = null } = {}) {
+export function firstIdeaStanding(handle, { house = null } = {}) {
   try {
-    const tank = ideasTank(worldDb ? { worldDb } : {});
+    const tank = ideasTank();
     if (tank.source !== "store") return null;
     // `house` is a seam, not a parameter callers pass in anger — the office
     // always resolves it here. It exists because a mutation pass caught the
@@ -2930,9 +2930,9 @@ export function parsePsaEntries(body) {
  * Returns `{ entries, window_days, max, dials, note }`, or `null` when the wall
  * is not in this index at all — an honest absence, never an invented quiet week.
  */
-export function psaFold(db, { now = Date.now(), worldDb = null } = {}) {
-  const windowDial = dialNumber("doorstep", "psa_window_days", 7, { worldDb, min: 0 });
-  const maxDial = dialNumber("doorstep", "psa_max", 5, { worldDb, min: 0 });
+export function psaFold(db, { now = Date.now() } = {}) {
+  const windowDial = dialNumber("doorstep", "psa_window_days", 7, { min: 0 });
+  const maxDial = dialNumber("doorstep", "psa_max", 5, { min: 0 });
   let row;
   try { row = db.prepare("SELECT json FROM bulletin WHERE slug = ?").get(PSA_SLUG); }
   catch { row = null; }

@@ -31,20 +31,20 @@
 import { writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { write } from "graphology-gexf";
-import { loadWorldGraph, DEFAULT_DB, OFFICE_ROOT } from "../src/world-store.mjs";
+import { OFFICE_ROOT } from "../src/world-store.mjs";
 
 const KIND_COLOR = {
   mark: "#4C6EF5", class: "#F59F00", code: "#12B886", doctrine: "#BE4BDB",
   entity: "#FA5252", emission: "#868E96", unknown: "#495057",
 };
 
-export function exportGexf({ dbPath = DEFAULT_DB, loaded = null, out = join(OFFICE_ROOT, "world-graph.gexf"), kinds = null, dropUnresolved = false } = {}) {
+export function exportGexf({ loaded, out = join(OFFICE_ROOT, "world-graph.gexf"), kinds = null, dropUnresolved = false } = {}) {
   // `loaded`: a graph already built (the hydrator's rows, or the store's
   // snapshot). It is COPIED, because the filters below drop nodes and a caller's
   // graph must come back as it was handed over.
-  const src = loaded ?? loadWorldGraph(dbPath);
-  const { meta, counts } = src;
-  const graph = loaded ? src.graph.copy() : src.graph;
+  if (!loaded?.graph) throw new Error("exportGexf needs a loaded graph: world.db is retired (POS-270 lane W 3b)");
+  const { meta, counts } = loaded;
+  const graph = loaded.graph.copy();
 
   // Filtering drops nodes, and an edge whose endpoint went with them has to go
   // too — Graphology's dropNode does that for us, which is exactly the wanted
@@ -101,8 +101,12 @@ export function exportGexf({ dbPath = DEFAULT_DB, loaded = null, out = join(OFFI
 
 if (process.argv[1]?.endsWith("world-gexf.mjs")) {
   const argOf = (n, d) => { const i = process.argv.indexOf(n); return i !== -1 ? process.argv[i + 1] : d; };
+  if (process.argv.includes("--db")) { console.error("world.db is retired (POS-270 lane W 3b): the gexf export reads --rows <file> (a hydration's --rows-out) or the store's snapshot; drop --db."); process.exit(2); }
+  const { worldGraphForTool } = await import("../src/world-graph-snapshot.mjs");
+  const w = await worldGraphForTool({ rows: argOf("--rows", null) });
+  if (w.error) { console.error(`no world graph: ${w.error}`); process.exit(1); }
   const r = exportGexf({
-    dbPath: argOf("--db", DEFAULT_DB),
+    loaded: w.loaded,
     out: argOf("--out", join(OFFICE_ROOT, "world-graph.gexf")),
     kinds: argOf("--kinds", null)?.split(",").map((s) => s.trim()) ?? null,
     dropUnresolved: process.argv.includes("--drop-unresolved"),

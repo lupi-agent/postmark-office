@@ -42,11 +42,11 @@
 //   WORLD_DYNAMIC_DB    the file (default: dynamic.db beside world.db)
 
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { OFFICE_ROOT, WORLD_CLONE } from "./world-store.mjs";
-import { metaIn, openWorldStore, registerTwin } from "./world-graph-db.mjs";
+import { metaIn, openWorldStore, registerTwin, NO_WORLD } from "./world-graph-db.mjs";
 import { servedCanonSha } from "./world-serve.mjs";
 // THE CODE FALLBACK IS AN EDGE, NOT A COPY. The no-literals law says a class
 // constant has exactly one home; until every reader edges to the class mark,
@@ -343,8 +343,9 @@ export const putMeta = (db, key, value) => db.prepare("INSERT OR REPLACE INTO me
 // in office code, in a tool, in a test — it must EDGE to the class rather than
 // restate it" (LOGOS/classes.md). This is that edge, for the sound class.
 //
-// The class mark stands in the world repo and reaches this office through
-// world.db, which the hydrator builds. So the read has an absent-input story,
+// The class mark stands in the world repo and reaches this office through the
+// world graph snapshot, which the hydrator writes to the store at each
+// settlement (POS-270). So the read has an absent-input story,
 // and the customs-house's deriver's law governs it: REFUSE OR DISCLOSE, NEVER
 // QUIETLY SUBSTITUTE.
 //
@@ -354,7 +355,7 @@ export const putMeta = (db, key, value) => db.prepare("INSERT OR REPLACE INTO me
 //   store readable, fresh          the class mark governs. `fresh: true`.
 //   store readable, STALE          the class mark STILL governs, and the
 //                                  staleness is disclosed on every emission and
-//                                  on the health surface. A world.db one commit
+//                                  on the health surface. A snapshot one commit
 //                                  behind main holds the real class mark at an
 //                                  older commit; the alternative — the office's
 //                                  own constants — is a strictly OLDER copy of
@@ -366,7 +367,7 @@ export const putMeta = (db, key, value) => db.prepare("INSERT OR REPLACE INTO me
 //                                  required because place words must match the
 //                                  fold byte-for-byte. A dial has no fold to
 //                                  match.)
-//   store absent / FAILED /        the office's shipped constants, DISCLOSED,
+//   no snapshot loaded /           the office's shipped constants, DISCLOSED,
 //   class mark or dial absent      per dial. Never silently.
 //
 // Disclosure is PER DIAL. A class mark that carries three of four dials hands
@@ -385,9 +386,8 @@ export const CODE_SOUND_DIALS = Object.freeze({
 
 const DIAL_NAMES = Object.keys(CODE_SOUND_DIALS);
 
-// The world.db read is cached on the FILE (mtime+size), like world-serve's
-// snapshot: a rehydration rewrites the file even at the same sha, and a cache
-// nobody can invalidate is worse than no cache.
+// The class read is cached on the PUBLISHED world graph snapshot: a new
+// settlement is a new snapshot object, so the cache can never outlive its world.
 let _classSnap = null;
 
 // Its two statements, named so the store's graph snapshot can answer them too
@@ -397,7 +397,7 @@ const NODE_PROPS_SQL = "SELECT props FROM nodes WHERE id = ?";
 registerTwin(SOUND_META_SQL, (g) => metaIn(g, ["as_of_world", "hydrated_at", "hydration_status"]));
 registerTwin(NODE_PROPS_SQL, (g, id) => { const n = g.byId.get(String(id)); return n ? [{ props: n.props }] : []; });
 
-/** The sound class mark, read through a handle (the file's or the snapshot's). */
+/** The sound class mark, read through the snapshot's handle. */
 function classMarkRead(db) {
   const meta = Object.fromEntries(db.prepare(SOUND_META_SQL).all().map((r) => [r.key, r.value]));
   const row = db.prepare(NODE_PROPS_SQL).get(SOUND_CLASS_MARK);
@@ -408,38 +408,20 @@ function classMarkRead(db) {
   return { asOfWorld: meta.as_of_world ?? null, hydratedAt: meta.hydrated_at ?? null, present: Boolean(row), props };
 }
 
-function classMarkSnapshot(worldDbPath) {
-  // THE STORE FIRST: with no file named, once the world graph snapshot has
-  // loaded, read through its handle and cache on the published snapshot.
-  if (worldDbPath == null) {
-    const w = openWorldStore();
-    if (w) {
-      if (_classSnap?.from === w.snap) return _classSnap;
-      const read = classMarkRead(w.db);
-      if (read.error) return read;
-      _classSnap = { from: w.snap, ...read };
-      return _classSnap;
-    }
-    worldDbPath = process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db");
-  }
-  let st;
-  try { st = statSync(worldDbPath); }
-  catch { return { error: "store-absent", detail: `no world store at ${worldDbPath}` }; }
-  if (_classSnap && _classSnap.path === worldDbPath && _classSnap.mtimeMs === st.mtimeMs && _classSnap.size === st.size)
-    return _classSnap;
-  try {
-    const db = new DatabaseSync(worldDbPath, { readOnly: true });
-    let read;
-    try { read = classMarkRead(db); } finally { db.close(); }
-    if (read.error) return read;
-    _classSnap = { path: worldDbPath, mtimeMs: st.mtimeMs, size: st.size, ...read };
-    return _classSnap;
-  } catch (e) {
-    return { error: "store-unreadable", detail: String(e?.message ?? e).slice(0, 200) };
-  }
+function classMarkSnapshot() {
+  // The world graph snapshot, or nothing: world.db is retired (POS-270 lane W
+  // 3b), and before a snapshot has loaded the sound class stands on the
+  // office's constants and says why.
+  const w = openWorldStore();
+  if (!w) return { error: "store-absent", detail: NO_WORLD };
+  if (_classSnap?.from === w.snap) return _classSnap;
+  const read = classMarkRead(w.db);
+  if (read.error) return read;
+  _classSnap = { from: w.snap, ...read };
+  return _classSnap;
 }
 
-/** Drop the cached class read — for tests that rewrite world.db in place. */
+/** Drop the cached class read — for a test that republishes the same snapshot object. */
 export function resetClassCache() { _classSnap = null; }
 
 /**
@@ -449,9 +431,8 @@ export function resetClassCache() { _classSnap = null; }
  * because a class read that could take down `say` would make the law more
  * fragile than the code it replaced.
  */
-export function soundClass({ worldDb = null, repo = WORLD_CLONE } = {}) {
-  // No file named: the store's snapshot first, the file as the floor (classMarkSnapshot).
-  const snap = classMarkSnapshot(worldDb ?? null);
+export function soundClass({ repo = WORLD_CLONE } = {}) {
+  const snap = classMarkSnapshot();
 
   const dials = { ...CODE_SOUND_DIALS };
   const sources = Object.fromEntries(DIAL_NAMES.map((d) => [d, "code-fallback"]));
@@ -496,8 +477,8 @@ export function soundClass({ worldDb = null, repo = WORLD_CLONE } = {}) {
     dials, sources, disclosed, drift,
     version, gate,
     mark: SOUND_CLASS_MARK,
-    // `path` names what answered: the file, or the store's graph snapshot.
-    store: { path: snap.from ? "the store's graph snapshot" : (worldDb ?? process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db")), as_of_world: asOfWorld, hydrated_at: snap.hydratedAt ?? null, fresh },
+    // `path` names what answered: the store's graph snapshot, or nothing.
+    store: { path: snap.from ? "the store's graph snapshot" : null, as_of_world: asOfWorld, hydrated_at: snap.hydratedAt ?? null, fresh },
   };
 }
 

@@ -59,7 +59,7 @@ export const lawSnapshot = () => state.snap;
  * Where the class layer is standing right now, for a door to disclose:
  * `{ source: "law", settlement, sha, disclosed }` once a snapshot is published,
  * `{ source: "floor", disclosed }` before (the readers then fall back to
- * world.db or their floors, as they always did).
+ * the world graph snapshot, or their floors).
  */
 export function lawStanding() {
   const s = state.snap;
@@ -67,8 +67,8 @@ export function lawStanding() {
   return {
     source: "floor",
     disclosed: state.lastError
-      ? `the law snapshot has not loaded (${state.lastError}) — class reads answer from world.db where there is one, else from their floors`
-      : "the law snapshot has not loaded yet — class reads answer from world.db where there is one, else from their floors",
+      ? `the law snapshot has not loaded (${state.lastError}) — class reads answer from the world graph snapshot where it has loaded, else from their floors`
+      : "the law snapshot has not loaded yet — class reads answer from the world graph snapshot where it has loaded, else from their floors",
   };
 }
 

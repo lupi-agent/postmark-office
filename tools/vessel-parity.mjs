@@ -36,12 +36,11 @@
 // So this tool does not have a pass mark of zero. It has EXPECTED residuals with
 // named causes, and its job is to notice when a residual appears that has none.
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { DatabaseSync } from "node:sqlite";
 
-import { WORLD_CLONE, OFFICE_ROOT } from "../src/world-store.mjs";
+import { WORLD_CLONE } from "../src/world-store.mjs";
 
 const argOf = (name, fallback = null) => { const i = process.argv.indexOf(name); return i !== -1 ? process.argv[i + 1] : fallback; };
 const flag = (name) => process.argv.includes(name);
@@ -77,13 +76,11 @@ export function marksAsOf(marks, iso, versions) {
   return { marks: out, unversioned };
 }
 
-/** Every geometry version in the store, oldest first per mark. */
-export function readGeometryVersions(dbPath) {
-  if (!existsSync(dbPath)) return { versions: [], absent: `no world store at ${dbPath} — run: npm run hydrate:world` };
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  const versions = db.prepare(
-    "SELECT mark_id, at_x, at_y, extent_w, extent_h, valid_from_iso, valid_to_iso FROM geometry_versions ORDER BY mark_id, valid_from_iso").all();
-  db.close();
+/** Every geometry version in a world graph's rows, oldest first per mark. */
+export function geometryVersionsOf(tables) {
+  const versions = (tables?.geometryVersions ?? [])
+    .map(({ mark_id, at_x, at_y, extent_w, extent_h, valid_from_iso, valid_to_iso }) => ({ mark_id, at_x, at_y, extent_w, extent_h, valid_from_iso, valid_to_iso }))
+    .sort((a, b) => (a.mark_id < b.mark_id ? -1 : a.mark_id > b.mark_id ? 1 : String(a.valid_from_iso) < String(b.valid_from_iso) ? -1 : String(a.valid_from_iso) > String(b.valid_from_iso) ? 1 : 0));
   return { versions, absent: null };
 }
 
@@ -125,7 +122,7 @@ export function parityRows({ vesselDepartures, marks, versions, vessel, vesselHa
 
 async function main() {
   const CLONE = resolve(argOf("--world", process.env.WORLD_CLONE ?? WORLD_CLONE));
-  const DB = resolve(argOf("--db", process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db")));
+  if (process.argv.includes("--db")) { console.error("world.db is retired (POS-270 lane W 3b): vessel-parity reads --rows <file> (a hydration's --rows-out) or the store's snapshot; drop --db."); process.exit(2); }
   const T = (f) => import(pathToFileURL(join(CLONE, "tools", f)).href);
   const [walk, vessel, fold] = await Promise.all([T("walk.mjs"), T("vessel.mjs"), T("marks-fold.mjs")]);
 
@@ -137,11 +134,14 @@ async function main() {
   const { departures } = walk.parseWalkLedger(readFileSync(join(CLONE, "WORLD", "walk-ledger.md"), "utf8"));
   const vesselDepartures = departures.filter((d) => d.handle === vesselHandle);
 
-  const { versions, absent } = readGeometryVersions(DB);
+  // The store's snapshot (what the office reads), or a hydration's --rows.
+  const { worldGraphForTool } = await import("../src/world-graph-snapshot.mjs");
+  const w = await worldGraphForTool({ rows: argOf("--rows", null) });
+  const { versions, absent } = w.error ? { versions: [], absent: w.error } : geometryVersionsOf(w.loaded.tables);
   const rows = parityRows({ vesselDepartures, marks, versions, vessel, vesselHandle });
 
   const report = {
-    world: CLONE, store: DB, store_absent: absent,
+    world: CLONE, store: w.source ?? null, store_absent: absent,
     service: { mark: service.markId, vessel: service.vessel.markId, pace: service.pace, stops: service.stops.map((s) => ({ mark: s.markId, at: s.at, departs: s.departs })) },
     departures: rows.length,
     scheduled: rows.filter((r) => r.scheduled).length,
