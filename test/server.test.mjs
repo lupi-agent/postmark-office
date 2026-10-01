@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { editClone, fixtureDb } from "./fixture.mjs";
 import { worldStoreFixture, AS_OF_WORLD } from "./world-graph-fixture.mjs";
+import { rowsEnv } from "./helpers/world-rows.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const KEY = "testkey";
@@ -38,7 +39,7 @@ before(async () => {
   // passed its own `--oauth-db`; this is that idiom applied to every spawn here.
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", "0", "--db", dbPath,
     "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db")], {
-    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: join(tmp, "no-clone-here"), WORLD_CLONE: join(tmp, "no-world-clone"), VOICES_LOG: join(tmp, "voices-log.jsonl"), TOWN_PUSH: "", WORLD_STORE_DB: join(tmp, "world.db") },
+    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: join(tmp, "no-clone-here"), WORLD_CLONE: join(tmp, "no-world-clone"), VOICES_LOG: join(tmp, "voices-log.jsonl"), TOWN_PUSH: "", ...rowsEnv(join(tmp, "world.db"), tmp) },   // the world is the rows (POS-270 lane W 3a), never the file
     stdio: ["ignore", "pipe", "pipe"],
   });
   await new Promise((ok, no) => {

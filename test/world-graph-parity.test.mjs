@@ -2,11 +2,12 @@
 // world graph from world.db, node for node and edge for edge (POS-270,
 // option A, Wright-ruled 2026-09-30: "Parity is the gate").
 //
-// ONE SET OF ROWS, TWO SOURCES. A world.db is read by the office's own reader
-// (`readWorldDbTables`), copied into a REAL Postgres (PGlite, every migration
-// 001..038 laid down) by the graph pen's own writer (`writeGraphSnapshot`), and
-// loaded back by the office's snapshot reader (`reloadWorldGraph`). Then
-// everything `loadWorldGraph` hands a reader is compared:
+// ONE SET OF ROWS, TWO SOURCES. A world's rows in a sqlite file (this test's
+// own read, `tablesOfFixture`) are copied into a REAL Postgres (PGlite, every
+// migration 001..038 laid down) by the graph pen's own writer
+// (`writeGraphSnapshot`), and loaded back by the office's snapshot reader
+// (`reloadWorldGraph`). Then everything the one construction (`graphFromTables`)
+// hands a reader from each is compared:
 //
 //   the nodes, in order, with every attribute;  the edges, in order, with key,
 //   ends and attributes;  the placeholders a dangling edge makes;  meta;
@@ -23,14 +24,18 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { worldClone, NO_WORLD, OFFICE_ROOT } from "./fixture-paths.mjs";
 import { loadPglite, storeFloor } from "./helpers/pglite-store.mjs";
-import { SCHEMA, EDGE_TYPES, loadWorldGraph, readWorldDbTables } from "../src/world-store.mjs";
+import { SCHEMA, EDGE_TYPES } from "../src/world-store.mjs";
+// The file's side is read by the TEST (POS-270 lane W 3a): the office no longer
+// opens world.db, so the rows a hydration wrote are read here and built through
+// the same one construction the store's rows pass through.
+import { graphOf, tablesOfFixture, writeFixtureDb } from "./helpers/world-rows.mjs";
 import { graphSnapshotFromTables, writeGraphSnapshot } from "../world2/tools/graph-ingest.mjs";
 import { reloadWorldGraph, resetWorldGraph, worldGraphSnapshot, worldGraphStanding } from "../src/world-graph-snapshot.mjs";
 
@@ -46,14 +51,14 @@ const edgeList = (g) => { const out = []; g.forEachEdge((key, a, src, dst) => ou
 async function assertParity(worldDb, { officeSha = null } = {}) {
   const db = await storeFloor(pglite);
   try {
-    const snap = graphSnapshotFromTables(readWorldDbTables(worldDb));
+    const snap = graphSnapshotFromTables(tablesOfFixture(worldDb));
     if (officeSha) assert.equal(snap.officeSha, officeSha);
     await writeGraphSnapshot(db, snap);
     resetWorldGraph();
     const r = await reloadWorldGraph({ query: (sql, p) => db.query(sql, p) });
     assert.equal(r.changed, true, `the snapshot did not load: ${JSON.stringify(r.standing)}`);
     const fromStore = worldGraphSnapshot();
-    const fromFile = loadWorldGraph(worldDb);
+    const fromFile = graphOf(worldDb, { label: worldDb });
 
     const [sn, fn] = [nodeList(fromStore.graph), nodeList(fromFile.graph)];
     assert.equal(sn.length, fn.length, "node count");
@@ -74,12 +79,13 @@ async function assertParity(worldDb, { officeSha = null } = {}) {
     for (const k of ["counts", "anomalies", "anomalyDetail", "gates"]) assert.deepStrictEqual(fromStore[k], fromFile[k], k);
 
     // The window's payload, whole: the one reader that serialises props.
-    const { worldGraphPayloadFrom, worldGraphPayload, resetGraphCache } = await import("../src/world-graph.mjs");
+    const { worldGraphPayloadFrom, resetGraphCache } = await import("../src/world-graph.mjs");
     resetGraphCache();
     // `store` says where the graph came from (the file's bytes and mtime, or the
     // snapshot's key) and is the one field that differs by source; every other
     // byte must be the same.
-    const filePayload = worldGraphPayload(worldDb);
+    const st = statSync(worldDb);
+    const filePayload = worldGraphPayloadFrom(fromFile, { bytes: st.size, mtime: new Date(st.mtimeMs).toISOString() });
     const storePayload = worldGraphPayloadFrom(fromStore);
     assert.equal(storePayload.store.source, "store");
     assert.equal(storePayload.store.tag_sha, fromFile.meta.as_of_world);
@@ -140,13 +146,13 @@ test("THE PEN REFUSES a FAILED hydration, and one with no office sha — never a
   const db = new DatabaseSync(failed);
   db.prepare("INSERT OR REPLACE INTO meta VALUES (?, ?)").run("hydration_status", "FAILED: empty tables — nodes");
   db.close();
-  assert.throws(() => graphSnapshotFromTables(readWorldDbTables(failed)), /stamped "FAILED/);
+  assert.throws(() => graphSnapshotFromTables(tablesOfFixture(failed)), /stamped "FAILED/);
   const noOffice = join(dir, "no-office.db");
   handBuiltWorldDb(noOffice);
   const db2 = new DatabaseSync(noOffice);
   db2.prepare("INSERT OR REPLACE INTO meta VALUES (?, ?)").run("as_of_office", "");
   db2.close();
-  assert.throws(() => graphSnapshotFromTables(readWorldDbTables(noOffice)), /as_of_office/);
+  assert.throws(() => graphSnapshotFromTables(tablesOfFixture(noOffice)), /as_of_office/);
 });
 
 // ── world 2: the checkout's newest blessing, hydrated as the tick does ──────
@@ -169,8 +175,9 @@ before(() => {
   blessing = newestBlessing(CLONE);
   blessedDb = join(dir, "blessed.db");
   execFileSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"),
-    "--world", CLONE, "--ref", blessing.sha, "--db", blessedDb, "--no-gexf"],
-  { stdio: "ignore", env: { ...process.env, WORLD_STORE_DB: blessedDb } });
+    "--world", CLONE, "--ref", blessing.sha, "--no-db", "--rows-out", `${blessedDb}.rows.json`, "--no-gexf"],
+  { stdio: "ignore", env: { ...process.env, TMP: dir, TEMP: dir, TMPDIR: dir } });
+  writeFixtureDb(`${blessedDb}.rows.json`, blessedDb);
 });
 
 test("PARITY at the checkout's newest settlement: node for node and edge for edge, lints and all", async (t) => {
@@ -193,7 +200,7 @@ test("THE READERS: with world.db ABSENT, the window and the served snapshot answ
     assert.match(String(worldGraphPayload().error), /no world store/);
     assert.match(String(storeSnapshot().error), /no world store/);
     // The store: one snapshot copied in and loaded.
-    await writeGraphSnapshot(db, graphSnapshotFromTables(readWorldDbTables(handBuiltWorldDb(join(dir, "readers.db")))));
+    await writeGraphSnapshot(db, graphSnapshotFromTables(tablesOfFixture(handBuiltWorldDb(join(dir, "readers.db")))));
     await reloadWorldGraph({ query: (sql, p) => db.query(sql, p) });
     const payload = worldGraphPayload();
     assert.equal(payload.error, undefined, `the window did not answer from the store: ${JSON.stringify(payload).slice(0, 160)}`);
@@ -217,10 +224,10 @@ test("THE LINTS over the store's snapshot answer what they answer over world.db,
   const { runLints } = await import("../src/world-lints.mjs");
   const db = await storeFloor(pglite);
   try {
-    await writeGraphSnapshot(db, graphSnapshotFromTables(readWorldDbTables(blessedDb)));
+    await writeGraphSnapshot(db, graphSnapshotFromTables(tablesOfFixture(blessedDb)));
     resetWorldGraph();
     await reloadWorldGraph({ query: (sql, p) => db.query(sql, p) });
-    const fromFile = await runLints({ dbPath: blessedDb });
+    const fromFile = await runLints({ store: graphOf(blessedDb) });
     const fromStore = await runLints({ store: worldGraphSnapshot() });
     const verdicts = (r) => r.lints.map((l) => [l.id, l.verdict, l.headline, JSON.stringify(l.evidence ?? null)]);
     assert.deepStrictEqual(verdicts(fromStore), verdicts(fromFile));
