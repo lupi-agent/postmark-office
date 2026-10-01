@@ -157,6 +157,10 @@
      "description": "string",
      "type": "string"
     },
+    "image": {
+     "description": "string",
+     "type": "string"
+    },
     "title": {
      "description": "string",
      "maxLength": "number",

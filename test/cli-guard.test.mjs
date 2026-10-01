@@ -125,6 +125,8 @@ const ROSTER = {
   "src/world-store.mjs": { args: [], code: 1, needle: "" },
   // tools/
   "tools/backfill-home-shelf.mjs": { args: ["--manifest", NOWHERE], code: 2, needle: "no manifest at" },
+  // POS-219: refuses with neither --dry-run nor --apply before it imports a door or reads anything
+  "tools/home-picture-carry.mjs": { args: [], code: 2, needle: "pass exactly one of --dry-run or --apply" },
   "tools/media-thumbnails-backfill.mjs": { args: ["--from-record", NOWHERE], code: 2, needle: "no record at" },
   "tools/box-rollcall.mjs": { args: ["--manifest", NOWHERE], code: 2, needle: "the roll-call itself could not run" },
   // POS-216: refuses on a missing town clone before reading or writing anything
