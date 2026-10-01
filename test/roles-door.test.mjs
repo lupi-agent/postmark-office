@@ -20,6 +20,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import { openRolesDb, grantRole, revokeRole } from "../src/roles.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -27,15 +28,18 @@ const KEY = "roles-door-test-key";
 const HOUSEHOLD = "keemin";
 const GH_ID = 583231;            // the pinned account id the static key carries
 
-/** One office, one registry, one flag state. Returns a stop() and a call(). */
-async function office({ port, gates }) {
+/** One office, one registry, one flag state. Returns a stop() and a call().
+ *  Its port is asked of the OS (spawn-office.mjs § the port, asked for): these
+ *  were 43871, 43872 and 43874, and 43871 is also loop-lag.test.mjs's, so the
+ *  two files collided inside one tree's parallel suite. */
+async function office({ gates }) {
   const tmp = mkdtempSync(join(tmpdir(), "postmark-office-roles-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
   const rolesPath = join(tmp, "roles.db");
   openRolesDb(rolesPath).close(); // exists and empty — nobody holds anything yet
 
-  const child = spawn(process.execPath, [
+  const { child, port } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"),
     "--port", String(port),
     "--db", dbPath,
@@ -51,12 +55,7 @@ async function office({ port, gates }) {
       WORLD_CLONE: join(tmp, "no-world-clone"),
     },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  await new Promise((ok, no) => {
-    const t = setTimeout(() => no(new Error("server never listened")), 15_000);
-    child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-    child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-  });
+  }));
 
   const base = `http://127.0.0.1:${port}`;
   return {
@@ -86,7 +85,7 @@ async function office({ port, gates }) {
 // ── FLAG OFF: the default, and every office today ───────────────────────────
 
 let open_;
-before(async () => { open_ = await office({ port: 43871, gates: false }); });
+before(async () => { open_ = await office({ gates: false }); });
 after(async () => { await open_?.stop(); });
 
 test('FLAG OFF — "absolutely nothing changes for any caller until the founder designates real gated surfaces"', async () => {
@@ -106,7 +105,7 @@ test('FLAG OFF — "absolutely nothing changes for any caller until the founder 
 // ── FLAG ON: the mechanism, demonstrated ───────────────────────────────────
 
 test("FLAG ON — the door actually consults the registry (grant passes, revoke refuses, anonymous is told to sign in)", async () => {
-  const gated = await office({ port: 43872, gates: true });
+  const gated = await office({ gates: true });
   try {
     // 1. ungranted, signed in -> 403 naming the role
     const refused = await gated.signedIn();
@@ -139,7 +138,7 @@ test("FLAG ON — the door actually consults the registry (grant passes, revoke 
 });
 
 test("A GATED SURFACE IS GATED AT EVERY CALL SITE — the MCP door serves the same read and must refuse alike", async () => {
-  const gated = await office({ port: 43874, gates: true });
+  const gated = await office({ gates: true });
   try {
     // Ungated at REST but open at MCP would be a decorative gate: the office
     // would report itself closed while the same numbers walked out the other
