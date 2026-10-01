@@ -33,6 +33,8 @@ function scriptedClient({ pendingPrior = null, standing = null } = {}) {
         return { rows: pendingPrior ? [{ id: pendingPrior }] : [], rowCount: pendingPrior ? 1 : 0 };
       if (text.includes("FROM marks WHERE slug") && text.includes("status = 'standing'"))
         return { rows: standing ? [{ id: standing }] : [], rowCount: standing ? 1 : 0 };
+      if (text.startsWith("UPDATE claims SET status = 'retracted'"))
+        return { rows: pendingPrior ? [{ id: pendingPrior }] : [], rowCount: pendingPrior ? 1 : 0 };
       if (text.startsWith("UPDATE claims SET")) return { rows: [{ id: "claim-new" }], rowCount: 1 };
       throw new Error(`unscripted query: ${text.slice(0, 80)}`);
     },
@@ -45,7 +47,7 @@ const amendRow = () => ({
 });
 
 const supersedesSent = (client) => {
-  const upd = client.log.find((q) => q.text.startsWith("UPDATE claims SET"));
+  const upd = client.log.find((q) => q.text.startsWith("UPDATE claims SET status = $12"));
   assert.ok(upd, "the drain reached the claim UPDATE");
   return upd.params[6]; // $7 = supersedes (world2-claims.mjs, the UPDATE's parameter list)
 };
@@ -61,11 +63,17 @@ test("an amendment of a PUBLISHED mark names the standing mark as what it supers
   //   the exact row the candle refused as a duplicate on 2026-09-10.
 });
 
-test("an amendment with a pending prior in the same window still names the prior (today's chain)", async () => {
+test("a second amend in the window REPLACES the first: the prior is retracted, the new one supersedes the standing mark", async () => {
+  // POS-241 ruling 1 (2026-09-26): "a second amend in one window replaces the first".
+  // This test pinned the in-window chain before; the chain is what refused both of
+  // wright's amends of furnish-ferrys-waiting-room at window 212.
   const client = scriptedClient({ pendingPrior: "claim-prior", standing: "mark-7a2f" });
   await claimTxFromJournal(client, amendRow(), 1510, { household: "noprotocol-keith" });
-  assert.equal(supersedesSent(client), "claim-prior", "in-window chain wins: head-of-chain is the clearing's transition 2");
-  assert.ok(!client.log.some((q) => q.text.includes("FROM marks WHERE slug")), "…and the standing mark is not even asked for");
+  const retract = client.log.find((q) => q.text.startsWith("UPDATE claims SET status = 'retracted'"));
+  assert.ok(retract, "the prior pending claim is retracted at filing");
+  assert.deepEqual(retract.params.slice(0, 3), [188, "keith/the-garage", "keith"], "this window, this mark, this author");
+  assert.match(retract.params[3], /^replaced: /, "the row says why it ended");
+  assert.equal(supersedesSent(client), "mark-7a2f", "the new claim supersedes the STANDING mark directly — no chain");
 });
 
 test("an amendment of a slug that stands nowhere supersedes nothing", async () => {
