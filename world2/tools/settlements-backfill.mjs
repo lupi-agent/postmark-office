@@ -75,12 +75,23 @@
 //
 // Nothing here updates or deletes a row. INSERT is the only write, and it is
 // the only write any runtime pen holds on this table.
+//
+// ── AND THEN THE MARKS EACH SETTLEMENT CARRIED (049, POS-142 Proposal B) ────
+//
+// --apply goes on to record, in `mark_carried`, which settlement first carried
+// each published mark the store has no row for yet: mark-carried-backfill.mjs §
+// recordCarried, the same function as the one-time backfill, capped at its
+// TICK_CAP so the tick never runs the whole backfill. Its line follows the
+// settlements line. A refusal there (a row disagreeing with 1.0's receipt) rolls
+// back only the carried rows and exits 1; the settlement rows are committed
+// first and stand.
 
 import pg from "pg";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 
 import { SETTLEMENT_TAG, isRepoRoot } from "../../src/settlements.mjs";
+import { recordCarried, receiptLine, TICK_CAP } from "./mark-carried-backfill.mjs";
 
 const NL = String.fromCharCode(10);
 const arg = (n, d = null) => { const i = process.argv.indexOf(`--${n}`); return i === -1 ? d : process.argv[i + 1]; };
@@ -168,6 +179,21 @@ export function planFrom(derived, existing, windows) {
   return { plan, extra };
 }
 
+/**
+ * The carried step of an apply. Its own failures are named in its line and
+ * never undo the settlement rows above, which are already committed: a store
+ * without 049 says so, and a git or store error is one line, not a stack.
+ */
+export async function carriedOnTick(client, repo) {
+  try {
+    const r = await recordCarried(client, repo, { apply: true, cap: TICK_CAP });
+    return { verdict: r.verdict, line: receiptLine(r) };
+  } catch (e) {
+    if (e?.code === "42P01") return { verdict: "absent", line: "carried: no `mark_carried` table yet (049 not applied) — nothing recorded" };
+    return { verdict: "error", line: `carried: NOT recorded (non-fatal) — ${String(e?.message ?? e).slice(0, 200)}` };
+  }
+}
+
 // ── the arm ──────────────────────────────────────────────────────────────────
 
 const iso = (d) => (d == null ? "—" : new Date(d).toISOString().replace(/\.\d{3}Z$/, "Z"));
@@ -243,7 +269,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
     const text = render(plan, extra, { dbName: who.d, user: who.u, repo, mode });
     if (!json && !quiet) console.log(text);
 
-    let wrote = 0, verdict = "ok";
+    let wrote = 0, verdict = "ok", carried = null;
     if (quiet && !apply && !verify) console.log(text.split(NL)[1]);   // the census line, nothing else
     if (conflicts.length) {
       verdict = "CONFLICT";
@@ -262,6 +288,14 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
       // nothing still says so with the number the table is at.
       console.log(`${quiet ? "" : NL}wrote ${wrote} row(s)${wrote ? ` — ${fresh.map((r) => `S${r.number}`).join(", ")}` : ""}; the table now holds ${n} (tags in the checkout: ${derived.length})`);
       if (drift.length) console.error(`${NL}${drift.length} present row(s) differ from their tag on a non-sha column and were LEFT ALONE (this tool never updates): ${drift.map((r) => `S${r.number}`).join(", ")}`);
+      // WHICH SETTLEMENT CARRIED EACH MARK (049, POS-142 Proposal B): with the
+      // settlement rows in, the published marks the store has no row for are
+      // asked of 1.0 and recorded, checked against its receipt before commit.
+      // After the one-time backfill that is a bless's own new marks plus the few
+      // git cannot answer. Before it, the cap skips and says so.
+      carried = await carriedOnTick(client, repo);
+      if (!json) console.log(carried.line);
+      if (carried.verdict === "DISAGREE") verdict = "CONFLICT";
     } else if (verify) {
       const missing = fresh.map((r) => r.number);
       if (missing.length || drift.length || extra.length) {
@@ -277,7 +311,8 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
     }
     receipt = { mode, verdict, db: who.d, user: who.u, repo, tags: derived.length, new: fresh.length, present: plan.filter((r) => r.state === "present").length,
       drift: drift.map((r) => r.number), conflict: conflicts.map((r) => r.number), extra, wrote, compared: plan.length,
-      rows: plan.map((r) => ({ number: r.number, state: r.state, tag_sha: r.tag_sha, published_at: iso(r.published_at), window_id: r.window_id, blessed_at: iso(r.blessed_at) })) };
+      rows: plan.map((r) => ({ number: r.number, state: r.state, tag_sha: r.tag_sha, published_at: iso(r.published_at), window_id: r.window_id, blessed_at: iso(r.blessed_at) })),
+      ...(carried ? { carried: carried.line } : {}) };
   } finally {
     await client.end();
   }

@@ -499,15 +499,20 @@ export function docketRow(row = {}, { byMark = null } = {}) {
 //   settlement  the newest row of `settlements`, through 1.0's settlementsFrom
 //   read_at     the world-marks head, named by the settlement whose tag_sha it is
 //
-// ONE FACT IS NOT IN THE STORE: which settlement CARRIED a published mark. 1.0
-// derives it from git (the oldest add of the mark's file, the lowest tag that
-// contains it). The only row-side stand-in, the lowest settlement whose window
-// is at or after `marks.locked_window`, was measured on dev on 2026-10-01 over
-// 22 marks: 3 agree, 5 differ, 14 cannot be derived. 725 of 1,117 rows carry
-// the seed's locked_window 150 whatever settlement S1–S47 carried them, and the
-// 09-25 marks-ingest rewrote locked_window to 209 on every mark it amended
-// (aion-solare/aelyria: S1 on 1.0, window 209 here). So a published receipt's
-// `crossing`, `settlement_sha` and `says` are declared, never derived.
+//   published_at  `mark_carried` (049) joined to `settlements`: which settlement
+//               first carried the mark, recorded once from 1.0's own git
+//               derivation (mark-receipt.mjs § settlementThatCarried) and checked
+//               against 1.0's receipt as it was written
+//               (world2/tools/mark-carried-backfill.mjs). Its `at` follows 1.0's
+//               rule: a date only for the 20 newest settlements (settlements.mjs
+//               RECENT_MAX), because 1.0 looks the date up in that list.
+//
+// A published mark with NO row (git could not answer for it, the backfill has
+// not reached it, or the table cannot be read) keeps `crossing`,
+// `settlement_sha` and `says` declared, never derived from anything else. The
+// only row-side stand-in, the lowest settlement whose window is at or after
+// `marks.locked_window`, measured 3 agree / 5 differ / 14 underivable over 22
+// marks on dev (2026-10-01).
 //
 // CARRIED, NOT MERELY STANDING. The clearing materializes a locked claim into
 // `marks` before any settlement carries it, so "stands in marks" alone would
@@ -527,7 +532,7 @@ async function storeSettlements(p) {
   return { rows, ...settlementsFrom(lines), settledWindow };
 }
 
-export const RECEIPT_NOT_IN_STORE = "which settlement CARRIED a published mark is recorded nowhere in the store. 1.0 derives it from git (mark-receipt.mjs § settlementThatCarried: the oldest add of the mark's file and the lowest settlement tag containing it). The `settlements` table (018) holds the settlements, not which mark each carried, and the only row-side stand-in, the lowest settlement whose window is at or after marks.locked_window, measured 3 agree / 5 differ / 14 underivable over 22 marks on dev (2026-10-01): the seed's 725 rows all carry locked_window 150, and amend and the marks-ingest rewrite locked_window (aion-solare/aelyria is S1 on 1.0 and window 209 in the store). So `crossing`, `settlement_sha`, and the `says` sentence built from them, are not answered for a published mark.";
+export const RECEIPT_NOT_IN_STORE = "this published mark has no row in `mark_carried` (049), the store's record of which settlement first carried each mark. A row is written only from 1.0's own git derivation (mark-receipt.mjs § settlementThatCarried: the oldest add of the mark's file and the lowest settlement tag containing it), checked against 1.0's receipt as it is written; a mark git cannot answer for, or one the backfill has not reached, has none, and the table may not be readable. So `crossing`, `settlement_sha`, and the `says` sentence built from them, are not answered for this mark. The only row-side stand-in, marks.locked_window, measured 3 agree / 5 differ / 14 underivable over 22 marks on dev (2026-10-01), and is not used.";
 export const RECEIPT_GIT_SPELLING = "git's spelling of the newest settlement: `sha` is `%(objectname:short)`, whose length git chooses per repository, and `date` is `iso-strict` in the committer's own zone. The store holds the full commit and the instant, so `crossing.n` is compared and these two spellings are not.";
 export const RECEIPT_DISCLOSURE = "1.0's disclosure is about its OWN class layer: it fires when the office's world.db was hydrated at a different world than the fold the answer was read from (world.mjs § markReceipt). This door reads no world.db, so it has nothing of that kind to disclose. When 1.0 does disclose, its `says` carries the qualification and the two sentences differ, and that difference is a finding.";
 
@@ -551,8 +556,23 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
   const windowKnown = Boolean(settled) && Number.isFinite(settled.settledWindow);
   const notYetCarried = lockedNewest && windowKnown && Number(newest.window_id) > settled.settledWindow;
   const carriedUndecidable = standing && lockedNewest && !windowKnown;
+  const published = standing && !notYetCarried && !carriedUndecidable;
+  // WHICH SETTLEMENT CARRIED IT: the recorded row, in 1.0's `{ s, sha, at }`.
+  // `at` is looked up in the 20 newest settlements, as 1.0 looks it up in its
+  // 20 newest tags; an older settlement's receipt names no date on either door.
+  let carried = null;
+  if (published) {
+    try {
+      const { rows: [c] } = await p.query(
+        `SELECT c.settlement, s.tag_sha FROM mark_carried c JOIN settlements s ON s.number = c.settlement WHERE c.mark = $1`, [id]);
+      if (c) {
+        const s = Number(c.settlement);
+        carried = { s, sha: c.tag_sha, at: (settled?.recent ?? []).find((t) => t.n === s)?.date ?? null };
+      }
+    } catch { carried = null; }
+  }
   const receipt = receiptFrom({
-    id, canon: standing && !notYetCarried && !carriedUndecidable ? { id } : null, published_at: null,
+    id, canon: published ? { id } : null, published_at: carried,
     claims, settlement: settled?.current ?? null, site_pin: null,
   });
   if (carriedUndecidable) {
@@ -562,7 +582,7 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
       says: `standing in the store, its newest claim locked at window ${newest.window_id}; whether a settlement has carried it cannot be told: ${reason}`,
     });
   }
-  if (receipt.status === "published") {
+  if (receipt.status === "published" && !carried) {
     Object.assign(receipt, { crossing: null, settlement_sha: null,
       says: "published — the store holds this mark standing; which settlement carried it is not recorded in the store (see tree_only)" });
   }
@@ -580,7 +600,7 @@ export function receiptTreeOnly(receipt) {
   return {
     "receipt.disclosed · receipt.qualified": RECEIPT_DISCLOSURE,
     ...(receipt?.status === "published"
-      ? { "receipt.crossing · receipt.settlement_sha · receipt.says": RECEIPT_NOT_IN_STORE }
+      ? (receipt.crossing == null ? { "receipt.crossing · receipt.settlement_sha · receipt.says": RECEIPT_NOT_IN_STORE } : {})
       : { "receipt.crossing.sha · receipt.crossing.date · receipt.settlement_sha": RECEIPT_GIT_SPELLING }),
   };
 }
