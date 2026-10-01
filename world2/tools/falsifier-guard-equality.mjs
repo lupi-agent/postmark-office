@@ -73,8 +73,9 @@
 // memory, and requires every break to turn this red.
 
 import { resolve, join } from "node:path";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 import pg from "pg";
 
@@ -84,14 +85,15 @@ const arg = (n) => { const i = process.argv.indexOf(n); return i === -1 ? null :
 const has = (n) => process.argv.includes(n);
 const die = (msg) => { console.error(`CANNOT RUN · ${msg}`); process.exit(2); };
 
-const worldRepo = arg("--world-repo");
-if (!worldRepo) die("usage: falsifier-guard-equality.mjs --world-repo <checkout> [--json] [--prove-can-fail]");
-const REPO = resolve(worldRepo);
-if (!existsSync(join(REPO, "STATE"))) die(`no STATE/ under ${REPO} — G5's oracle is 1.0's attachmentsFromState over it, and a run that skipped G5 would report a green it did not earn`);
-
-for (const v of ["WORLD2_PG_URL", "W2_GUARDS_URL", "W2_GUARDS_OWNER_URL"]) {
-  if (!process.env[v]) die(`${v} missing`);
-}
+// ── THE ENTRY GUARD (POS-142 S3, 2026-10-01) ────────────────────────────────
+//
+// Importing this module runs NOTHING: the argv checks, the env rewrite, the
+// office's own imports and the run all live in `main()`, which runs only when
+// this file is the entry. That lets world2/tools/falsifier-guard-g5.mjs import
+// `loadOracles`, `buildOracleAttachments`, `g5Holdings` and `g5Breaks` and run
+// G5, the one equality that reads the real store, read-only beside apex,
+// standing and live (prod-flip-falsifiers.mjs). Run directly, this tool does
+// exactly what it did, in the same order.
 
 // ── the oracles, imported live out of this office ───────────────────────────
 //
@@ -100,29 +102,31 @@ for (const v of ["WORLD2_PG_URL", "W2_GUARDS_URL", "W2_GUARDS_OWNER_URL"]) {
 // built, and `world-journal.mjs` decides at every write whether to mirror. The
 // scratch database has to be the one those modules reach, or G1 would compare
 // 1.0's journal against `world2_dev` and red on every row for the right reason
-// and the wrong cause.
-const DEV_URL = process.env.WORLD2_PG_URL;
-process.env.WORLD2_PG_URL = process.env.W2_GUARDS_URL;
-process.env.WORLD2_PG = "1";
-process.env.WORLD2_CANDLE = "1";
-process.env.WORLD_SINGLE_LOG = "1";
+// and the wrong cause. `main()` sets it, then calls `loadOracles()`; the G5-only
+// entry sets none of it, because G5 reads the real store and writes nothing.
 
-let journalMod, holdMod, entitiesMod, storeMod, claimsMod;
-try {
-  journalMod = await import("../../src/world-journal.mjs");
-  holdMod = await import("../../src/world-hold.mjs");
-  entitiesMod = await import("../../src/dynamic-entities.mjs");
-  storeMod = await import("../../src/dynamic-store.mjs");
-  claimsMod = await import("../../src/world2-claims.mjs");
-} catch (e) { die(`this office's own modules cannot be imported: ${e.message}`); }
+let appendJournal, normalizeRow, liveMarks, liveChildrenOf, readJournal, replayDrafts, pathFor, CLASS_MARK;
+let liveHolder, holdingsOf, readAttachments, declareAttachment, openDynamic, withHousehold, docketSettled;
 
-const { appendJournal, normalizeRow, liveMarks, liveChildrenOf, readJournal, replayDrafts, pathFor, CLASS_MARK } = journalMod;
-const { liveHolder, holdingsOf } = holdMod;
-const { readAttachments, declareAttachment } = entitiesMod;
-const { openDynamic } = storeMod;
-const { withHousehold, docketSettled } = claimsMod;
-for (const [n, f] of Object.entries({ appendJournal, normalizeRow, liveMarks, liveChildrenOf, replayDrafts, liveHolder, readAttachments, declareAttachment, attachmentsFromState, withHousehold }))
-  if (typeof f !== "function") die(`this office exports no ${n} — the oracle this falsifier judges against is missing`);
+/** Import this office's oracles into the module's bindings. The caller sets the env FIRST (see above). */
+export async function loadOracles() {
+  let journalMod, holdMod, entitiesMod, storeMod, claimsMod;
+  try {
+    journalMod = await import("../../src/world-journal.mjs");
+    holdMod = await import("../../src/world-hold.mjs");
+    entitiesMod = await import("../../src/dynamic-entities.mjs");
+    storeMod = await import("../../src/dynamic-store.mjs");
+    claimsMod = await import("../../src/world2-claims.mjs");
+  } catch (e) { die(`this office's own modules cannot be imported: ${e.message}`); }
+
+  ({ appendJournal, normalizeRow, liveMarks, liveChildrenOf, readJournal, replayDrafts, pathFor, CLASS_MARK } = journalMod);
+  ({ liveHolder, holdingsOf } = holdMod);
+  ({ readAttachments, declareAttachment } = entitiesMod);
+  ({ openDynamic } = storeMod);
+  ({ withHousehold, docketSettled } = claimsMod);
+  for (const [n, f] of Object.entries({ appendJournal, normalizeRow, liveMarks, liveChildrenOf, replayDrafts, liveHolder, readAttachments, declareAttachment, attachmentsFromState, withHousehold }))
+    if (typeof f !== "function") die(`this office exports no ${n} — the oracle this falsifier judges against is missing`);
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // THE POPULATION — one appendJournal call per declaration, both pens at once
@@ -668,6 +672,50 @@ export function g5Holdings(oracleRows, portRows) {
   return { findings, compared, oracle_rows: oracleRows.length, port_rows: portRows.length, targets: targets.length };
 }
 
+/**
+ * THE TWO BREAKS AIMED AT G5 (proofs 5 and 6), as [label, run] pairs in their
+ * order. Each run returns `{ bit, findings }` for `main()`'s `proof()` and the
+ * G5-only entry alike. `devPool` is the real store's pool, read-only.
+ */
+export function g5Breaks({ oracle, portAttachments, devPool }) {
+  return [
+    // 5 · THE ORDER — attachments read by acts.id instead of the record's own
+    //     born_at. Aimed at G5, whose oracle is 1.0's recovery chain.
+    ["attachments read in acts.id order (latest-wins handed the seed's insert order)", async () => {
+      const c = await devPool.connect();
+      try {
+        const { rows } = await c.query(
+          "SELECT id, at, actor, action, payload FROM acts WHERE action = ANY($1) ORDER BY acts.id DESC", [guards.ATTACHMENT_ACTIONS]);
+        const recs = rows.map((r) => guards.attachmentRowOf(r)).filter((r) => !r.refused).map((r) => ({ ...r.row, era: r.era }));
+        const moved = recs.filter((r, i) => r.born_at !== portAttachments.rows[i]?.born_at).length;
+        return { bit: moved, findings: g5Holdings(oracle.rows, recs).findings };
+      } finally { c.release(); }
+    }],
+
+    // 6 · THE ACTOR TRAP — the live era's entity read as `acts.actor`, which in
+    //     that era is the DECLARER and not the holder. Aimed at G5, whose
+    //     oracle is 1.0's own `liveHolder`.
+    //
+    //     THE ROWS ARE SYNTHESIZED, and that is stated rather than hidden:
+    //     nothing has been given, dropped or taken since the mirror shipped, so
+    //     `acts` holds no live-era holding row for this break to bend. The
+    //     alternative was to leave the era's sharpest trap untested until the
+    //     first give, which is the wrong side of the record to discover it on.
+    //     `bit` counts the synthesized rows, so this reads RED rather than
+    //     INERT, and the census note beside it says the era is unexercised.
+    ["the live era's entity read as acts.actor (every give handed back to the giver)", () => {
+      const give = { id: "synthetic-1", at: new Date("2026-08-29T00:00:00.000Z"), actor: ACTORS.a, action: "give",
+                     payload: { thing: `${ACTORS.a}/the-lamp`, holder: ACTORS.b, previous_holder: ACTORS.a, made_by: ACTORS.a, policy: "cascade" } };
+      const drop = { id: "synthetic-2", at: new Date("2026-08-29T00:01:00.000Z"), actor: ACTORS.b, action: "drop",
+                     payload: { thing: `${ACTORS.a}/the-other-lamp`, holder: null, previous_holder: ACTORS.b, made_by: ACTORS.a, policy: "detach" } };
+      const right = [give, drop].map((a) => guards.attachmentRowOf(a).row);
+      const wrong = right.map((r, i) => ({ ...r, entity: [give, drop][i].actor }));
+      return { bit: wrong.filter((r, i) => r.entity !== right[i].entity).length,
+               findings: g5Holdings(right, wrong).findings };
+    }],
+  ];
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // G6 · THE RLS REFUSAL, AND WHAT THE CREDENTIAL CANNOT SEE
 // ═════════════════════════════════════════════════════════════════════════════
@@ -724,6 +772,26 @@ export async function g6Rls(pool, household, ownerPool, devOwnerUrl) {
 // ═════════════════════════════════════════════════════════════════════════════
 // THE RUN
 // ═════════════════════════════════════════════════════════════════════════════
+
+// The body below is the run as it was, left at column 0 so this change reads as
+// a move. It is `main()`'s, and runs only when this file is the entry.
+async function main() {
+const worldRepo = arg("--world-repo");
+if (!worldRepo) die("usage: falsifier-guard-equality.mjs --world-repo <checkout> [--json] [--prove-can-fail]");
+const REPO = resolve(worldRepo);
+if (!existsSync(join(REPO, "STATE"))) die(`no STATE/ under ${REPO} — G5's oracle is 1.0's attachmentsFromState over it, and a run that skipped G5 would report a green it did not earn`);
+
+for (const v of ["WORLD2_PG_URL", "W2_GUARDS_URL", "W2_GUARDS_OWNER_URL"]) {
+  if (!process.env[v]) die(`${v} missing`);
+}
+
+const DEV_URL = process.env.WORLD2_PG_URL;
+process.env.WORLD2_PG_URL = process.env.W2_GUARDS_URL;
+process.env.WORLD2_PG = "1";
+process.env.WORLD2_CANDLE = "1";
+process.env.WORLD_SINGLE_LOG = "1";
+
+await loadOracles();
 
 const tmp = mkdtempSync(join(tmpdir(), "guards-lane-"));
 const scratchPool = new pg.Pool({ connectionString: process.env.W2_GUARDS_URL, max: 4 });
@@ -871,40 +939,9 @@ try {
       return { bit: overlays.a.two.marks.length - two.length, findings: g4Overlay(overlays.a.one.marks, two).findings };
     });
 
-    // 5 · THE ORDER — attachments read by acts.id instead of the record's own
-    //     born_at. Aimed at G5, whose oracle is 1.0's recovery chain.
-    await proof("attachments read in acts.id order (latest-wins handed the seed's insert order)", async () => {
-      const c = await devPool.connect();
-      try {
-        const { rows } = await c.query(
-          "SELECT id, at, actor, action, payload FROM acts WHERE action = ANY($1) ORDER BY acts.id DESC", [guards.ATTACHMENT_ACTIONS]);
-        const recs = rows.map((r) => guards.attachmentRowOf(r)).filter((r) => !r.refused).map((r) => ({ ...r.row, era: r.era }));
-        const moved = recs.filter((r, i) => r.born_at !== portAttachments.rows[i]?.born_at).length;
-        return { bit: moved, findings: g5Holdings(oracle.rows, recs).findings };
-      } finally { c.release(); }
-    });
-
-    // 6 · THE ACTOR TRAP — the live era's entity read as `acts.actor`, which in
-    //     that era is the DECLARER and not the holder. Aimed at G5, whose
-    //     oracle is 1.0's own `liveHolder`.
-    //
-    //     THE ROWS ARE SYNTHESIZED, and that is stated rather than hidden:
-    //     nothing has been given, dropped or taken since the mirror shipped, so
-    //     `acts` holds no live-era holding row for this break to bend. The
-    //     alternative was to leave the era's sharpest trap untested until the
-    //     first give, which is the wrong side of the record to discover it on.
-    //     `bit` counts the synthesized rows, so this reads RED rather than
-    //     INERT, and the census note beside it says the era is unexercised.
-    await proof("the live era's entity read as acts.actor (every give handed back to the giver)", () => {
-      const give = { id: "synthetic-1", at: new Date("2026-08-29T00:00:00.000Z"), actor: ACTORS.a, action: "give",
-                     payload: { thing: `${ACTORS.a}/the-lamp`, holder: ACTORS.b, previous_holder: ACTORS.a, made_by: ACTORS.a, policy: "cascade" } };
-      const drop = { id: "synthetic-2", at: new Date("2026-08-29T00:01:00.000Z"), actor: ACTORS.b, action: "drop",
-                     payload: { thing: `${ACTORS.a}/the-other-lamp`, holder: null, previous_holder: ACTORS.b, made_by: ACTORS.a, policy: "detach" } };
-      const right = [give, drop].map((a) => guards.attachmentRowOf(a).row);
-      const wrong = right.map((r, i) => ({ ...r, entity: [give, drop][i].actor }));
-      return { bit: wrong.filter((r, i) => r.entity !== right[i].entity).length,
-               findings: g5Holdings(right, wrong).findings };
-    });
+    // 5, 6 · THE TWO BREAKS AIMED AT G5, lifted into `g5Breaks()` (below) so the
+    //     G5-only entry runs the same two; called here, in the same place and order.
+    for (const [label, run] of g5Breaks({ oracle, portAttachments, devPool })) await proof(label, run);
 
     // 7 · THE RLS ASSERTION REMOVED — the read runs undeclared.
     //     Aimed at G6, and it is the one break whose oracle is Postgres itself.
@@ -968,3 +1005,10 @@ else {
 if (out.unchecked?.length) process.exit(2);
 if (out.can_fail?.silent.length) process.exit(1);
 process.exit(out.findings.length ? 1 : 0);
+}
+
+const isMain = (() => {
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+})();
+if (isMain) await main();
