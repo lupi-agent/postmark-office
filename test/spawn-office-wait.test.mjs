@@ -17,7 +17,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { awaitListening } from "./spawn-office.mjs";
+import { createServer } from "node:net";
+import { awaitListening, bootOnFreePort, freePort } from "./spawn-office.mjs";
 
 const rejection = async (promise) => {
   try { await promise; return null; } catch (e) { return e; }
@@ -82,4 +83,58 @@ test("A HEALTHY OFFICE RESOLVES, and the exit that follows the kill does not rej
   const gone = new Promise((ok) => child.on("exit", ok));
   child.kill();
   await gone; // an unhandled rejection here would fail the run
+});
+
+// ── bootOnFreePort: the window between the probe and the bind ────────────────
+//
+// The retry is a branch only a lost race reaches, so these tests lose the race
+// on purpose: a server in this process holds a port, and the probe is made to
+// offer exactly that port. A child that is a bare listener stands in for the
+// office — the subject is the helper, not the office's boot.
+
+const listenerChild = (port) => spawn(process.execPath,
+  ["-e", "require('node:http').createServer().listen(Number(process.argv.at(-1)), () => console.log('listening'))", String(port)],
+  { stdio: ["ignore", "pipe", "pipe"] });
+
+const holdAPort = async () => {
+  const held = createServer();
+  await new Promise((ok) => held.listen(0, ok));
+  return held;
+};
+
+test("freePort hands back a port this process can then bind", async () => {
+  const port = await freePort();
+  assert.ok(Number.isInteger(port) && port > 0);
+  const s = createServer();
+  await new Promise((ok, no) => { s.on("error", no); s.listen(port, ok); });
+  await new Promise((ok) => s.close(ok));
+});
+
+test("A PORT TAKEN BETWEEN THE PROBE AND THE BIND is asked for once more, aloud", async () => {
+  const held = await holdAPort();
+  const taken = held.address().port;
+  const offers = [taken];
+  const said = [];
+  const { child, port } = await bootOnFreePort(listenerChild, {
+    probe: async () => offers.shift() ?? freePort(), log: (l) => said.push(l), budgetMs: 15_000 });
+  try {
+    assert.notEqual(port, taken, "the second boot is on a fresh port, not the one that was taken");
+    assert.equal(said.length, 1, "the retry is said exactly once");
+    assert.match(said[0], new RegExp(`port ${taken} was taken .*EADDRINUSE.*retrying once`));
+  } finally {
+    child.kill();
+    await new Promise((ok) => held.close(ok));
+  }
+});
+
+test("A SECOND LOSS IS A FAILED BOOT — the helper retries once, not forever", async () => {
+  const held = await holdAPort();
+  const taken = held.address().port;
+  const said = [];
+  const err = await rejection(bootOnFreePort(listenerChild, {
+    probe: async () => taken, log: (l) => said.push(l), budgetMs: 15_000 }));
+  await new Promise((ok) => held.close(ok));
+  assert.ok(err, "it must reject");
+  assert.match(err.message, /exited before it was ready/, "the rejection is the wait's own sentence");
+  assert.equal(said.length, 1, "one retry was said, and only one was made");
 });
