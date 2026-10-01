@@ -833,8 +833,8 @@ export async function docketSettled() {
  // lane already use. Resolving it at the call site would be a second notion of
  // whose drafts these are, which is the exact drift that function's own header
  // forbids ("do not inline either half").
-export async function claimRowsForSlug(slug, { key = null, env = process.env } = {}) {
-  const p = await pool(env);
+export async function claimRowsForSlug(slug, { key = null, env = process.env, p: injected = null } = {}) {
+  const p = injected ?? await pool(env);
   const sql = `SELECT id, slug, class, claimant, household, status, window_id,
                       submitted_at, decided_at, refusal_check, stake, supersedes
                  FROM claims WHERE slug = $1
