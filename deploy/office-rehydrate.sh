@@ -1,7 +1,7 @@
 #!/bin/sh
-# office-rehydrate.sh — rebuild the office's two read indexes, office.db (the
-# town) and world.db (the world at the newest blessing), and confirm the door
-# picked the new office.db up. Nothing else: the pulls, the mint, the
+# office-rehydrate.sh — rebuild the office's read indexes, office.db (the town)
+# and the world graph snapshot in the store (the world at the newest blessing),
+# and confirm the door picked the new office.db up. Nothing else: the pulls, the mint, the
 # settlements row and the panes moved to deploy/office-keep.sh (POS-268,
 # 2026-09-27), so this unit is exactly the part the sqlite retirement deletes.
 #
@@ -14,6 +14,8 @@
 # office swaps its read handle in place; the last step is a receipt, not an act.
 #
 # Env (from /etc/postmark-office.env via the unit): TOWN_CLONE, WORLD_CLONE.
+# And PG_LAW_INGESTER_PASSWORD (from /etc/postmark-world2-dev.env, read by
+# systemd and handed in): the world graph's store write takes the law pen.
 # Optional: OFFICE_DOOR (default http://127.0.0.1:4380 — the unit's --port).
 # Cwd: /srv/postmark-office (the unit's WorkingDirectory).
 
@@ -32,7 +34,7 @@ trap 'rm -rf "$SNAP"' EXIT
 # ── outside the lock: derive from the frozen snapshot (however long) ─────────
 node src/hydrate.mjs --town "$SNAP/town" --db office.db.new
 mv -f office.db.new office.db
-# world.db rides the same unit — AT THE NEWEST BLESSING, never main (Keemin,
+# The world graph rides the same unit — AT THE NEWEST BLESSING, never main (Keemin,
 # 2026-09-18, postmark#2934: "shouldn't the bless override the tick?" — yes).
 # The crossing commits its candidate to main and office-keep.sh's fetch carries it
 # in within fifteen minutes; the keeper's `settlement/S<n>` tag is his
@@ -43,12 +45,26 @@ mv -f office.db.new office.db
 # fetch in office-keep.sh is what carries a fresh tag in (a plain fetch re-follows an
 # annotated tag whose commit is already local — measured 2026-09-17). Never
 # HEAD — the pen parks this clone on draft branches, and a draft-stamped store
-# can never be eligible. Non-fatal: the office.db rebuild is never
-# held hostage, and a stale-but-good world.db beats no world.db. Interim until
-# the read flip (POS-104) takes standing from the clearing's lock.
-( node src/world-hydrate.mjs --world "$WORLD_CLONE" --ref blessed --db world.db.new \
-    && mv -f world.db.new world.db ) \
-  || echo "[office-rehydrate] world hydrate FAILED (non-fatal) — world.db stays at its last good build" >&2
+# can never be eligible. Non-fatal: the office.db rebuild is never held
+# hostage, and a stale-but-good snapshot beats none. Interim until the read
+# flip (POS-104) takes standing from the clearing's lock.
+#
+# THE STORE IS THE ONLY OUTPUT (POS-270 lane W 3b). world.db is retired: the
+# office reads the world graph snapshot per settlement (037/038), which this
+# hydration writes as the law pen (deploy/world2-lib.sh § w2_pgenv — sed-read,
+# never sourced; bash, for the lib). A miss — the store refused or unreachable,
+# or the credential unreadable — leaves the office on the snapshot it already
+# has, and the journal says so loudly. Non-fatal either way.
+WORLD_RC=0
+bash -c '
+  . deploy/world2-lib.sh
+  w2_pgenv law_ingester PG_LAW_INGESTER_PASSWORD || exit 4
+  exec node src/world-hydrate.mjs --world "$WORLD_CLONE" --ref blessed --to-store' || WORLD_RC=$?
+case "$WORLD_RC" in
+  0) echo "[office-rehydrate] the world graph snapshot written to the store" ;;
+  4) echo "[office-rehydrate] WORLD STORE NOT WRITTEN (non-fatal) — the law pen's credential is unreadable (PG_LAW_INGESTER_PASSWORD, /etc/postmark-world2-dev.env); the office keeps reading the snapshot it has" >&2 ;;
+  *) echo "[office-rehydrate] WORLD STORE NOT WRITTEN (non-fatal, exit $WORLD_RC) — the reason is in the hydrate's stderr above; the office keeps reading the snapshot it has" >&2 ;;
+esac
 
 # ── the receipt: the door is serving what we just built ──────────────────────
 # Non-fatal like the world hydrate above, and for the same reason:

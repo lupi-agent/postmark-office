@@ -4,7 +4,7 @@
 #   deploy/office-keep.sh       the pulls, the mint and welcome pass, the
 #                               settlements row, the panes
 #                               (postmark-office-keep.timer, :07/:22/:37/:52)
-#   deploy/office-rehydrate.sh  office.db + world.db and the door's receipt
+#   deploy/office-rehydrate.sh  office.db + the world graph snapshot, and the door's receipt
 #                               (postmark-office-rehydrate.timer, :09/:24/:39/:54)
 #
 # This file exists only for a box whose INSTALLED postmark-office-rehydrate
