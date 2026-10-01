@@ -42,7 +42,8 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { readDraftClaims, householdKeyForKey, withHousehold } from "./world2-claims.mjs";
+import { readDraftClaims, householdKeyForKey, withHousehold, claimRowsForSlug } from "./world2-claims.mjs";
+import { receiptFrom } from "./mark-receipt.mjs";
 import { sessionKeysVia, resolveHouse, houseRowsVia } from "./household-deriver.mjs";
 
 /**
@@ -92,7 +93,7 @@ import { stakesFromStore } from "../world2/tools/fold-input.mjs";
 // The CANDLE'S OWN escrow reader, not a second one — § THE DOCKET ROW says why.
 import { escrowPresenceAt } from "../world2/tools/escrow-presence.mjs";
 import { blessedRef, materializeAtRef } from "./world-branches.mjs";
-import { WORLD_CLONE, placeWordsFrom, markPage } from "./world.mjs";
+import { WORLD_CLONE, placeWordsFrom, markPage, thingStandsBlock } from "./world.mjs";
 // 1.0's own backed row, imported rather than restated — see portfolio-reads.mjs
 // § THE DECISIONS ARE NOT RE-EXPRESSED HERE.
 import { backedRow } from "./world-stake.mjs";
@@ -100,6 +101,7 @@ import { backedRow } from "./world-stake.mjs";
 // rather than restated; see § THE SETTLEMENTS TWIN below.
 import { settlementsFrom } from "./settlements.mjs";
 import { CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
+import { myMarksRefused } from "./claim-effects.mjs";
 import { actorRoster } from "./human-actor.mjs";
 import { stopDepartures } from "./world-movement.mjs";
 // The class every reader IS — 1.0's own constant, so the two apexes name the
@@ -207,7 +209,7 @@ export async function world2MyDrafts(key) {
  * `tree_only`; see that module's header for why each is absent rather than
  * approximated.
  */
-export async function world2MyMarks(key, { offset = 0, p: injected = null } = {}) {
+export async function world2MyMarks(key, { offset = 0, p: injected = null, refusedReader = myMarksRefused } = {}) {
   const p = injected ?? await pool();
   const household = await householdKeyForKey(p, key);
 
@@ -282,6 +284,9 @@ export async function world2MyMarks(key, { offset = 0, p: injected = null } = {}
 
   return {
     ...body,
+    // 1.0's own `refused`, from the same one derivation (claim-effects.mjs §
+    // myMarksRefused), handed this door's roster as 1.0 is handed its own.
+    refused: await refusedReader(residents, { key }),
     // NAMED, NOT SILENT — and `backed` says which absence it is, because a
     // refusal and an empty ledger are different facts.
     ...(stakeRows == null ? { backed_unavailable:
@@ -482,6 +487,102 @@ export function docketRow(row = {}, { byMark = null } = {}) {
   const mark = row?.geometry?.slug ?? row?.slug ?? null;
   return { ...row,
     held: byMark == null || !mark ? null : Number(byMark.get(mark) ?? 0) };
+}
+
+// ── THE RECEIPT FROM ROWS (POS-142 S3 item 4, Wright's option A) ───────────
+//
+// `/world2/investigate`'s receipt is 1.0's own pure `mark-receipt.mjs §
+// receiptFrom`, handed the store's records instead of the clone's:
+//
+//   claims      `claimRowsForSlug` on this door's pool: the same rows 1.0 reads
+//   canon       the mark stands in `marks` AND a settlement has carried it
+//   settlement  the newest row of `settlements`, through 1.0's settlementsFrom
+//   read_at     the world-marks head, named by the settlement whose tag_sha it is
+//
+// ONE FACT IS NOT IN THE STORE: which settlement CARRIED a published mark. 1.0
+// derives it from git (the oldest add of the mark's file, the lowest tag that
+// contains it). The only row-side stand-in, the lowest settlement whose window
+// is at or after `marks.locked_window`, was measured on dev on 2026-10-01 over
+// 22 marks: 3 agree, 5 differ, 14 cannot be derived. 725 of 1,117 rows carry
+// the seed's locked_window 150 whatever settlement S1–S47 carried them, and the
+// 09-25 marks-ingest rewrote locked_window to 209 on every mark it amended
+// (aion-solare/aelyria: S1 on 1.0, window 209 here). So a published receipt's
+// `crossing`, `settlement_sha` and `says` are declared, never derived.
+//
+// CARRIED, NOT MERELY STANDING. The clearing materializes a locked claim into
+// `marks` before any settlement carries it, so "stands in marks" alone would
+// call a locked mark published. A mark whose newest claim is LOCKED at a window
+// beyond the newest window a settlement closed has not been carried yet, and
+// its receipt says `locked`, as 1.0's does.
+
+const isoZ = (t) => (t == null ? null : new Date(t).toISOString().replace(/\.\d{3}Z$/, "Z"));
+
+/** The store's settlements, in 1.0's own shape, plus the newest window one closed. */
+async function storeSettlements(p) {
+  const { rows } = await p.query(
+    `SELECT number, tag_sha, published_at, window_id, blessed_at
+       FROM settlements ORDER BY number DESC`);
+  const lines = rows.map((r) => ({ tag: `settlement/S${r.number}`, sha: r.tag_sha, date: isoZ(r.published_at) }));
+  const settledWindow = rows.reduce((w, r) => (r.window_id == null ? w : Math.max(w, Number(r.window_id))), -Infinity);
+  return { rows, ...settlementsFrom(lines), settledWindow };
+}
+
+export const RECEIPT_NOT_IN_STORE = "which settlement CARRIED a published mark is recorded nowhere in the store. 1.0 derives it from git (mark-receipt.mjs § settlementThatCarried: the oldest add of the mark's file and the lowest settlement tag containing it). The `settlements` table (018) holds the settlements, not which mark each carried, and the only row-side stand-in, the lowest settlement whose window is at or after marks.locked_window, measured 3 agree / 5 differ / 14 underivable over 22 marks on dev (2026-10-01): the seed's 725 rows all carry locked_window 150, and amend and the marks-ingest rewrite locked_window (aion-solare/aelyria is S1 on 1.0 and window 209 in the store). So `crossing`, `settlement_sha`, and the `says` sentence built from them, are not answered for a published mark.";
+export const RECEIPT_GIT_SPELLING = "git's spelling of the newest settlement: `sha` is `%(objectname:short)`, whose length git chooses per repository, and `date` is `iso-strict` in the committer's own zone. The store holds the full commit and the instant, so `crossing.n` is compared and these two spellings are not.";
+export const RECEIPT_DISCLOSURE = "1.0's disclosure is about its OWN class layer: it fires when the office's world.db was hydrated at a different world than the fold the answer was read from (world.mjs § markReceipt). This door reads no world.db, so it has nothing of that kind to disclose. When 1.0 does disclose, its `says` carries the qualification and the two sentences differ, and that difference is a finding.";
+
+/**
+ * The receipt for one mark, from rows, or null when the store could not be read
+ * at all. `standing` is whether the mark stands in the rows this answer folded.
+ */
+export async function twinReceipt(p, id, { terrain = false, standing = false } = {}) {
+  if (terrain) return receiptFrom({ id, terrain: true, site_pin: null });
+  let claims = null;
+  try { claims = await claimRowsForSlug(id, { p }); } catch { claims = null; }
+  let settled = null;
+  try { settled = await storeSettlements(p); } catch { settled = null; }
+  const newest = Array.isArray(claims) ? (claims.find((c) => c?.slug === id) ?? null) : null;
+  // CARRIED IS PROVEN, NEVER ASSUMED (Wright's #305 review). A standing mark
+  // whose newest claim is locked is carried only when a settlement is known to
+  // have closed its window. With no settled window to compare (the table could
+  // not be read, or names no window), whether it was carried is UNDECIDABLE, and
+  // the receipt says so rather than calling it published.
+  const lockedNewest = newest?.status === "locked";
+  const windowKnown = Boolean(settled) && Number.isFinite(settled.settledWindow);
+  const notYetCarried = lockedNewest && windowKnown && Number(newest.window_id) > settled.settledWindow;
+  const carriedUndecidable = standing && lockedNewest && !windowKnown;
+  const receipt = receiptFrom({
+    id, canon: standing && !notYetCarried && !carriedUndecidable ? { id } : null, published_at: null,
+    claims, settlement: settled?.current ?? null, site_pin: null,
+  });
+  if (carriedUndecidable) {
+    const reason = settled ? "the settlements table names no window a settlement closed" : "the settlements table could not be read";
+    Object.assign(receipt, {
+      settlements: { readable: Boolean(settled), reason },
+      says: `standing in the store, its newest claim locked at window ${newest.window_id}; whether a settlement has carried it cannot be told: ${reason}`,
+    });
+  }
+  if (receipt.status === "published") {
+    Object.assign(receipt, { crossing: null, settlement_sha: null,
+      says: "published — the store holds this mark standing; which settlement carried it is not recorded in the store (see tree_only)" });
+  }
+  let read_at = null;
+  try {
+    const { rows: [head] } = await p.query("SELECT sha FROM projection_heads WHERE repo = 'world-marks'");
+    const tagged = head?.sha ? (settled?.rows ?? []).find((s) => s.tag_sha === head.sha) : null;
+    if (tagged) read_at = { ref: `refs/tags/settlement/S${tagged.number}`, sha: head.sha };
+  } catch { /* an unnamed head is an absent read_at, never a guessed ref */ }
+  return { ...receipt, ...(read_at ? { read_at } : {}) };
+}
+
+/** The fields this receipt cannot answer, declared per answer. */
+export function receiptTreeOnly(receipt) {
+  return {
+    "receipt.disclosed · receipt.qualified": RECEIPT_DISCLOSURE,
+    ...(receipt?.status === "published"
+      ? { "receipt.crossing · receipt.settlement_sha · receipt.says": RECEIPT_NOT_IN_STORE }
+      : { "receipt.crossing.sha · receipt.crossing.date · receipt.settlement_sha": RECEIPT_GIT_SPELLING }),
+  };
 }
 
 /**
@@ -769,26 +870,39 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     const world = eng.build.assembleWorld({ worldState, skeleton });
     const r = eng.verbs.investigate(String(mark), world, { depth });
 
+    // THE RECEIPT FROM ROWS (POS-142 S3 item 4). 1.0's own pure `receiptFrom`,
+    // handed the store's records: the docket's rows for this slug, whether the
+    // mark stands in `marks` (the store's canon), and the newest settlement the
+    // `settlements` table holds. See `twinReceipt` for the one fact it cannot
+    // be handed.
+    const receipt = await twinReceipt(p, String(mark), { terrain: r?.kind === "terrain", standing: markRows.some((m) => m.slug === String(mark)) });
+
     // THE MISS IS `r.error`, NOT `!r` — 1.0's own repair, 2026-09-07, found by
     // its door falsifier: the engine answers a missing mark with a TRUTHY
     // `{ error: … }`, so a `!r` test never fires. Carried here so the port does
     // not re-introduce the dead branch the original spent a lane removing.
     if (!r || r.error) {
+      // 1.0's own tense: a mark the RECORD has seen (on the docket, refused,
+      // locked) is answered with its receipt, not bounced like a typo.
+      if (receipt && receipt.status !== "never-was")
+        return { code: 200, body: { mark: String(mark), standing: false, receipt, note: receipt.says, tree_only: receiptTreeOnly(receipt) } };
       return { code: 404, body: { error: "bounce", defect: `no mark "${mark}"`,
         hint: "ids are <by>/<slug> — see /world2/marks",
-        ...(r?.error ? { engine: String(r.error) } : {}) } };
+        ...(r?.error ? { engine: String(r.error) } : {}),
+        ...(receipt ? { receipt } : {}) } };
     }
+
+    // WHERE THE THING STANDS: 1.0's own block, not a second composition. It
+    // already reads the store for both halves (POS-162), and the twin hands it
+    // the world assembled from rows, so the holder answer beside the engine's
+    // judgment is the same function's on both doors (POS-142 S3 item 5).
+    const stands = await thingStandsBlock(String(mark), world, r);
 
     return { code: 200, body: {
       ...r,
-      // The two blocks 1.0 spreads beside the engine's answer are NOT here, and
-      // each is absent for its own reason rather than for one shared excuse.
-      tree_only: {
-        "receipt.crossing · receipt.settlement_sha · receipt.published_at":
-          "mark-receipt.mjs derives the settlement epoch from the world repo's own `settlement/S<n>` git TAGS (settlements.mjs: \"the truth is the world repo's own git TAGS … which exist only when a settlement actually landed\") and from the filing index at a published sha. The store carries no tag and no settlement row — `acts` holds none and there is no settlements table — so the S-number, the sha it blessed and its date cannot be answered here at all. The rest of the receipt (`claims`, canon, the sketchbook) is store-readable and is a second lane's wiring, not a second lane's finding.",
-        stands:
-          "world.mjs § thingStandsBlock now reads the STORE for both halves (POS-162: `guard-reads.mjs § pgAttachmentsFor` for the holder, `§ pgHoldingRowsFor` for the set-down, one read-only transaction), so this block is no longer unportable OR unported — it is UNWIRED HERE. Emitting it would mean this door composing a holder answer of its own beside the engine's judgment, which is a second lane's wiring and wants its own falsifier; the read it would use already exists and is proven at the 1.0 door.",
-      },
+      ...(receipt ? { receipt } : {}),
+      ...(stands ? { stands } : {}),
+      tree_only: receiptTreeOnly(receipt),
     } };
   }
 

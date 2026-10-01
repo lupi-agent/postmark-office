@@ -420,10 +420,19 @@ test("world_holdings: `count` is what you hold, `shown` is what was listed", asy
   const rec = await installHoldRecord();
   try {
     const { callHoldTool, declareHoldingFlipped } = await import("../src/world-hold.mjs");
+    // THE TEST OWNS ITS CLOCK. The takes file through the real pen, whose
+    // window guard reads the town's open window off the real clock
+    // (world2-pen.mjs § LateCrossingError). A crossing pinned here (it was 221)
+    // decays the moment the town crosses twice: on 2026-10-01 the open window
+    // was 223, the guard refused every take as certified history, and this
+    // test went red with nothing in the office changed. So the takes are
+    // stamped with the window open NOW, read through the guard's own
+    // `currentCrossing`. The guard is untouched; the subject here is holdings.
+    const { currentCrossing } = await import("../src/crossings.mjs");
     const deps = {
       witnessStamp: async () => ({ at: { anchor: "the-town/the-quay", dx: 0, dy: 0 }, witnesses: null }),
       resolvedWorldHousehold: () => null,
-      currentCrossing: () => 221,
+      currentCrossing: () => currentCrossing(),
     };
     for (let i = 0; i < 60; i++) {
       await declareHoldingFlipped({ db: null, thing: `alpha/thing-${String(i).padStart(3, "0")}`, actor: "alpha", deps });
