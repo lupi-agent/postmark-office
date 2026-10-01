@@ -164,3 +164,27 @@ test("the runner judges a tree's migrations by the TREE's probe table, and falls
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── THE SEED SAYS WHY (2026-10-01) ──────────────────────────────────────────
+// `pen … --apply 2>&1 | sed -n '1p'` showed node's SQLite ExperimentalWarning —
+// line 1 — and nothing else, so every refusal on a copy that already holds the
+// registry exited 1 unexplained. Held by sourcing world2-rehearse.sh (it defines
+// seed_registry and returns) with a stub `pen` that speaks as the seed does.
+test("--seed-registry prints the seed's WHOLE output when it refuses, and says up front that a held registry refuses", (t) => {
+  if (!bashOk) return t.skip("bash is not on PATH here");
+  const REHEARSE = join(ROOT, "deploy/world2-rehearse.sh");
+  const warn = "(node:4242) ExperimentalWarning: SQLite is an experimental feature and might change at any time";
+  const refusal = "registry-seed --apply REFUSES: the registry tables are not empty — households 136, household_pins 211, registry_meta 1.";
+  const run = (body) => bash(`. "$1"; pen() { ${body}; }; seed_registry "$(mktemp)"`, [REHEARSE]);
+
+  const refused = run(`echo "${warn}" >&2; echo "${refusal}" >&2; return 1`);
+  assert.notEqual(refused.status, 0, "a refused seed fails the step");
+  assert.ok(refused.stderr.includes(refusal), `the refusal reaches the operator: ${refused.stderr}`);
+  assert.ok(refused.stderr.includes(warn), "the whole output, warning included");
+  assert.match(refused.stdout, /REFUSES on one that holds rows — every copy of prod since w40 does/);
+
+  const seeded = run(`echo "${warn}" >&2; echo "seeded: 125 households, 198 pins"; return 0`);
+  assert.equal(seeded.status, 0, seeded.stderr);
+  assert.match(seeded.stdout, /\nseeded: 125 households, 198 pins\n$/, "a clean seed prints its own first line, not node's warning");
+  assert.doesNotMatch(seeded.stdout, /ExperimentalWarning/);
+});
