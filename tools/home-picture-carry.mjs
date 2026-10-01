@@ -125,7 +125,8 @@ if (isMain) {
   process.env.TOWN_CLONE = TOWN;
   if (DRY) for (const k of ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"]) if (!process.env[k]) process.env[k] = "dry-run";
   const { uploadMedia, mediaConfigured } = await import("../src/media.mjs");
-  const { openOauthDb, householdFor } = await import("../src/oauth.mjs");
+  const { openOauthDb, oauthSchema, householdFor } = await import("../src/oauth.mjs");
+  const { openPaper } = await import("../src/paperwork.mjs");
   const { setHomePicture } = await import("../src/home-picture.mjs");
   const { loadRegistry } = await import("../src/registry-store.mjs");
   const { homePictureIn } = await import("../src/registry-rows.mjs");
@@ -157,7 +158,13 @@ if (isMain) {
 
   let dbPath = OAUTH_DB, tmp = null;
   if (DRY) { tmp = mkdtempSync(join(tmpdir(), "home-picture-carry-")); dbPath = join(tmp, "oauth.db"); if (existsSync(OAUTH_DB)) copyFileSync(OAUTH_DB, dbPath); }
-  const odb = openOauthDb(dbPath);
+  // THE LEDGER THE DOOR WRITES (POS-271). --apply opens it the way the server
+  // does, so a switched office (OFFICE_PAPERWORK_STORE=1) writes the media rows
+  // into the store's office_media, not into a file it no longer reads.
+  // --dry-run opens a throwaway COPY of the file and never the store: the file
+  // is the store's mirror when switched, so its reads (what this household
+  // holds, what its quota has spent) are the real state, and nothing is kept.
+  const odb = DRY ? openOauthDb(dbPath) : await openPaper(OAUTH_DB, { schema: oauthSchema });
   const put = DRY ? async () => {} : undefined;
   const keep = DRY ? async ({ handle }) => ({ household: Object.entries(registry?.households ?? {}).find(([, r]) => (r.residents ?? []).includes(handle))?.[0] ?? "(no record here)" }) : setHomePicture;
 
