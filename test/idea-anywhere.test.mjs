@@ -44,6 +44,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { NO_TOWN, townClone } from "./fixture-paths.mjs";
+import { NO_WORLD_DB, publishWorld } from "./helpers/world-rows.mjs";
 
 const { ideasTank } = await import("../src/world-classes.mjs");
 const { injectedComplete } = await import("../src/queries.mjs");
@@ -89,6 +90,9 @@ function storeWith(ideas, { declaration = "the-town/idea", declare = true } = {}
     else if (i.ground !== null) place.run(i.ground ?? TANK, i.id, "contains");
   }
   db.close();
+  // The readers stand on the world graph snapshot (POS-270 lane W 3a): the
+  // store built here is published as one, and no read names the file.
+  publishWorld(path);
   return { path, cleanup: () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* Windows keeps the handle; the OS gets it */ } } };
 }
 
@@ -105,7 +109,7 @@ test(`AN IDEA STANDING OFF THE TANK IS AN IDEA — "${FOUNDER_LAW}"`, () => {
     { id: "alden/a-bench-at-the-garrison-gate", by: "alden", ground: GARRISON },
   ]);
   try {
-    const t = ideasTank({ worldDb: path });
+    const t = ideasTank();
     assert.equal(t.source, "store");
     assert.equal(t.ideas.length, 2, `read ${t.ideas.length} rows: ${ids(t).join(", ")}`);
     assert.ok(ids(t).includes("alden/a-bench-at-the-garrison-gate"),
@@ -122,7 +126,7 @@ test(`AN IDEA MAY BE A PREDICATE — "${PREDICATE_LAW}" — and standing_at is t
     { id: "alta-of-garrison/a-second-mooring", by: "alta-of-garrison", about: "alta-of-garrison/the-brass-otter-mooring" },
   ]);
   try {
-    const t = ideasTank({ worldDb: path });
+    const t = ideasTank();
     assert.equal(t.ideas.length, 1, `read ${t.ideas.length} rows: ${ids(t).join(", ")}`);
     // The join carries NO kind clause on purpose: instance-of does not care what
     // kind a mark is, so a predicated idea needed nothing loosened to arrive.
@@ -142,7 +146,7 @@ test("THE READER ASKS NOTHING ABOUT GEOMETRY — a predicated idea has no `at` A
     { id: "alta-of-garrison/a-second-mooring", by: "alta-of-garrison", about: "alta-of-garrison/the-brass-otter-mooring" },
   ]);
   try {
-    const r = row(ideasTank({ worldDb: path }), "alta-of-garrison/a-second-mooring");
+    const r = row(ideasTank(), "alta-of-garrison/a-second-mooring");
     assert.ok(r, "a geometryless idea is on the lane");
     assert.ok(!("at" in r), `the row carries no geometry to be tempted by: ${Object.keys(r).join(", ")}`);
   } finally { cleanup(); }
@@ -154,7 +158,7 @@ test("THE LAW SENTENCE IS THE STORE'S BYTES — never a copy typed into the offi
   // 2026-09-01; nothing here had to change, because nothing here holds it.
   const { path, cleanup } = storeWith([]);
   try {
-    assert.equal(ideasTank({ worldDb: path }).law, "an idea is a resident's ask of the town",
+    assert.equal(ideasTank().law, "an idea is a resident's ask of the town",
       "whatever the record says is what the door says — the fixture's sentence is arbitrary on purpose");
   } finally { cleanup(); }
 });
@@ -162,7 +166,7 @@ test("THE LAW SENTENCE IS THE STORE'S BYTES — never a copy typed into the offi
 test("THE DECLARATION IS NOT ONE OF ITS OWN INSTANCES — a class mark carries the class it defines", () => {
   const { path, cleanup } = storeWith([{ id: "wright/a-newcomers-first-hour", by: "wright" }]);
   try {
-    const t = ideasTank({ worldDb: path });
+    const t = ideasTank();
     assert.ok(!ids(t).includes("the-town/idea"),
       "the-town/idea carries class: idea and DEFINES it — a filter on the class value alone sweeps the constitution in beside the ideas");
     assert.equal(t.law, "an idea is a resident's ask of the town",
@@ -175,7 +179,7 @@ test("THE CLASS NODE IS FOUND, NEVER ASSUMED — a re-filed declaration still op
     [{ id: "wright/a-newcomers-first-hour", by: "wright" }],
     { declaration: "the-town/the-idea-class" });
   try {
-    const t = ideasTank({ worldDb: path });
+    const t = ideasTank();
     assert.equal(t.ideas.length, 1,
       "the reader resolved the declaration through the roster gate — an id written into the query would have emptied the tank here");
   } finally { cleanup(); }
@@ -184,7 +188,7 @@ test("THE CLASS NODE IS FOUND, NEVER ASSUMED — a re-filed declaration still op
 test("NO DECLARATION IN THE RECORD is an EMPTY tank, not a floor read", () => {
   const { path, cleanup } = storeWith([{ id: "wright/a-newcomers-first-hour", by: "wright" }], { declare: false });
   try {
-    const t = ideasTank({ worldDb: path });
+    const t = ideasTank();
     assert.deepEqual(t.ideas, []);
     // The distinction the whole file family exists to keep: "I read the record
     // and the class is not declared" is not "I could not read the record".
@@ -198,7 +202,7 @@ test("standing_at is NULL for an idea the fold has not placed yet — and null i
   // freshly published idea genuinely has no placement edge until the crossing.
   const { path, cleanup } = storeWith([{ id: "rei/posted-five-minutes-ago", by: "rei", ground: null }]);
   try {
-    const t = ideasTank({ worldDb: path });
+    const t = ideasTank();
     assert.equal(t.ideas.length, 1, "an unplaced idea is still an idea — it is on the lane the moment the store carries it");
     assert.equal(row(t, "rei/posted-five-minutes-ago").standing_at, null);
   } finally { cleanup(); }
@@ -210,7 +214,7 @@ test("THE ORDER IS THE RECORD'S — by date then id, unchanged by where anything
     { id: "a/first", by: "a", date: "2026-08-30" },
   ]);
   try {
-    assert.deepEqual(ids(ideasTank({ worldDb: path })), ["a/first", "b/second"]);
+    assert.deepEqual(ids(ideasTank()), ["a/first", "b/second"]);
   } finally { cleanup(); }
 });
 
@@ -221,9 +225,9 @@ test("THE ORDER IS THE RECORD'S — by date then id, unchanged by where anything
 test("THE DOORSTEP ROW: an idea standing off the Tank settles first-idea — the row that PAYS", () => {
   const { path, cleanup } = storeWith([{ id: "alden/a-bench-at-the-garrison-gate", by: "alden", ground: GARRISON }]);
   try {
-    assert.deepEqual(injectedComplete("alden", { worldDb: path, house: ["alden"] }), { "first-idea": true },
+    assert.deepEqual(injectedComplete("alden", { house: ["alden"] }), { "first-idea": true },
       "alden published an idea; telling him to go publish one would be the door disbelieving the record");
-    assert.deepEqual(injectedComplete("rei", { worldDb: path, house: ["rei"] }), { "first-idea": false },
+    assert.deepEqual(injectedComplete("rei", { house: ["rei"] }), { "first-idea": false },
       "…and a household that has not published is still told so — the two answers differ, which is what makes the true one worth anything");
   } finally { cleanup(); }
 });
@@ -268,7 +272,7 @@ test("THE CROSSING MINTS FOR AN IDEA IN THE GARRISON — the consumer that pays,
     { id: "rei/a-thought-about-a-mooring", by: "rei", about: "alta-of-garrison/the-brass-otter-mooring" },
   ]);
   try {
-    const plan = planFirstIdeaSweep(clone, { date: "2026-09-01", worldDb: path });
+    const plan = planFirstIdeaSweep(clone, { date: "2026-09-01" });
     assert.equal(plan.refused, undefined, `the plan refused: ${plan.refused}`);
     const minted = plan.mints.map((m) => m.mark).sort();
     assert.deepEqual(minted, ["alden/a-bench-at-the-garrison-gate", "rei/a-thought-about-a-mooring"],
@@ -311,7 +315,7 @@ test("extent: is REFUSED BY NAME at this door, never dropped in silence", async 
 test("A BAD at: / on: EARNS THE WORLD DOOR'S OWN SENTENCE, byte for byte", async () => {
   const { path, cleanup } = storeWith([]);          // gives classRoster the `idea` declaration
   const prior = process.env.WORLD_STORE_DB;
-  process.env.WORLD_STORE_DB = path;
+  process.env.WORLD_STORE_DB = NO_WORLD_DB;
   resetClassRosterCache();
   try {
     const cases = [

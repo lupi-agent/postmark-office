@@ -29,6 +29,7 @@ import { join } from "node:path";
 import {
   fixtureWorldCloneWithEngine, fixtureWorldDb, mainShaOf, scratchDir, crossingStart,
 } from "./dynamic-fixture.mjs";
+import { NO_WORLD_DB } from "./helpers/world-rows.mjs";
 import { rmSync } from "node:fs";
 
 const scratch = scratchDir("union");
@@ -72,7 +73,7 @@ const worldDbPath = join(scratch, "world.db");
 const dynPath = join(scratch, "dynamic.db");
 
 process.env.WORLD_CLONE = repo;
-process.env.WORLD_STORE_DB = worldDbPath;
+process.env.WORLD_STORE_DB = NO_WORLD_DB;   // the world is the published fixture (POS-270 lane W 3a), never the file
 process.env.WORLD_DYNAMIC_DB = dynPath;
 // Presence reads the position projection (POS-269): the entities table it read
 // without one went with dynamic.db.

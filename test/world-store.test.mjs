@@ -19,7 +19,8 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SCHEMA, geometryIndex, geometryAsOf, rectOfVersion, loadWorldGraph } from "../src/world-store.mjs";
+import { SCHEMA, geometryIndex, geometryAsOf, rectOfVersion } from "../src/world-store.mjs";
+import { graphOf } from "./helpers/world-rows.mjs";
 
 const LANDING = "the-town/the-pando-landing";
 const SEAM = "2026-08-09T21:32:24.000Z";
@@ -75,6 +76,8 @@ test("an index stamped FAILED refuses to load", () => {
   db.prepare("INSERT INTO meta VALUES (?, ?)").run("hydration_status", "FAILED: empty tables — events (promised by gate walk-ledger)");
   db.close();
 
-  assert.throws(() => loadWorldGraph(path), /stamped FAILED/);
-  assert.doesNotThrow(() => loadWorldGraph(path, { allowFailed: true }));
+  // The refusal lives in the one construction (graphFromTables), which every
+  // source of rows passes through: the store's snapshot, or a fixture's.
+  assert.throws(() => graphOf(path), /stamped FAILED/);
+  assert.doesNotThrow(() => graphOf(path, { allowFailed: true }));
 });

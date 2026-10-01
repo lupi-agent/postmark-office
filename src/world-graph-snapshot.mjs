@@ -21,6 +21,7 @@
 // is null and each reader answers exactly as it did before: from world.db
 // where there is one. `worldGraphStanding()` says which, with the key.
 
+import { readFileSync, statSync } from "node:fs";
 import { graphFromTables, EDGE_TYPES } from "./world-store.mjs";
 
 /** The newest snapshot's key. Newest by settlement, then by build. */
@@ -52,7 +53,64 @@ export async function graphTablesAt(query, { tag_sha, office_sha }) {
   return out;
 }
 
-const state = { snap: null, key: null, inflight: null, lastError: null, timer: null };
+const state = { snap: null, key: null, inflight: null, lastError: null, timer: null, rowsRefused: null };
+
+/** One assignment: a reader sees the old graph or the new one. */
+function publish(tables, pin, key, source) {
+  const built = graphFromTables(tables, { source });
+  // `tables` rides along for the readers that ask the graph questions in
+  // SQL's shape (world-graph-db.mjs § graphDb): one set of rows, two views.
+  state.snap = { ...built, tables, pin };
+  state.key = key;
+  state.lastError = null;
+}
+
+// ── THE TEST FIXTURE SEAM (POS-270 lane W 3a, Keemin-ruled 2026-09-30) ──────
+//
+// A test's world comes from rows, never from a world.db: in process it
+// publishes them (`publishWorldGraphForTest`), and an office it spawns reads
+// them from WORLD_GRAPH_ROWS (a JSON file of world.db's tables by name, which
+// `world-hydrate.mjs --rows-out` writes). Both answer only under `node --test`
+// (NODE_TEST_CONTEXT): an office pointed at a rows file anywhere else refuses
+// it by name and stands on the store, so a fixture can never become prod's world.
+const inNodeTest = () => Boolean(process.env.NODE_TEST_CONTEXT);
+const testPin = (tables) => ({
+  tag_sha: tables.meta?.find((m) => m.key === "as_of_world")?.value ?? "test-rows",
+  office_sha: "test-rows",
+  settlement: null,
+});
+
+/** Tests only: publish these rows as the world graph snapshot. */
+export function publishWorldGraphForTest(tables, { label = "test rows" } = {}) {
+  if (!inNodeTest()) throw new Error("publishWorldGraphForTest is a test seam and answers only under node --test");
+  const t = { ...tables, edgeTypes: tables.edgeTypes ?? EDGE_TYPES.map(([type, note]) => ({ type, note })) };
+  publish(t, testPin(t), `test:${label}:${Date.now()}:${Math.random()}`, label);
+}
+
+/**
+ * WORLD_GRAPH_ROWS, read once per change of the file. True when this process
+ * stands on a test's rows; false when there are none, AND when they are
+ * refused — a refused fixture must leave the store's load to run, or an office
+ * with a stray WORLD_GRAPH_ROWS would publish no world at all. The refusal is
+ * kept in its own field, so it stays disclosed after the store has published
+ * (publish() clears lastError).
+ */
+function loadRowsFixture() {
+  const path = process.env.WORLD_GRAPH_ROWS;
+  if (!path) return false;
+  if (!inNodeTest()) { state.rowsRefused = `WORLD_GRAPH_ROWS is a test fixture and is refused outside node --test (${path})`; return false; }
+  try {
+    const st = statSync(path);
+    const key = `rows:${path}:${st.mtimeMs}:${st.size}`;
+    if (state.snap && state.key === key) return true;
+    const tables = JSON.parse(readFileSync(path, "utf8"));
+    const t = { ...tables, edgeTypes: tables.edgeTypes ?? EDGE_TYPES.map(([type, note]) => ({ type, note })) };
+    publish(t, testPin(t), key, `WORLD_GRAPH_ROWS ${path}`);
+  } catch (e) { state.lastError = `WORLD_GRAPH_ROWS would not load: ${String(e?.message ?? e).slice(0, 160)}`; }
+  return true;
+}
+// At import, synchronously, so an office spawned on a fixture answers its first read from it.
+loadRowsFixture();
 
 /** The published snapshot (`loadWorldGraph`'s shape plus `pin`), or null. Synchronous. */
 export const worldGraphSnapshot = () => state.snap;
@@ -60,18 +118,28 @@ export const worldGraphSnapshot = () => state.snap;
 /** Which source the graph readers stand on, for a door or a health line. */
 export function worldGraphStanding() {
   const s = state.snap;
-  if (s) return { source: "store", settlement: s.pin.settlement, tag_sha: s.pin.tag_sha, office_sha: s.pin.office_sha };
+  const refused = state.rowsRefused ? { refused: state.rowsRefused } : {};
+  if (s) return { source: "store", settlement: s.pin.settlement, tag_sha: s.pin.tag_sha, office_sha: s.pin.office_sha, ...refused };
   return {
     source: "floor",
-    disclosed: `the world graph snapshot has not loaded${state.lastError ? ` (${state.lastError})` : ""}; graph reads answer from world.db where there is one`,
+    disclosed: `the world graph snapshot has not loaded${state.lastError ? ` (${state.lastError})` : ""}${state.rowsRefused ? ` (${state.rowsRefused})` : ""}; graph reads answer from world.db where there is one`,
+    ...refused,
   };
 }
 
-async function defaultQuery(sql, params) {
+async function storeQuery(sql, params) {
   const { world2ServeEnabled, world2Pool } = await import("./world2-serve.mjs");
   if (!world2ServeEnabled()) throw new Error("the world 2.0 store is not engaged at this office (WORLD2_PG/WORLD2_PG_URL)");
   return (await world2Pool()).query(sql, params);
 }
+
+// What a reload asks when no query is handed in: the store. A child process
+// can stand a stub in for it (__setDefaultQueryForTest), so the path an office
+// actually takes — the fixture check, then the store — is driven end to end,
+// including outside node --test, where the fixture must be refused.
+let defaultQuery = storeQuery;
+/** Tests only: what an argument-less reload asks; null puts the store back. */
+export function __setDefaultQueryForTest(fn) { defaultQuery = fn ?? storeQuery; }
 
 /**
  * Ask whether a newer snapshot has been copied in, and if so load it and
@@ -79,6 +147,7 @@ async function defaultQuery(sql, params) {
  * Resolves `{ changed, standing }`; never throws into a caller.
  */
 export function reloadWorldGraph({ query = defaultQuery, force = false } = {}) {
+  if (query === defaultQuery && loadRowsFixture()) return Promise.resolve({ changed: false, standing: worldGraphStanding() });
   if (state.inflight) return state.inflight;
   state.inflight = (async () => {
     try {
@@ -87,13 +156,8 @@ export function reloadWorldGraph({ query = defaultQuery, force = false } = {}) {
       const key = `${pin.tag_sha}/${pin.office_sha}`;
       if (!force && state.snap && key === state.key) { state.lastError = null; return { changed: false, standing: worldGraphStanding() }; }
       const tables = await graphTablesAt(query, pin);
-      const built = graphFromTables(tables, { source: `world_graphs@S${pin.settlement ?? "?"}:${pin.tag_sha}` });
-      // THE PUBLISH. One assignment: a reader sees the old graph or the new one.
-      // `tables` rides along for the readers that ask the graph questions in
-      // SQL's shape (world-graph-db.mjs § graphDb): one set of rows, two views.
-      state.snap = { ...built, tables, pin: { tag_sha: pin.tag_sha, office_sha: pin.office_sha, settlement: pin.settlement } };
-      state.key = key;
-      state.lastError = null;
+      publish(tables, { tag_sha: pin.tag_sha, office_sha: pin.office_sha, settlement: pin.settlement }, key,
+        `world_graphs@S${pin.settlement ?? "?"}:${pin.tag_sha}`);
       return { changed: true, standing: worldGraphStanding() };
     } catch (e) {
       state.lastError = String(e?.message ?? e).slice(0, 160);
@@ -123,5 +187,5 @@ export function startWorldGraphRefresher({ intervalMs = Number(process.env.WORLD
 /** Tests only: forget everything, stop the timer. */
 export function resetWorldGraph() {
   if (state.timer) clearInterval(state.timer);
-  Object.assign(state, { snap: null, key: null, inflight: null, lastError: null, timer: null });
+  Object.assign(state, { snap: null, key: null, inflight: null, lastError: null, timer: null, rowsRefused: null });
 }

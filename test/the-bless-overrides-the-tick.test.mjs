@@ -212,12 +212,11 @@ test("HYDRATE --ref blessed: the store stands on the blessed sha and stamps the 
   if (!WORLD || !existsSync(join(WORLD, "WORLD", "marks"))) return t.skip("no WORLD_CLONE with WORLD/marks — the hydrate needs a real world tree");
   const b = blessed(WORLD);
   if (b.source !== "settlement") return t.skip("WORLD_CLONE carries no settlement tag");
-  const db = join(mkdtempSync(join(tmpdir(), "postmark-blessed-db-")), "world.db");
-  execFileSync(process.execPath, ["src/world-hydrate.mjs", "--world", WORLD, "--ref", "blessed", "--db", db, "--no-gexf", "--no-lints"],
+  // The hydration's rows (--rows-out): the meta the store's snapshot is keyed by.
+  const db = join(mkdtempSync(join(tmpdir(), "postmark-blessed-db-")), "rows.json");
+  execFileSync(process.execPath, ["src/world-hydrate.mjs", "--world", WORLD, "--ref", "blessed", "--no-db", "--rows-out", db, "--no-gexf", "--no-lints"],
     { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
-  const store = new DatabaseSync(db, { readOnly: true });
-  const meta = Object.fromEntries(store.prepare("SELECT key, value FROM meta").all().map((r) => [r.key, r.value]));
-  store.close();
+  const meta = Object.fromEntries(JSON.parse(readFileSync(db, "utf8")).meta.map((r) => [r.key, r.value]));
   assert.equal(meta.as_of_world, b.sha, "hydrated at the blessed commit");
   assert.equal(meta.world_ref, b.ref);
   assert.equal(meta.as_of_settlement, `S${b.n}`);

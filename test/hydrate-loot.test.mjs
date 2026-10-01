@@ -42,6 +42,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { writeFixtureDb } from "./helpers/world-rows.mjs";
 
 import { WORLD_CLONE } from "../src/world-store.mjs";
 
@@ -101,9 +102,12 @@ function buildWorld() {
 function hydrate(worldDir) {
   const dbPath = join(worldDir, "world.db");
   const r = spawnSync(process.execPath,
-    [join(OFFICE, "src", "world-hydrate.mjs"), "--world", worldDir, "--db", dbPath, "--office", OFFICE, "--no-lints", "--no-gexf"],
+    [join(OFFICE, "src", "world-hydrate.mjs"), "--world", worldDir, "--no-db", "--rows-out", `${dbPath}.rows.json`, "--office", OFFICE, "--no-lints", "--no-gexf"],
     { encoding: "utf8" });
   if (r.status !== 0) assert.fail(`hydration exited ${r.status}\n${r.stdout}\n${r.stderr}`);
+  // The hydration emits ROWS (POS-270 lane W 3a); the file asked here is this
+  // test's own, built from them, never one the office writes or opens.
+  writeFixtureDb(`${dbPath}.rows.json`, dbPath);
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const rows = Object.fromEntries(db.prepare(
     `SELECT id,

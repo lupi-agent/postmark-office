@@ -24,6 +24,11 @@ import { classRoster, classDials, classNames, resetClassRosterCache, ROSTER_FLOO
 import { declareHolding, liveHolder, holdingsOf, heldPositionOf } from "../src/world-hold.mjs";
 import { openDynamic } from "../src/dynamic-store.mjs";
 import { readAttachments, declareAttachment } from "../src/dynamic-entities.mjs";
+import { NO_WORLD_DB, clearWorld, publishWorld } from "./helpers/world-rows.mjs";
+
+// The class layer reads the world graph snapshot (POS-270 lane W 3a): storeWith()
+// publishes an OK store as one, and world.db's path points nowhere.
+process.env.WORLD_STORE_DB = NO_WORLD_DB;
 
 const TMP = mkdtempSync(join(tmpdir(), "office-things-"));
 
@@ -51,6 +56,9 @@ function storeWith(classMarks, { status = "OK", file = "world.db" } = {}) {
       ...m.props,
     }));
   db.close();
+  // A FAILED hydration is never published (the store is never given one), so
+  // what the office sees after one is NO world.
+  if (status === "OK") publishWorld(path); else clearWorld();
   resetClassRosterCache();
   return path;
 }
@@ -68,7 +76,7 @@ const PARCEL_CLASS = { id: "the-town/parcel", props: { class: "parcel", class_ve
 
 test("the class roster is READ from the record, not held", () => {
   const db = storeWith([THING_CLASS, BOUNTY_CLASS, PARCEL_CLASS]);
-  const { roster, source, disclosed } = classRoster({ worldDb: db });
+  const { roster, source, disclosed } = classRoster();
   assert.equal(source, "store");
   assert.equal(disclosed, null);
   assert.deepEqual([...roster].sort(), ["bounty", "parcel", "thing"]);
@@ -76,7 +84,7 @@ test("the class roster is READ from the record, not held", () => {
 
 test("a class the record does not declare is not in the roster — the probe can fail", () => {
   const db = storeWith([BOUNTY_CLASS]);
-  const { roster, source } = classRoster({ worldDb: db });
+  const { roster, source } = classRoster();
   assert.equal(source, "store");
   assert.ok(roster.has("bounty"));
   // THE DISCRIMINATING ASSERTION. If the roster were still the hardcoded list
@@ -108,7 +116,7 @@ test("resident prose can never enter the roster — authorship carries the weigh
   const forged = { id: "someone/my-own-class", by: "someone", tier: "constitution", props: { class: "sovereign-everything" } };
   const marketed = { id: "the-town/draft-class", by: "the-town", tier: "market", props: { class: "not-yet-law" } };
   const db = storeWith([THING_CLASS, forged, marketed]);
-  const { roster } = classRoster({ worldDb: db });
+  const { roster } = classRoster();
   assert.deepEqual([...roster].sort(), ["thing"]);
 });
 
@@ -116,22 +124,24 @@ test("resident prose can never enter the roster — authorship carries the weigh
 
 test("an absent store falls back to the floor AND says so", () => {
   resetClassRosterCache();
-  const { roster, source, disclosed } = classRoster({ worldDb: join(TMP, "there-is-no-such-store.db") });
+  const { roster, source, disclosed } = (clearWorld(), classRoster());
   assert.equal(source, "floor");
   assert.deepEqual([...roster].sort(), [...ROSTER_FLOOR].sort());
   assert.match(disclosed, /could not be read|no world store/);
 });
 
-test("a FAILED hydration falls back and says which failure it was", () => {
-  const db = storeWith([THING_CLASS], { status: "FAILED: mid-write", file: "failed.db" });
-  const { source, disclosed } = classRoster({ worldDb: db });
+test("a FAILED hydration falls back, and says there is no world to read", () => {
+  storeWith([THING_CLASS], { status: "FAILED: mid-write", file: "failed.db" });
+  const { source, disclosed } = classRoster();
   assert.equal(source, "floor");
-  assert.match(disclosed, /FAILED/);
+  // The failure is the hydrator's to name (it exits 1 and publishes nothing);
+  // the office is left with no world, and says that rather than nothing.
+  assert.match(disclosed, /no world store|could not be read/);
 });
 
 test("a store that hydrated but holds no class marks is a BROKEN world, not an empty one", () => {
   const db = storeWith([], { file: "empty.db" });
-  const { source, disclosed } = classRoster({ worldDb: db });
+  const { source, disclosed } = classRoster();
   assert.equal(source, "floor", "admitting nothing would take the board down as surely as an outage");
   assert.match(disclosed, /no class marks/);
 });
@@ -140,8 +150,8 @@ test("a store that hydrated but holds no class marks is a BROKEN world, not an e
 
 test("a cap is a class dial read from the record, never a constant in this repo", () => {
   const db = storeWith([THING_CLASS]);
-  assert.deepEqual(classDials("thing", { worldDb: db }), { make_daily_cap: 12, carry_cap: 24, take_requires_welcome: false });
-  assert.deepEqual(classDials("no-such-class", { worldDb: db }), {}, "an absent dial is an absent boundary — neutrality, the law's default");
+  assert.deepEqual(classDials("thing"), { make_daily_cap: 12, carry_cap: 24, take_requires_welcome: false });
+  assert.deepEqual(classDials("no-such-class"), {}, "an absent dial is an absent boundary — neutrality, the law's default");
 });
 
 // ── the holding edge ────────────────────────────────────────────────────────
@@ -384,14 +394,14 @@ const STRIDE_CLASS = { id: "the-town/resident", props: { class: "resident", clas
 test("the walker's pace is the RESIDENT class's own dial, read by the record's own name", () => {
   const db = storeWith([STRIDE_CLASS], { file: "stride-pace.db" });
   assert.equal(STRIDE_CLASS_NAME, "resident", "the name the reader asks for is the record's");
-  assert.equal(departurePace({ worldDb: db }), 60, "650 m should take ~7.5 min at the law's 60 km/crossing, not 30");
+  assert.equal(departurePace(), 60, "650 m should take ~7.5 min at the law's 60 km/crossing, not 30");
 });
 
 test("an unreadable or unlawful pace dial derives null — the legacy constant's visible sign", () => {
   const empty = storeWith([THING_CLASS], { file: "no-depart.db" });
-  assert.equal(departurePace({ worldDb: empty }), null, "absent class -> null, never NaN");
+  assert.equal(departurePace(), null, "absent class -> null, never NaN");
   const bad = storeWith([{ id: "the-town/resident", props: { class: "resident", class_version: 8, dials: { pace_km_per_crossing: 0 } } }], { file: "bad-pace.db" });
-  assert.equal(departurePace({ worldDb: bad }), null, "a zero stride is unlawful, not slow");
+  assert.equal(departurePace(), null, "a zero stride is unlawful, not slow");
 });
 
 // ── the holdings bound (2026-08-25) ─────────────────────────────────────────

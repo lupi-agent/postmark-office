@@ -30,6 +30,7 @@ import {
   fixtureWorldClone, fixtureWorldDb, mainShaOf, scratchDir,
   crossingStart, DEFAULT_DIALS,
 } from "./dynamic-fixture.mjs";
+import { NO_WORLD_DB, clearWorld } from "./helpers/world-rows.mjs";
 
 const scratch = scratchDir("store");
 const repo = fixtureWorldClone({ label: "store" });
@@ -44,7 +45,9 @@ const worldDbPath = join(scratch, "world.db");
 const dynPath = join(scratch, "dynamic.db");
 
 process.env.WORLD_CLONE = repo;
-process.env.WORLD_STORE_DB = worldDbPath;
+// The office reads the world graph snapshot (POS-270 lane W 3a): buildWorld()
+// publishes the fixture as one, and world.db's path points nowhere.
+process.env.WORLD_STORE_DB = NO_WORLD_DB;
 process.env.WORLD_DYNAMIC_DB = dynPath;
 delete process.env.WORLD_EMISSIONS;
 
@@ -141,6 +144,7 @@ test("no class mark, no dials, a FAILED store, no store at all — each falls ba
     ["store-failed", { status: "FAILED: empty tables — nodes" }],
   ]) {
     rmSync(worldDbPath, { force: true });
+    clearWorld();
     buildWorld(opts);
     resetClassCache();
     const cls = soundClass({ repo });
@@ -149,6 +153,7 @@ test("no class mark, no dials, a FAILED store, no store at all — each falls ba
     assert.deepEqual(cls.disclosed.sort(), Object.keys(DEFAULT_DIALS).sort(), `${label}: every dial is disclosed`);
   }
   rmSync(worldDbPath, { force: true });
+  clearWorld();
   resetClassCache();
   const gone = soundClass({ repo });
   reasons.push(["no-store", gone.gate.reason]);
@@ -157,7 +162,9 @@ test("no class mark, no dials, a FAILED store, no store at all — each falls ba
   assert.deepEqual(reasons, [
     ["class-mark-absent", "class-mark-absent"],
     ["class-dials-absent", "class-dials-absent"],
-    ["store-failed", "store-failed"],
+    // A failed hydration is never published (the store is never given a failed
+    // snapshot), so what the office sees after one is NO world, said as such.
+    ["store-failed", "store-absent"],
     ["no-store", "store-absent"],
   ], "every fallback says which input was missing — no silent substitution anywhere");
 });
@@ -208,7 +215,7 @@ test("the flag is off by default and is read per call, never latched", async () 
 
 const derive = async () => {
   const { readDepartureEvents, deriveEntities, walkModule } = await import("../src/dynamic-entities.mjs");
-  const read = readDepartureEvents({ worldDb: worldDbPath, repo });
+  const read = readDepartureEvents({ repo });
   return { read, rows: read.refused ? null : deriveEntities(read.events, NOW, await walkModule({ repo })) };
 };
 
@@ -240,6 +247,7 @@ test("a store whose ledger gate is absent, or no store at all, REFUSES by name �
   assert.equal((await derive()).read.refused.gate, "walk-ledger");
 
   rmSync(worldDbPath, { force: true });
+  clearWorld();
   assert.equal((await derive()).read.refused.gate, "world-store");
 });
 
@@ -286,12 +294,15 @@ test("a dynamic store is not deleted and rebuilt like world.db — the health su
   assert.deepEqual(h.sound_class.disclosed_fallbacks, []);
 });
 
-test("a world.db that is not a database at all discloses instead of throwing", async () => {
+test("a world that will not load discloses instead of throwing", async () => {
   const { soundClass, resetClassCache } = await fresh();
+  // Rows the one construction refuses are never published: what stands is NO
+  // world, and speech must still work.
   writeFileSync(worldDbPath, "this is not a database");
+  clearWorld();
   resetClassCache();
   const cls = soundClass({ repo });
   assert.equal(cls.gate.status, "ABSENT");
-  assert.equal(cls.gate.reason, "store-unreadable");
+  assert.equal(cls.gate.reason, "store-absent");
   assert.deepEqual(cls.dials, DEFAULT_DIALS, "speech must not be able to fail because an index is corrupt");
 });
