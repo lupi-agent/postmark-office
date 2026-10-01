@@ -18,7 +18,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -143,5 +143,26 @@ test("A STORE MISS AFTER A GOOD FILE EXITS 3, so the tick still swaps the file i
     assert.equal(existsSync(join(dir, "world.db")), true, "exit 3 promises the file was written");
     const storeOnly = hydrate(["--no-db"]);
     assert.equal(storeOnly.status, 1, "with no file asked for, a store miss built nothing usable");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("AN OFFICE PLACED BY THE RELEASE TRAIN (no .git, a release.json) keys its rows by the receipt's sha", (t) => {
+  if (NO_WORLD) return t.skip(NO_WORLD);
+  const dir = mkdtempSync(join(tmpdir(), "hydrator-release-office-"));
+  const office = join(dir, "office");
+  mkdirSync(office);
+  // The receipt the train ships beside the code (src/release.mjs).
+  const SHA = "ab".repeat(20);
+  writeFileSync(join(office, "release.json"), JSON.stringify({ tag: "release/2026-w41", sha: SHA, deployed_at: "2026-10-04T00:00:00Z" }));
+  try {
+    const file = join(dir, "world.db");
+    execFileSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"), "--world", CLONE, "--office", office, "--no-gexf", "--no-lints", "--db", file],
+      { stdio: "ignore", env: { ...process.env, TMP: dir, TEMP: dir, TMPDIR: dir } });
+    const db = new DatabaseSync(file, { readOnly: true });
+    const meta = Object.fromEntries(db.prepare("SELECT key, value FROM meta").all().map((r) => [r.key, r.value]));
+    db.close();
+    assert.equal(meta.as_of_office, SHA, "an office the train placed must key the snapshot by the commit it is running");
+    const gates = JSON.parse(meta.gates);
+    assert.equal(gates.find((g) => g.gate === "office-release")?.status, "PRESENT");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

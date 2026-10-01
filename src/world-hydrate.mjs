@@ -53,6 +53,7 @@ import {
 } from "./world-store.mjs";
 import { createGraphRows, graphTablesOf, graphCounts } from "./world-graph-rows.mjs";
 import { blessed } from "./world-branches.mjs";
+import { readReleaseStamp } from "./release.mjs";
 
 const argOf = (name, fallback) => { const i = process.argv.indexOf(name); return i !== -1 ? process.argv[i + 1] : fallback; };
 const flag = (name) => process.argv.includes(name);
@@ -154,6 +155,16 @@ try {
   if (resolve(top).toLowerCase() === resolve(OFFICE).toLowerCase()) { officeSha = head; gatePresent("office-git", OFFICE, `HEAD = ${head.slice(0, 12)}`); }
   else gateAbsent("office-git", OFFICE, `not a git checkout of its own (toplevel ${top}) — as_of_office left null`);
 } catch { gateAbsent("office-git", OFFICE, "no git sha — as_of_office left null"); }
+// THE DEPLOYED OFFICE IS NOT ALWAYS A CHECKOUT. The release train rsyncs a
+// `git archive` of its tag onto the box and ships the receipt beside it
+// (release.json, src/release.mjs): that receipt names the commit running, which
+// is what as_of_office means. Without one or the other the sha stays null and
+// the store refuses the snapshot by name (graph-ingest: half the key), which
+// the tick reports as a store miss rather than a silent write.
+if (officeSha == null) {
+  const stamp = readReleaseStamp(OFFICE);
+  if (stamp.deployed) { officeSha = stamp.sha; gatePresent("office-release", OFFICE, `release.json names ${stamp.tag} at ${stamp.sha.slice(0, 12)}`); }
+}
 
 // The tree is read AT THE SHA, never from the working directory: the world
 // clone is fetch-never-pull and the write pen parks it on household draft
