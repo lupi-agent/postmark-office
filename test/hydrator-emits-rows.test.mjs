@@ -17,8 +17,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -111,11 +111,11 @@ test("THE OUTPUTS: --no-db writes no world.db, and the rows it emits carry the c
   const privateTmp = { TMP: dir, TEMP: dir, TMPDIR: dir };
   try {
     const run = (args) => JSON.parse(execFileSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"), "--world", CLONE, "--office", office, "--no-gexf", "--no-lints", "--json", ...args],
-      { encoding: "utf8", env: { ...process.env, ...privateTmp, WORLD_STORE_DB: join(dir, "unused.db") }, stdio: ["ignore", "pipe", "ignore"] }));
+      { encoding: "utf8", env: { ...process.env, ...privateTmp }, stdio: ["ignore", "pipe", "ignore"] }));
     const rowsPath = join(dir, "rows.json");
-    const out = run(["--no-db", "--db", join(dir, "absent.db"), "--rows-out", rowsPath]);
-    assert.equal(existsSync(join(dir, "absent.db")), false, "--no-db wrote a world.db");
-    assert.equal(out.db, null);
+    const out = run(["--no-db", "--rows-out", rowsPath]);
+    assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith(".db")), [], "the hydration wrote a world.db");
+    assert.equal(Object.hasOwn(out, "db"), false, "the run reported a world.db it was not asked for");
     // The rows are what the store's snapshot and a test's fixture are made of:
     // their own meta carries the counts the run reported, stamped OK.
     const rows = JSON.parse(readFileSync(rowsPath, "utf8"));
@@ -123,5 +123,15 @@ test("THE OUTPUTS: --no-db writes no world.db, and the rows it emits carry the c
     assert.deepStrictEqual(JSON.parse(meta.counts), out.counts, "the counts in the rows are not the counts reported");
     assert.equal(meta.hydration_status, "OK");
     assert.equal(rows.nodes.length, out.counts.nodes_total, "the rows hold the nodes the run counted");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("--db IS REFUSED BY NAME: world.db is retired, and a caller still asking for one is told where the world went", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hydrator-db-refused-"));
+  try {
+    const r = spawnSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"), "--db", join(dir, "world.db")], { encoding: "utf8" });
+    assert.equal(r.status, 2, `exit ${r.status}: ${r.stderr}`);
+    assert.match(r.stderr, /world.db is retired .* --to-store .* --rows-out/);
+    assert.equal(existsSync(join(dir, "world.db")), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

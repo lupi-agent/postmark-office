@@ -199,10 +199,10 @@ test("THE DOOR: with the snapshot loaded and world.db absent, openStore() answer
   }
 });
 
-test("THE WALK'S GROUND LOOKUP asks the snapshot's handle first (2b), world.db only as the floor", () => {
+test("THE WALK'S GROUND LOOKUP asks the snapshot's handle, and with none it leaves the walk untouched (3b: no file behind it)", () => {
   const code = readFileSync(join(OFFICE_ROOT, "src", "world.mjs"), "utf8");
-  assert.match(code, /db = snap\?\.tables \? graphDb\(snap\.tables\) : new DatabaseSync\(path, \{ readOnly: true \}\);/,
-    "the walk desk opens world.db for its portal-ground lookup even when the snapshot has loaded");
+  assert.match(code, /const snap = worldGraphSnapshot\(\);\s*if \(!snap\?\.tables\) return null;\s*try \{\s*const db = graphDb\(snap\.tables\);/,
+    "the walk desk's portal-ground lookup no longer reads the snapshot's handle, or reaches for something else when there is none");
 });
 
 test("2(c) THE READERS, from the store: world-classes' readers, the sound class and the walk ledger answer what the file's rows answer", async (t) => {

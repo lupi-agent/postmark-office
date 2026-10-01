@@ -609,7 +609,7 @@ test("the read carries the spine, the salient marks, and where the law was read 
   assert.equal(r.within[0].id, FRAME, "the spine is root-first");
   assert.equal(r.within.at(-1).id, "alpha/false-constitution", "…and innermost-last");
   assert.ok(r.nearby.length > 0);
-  assert.equal(r.law.source, "world.db");
+  assert.equal(r.law.source, "the world graph snapshot");
   assert.ok(r.law.as_of_world);
   assert.equal(r.present, undefined, "presence is off, so the key is absent, not empty");
   assert.equal(r.telling, undefined, "the passing read pays for no prose");
