@@ -201,6 +201,8 @@ const ROSTER = {
   "world2/tools/falsifier-pen-flip.mjs": { args: ["--help"], env: NO_PG, code: 0, needle: "usage" },
   "world2/tools/falsifier-projection-equality.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: falsifier-projection-equality.mjs" },
   "world2/tools/falsifier-review-closure.mjs": { args: [], env: NO_PG, code: 2, needle: "WORLD2_PG_URL missing" },
+  // No --base: stops on usage before any HTTP (POS-142).
+  "world2/tools/falsifier-twins-equality.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: falsifier-twins-equality.mjs" },
   "world2/tools/law-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: law-ingest.mjs" },
   "world2/tools/graph-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: graph-ingest.mjs" },
   "tools/arena-archive.mjs": { args: [], env: {}, code: 2, needle: "usage: arena-archive.mjs" },

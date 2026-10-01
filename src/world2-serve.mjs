@@ -92,7 +92,7 @@ import { stakesFromStore } from "../world2/tools/fold-input.mjs";
 // The CANDLE'S OWN escrow reader, not a second one — § THE DOCKET ROW says why.
 import { escrowPresenceAt } from "../world2/tools/escrow-presence.mjs";
 import { blessedRef, materializeAtRef } from "./world-branches.mjs";
-import { WORLD_CLONE, placeWordsFrom, markPage } from "./world.mjs";
+import { WORLD_CLONE, placeWordsFrom, markPage, thingStandsBlock } from "./world.mjs";
 // 1.0's own backed row, imported rather than restated — see portfolio-reads.mjs
 // § THE DECISIONS ARE NOT RE-EXPRESSED HERE.
 import { backedRow } from "./world-stake.mjs";
@@ -100,6 +100,7 @@ import { backedRow } from "./world-stake.mjs";
 // rather than restated; see § THE SETTLEMENTS TWIN below.
 import { settlementsFrom } from "./settlements.mjs";
 import { CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
+import { myMarksRefused } from "./claim-effects.mjs";
 import { actorRoster } from "./human-actor.mjs";
 import { stopDepartures } from "./world-movement.mjs";
 // The class every reader IS — 1.0's own constant, so the two apexes name the
@@ -207,7 +208,7 @@ export async function world2MyDrafts(key) {
  * `tree_only`; see that module's header for why each is absent rather than
  * approximated.
  */
-export async function world2MyMarks(key, { offset = 0, p: injected = null } = {}) {
+export async function world2MyMarks(key, { offset = 0, p: injected = null, refusedReader = myMarksRefused } = {}) {
   const p = injected ?? await pool();
   const household = await householdKeyForKey(p, key);
 
@@ -282,6 +283,9 @@ export async function world2MyMarks(key, { offset = 0, p: injected = null } = {}
 
   return {
     ...body,
+    // 1.0's own `refused`, from the same one derivation (claim-effects.mjs §
+    // myMarksRefused), handed this door's roster as 1.0 is handed its own.
+    refused: await refusedReader(residents, { key }),
     // NAMED, NOT SILENT — and `backed` says which absence it is, because a
     // refusal and an empty ledger are different facts.
     ...(stakeRows == null ? { backed_unavailable:
@@ -779,15 +783,20 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
         ...(r?.error ? { engine: String(r.error) } : {}) } };
     }
 
+    // WHERE THE THING STANDS: 1.0's own block, not a second composition. It
+    // already reads the store for both halves (POS-162), and the twin hands it
+    // the world assembled from rows, so the holder answer beside the engine's
+    // judgment is the same function's on both doors (POS-142 S3 item 5).
+    const stands = await thingStandsBlock(String(mark), world, r);
+
     return { code: 200, body: {
       ...r,
-      // The two blocks 1.0 spreads beside the engine's answer are NOT here, and
-      // each is absent for its own reason rather than for one shared excuse.
+      ...(stands ? { stands } : {}),
+      // The receipt is the one block 1.0 spreads beside the engine's answer
+      // that is NOT here.
       tree_only: {
         "receipt.crossing · receipt.settlement_sha · receipt.published_at":
           "mark-receipt.mjs derives the settlement epoch from the world repo's own `settlement/S<n>` git TAGS (settlements.mjs: \"the truth is the world repo's own git TAGS … which exist only when a settlement actually landed\") and from the filing index at a published sha. The store carries no tag and no settlement row — `acts` holds none and there is no settlements table — so the S-number, the sha it blessed and its date cannot be answered here at all. The rest of the receipt (`claims`, canon, the sketchbook) is store-readable and is a second lane's wiring, not a second lane's finding.",
-        stands:
-          "world.mjs § thingStandsBlock now reads the STORE for both halves (POS-162: `guard-reads.mjs § pgAttachmentsFor` for the holder, `§ pgHoldingRowsFor` for the set-down, one read-only transaction), so this block is no longer unportable OR unported — it is UNWIRED HERE. Emitting it would mean this door composing a holder answer of its own beside the engine's judgment, which is a second lane's wiring and wants its own falsifier; the read it would use already exists and is proven at the 1.0 door.",
       },
     } };
   }
