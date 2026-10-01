@@ -42,7 +42,7 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { readDraftClaims, householdKeyForKey, withHousehold, claimRowsForSlug } from "./world2-claims.mjs";
+import { readDraftClaims, keyHouseholdOf, withHousehold, claimRowsForSlug } from "./world2-claims.mjs";
 import { receiptFrom } from "./mark-receipt.mjs";
 import { sessionKeysVia, resolveHouse, houseRowsVia } from "./household-deriver.mjs";
 
@@ -184,10 +184,10 @@ async function engine() {
  * WHERE clause is belt to the policy's braces rather than the only strap.
  */
 export async function world2MyDrafts(key) {
-  const { household, drafts } = await readDraftClaims(key);
+  const { household, drafts, disclosure } = await readDraftClaims(key);
   return {
     what: "your household's private compose space — every draft you hold, and nobody else can ask this question about you",
-    household, count: drafts.length, drafts,
+    household, ...(disclosure ? { household_disclosure: disclosure } : {}), count: drafts.length, drafts,
     privacy: "these stand on no docket, in no export, in no archive, and in no public answer. Submitting one is the act that makes it public, and it crosses once.",
   };
 }
@@ -211,7 +211,7 @@ export async function world2MyDrafts(key) {
  */
 export async function world2MyMarks(key, { offset = 0, p: injected = null, refusedReader = myMarksRefused } = {}) {
   const p = injected ?? await pool();
-  const household = await householdKeyForKey(p, key);
+  const { household, disclosure } = await keyHouseholdOf(p, key);
 
   // The household's roster, from the store's own `identities` projection — the
   // registry `roll-ingest.mjs` writes ("census decision 1: roster is
@@ -284,6 +284,11 @@ export async function world2MyMarks(key, { offset = 0, p: injected = null, refus
 
   return {
     ...body,
+    // 1.0's `household` is the key's own name, echoed for display
+    // (`world-stake.mjs § worldPortfolioStakeSlice`), and the twin answers what
+    // 1.0 answers. The house the rows were read under is `household_key`.
+    household: String(key?.household ?? "").trim(),
+    household_key: household,
     // 1.0's own `refused`, from the same one derivation (claim-effects.mjs §
     // myMarksRefused), handed this door's roster as 1.0 is handed its own.
     refused: await refusedReader(residents, { key }),
@@ -292,6 +297,7 @@ export async function world2MyMarks(key, { offset = 0, p: injected = null, refus
     ...(stakeRows == null ? { backed_unavailable:
       "the escrow projection could not be read at the ingested town head, so what you have staked is UNKNOWN — not nothing. `backed` and `counts.backed` are empty for that reason and not because you back nothing." } : {}),
     ...(townHead?.sha ? { escrow_at_town_sha: townHead.sha } : {}),
+    ...(disclosure ? { household_disclosure: disclosure } : {}),
     tree_only: portfolio.PORTFOLIO_TREE_ONLY,
   };
 }
