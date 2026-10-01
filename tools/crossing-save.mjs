@@ -2,8 +2,11 @@
 // crossing-save.mjs — the save tick.
 //
 //   node tools/crossing-save.mjs [--at <iso>] [--world <clone>] [--state <dir>]
-//                                [--db <path>] [--no-refresh] [--no-commit]
-//                                [--prune] [--json]
+//                                [--no-commit] [--json] [--record-fixture <file>]
+//
+// (`--prune`, `--db` and `--no-refresh` are accepted and do nothing: they
+// were dynamic.db's, and the store is retired — POS-269. The box's unit still
+// passes `--prune`.)
 //   node tools/crossing-save.mjs --check [--window <N>[,<N>…]] [--world <clone>]
 //
 // `--check` (POS-196) renders the departure record from the REGISTER and diffs
@@ -67,15 +70,13 @@ import { dirname, join, resolve } from "node:path";
 
 import { penCommit } from "../src/write.mjs";
 import { WORLD_CLONE } from "../src/world-store.mjs";
-import { openDynamic, putMeta, getMeta, emissionsEnabled, soundClass, soundMs, dynamicRetired } from "../src/dynamic-store.mjs";
+import { emissionsEnabled, soundClass, soundMs } from "../src/dynamic-store.mjs";
 import { world2Enabled } from "../src/world2-acts.mjs";
 import {
   readDepartureEvents, governingAt, entityFromDeparture, byHandle,
-  refreshEntities, readEntities, readAttachments,
   mergedDepartureEvents, walkModule,
 } from "../src/dynamic-entities.mjs";
 import { DEPARTURE_GAPS, RECORD_READ_FIELDS, storedDepartureEvents } from "../src/world-movement.mjs";
-import { emissionsBetween, pruneEmissions } from "../src/dynamic-emissions.mjs";
 import { holdEdgeOnActs } from "../src/hold-edge.mjs";
 import { storeAttachmentRows } from "../src/world2-guards.mjs";
 import { laneFlipped } from "../src/world2-pen.mjs";
@@ -86,37 +87,67 @@ const flag = (name) => process.argv.includes(name);
 
 const CLONE = resolve(argOf("--world", process.env.WORLD_CLONE ?? WORLD_CLONE));
 const STATE_DIR = resolve(argOf("--state", join(CLONE, "STATE")));
-const DB_PATH = argOf("--db", null);
 const JSON_OUT = flag("--json");
+
+// ── THE RECORD, AND ITS ONE STAND-IN (POS-269) ──────────────────────────────
+//
+// Every input the save writes STATE/ from is the record's: the departures (the
+// walk ledger and the store's acts), the holdings (the hold acts), the voices
+// (the say acts). dynamic.db is not read at all — it was retired, and its
+// flag-off paths went with it.
+//
+// `--record-fixture <file>` is the suites' stand-in for the store, a JSON file
+// `{ movements, attachments, say_acts, centres }` read in place of the
+// Postgres reads, exactly as `--state` stands a scratch directory in for the
+// clone's STATE/. The box never passes it; with it unset every read is the
+// store's and a store that will not answer is a refusal.
+const FIXTURE = (() => {
+  const p = argOf("--record-fixture", null);
+  if (!p) return null;
+  return JSON.parse(readFileSync(p, "utf8"));
+})();
 
 /** Stable bytes: two-space JSON, arrays already ordered by their builders, one trailing newline. */
 export const stableJson = (v) => `${JSON.stringify(v, null, 2)}\n`;
 
-/**
- * The attachments a save carries (POS-269). Where the holding edge is on
- * `acts` (W2_PEN has hold and W2_GUARDS=1), the door no longer writes
- * dynamic.db's copy, so the save reads the record; elsewhere sqlite is still
- * the record. A record that will not answer throws, and `main` refuses by
- * name, never falling back to the stale file.
- */
-export async function attachmentsForSave(db, { onActs = holdEdgeOnActs(), read = storeAttachmentRows } = {}) {
-  return onActs ? read() : readAttachments(db);
+/** Why a save cannot read a lane's record, said the way the save refuses. */
+export class RecordPreconditionError extends Error {
+  constructor(what, flags) {
+    super(`the ${what} are the record's, and this office does not read them from it: ${flags}. dynamic.db, which used to stand in, is retired (POS-269)`);
+    this.name = "RecordPreconditionError";
+  }
 }
 
 /**
- * The emissions a save carries (POS-269), the attachments' rule applied to
- * speech. Where the say lane's pen is the record (W2_PEN has say), every voice
- * is an act and the lines are written from it (src/save-emissions.mjs, measured
- * byte-equal on the town's own files); elsewhere dynamic.db is still the source.
- * WORLD_EMISSIONS still decides whether the record carries speech at all: off,
- * no emission line is written from either source, exactly as before.
- * A record that will not answer, or a voice that cannot be placed, throws, and
+ * The attachments a save carries: the holding acts, which ARE the edge where
+ * the hold lane is flipped under the guards. Anywhere else there is no record
+ * of holdings for a save to read, and it refuses by name.
+ */
+export async function attachmentsForSave({ onActs = holdEdgeOnActs(), read = storeAttachmentRows, fixture = FIXTURE } = {}) {
+  if (fixture) return fixture.attachments ?? [];
+  if (!onActs) throw new RecordPreconditionError("holdings", "the hold lane must be flipped (W2_PEN has hold) with W2_GUARDS=1");
+  return read();
+}
+
+/**
+ * The emissions a save carries: the say acts, rendered by recordEmission's own
+ * rule (src/save-emissions.mjs, measured byte-equal on the town's own files).
+ * WORLD_EMISSIONS decides whether the record carries speech at all; with it on
+ * and the say lane unflipped there is no record of speech to read, and the save
+ * refuses by name. A record that will not answer, or a voice that cannot be
+ * placed, throws, and
  * `main` refuses by name.
  */
-export async function emissionsForSave(db, { fromIso, toIso, onActs = laneFlipped("say"), enabled = emissionsEnabled(),
-  readActs = readSayActs, centres = async () => (await import("../src/world.mjs")).markCentreOf(), cls = null } = {}) {
-  if (!onActs) return emissionsBetween(db, fromIso ?? new Date(0).toISOString(), toIso);
+export async function emissionsForSave({ fromIso, toIso, onActs = laneFlipped("say"), enabled = emissionsEnabled(),
+  readActs = readSayActs, centres = async () => (await import("../src/world.mjs")).markCentreOf(), cls = null, fixture = FIXTURE } = {}) {
   if (!enabled) return [];
+  if (fixture) {
+    const inWindow = (a) => { const t = Date.parse(a.at); return t >= Date.parse(fromIso) && t < Date.parse(toIso); };
+    readActs = async () => (fixture.say_acts ?? []).filter(inWindow);
+    if (fixture.centres) centres = async () => (id) => fixture.centres[id] ?? null;
+  } else if (!onActs) {
+    throw new RecordPreconditionError("voices", "the say lane must be flipped (W2_PEN has say)");
+  }
   const law = cls ?? soundClass({ repo: CLONE });
   const { ttlMs, earshotM } = soundMs(law);
   return emissionRowsFromActs(await readActs(fromIso, toIso), { centreOf: await centres(), cls: law, ttlMs, earshotM });
@@ -475,24 +506,11 @@ async function main() {
     process.exit(out.clean ? 0 : 1);
   }
 
-  // RETIRED (POS-269): on the record's flags the save opens no dynamic.db at
-  // all. Its entities refresh fed presence, which reads the position projection
-  // there; its attachments and emissions already come from the acts; its meta
-  // stamps and the emission prune kept a store nothing reads. STATE/ is written
-  // from the same sources either way, so the files are the files.
-  const retired = dynamicRetired();
-  const db = retired ? null : openDynamic(DB_PATH ?? undefined);
-
-  // The store and the save must share ONE clock, or the replay check compares
-  // two different worlds and calls the difference a finding.
-  let refresh = null;
-  if (!flag("--no-refresh") && !retired) {
-    refresh = await refreshEntities({ db, repo: CLONE, at: saveMs, walk });
-    if (!refresh.ok) { db?.close(); return die(4, refresh.refused.gate, refresh.refused.detail); }
-  }
-
+  // NO dynamic.db (POS-269). The save used to refresh its entities table (for
+  // presence, which reads the position projection now), stamp its meta, and
+  // prune its emissions; the store is retired and none of that has a reader.
   const read = readDepartureEvents({ repo: CLONE });
-  if (read.refused) { db?.close(); return die(4, read.refused.gate, read.refused.detail); }
+  if (read.refused) return die(4, read.refused.gate, read.refused.detail);
 
   // STAGE D: the walk ledger is frozen with honor and `STATE/log/` becomes the
   // movement record, so a departure declared after the seam reaches the save
@@ -524,28 +542,28 @@ async function main() {
   // failure — an office pointed at no register has no live era at all, exactly
   // as `movementV2Enabled()` false meant before.
   let storeMovements = [];
-  if (world2Enabled()) {
+  if (FIXTURE) storeMovements = FIXTURE.movements ?? [];
+  else if (world2Enabled()) {
     const stored = await storedDepartureEvents({ atMs: saveMs });
-    if (stored.absent) { db?.close(); return die(4, "register", stored.absent); }
+    if (stored.absent) return die(4, "register", stored.absent);
     storeMovements = stored.events;
   }
   const departureEvents = storeMovements.length ? mergedDepartureEvents(read.events, storeMovements) : read.events;
 
-  // POS-269: once the hold pen is flipped, the holding acts ARE the edge and
-  // dynamic.db's copy stops at the switch, so the save reads the record. An
-  // unreadable record is a refusal, never the stale file passed off as now.
+  // The holding acts ARE the edge (POS-269). An unreadable record, or an office
+  // that does not read holdings from it, is a refusal by name.
   let attachments;
-  try { attachments = await attachmentsForSave(db); }
-  catch (e) { db?.close(); return die(4, "holdings", `the holding record could not be read: ${String(e?.message ?? e).slice(0, 160)}`); }
+  try { attachments = await attachmentsForSave(); }
+  catch (e) { return die(4, "holdings", `the holding record could not be read: ${String(e?.message ?? e).slice(0, 200)}`); }
   // From the start of the crossing this run may close, to the save instant:
   // every window `buildSave` is handed below lies inside it.
   let allEmissions;
   try {
-    allEmissions = await emissionsForSave(db, {
+    allEmissions = await emissionsForSave({
       fromIso: new Date(crossingStartMs(Math.max(0, crossing - 1))).toISOString(),
       toIso: new Date(saveMs).toISOString(),
     });
-  } catch (e) { db?.close(); return die(4, "emissions", `the voices could not be read from the record: ${String(e?.message ?? e).slice(0, 200)}`); }
+  } catch (e) { return die(4, "emissions", `the voices could not be read from the record: ${String(e?.message ?? e).slice(0, 200)}`); }
 
   const written = [];
   const saves = [];
@@ -583,7 +601,7 @@ async function main() {
   // pen, which parks it on household draft branches; the walk ledger once lost
   // 17 public lines to exactly that.
   try { execFileSync("git", ["-C", CLONE, "switch", "-q", "main"], { encoding: "utf8" }); }
-  catch (e) { db?.close(); return die(5, "world-main", `the world clone would not stand on main (${String(e?.message ?? e).slice(0, 160)})`); }
+  catch (e) { return die(5, "world-main", `the world clone would not stand on main (${String(e?.message ?? e).slice(0, 160)})`); }
   if (process.env.TOWN_PUSH === "1")
     try { execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" }); } catch { /* offline or behind — save locally */ }
 
@@ -659,19 +677,6 @@ async function main() {
     }
   }
 
-  // `logged_through` is the prune's gate, so it is stamped ONLY when the
-  // occurrences actually reached the record. --no-commit leaves it alone: files
-  // in a working tree are not the town's memory, and a prune trusting them could
-  // drop speech a `git clean` was about to erase.
-  let prune = null;
-  if (committed && db) {
-    putMeta(db, "logged_through", new Date(saves.at(-1).meta.covers_to).toISOString());
-    putMeta(db, "last_crossing_saved", String(saves.at(-1).meta.crossing));
-    putMeta(db, "last_save_at", new Date(saveMs).toISOString());
-    putMeta(db, "last_save_commit", commit);
-    if (flag("--prune")) prune = pruneEmissions(db, { atMs: saveMs });
-  }
-
   const report = {
     crossing,
     saved_at: new Date(saveMs).toISOString(),
@@ -684,9 +689,7 @@ async function main() {
     })),
     files_changed: written,
     commit, pushed, push_error,
-    logged_through: db ? getMeta(db, "logged_through") : null,
-    ...(retired ? { dynamic_db: "retired on this office's flags — nothing opened, nothing stamped, nothing pruned (POS-269)" } : {}),
-    entities_refreshed: refresh ? { count: refresh.entities, mid_walk: refresh.mid_walk, as_of: refresh.as_of } : null,
+    dynamic_db: "retired — the save reads the record only; nothing opened, nothing stamped, nothing pruned (POS-269)",
     source: { as_of_world: read.as_of_world, hydrated_at: read.hydrated_at, fresh: read.fresh },
     disclosed: read.disclosed,
     // THE PASSAGES, COUNTED AND NOT WRITTEN (#2152). The save no longer folds
@@ -695,9 +698,7 @@ async function main() {
     // moving is how the two-day staleness was finally noticed, and losing the
     // number would be trading one silence for another.
     enter_exit_ledger: { written: false, where: "derived at read time from the frozen era + the REGISTER (POS-194, `livePassageRows`); the committed copy is the frozen era by the world repo's own law (#2152). The `derived_acts` count this used to carry read the sqlite journal and went with G1 — ask the door, which owns that derivation" },
-    prune,
   };
-  db?.close();
 
   if (JSON_OUT) { console.log(JSON.stringify(report, null, 2)); return; }
   console.log(`crossing-save · crossing ${crossing}  (saved at ${report.saved_at})`);
@@ -709,7 +710,6 @@ async function main() {
   console.log(`  world    ${String(read.as_of_world).slice(0, 12)} hydrated ${read.hydrated_at}${read.fresh === false ? "  (the walk ledger has MOVED since — disclosed in this report)" : ""}`);
   console.log("  passages · NOT written — the save has no pen here (#2152); the derived record is the door's (GET /world/enter-exit-ledger)");
   for (const d of read.disclosed) console.log(`  DISCLOSED ${d}`);
-  if (prune) console.log(`  prune    ${prune.refused ?? `${prune.pruned} faded emission(s) dropped (occurrence saved through ${prune.horizon})`}`);
 }
 
 if (process.argv[1]?.endsWith("crossing-save.mjs")) {

@@ -125,16 +125,13 @@ test("W2_GUARDS OFF: the holder check still reads sqlite, so the sqlite edge is 
   } finally { db.close(); rec.restore(); }
 });
 
-test("CROSSING-SAVE: on prod's flags the save's attachments come from the record; a record that will not answer is thrown, never the file", async () => {
-  const { attachmentsForSave } = await import("../tools/crossing-save.mjs");
-  const db = openDynamic(join(tmp, "save.db"));
-  try {
-    declareHolding({ db, thing: "maker/stool", actor: "alpha", dials: {} });
-    const record = [{ seq: null, entity: "beta", target: "maker/stool", policy: "cascade", declared_by: "alpha", born_at: "2026-09-30T04:00:02.000Z" }];
-    assert.deepEqual((await attachmentsForSave(db, { onActs: true, read: async () => record })).map((r) => r.entity), ["beta"]);
-    assert.deepEqual((await attachmentsForSave(db, { onActs: false, read: async () => record })).map((r) => r.entity), ["alpha"]);
-    await assert.rejects(attachmentsForSave(db, { onActs: true, read: async () => { throw new Error("connection refused"); } }), /connection refused/);
-  } finally { db.close(); }
+test("CROSSING-SAVE: the save's attachments are the record's; off the hold lane it refuses by name; a record that will not answer is thrown, never a file", async () => {
+  const { attachmentsForSave, RecordPreconditionError } = await import("../tools/crossing-save.mjs");
+  const record = [{ seq: null, entity: "beta", target: "maker/stool", policy: "cascade", declared_by: "alpha", born_at: "2026-09-30T04:00:02.000Z" }];
+  assert.deepEqual((await attachmentsForSave({ onActs: true, read: async () => record, fixture: null })).map((r) => r.entity), ["beta"]);
+  await assert.rejects(attachmentsForSave({ onActs: false, read: async () => record, fixture: null }),
+    (e) => e instanceof RecordPreconditionError && /the hold lane must be flipped/.test(e.message), "off the hold lane there is no record of holdings, and dynamic.db no longer stands in");
+  await assert.rejects(attachmentsForSave({ onActs: true, read: async () => { throw new Error("connection refused"); }, fixture: null }), /connection refused/);
 });
 
 // ── ONE THREAD (Wright's condition 1 on (a)) ────────────────────────────────

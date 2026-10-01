@@ -98,19 +98,16 @@ test("THE SAVE gets past the opener on those flags: it stops at the record, not 
   } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 5 }); }
 });
 
-test("THE CENSUS: every src module that can open the store names why it cannot on those flags", () => {
+test("THE CENSUS: every src module that can open the store names why it cannot on those flags (presence, the hold door and the say door no longer open it on ANY flags)", () => {
   const files = readdirSync(join(ROOT, "src")).filter((f) => f.endsWith(".mjs"))
     .filter((f) => /openDynamic(ReadOnly)?\(/.test(readFileSync(join(ROOT, "src", f), "utf8").replace(/^\s*\/\/.*$/gm, "")))
     .sort();
   // Each entry is the reason the call is unreachable on the retired flags (or,
   // for the drain, why it is let through). A new caller reds this until it says.
   const WHY = {
-    "dynamic-emissions.mjs": "emissionFromVoice returns before opening when the say lane is flipped",
-    "dynamic-entities.mjs": "refreshEntities: the crossing-save does not call it when retired; dynamic-rebuild is a flag-off tool",
-    "dynamic-presence.mjs": "readPresence opens only when handed no projection, and the doors hand one on WORLD_POSITIONS=1",
+    "dynamic-entities.mjs": "refreshEntities, which only the flag-off dynamic-rebuild tool calls; the crossing-save no longer does",
     "dynamic-store.mjs": "the opener itself, and the panel, which returns before opening when retired",
     "world-drain.mjs": "the git-road drain, the one named legacy reader",
-    "world-hold.mjs": "the door opens nothing where the hold edge is on acts",
     "world-journal.mjs": "draftsForKey, which no door calls (every door calls guardedDraftsForKey)",
   };
   assert.deepEqual(files, Object.keys(WHY).sort());

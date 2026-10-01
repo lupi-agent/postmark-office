@@ -18,7 +18,7 @@ import { openDynamic, soundMs } from "../src/dynamic-store.mjs";
 import { recordEmission, emissionsBetween } from "../src/dynamic-emissions.mjs";
 import { anchorAt, WORLD_ANCHOR } from "../src/world-journal.mjs";
 import { emissionRowsFromActs, EmissionUnplacedError } from "../src/save-emissions.mjs";
-import { buildSave, emissionsForSave } from "../tools/crossing-save.mjs";
+import { buildSave, emissionsForSave, RecordPreconditionError } from "../tools/crossing-save.mjs";
 
 const CLS = {
   version: 2,
@@ -95,31 +95,19 @@ test("A VOICE THAT CANNOT BE PLACED REFUSES — no guessed x,y reaches a public 
     (e) => e instanceof EmissionUnplacedError && /act 7, neth at someone\/a-mark-that-is-gone/.test(e.message));
 });
 
-test("THE SOURCE FOLLOWS THE SAY LANE: flipped, the acts; not flipped, dynamic.db; WORLD_EMISSIONS off, no speech", async () => {
-  const dbRows = [{ id: "from-the-file" }];
-  const fakeDb = { prepare: () => ({ all: () => dbRows.map((r) => ({ ...r, props: "{}" })) }) };
+test("THE SOURCE IS THE SAY ACTS OR NOTHING: flipped, the acts; unflipped, a refusal by name; WORLD_EMISSIONS off, no speech", async () => {
   const acts = VOICES.slice(0, 1).map((v, i) => actOf(v, i));
-  const opts = { fromIso: new Date(T0).toISOString(), toIso: new Date(T0 + 3_600_000).toISOString(), cls: CLS, centres: async () => centreOf, readActs: async () => acts };
-  assert.deepEqual((await emissionsForSave(fakeDb, { ...opts, onActs: false })).map((r) => r.id), ["from-the-file"]);
-  assert.deepEqual(await emissionsForSave(fakeDb, { ...opts, onActs: true, enabled: false }), []);
-  assert.deepEqual((await emissionsForSave(fakeDb, { ...opts, onActs: true, enabled: true })).map((r) => r.id), [`sound:${T0 + 1000}:neth`]);
+  const opts = { fromIso: new Date(T0).toISOString(), toIso: new Date(T0 + 3_600_000).toISOString(), cls: CLS, centres: async () => centreOf, readActs: async () => acts, fixture: null };
+  await assert.rejects(emissionsForSave({ ...opts, onActs: false, enabled: true }),
+    (e) => e instanceof RecordPreconditionError && /the say lane must be flipped/.test(e.message) && /dynamic\.db, which used to stand in, is retired/.test(e.message));
+  assert.deepEqual(await emissionsForSave({ ...opts, onActs: false, enabled: false }), [], "no speech in the record is not a refusal");
+  assert.deepEqual((await emissionsForSave({ ...opts, onActs: true, enabled: true })).map((r) => r.id), [`sound:${T0 + 1000}:neth`]);
 });
 
-test("WHERE THE SAY LANE IS THE RECORD, dynamic.db takes no second copy of the voice (and flag-on elsewhere it still does)", async () => {
-  const { emissionFromVoice } = await import("../src/dynamic-emissions.mjs");
-  const { existsSync } = await import("node:fs");
-  const dir = mkdtempSync(join(tmpdir(), "save-emissions-dual-"));
-  const saved = { db: process.env.WORLD_DYNAMIC_DB, em: process.env.WORLD_EMISSIONS };
-  process.env.WORLD_DYNAMIC_DB = join(dir, "dynamic.db");
-  process.env.WORLD_EMISSIONS = "1";
-  try {
-    const voice = { handle: "neth", text: "hello", at: T0, x: 1329, y: 2083, place: null, aboard: false };
-    assert.equal(emissionFromVoice(voice, { sayOnActs: true }), null);
-    assert.equal(existsSync(process.env.WORLD_DYNAMIC_DB), false, "the store is not even created");
-    const row = emissionFromVoice(voice, { sayOnActs: false });
-    assert.equal(row?.id, `sound:${T0}:neth`, "off the flipped lane the dual-write is exactly what it was");
-  } finally {
-    for (const [k, v] of [["WORLD_DYNAMIC_DB", saved.db], ["WORLD_EMISSIONS", saved.em]]) if (v === undefined) delete process.env[k]; else process.env[k] = v;
-    rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
-  }
+test("THE SAY DOOR WRITES NO SECOND COPY: the dual-write is gone from the say path and from the emissions module", async () => {
+  const { readFileSync } = await import("node:fs");
+  const mod = await import("../src/dynamic-emissions.mjs");
+  assert.equal(mod.emissionFromVoice, undefined);
+  const world = readFileSync(new URL("../src/world.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(world, /emissionFromVoice\(/, "the say's onSpoke hook no longer reaches for dynamic.db");
 });
