@@ -181,8 +181,7 @@ async function checkAgainstReceipts(client, repo, sha, marks) {
 
 /**
  * The write, shared by this tool's --apply and settlements-backfill's tick.
- * Derives for the published marks with no row (all of them, or `only` if given),
- * INSERTs the `new` ones, checks every inserted row against 1.0's receipt, and
+ * Derives for the published marks with no row, INSERTs the `new` ones, checks every inserted row against 1.0's receipt, and
  * commits only if all agree. Returns a receipt object; never throws on a
  * disagreement (it is a verdict), throws only when it cannot run.
  */
@@ -227,15 +226,22 @@ export async function recordCarried(client, repo, { apply = false, cap = Infinit
   return { ...receipt, wrote: fresh.length, by_settlement: Object.fromEntries([...bySettlement].sort((a, b) => a[0] - b[0])) };
 }
 
-/** Every row the table holds, re-derived by 1.0 and re-checked against its receipt. */
+/**
+ * Every row whose mark the newest blessing still publishes, re-derived by 1.0
+ * and re-checked against its receipt. A row for a mark no longer published (let
+ * go, retired) is KEPT and counted, not compared: the fact that a settlement
+ * once carried it does not end, and 1.0 has no receipt for it to compare with.
+ */
 export async function verifyCarried(client, repo) {
-  const { sha, n } = publishedMarks(repo);
-  const { rows: existing } = await client.query("SELECT mark, settlement FROM mark_carried ORDER BY mark");
+  const { sha, n, ids } = publishedMarks(repo);
+  const published = new Set(ids);
+  const { rows: all } = await client.query("SELECT mark, settlement FROM mark_carried ORDER BY mark");
+  const existing = all.filter((r) => published.has(r.mark));
   const { rows: srows } = await client.query("SELECT number FROM settlements");
   const plan = planCarried(deriveCarried(repo, existing.map((r) => r.mark), sha), existing, srows.map((r) => r.number));
   const drift = plan.filter((p) => p.state !== "present").map((p) => ({ mark: p.mark, why: [`${p.state}: row S${p.have ?? "?"}, 1.0 ${p.settlement != null ? `S${p.settlement}` : "no answer"}`] }));
   const bad = await checkAgainstReceipts(client, repo, sha, plan.filter((p) => p.state === "present").map((p) => p.mark));
-  return { at: `S${n}`, rows: existing.length, compared: plan.length, verdict: drift.length || bad.length ? "DRIFT" : "ok", disagree: [...drift, ...bad] };
+  return { at: `S${n}`, rows: all.length, kept: all.length - existing.length, compared: plan.length, verdict: drift.length || bad.length ? "DRIFT" : "ok", disagree: [...drift, ...bad] };
 }
 
 /** The one line a tick journals. */
@@ -288,7 +294,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
     if (verify) {
       out = await verifyCarried(client, repo);
       if (!json) {
-        if (out.verdict === "ok") console.log(`EQUAL: ${out.rows} row(s) at ${out.at}, every one 1.0's answer and its receipt's S-number, sha and date (compared ${out.compared})`);
+        if (out.verdict === "ok") console.log(`EQUAL: ${out.compared} row(s) for marks published at ${out.at}, every one 1.0's answer and its receipt's S-number, sha and date; ${out.kept} kept for marks no longer published (the table holds ${out.rows})`);
         else console.error(`DRIFT: ${out.disagree.length} row(s) — ${out.disagree.slice(0, 20).map((d) => `${d.mark} (${d.why.join("; ")})`).join(", ")}`);
       }
       code = out.verdict === "ok" ? 0 : 1;

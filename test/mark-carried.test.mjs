@@ -49,7 +49,8 @@ const markPath = (id) => `WORLD/marks/${id}/mark.md`;
 const body = (id, note) => `---\nby: ${id.split("/")[0]}\n---\n${id}: ${note}\n`
   + [...id].map((ch, i) => `${i} ${ch.charCodeAt(0) * (i + 7)} ${id.split("").reverse().join("")}`).join("\n") + "\n";
 const ids = new Set();
-function settle(n, { add = [], amend = [], listOnly = [] } = {}) {
+function settle(n, { add = [], amend = [], listOnly = [], letGo = [] } = {}) {
+  for (const id of letGo) { rmSync(join(world, markPath(id))); ids.delete(id); }
   for (const id of add) { put(markPath(id), body(id, "declared")); ids.add(id); }
   for (const id of amend) put(markPath(id), body(id, `amended at S${n}`));
   for (const id of listOnly) ids.add(id);
@@ -190,4 +191,16 @@ test("the twin equals 1.0 on a published mark: crossing, settlement_sha and says
     assert.match(none.says, /not recorded in the store/);
     assert.ok(Object.keys(receiptTreeOnly(none)).includes("receipt.crossing · receipt.settlement_sha · receipt.says"));
   } finally { await p.end(); }
+});
+
+test("a mark let go keeps its row: the verify counts it kept and compares only what is still published", { skip }, async () => {
+  settle(5, { letGo: ["wright/the-gate"] });
+  await owner((c) => settleRows(c));
+  const r = await asApi((c) => recordCarried(c, world, { apply: true, cap: TICK_CAP }));
+  assert.equal(r.wrote, 0);
+  assert.ok((await carriedRows()).includes("wright/the-gate@S2"), "the fact that S2 carried it does not end");
+  const v = await asApi((c) => verifyCarried(c, world));
+  assert.equal(v.verdict, "ok", JSON.stringify(v.disagree));
+  assert.equal(v.kept, 1);
+  assert.equal(v.compared, 3);
 });
