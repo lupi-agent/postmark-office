@@ -64,10 +64,17 @@ function recordStandIn() {
   return { acts, pen, restore };
 }
 
+// THE CROSSING IS BORROWED, NOT THE SUBJECT: nothing here asserts what
+// happened at a named window, so the acts are stamped with the window open
+// when this file runs, through the guard's own currentCrossing (the #302
+// lesson: a pinned crossing decays the moment the town crosses past it).
+const { currentCrossing } = await import("../src/crossings.mjs");
+const OPEN = currentCrossing();
+
 const deps = (pen) => ({
   witnessStamp: async () => ({ at: { anchor: "the-town/the-quay", dx: 0, dy: 0 }, witnesses: null }),
   resolvedWorldHousehold: () => null,
-  currentCrossing: () => 221,
+  currentCrossing: () => OPEN,
   appendActFlipped: pen,
 });
 
@@ -165,7 +172,7 @@ test("ONE THREAD, THE SECOND WALL: a hold that reaches a read worker refuses bef
       await declareHoldingFlipped({ db: null, thing: "maker/stool", actor: "alpha", deps: {
         onActs: true, appendActFlipped: async () => { pens++; return { actId: 1 }; },
         witnessStamp: async () => ({ at: null, witnesses: null }), resolvedWorldHousehold: () => null,
-        currentCrossing: () => 1 } });
+        currentCrossing: () => ${OPEN} } });
       parentPort.postMessage({ refused: false, pens });
     } catch (e) { parentPort.postMessage({ refused: true, message: String(e?.message ?? e), pens }); }
   `);

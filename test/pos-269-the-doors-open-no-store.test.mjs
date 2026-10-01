@@ -39,6 +39,12 @@ after(() => {
 });
 
 const { penVoiceAct } = await import("../src/world.mjs");
+// THE CROSSING IS BORROWED, NOT THE SUBJECT: nothing here asserts what
+// happened at a named window, so the acts are stamped with the window open
+// when this file runs, through the guard's own currentCrossing (the #302
+// lesson: a pinned crossing decays the moment the town crosses past it).
+const { currentCrossing } = await import("../src/crossings.mjs");
+const OPEN = currentCrossing();
 
 const voice = { handle: "wright", text: "evening", x: 10, y: 20, at: Date.parse("2026-09-27T01:00:00Z"), place: "the snug" };
 const stamp = async () => ({ at: { anchor: "the-town/the-snug", dx: 0, dy: 0 }, witnesses: { source: "presence", list: [] } });
@@ -47,7 +53,7 @@ test("THE SAY TAKES NO STORE — the pen is handed no handle and dynamic.db is n
   const handed = [];
   const out = await penVoiceAct(voice, null, {
     witnessStampAt: stamp,
-    currentCrossing: () => 200,
+    currentCrossing: () => OPEN,
     appendActFlipped: async (db, entry) => { handed.push(db); return { seq: null, actId: 4242, record: "acts", ...entry }; },
   });
   assert.deepEqual(out, { ok: true, seq: null, actId: 4242 });
@@ -59,7 +65,7 @@ test("THE REFUSAL IS UNCHANGED — an unreachable record is the ruled bounce, an
   const err = Object.assign(new Error("the office's record cannot be reached — nothing was written, and nothing was lost."), { name: "PenUnreachableError" });
   const out = await penVoiceAct(voice, null, {
     witnessStampAt: stamp,
-    currentCrossing: () => 200,
+    currentCrossing: () => OPEN,
     appendActFlipped: async () => { throw err; },
   });
   assert.equal(out.error, "bounce");

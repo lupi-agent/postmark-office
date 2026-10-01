@@ -46,12 +46,19 @@ const { openDynamic } = await import("../src/dynamic-store.mjs");
 const { declareHoldingFlipped, declareHolding, holdingEntry } = await import("../src/world-hold.mjs");
 const { createVoices } = await import("../src/voices.mjs");
 
+// THE CROSSING IS BORROWED, NOT THE SUBJECT: nothing here asserts what
+// happened at a named window, so the acts are stamped with the window open
+// when this file runs, through the guard's own currentCrossing (the #302
+// lesson: a pinned crossing decays the moment the town crosses past it).
+const { currentCrossing } = await import("../src/crossings.mjs");
+const OPEN = currentCrossing();
+
 // The door's real dependencies reach into the world store; these stand in for
 // them so the ordering is on trial and nothing else is.
 const stubDeps = (over = {}) => ({
   witnessStamp: async () => ({ at: { anchor: "the-town/the-quay", dx: 0, dy: 0 }, witnesses: null }),
   resolvedWorldHousehold: () => null,
-  currentCrossing: () => 168,
+  currentCrossing: () => OPEN,
   ...over,
 });
 const count = (db, table) => Number(db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n);
@@ -104,7 +111,7 @@ test("HOLD, FLIPPED, PEN COMMITS: the act is the record, in the one row shape, a
     assert.equal(did.log, "acts", "a flipped lane's answer says which store is the record");
     assert.equal(did.seq, 4242, "and names the act by its id");
     assert.equal(seen.length, 1, "one act handed to the pen");
-    const shape = holdingEntry(did, { crossing: 168, at: seen[0].at, witnesses: null, cls: "holding", household: null });
+    const shape = holdingEntry(did, { crossing: OPEN, at: seen[0].at, witnesses: null, cls: "holding", household: null });
     assert.deepEqual(seen[0].payload, shape.payload);
     assert.equal(seen[0].action, shape.action);
     assert.equal(seen[0].writtenAt, shape.writtenAt);
