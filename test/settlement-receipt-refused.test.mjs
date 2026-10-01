@@ -161,8 +161,12 @@ test("THE BRIEF'S CONTROL: a clean report leaves the receipt exactly as it was",
   // `state_log` joined it on 2026-09-22 (POS-155), and this guard is what made
   // that a decision rather than a side effect — it went red on the commit that
   // added the channel, which is the whole reason it is a list.
+  //
+  // `dry` and `withheld` joined it on 2026-10-01 (POS-242, the dry leg), red
+  // here first and then decided: a mode field is on every receipt, `false` and
+  // `[]` included, by `source`'s and `by_hand`'s own rule in the composer.
   assert.deepEqual(Object.keys(r), [
-    "at", "status", "town_sha", "world_from", "world_to", "source", "by_hand",
+    "at", "status", "town_sha", "world_from", "world_to", "source", "by_hand", "dry", "withheld",
     "sketchbook_ghosts", "sketchbook_kept_undelivered", "sketchbook_resets",
     "as_of", "drain", "store", "state_log", "registry", "surveyed", "surveyed_reading",
     "retired", "channels", "quarantined", "isolated", "harm", "suite",
