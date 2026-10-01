@@ -577,9 +577,12 @@ export function nodesWhere(graph, pred) {
   return rows;
 }
 
-if (process.argv[1]?.endsWith("world-store.mjs")) {
+if (process.argv[1]?.endsWith("world-store.mjs")) (async () => {
   // The store's snapshot, or --rows (POS-270): world.db is retired, so this
   // summary reads what the office reads, and says so when there is none.
+  // NOT a top-level await: world-graph-snapshot imports this module, and
+  // awaiting it while this module is still evaluating is an import cycle that
+  // never settles (node exits 13). The IIFE lets this module finish first.
   const { worldGraphForTool } = await import("./world-graph-snapshot.mjs");
   const argOf = (n) => { const i = process.argv.indexOf(n); return i !== -1 ? process.argv[i + 1] : null; };
   const w = await worldGraphForTool({ rows: argOf("--rows") });
@@ -589,4 +592,4 @@ if (process.argv[1]?.endsWith("world-store.mjs")) {
   console.log(`  as_of world ${(meta.as_of_world ?? "?").slice(0, 12)} · office ${(meta.as_of_office ?? "?").slice(0, 12)} · hydrated ${meta.hydrated_at}`);
   console.log(`  ${JSON.stringify(counts.nodes_by_kind)}`);
   console.log(`  ${JSON.stringify(counts.edges_by_type)}`);
-}
+})().catch((e) => { console.error(`no world graph: ${String(e?.message ?? e)}`); process.exit(1); });
