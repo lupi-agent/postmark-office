@@ -35,7 +35,7 @@
 //                       deleted arm, which `claims` cannot answer at all.
 //   G5 THE HOLDER FOLD  1.0's `attachmentsFromState` → `declareAttachment` →
 //                       `readAttachments` → `liveHolder`/`holdingsOf` — the
-//                       recovery chain `dynamic-rebuild.mjs` runs — against
+//                       recovery chain `dynamic-rebuild.mjs` ran — against
 //                       `pgAttachmentsFor` → `pgHolderOf`/`pgHoldingsOf` over
 //                       `acts`. The 1.0 store on this box is EMPTY (see the
 //                       module's § COVERAGE), so the oracle is rebuilt from the
@@ -73,7 +73,7 @@
 // memory, and requires every break to turn this red.
 
 import { resolve, join } from "node:path";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import pg from "pg";
@@ -107,13 +107,12 @@ process.env.WORLD2_PG = "1";
 process.env.WORLD2_CANDLE = "1";
 process.env.WORLD_SINGLE_LOG = "1";
 
-let journalMod, holdMod, entitiesMod, storeMod, rebuildMod, claimsMod;
+let journalMod, holdMod, entitiesMod, storeMod, claimsMod;
 try {
   journalMod = await import("../../src/world-journal.mjs");
   holdMod = await import("../../src/world-hold.mjs");
   entitiesMod = await import("../../src/dynamic-entities.mjs");
   storeMod = await import("../../src/dynamic-store.mjs");
-  rebuildMod = await import("../../tools/dynamic-rebuild.mjs");
   claimsMod = await import("../../src/world2-claims.mjs");
 } catch (e) { die(`this office's own modules cannot be imported: ${e.message}`); }
 
@@ -121,7 +120,6 @@ const { appendJournal, normalizeRow, liveMarks, liveChildrenOf, readJournal, rep
 const { liveHolder, holdingsOf } = holdMod;
 const { readAttachments, declareAttachment } = entitiesMod;
 const { openDynamic } = storeMod;
-const { attachmentsFromState } = rebuildMod;
 const { withHousehold, docketSettled } = claimsMod;
 for (const [n, f] of Object.entries({ appendJournal, normalizeRow, liveMarks, liveChildrenOf, replayDrafts, liveHolder, readAttachments, declareAttachment, attachmentsFromState, withHousehold }))
   if (typeof f !== "function") die(`this office exports no ${n} — the oracle this falsifier judges against is missing`);
@@ -570,6 +568,45 @@ export function g4Overlay(oneMarks, twoMarks) {
 // preferred: both the lab office's and the dev office's tables hold ZERO rows
 // (2026-08-28), so an equality against them would compare 43 rows to nothing and
 // call the port wrong — or, worse, compare nothing to nothing and call it green.
+
+// THE RECOVERY COVENANT, CARRIED HERE (POS-269). `attachmentsFromState` was
+// `tools/dynamic-rebuild.mjs`'s, and that tool went with dynamic.db's entities
+// table. It is the oracle's first link and nothing else calls it, so it lives
+// with the oracle now — moved verbatim, blob a446df47 (VENDOR.rebuild in
+// guard-reads.mjs pins where it came from). The chain G5 runs is unchanged:
+// this, then 1.0's `declareAttachment` and `readAttachments`.
+export function attachmentsFromState(stateDir) {
+  const snapRoot = join(stateDir, "snapshot");
+  if (!existsSync(snapRoot)) return { crossing: null, attachments: [], reason: `no ${snapRoot} — no crossing-save has ever run` };
+  const crossings = readdirSync(snapRoot).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!crossings.length) return { crossing: null, attachments: [], reason: "the snapshot directory holds no crossings" };
+  const newest = crossings.at(-1);
+
+  const out = new Map();
+  const key = (a) => `${a.entity} ${a.target} ${a.born_at}`;
+  try {
+    const snap = JSON.parse(readFileSync(join(snapRoot, String(newest), "entities.json"), "utf8"));
+    for (const a of snap.attachments ?? []) out.set(key(a), a);
+  } catch (e) {
+    return { crossing: newest, attachments: [], reason: `snapshot ${newest} unreadable (${String(e?.message ?? e).slice(0, 120)})` };
+  }
+  // Every log at or after the snapshot's own crossing: the snapshot holds the
+  // boundary, the logs hold what was declared after it.
+  const logDir = join(stateDir, "log");
+  if (existsSync(logDir)) {
+    for (const f of readdirSync(logDir).filter((n) => /^\d+\.jsonl$/.test(n))) {
+      if (Number(f.split(".")[0]) < newest) continue;
+      for (const line of readFileSync(join(logDir, f), "utf8").split("\n")) {
+        if (!line.trim()) continue;
+        let ev; try { ev = JSON.parse(line); } catch { continue; }
+        if (ev.type !== "attachment") continue;
+        const a = { entity: ev.actor, target: ev.payload.target, policy: ev.payload.policy, declared_by: ev.payload.declared_by, born_at: ev.at };
+        out.set(key(a), a);
+      }
+    }
+  }
+  return { crossing: newest, attachments: [...out.values()], reason: null };
+}
 
 export function buildOracleAttachments(stateDir, dbPath) {
   const found = attachmentsFromState(stateDir);

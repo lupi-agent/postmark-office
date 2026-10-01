@@ -22,8 +22,8 @@
 //   EVERY ROW IS RE-DERIVABLE OR CROSSING-SAVE-RECOVERABLE. Entities re-derive
 //   from the walk ledger (via world.db's events). Attachments recover from the
 //   last STATE save plus the logs after it. Emissions do neither by design:
-//   presence is allowed to be lost, and `tools/dynamic-rebuild.mjs` says so
-//   rather than pretending to restore it.
+//   presence is allowed to be lost. (Retired on the record's flags, POS-269:
+//   the file is the git-road drain's alone, and no door, save or panel opens it.)
 //
 // One consequence that shapes the code below: an emission row is NOT deleted
 // when its TTL expires. Presence is a QUERY (`presentEmissions`), never a

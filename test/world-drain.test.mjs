@@ -839,7 +839,26 @@ test("NO GAP ACROSS THE DRAIN — the author's overlay shows the same marks befo
   // the handover dropped anything the resident would watch their own work
   // blink out of the world at the settlement — the exact failure the union in
   // slice 1 was built to prevent, seen from the other end.
-  const { draftsForKey } = await import("../src/world-journal.mjs");
+  //
+  // THE UNION IS COMPOSED HERE (POS-269). It was `draftsForKey`, the sqlite
+  // overlay no door called, and it went with dynamic.db. The drain is the one
+  // legacy reader of the journal, so the union it hands over is rebuilt from
+  // the same parts — the sketchbook's git delta and the journal's replay,
+  // journal winning a shared id — read through the drain's own named handle.
+  const { readJournal, replayDrafts, journalHead, CLASS_MARK } = await import("../src/world-journal.mjs");
+  const { draftDeltaForKey, resolvedWorldHousehold } = await import("../src/world-branches.mjs");
+  const { openDynamic } = await import("../src/dynamic-store.mjs");
+  const draftsForKey = (repo, key) => {
+    const git = draftDeltaForKey(repo, key);
+    const db = openDynamic(w.dbPath, { readOnly: true, legacy: "the git-road drain" });
+    try {
+      const replayed = replayDrafts(readJournal(db, { household: resolvedWorldHousehold(key), cls: CLASS_MARK }));
+      const byId = new Map();
+      for (const m of git.marks ?? []) if (m.id) byId.set(m.id, m);
+      for (const m of replayed.marks) if (m.id) byId.set(m.id, m);
+      return { marks: [...byId.values()], log: { head: journalHead(db) } };
+    } finally { db.close(); }
+  };
   const w = makeWorld("no-gap");
   seedJournal(w.dbPath);
   process.env.WORLD_DYNAMIC_DB = w.dbPath;

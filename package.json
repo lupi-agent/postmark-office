@@ -12,13 +12,11 @@
     "world:shadow": "node tools/world-shadow.mjs",
     "world:store": "node src/world-serve.mjs",
     "world:gexf": "node tools/world-gexf.mjs",
-    "dynamic:rebuild": "node tools/dynamic-rebuild.mjs",
     "dynamic:store": "node src/dynamic-store.mjs",
     "crossing:save": "node tools/crossing-save.mjs",
     "world:drain": "node src/world-drain.mjs",
     "town:drain": "node tools/town-drain-run.mjs",
     "crossing:replay-check": "node tools/crossing-replay-check.mjs",
-    "threads:parity": "node tools/thread-parity.mjs",
     "serve": "node src/server.mjs",
     "smoke": "node src/smoke.mjs"
   },

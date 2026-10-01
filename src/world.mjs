@@ -26,7 +26,7 @@ import { isPrincipal } from "./ops.mjs";
 import { nextSettlementAttemptAt } from "./settlements.mjs";
 import { execUnderTownLock, lockTimedOut, LOCK_BUSY } from "./town-lock.mjs";
 import {
-  // draftDeltaForKey is reached through world-journal's draftsForKey, which unions it with the live log (POS-5 slice 1)
+  // draftDeltaForKey is reached through world2-guards' guardedDraftsForKey, which unions it with the record (POS-5 slice 1; the sqlite draftsForKey went with dynamic.db, POS-269)
   blessedRef,
   draftBranch,
   draftRefForKey,
@@ -4732,8 +4732,9 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
     //     REVERSE-MIRROR copy G1 removes. Nothing reads it live any more:
     //     `storedDepartures` moved to `acts` in POS-154, `refreshEntities` and
     //     `crossing-save`'s `<N>.jsonl` half in POS-156 part 0. The table keeps
-    //     its frozen history and its historical readers (`tools/ledger-freeze`,
-    //     `tools/state-to-r2`); nothing adds to it.
+    //     its frozen history and its one historical reader (`tools/ledger-freeze`;
+    //     `tools/state-to-r2`'s live pass went with dynamic.db, POS-269);
+    //     nothing adds to it.
     //   · the FIRE-AND-FORGET mirror on the unflipped arm — `mirrorLaneAct` in
     //     a `void (async () => …)()`, which answered the resident before the act
     //     had reached anywhere durable. That was defensible while `movements`

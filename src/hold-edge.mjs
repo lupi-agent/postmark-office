@@ -6,7 +6,8 @@
 // the door writes nothing to dynamic.db's `attachments`
 // (world-hold.mjs § declareHoldingFlipped), and crossing-save reads holdings
 // from the record (tools/crossing-save.mjs § attachmentsForSave). Elsewhere
-// sqlite is still that office's record, and both read it as before.
+// there is no record of holdings at all — dynamic.db's edge is retired — and
+// the door and the save refuse by name.
 //
 // This file held an in-memory snapshot of the record's attachment rows for the
 // arena's fold and the apex's portal block, the two synchronous readers. The
@@ -17,9 +18,9 @@ import { laneFlipped } from "./world2-pen.mjs";
 import { guardsFlipped } from "./world2-guards.mjs";
 
 /**
- * Is the holding edge `acts` and only `acts` at this office? Two flags, both
+ * Is there a holding edge at this office — the hold acts? Two flags, both
  * prod's, because it takes both: the pen must write the act, and the door's
- * holder check must read it (`guardedAttachments` reads sqlite while W2_GUARDS
- * is off, and that office still needs its sqlite edge written).
+ * holder check must read it through the guards. With either off the door and
+ * the save refuse by name (POS-269).
  */
 export const holdEdgeOnActs = (env = process.env) => laneFlipped("hold", env) && guardsFlipped(env);

@@ -379,11 +379,9 @@ export async function guardedDraftsForKey(repo, key) {
  * refusal text says a skipped holding act "would answer with the WRONG RESIDENT
  * holding a thing, which is the one answer this door exists to get right."
  */
-export async function guardedAttachments(db, { until = null } = {}) {
-  if (!guardsFlipped()) {
-    const { readAttachments } = await import("./dynamic-entities.mjs");
-    return readAttachments(db, { until });
-  }
+export async function guardedAttachments({ until = null } = {}) {
+  // No sqlite arm (POS-269): the hold door refuses off the hold lane before it
+  // asks, and dynamic.db's attachments table is retired with the file.
   return refusing("holder", async () =>
     reading(async (client) => {
       const { rows } = await port.pgAttachmentsFor(client, { until });

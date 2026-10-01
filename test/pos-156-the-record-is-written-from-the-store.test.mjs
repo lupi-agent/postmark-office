@@ -12,23 +12,18 @@
 //
 //   the writer moved        the two write paths that rendered the live era from
 //                           `dynamic.db/movements` — `crossing-save`'s
-//                           `<N>.jsonl` half and `refreshEntities`' entities
+//                           `<N>.jsonl` half and `refreshEntities`' entities (the latter
+//                           retired with the entities table, POS-269)
 //                           derivation — call `storedDepartureEvents` and no
 //                           longer call `readMovements`. Source pins, because
 //                           the alternative is a behavioural test that passes
 //                           against either pen (both render the same shape;
 //                           that was the whole design of the renderer).
-//   the refusal is not an   an office pointed AT a register that cannot be read
-//   outage                  refuses by name and leaves the entities table
-//                           exactly where it was. Before the swap this read
-//                           `[]` and derived the frozen era over a good table,
-//                           which is the two-day-stale-fossil failure wearing a
-//                           success code.
-//   no register is not an   an office pointed at NO register reads `[]` and the
-//   empty record            frozen derivation runs, exactly as
-//                           `movementV2Enabled()` false meant before. This is
-//                           the control that keeps the refusal above from being
-//                           a refusal of everything.
+//   the refusal is not an   (RETIRED with the entities table, POS-269, along
+//   outage, and its         with its control. They held that `refreshEntities`
+//   control                 refused an unreadable register by name and left the
+//                           table where it was; the save's own refusal is the
+//                           `stored.absent` pin in § 1.)
 //
 // The byte-equality half of part 0 is not re-asserted here — it is POS-198's
 // "POST-CHANGE EQUALITY: acts built by the LIVE writers read byte-equal on all
@@ -39,7 +34,7 @@
 
 import test, { after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -53,46 +48,21 @@ after(() => { sweep(scratch); sweep(repo); });
 
 const SHA = mainShaOf(repo);
 const worldDbPath = join(scratch, "world.db");
-const dynPath = join(scratch, "dynamic.db");
 
 process.env.WORLD_CLONE = repo;
 process.env.WORLD_STORE_DB = worldDbPath;
-process.env.WORLD_DYNAMIC_DB = dynPath;
 
 const T0 = crossingStart(100);
-const NOW = T0 + 6 * 3600 * 1000;
 const DEPARTURES = [
   { at: new Date(T0).toISOString(), actor: "wright", from: { x: 0, y: 0 }, toward: { x: 0, y: 0 }, crossing: 100, line_no: 1 },
   { at: new Date(T0).toISOString(), actor: "iris", from: { x: 0, y: 0 }, toward: { x: 100, y: 0 }, crossing: 100, to: "the-town/quay", line_no: 2 },
 ];
-
-const fresh = async () => {
-  if (existsSync(dynPath)) rmSync(dynPath, { force: true });
-  for (const s of ["-wal", "-shm"]) if (existsSync(dynPath + s)) rmSync(dynPath + s, { force: true });
-  const m = await import("../src/dynamic-store.mjs");
-  m.resetClassCache();
-  return m;
-};
 
 beforeEach(async () => {
   fixtureWorldDb(worldDbPath, { sha: SHA, departures: DEPARTURES });
   const { resetClassCache } = await import("../src/dynamic-store.mjs");
   resetClassCache();
 });
-
-// The register env is set PER TEST and restored, because two of these tests are
-// each other's control and a leaked variable would make the pair agree by
-// accident rather than by mechanism.
-const withRegister = async (url, fn) => {
-  const was = { pg: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL };
-  if (url == null) { delete process.env.WORLD2_PG; delete process.env.WORLD2_PG_URL; }
-  else { process.env.WORLD2_PG = "1"; process.env.WORLD2_PG_URL = url; }
-  try { return await fn(); }
-  finally {
-    if (was.pg == null) delete process.env.WORLD2_PG; else process.env.WORLD2_PG = was.pg;
-    if (was.url == null) delete process.env.WORLD2_PG_URL; else process.env.WORLD2_PG_URL = was.url;
-  }
-};
 
 // ── 1. THE WRITER MOVED ──────────────────────────────────────────────────────
 //
@@ -128,20 +98,8 @@ test("`crossing-save`'s write path renders the live era from the REGISTER, not f
     "an unreachable register must be a refusal here — the thing this tool commits is a public file");
 });
 
-test("`refreshEntities` derives the live era from the REGISTER, not from `movements`", () => {
-  const text = readFileSync(new URL("../src/dynamic-entities.mjs", import.meta.url), "utf8");
-  const code = codeOnly(text);
-  const fn = code.slice(code.indexOf("export async function refreshEntities"),
-    code.indexOf("export function readEntities"));
-  assert.ok(fn.length > 200, "refreshEntities was not found — this pin is reading the wrong region");
-
-  assert.match(fn, /storedDepartureEvents/,
-    "`refreshEntities` no longer reads the register for its live era");
-  assert.equal(/\breadMovements\(/.test(fn), false,
-    "`refreshEntities` still reads `dynamic.db/movements` — the copy G1 removes");
-  assert.equal(/\bmovementV2Enabled\(/.test(fn), false,
-    "the live era is gated on `world2Enabled()` now; `WORLD_MOVEMENT_V2` gated the pen that is going");
-});
+// (`refreshEntities` had the same pin here. It went with the entities table,
+// POS-269; the crossing-save pin above is the writer that remains.)
 
 test("the stamp on a rendered line is `acts`, and it is the one field the world does not read", async () => {
   const { DEPARTURE_GAPS, RECORD_READ_FIELDS, departureEventOf } = await import("../src/world-movement.mjs");
@@ -158,43 +116,8 @@ test("the stamp on a rendered line is `acts`, and it is the one field the world 
 
 // ── 2. THE REFUSAL IS NOT AN OUTAGE ──────────────────────────────────────────
 
-test("a register that cannot be read REFUSES by name and leaves the entities table where it was", async () => {
-  await fresh();
-  const { refreshEntities, readEntities } = await import("../src/dynamic-entities.mjs");
-  const { openDynamic } = await import("../src/dynamic-store.mjs");
+// (A register that cannot be read refused `refreshEntities` by name and left
+// the entities table where it was. The table is gone, POS-269; the save's own
+// refusal on an unreachable register is pinned above — `stored.absent`.)
 
-  // A good derivation first, so there is something to lose.
-  const good = await withRegister(null, () => refreshEntities({ dbPath: dynPath, repo, at: NOW }));
-  assert.equal(good.ok, true);
-  const before = (() => { const db = openDynamic(dynPath, { readOnly: true }); const r = readEntities(db); db.close(); return r; })();
-  assert.equal(before.length, 2, "the fixture's two walkers are derived");
-
-  // Now pointed AT a register, and it is not there. `world2-acts` builds a pool
-  // against this url and every query fails — which is exactly the condition
-  // this gate is for.
-  const bad = await withRegister("postgres://pos156-no-register/none",
-    () => refreshEntities({ dbPath: dynPath, repo, at: NOW }));
-
-  assert.equal(bad.ok, false, "an unreadable register derived a table and reported success");
-  assert.equal(bad.refused.gate, "register");
-  assert.ok(String(bad.refused.detail).length > 0, "a refusal must carry its cause, never just its name");
-
-  const after_ = (() => { const db = openDynamic(dynPath, { readOnly: true }); const r = readEntities(db); db.close(); return r; })();
-  assert.deepEqual(after_.map((e) => e.handle), before.map((e) => e.handle),
-    "the refusal emptied or re-derived the table — a hydrator that cannot refill must not empty");
-  assert.deepEqual(after_.map((e) => e.derived_at), before.map((e) => e.derived_at),
-    "the rows were re-derived from the frozen era alone, which is the failure this gate exists to refuse");
-});
-
-test("CONTROL: an office pointed at NO register derives the frozen era and reports success", async () => {
-  await fresh();
-  const { refreshEntities, readEntities } = await import("../src/dynamic-entities.mjs");
-  const { openDynamic } = await import("../src/dynamic-store.mjs");
-
-  const r = await withRegister(null, () => refreshEntities({ dbPath: dynPath, repo, at: NOW }));
-  assert.equal(r.ok, true,
-    "no register is this office having no live era at all — it is not a failure, and it is what `movementV2Enabled()` false meant");
-  const db = openDynamic(dynPath, { readOnly: true });
-  assert.deepEqual(readEntities(db).map((e) => e.handle), ["iris", "wright"]);
-  db.close();
-});
+// (Its control — no register derives the frozen era — went with it.)

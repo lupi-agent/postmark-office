@@ -105,10 +105,8 @@ test("THE CENSUS: every src module that can open the store names why it cannot o
   // Each entry is the reason the call is unreachable on the retired flags (or,
   // for the drain, why it is let through). A new caller reds this until it says.
   const WHY = {
-    "dynamic-entities.mjs": "refreshEntities, which only the flag-off dynamic-rebuild tool calls; the crossing-save no longer does",
     "dynamic-store.mjs": "the opener itself, and the panel, which returns before opening when retired",
     "world-drain.mjs": "the git-road drain, the one named legacy reader",
-    "world-journal.mjs": "draftsForKey, which no door calls (every door calls guardedDraftsForKey)",
   };
   assert.deepEqual(files, Object.keys(WHY).sort());
   assert.deepEqual(RETIRED_LEGACY_READERS, ["the git-road drain"]);
