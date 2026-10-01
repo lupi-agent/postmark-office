@@ -45,6 +45,11 @@ import { DatabaseSync } from "node:sqlite";
 
 import { civicQuarter, CIVIC_QUARTER, CIVIC_READING_LAW } from "../src/world-classes.mjs";
 import { TOWN_READS, TOWN_READABLE, townApex } from "../src/town-apex.mjs";
+import { NO_WORLD_DB, clearWorld, publishWorld } from "./helpers/world-rows.mjs";
+
+// The readers stand on the world graph snapshot (POS-270 lane W 3a): each store
+// built here is published as one, and world.db's path points nowhere.
+process.env.WORLD_STORE_DB = NO_WORLD_DB;
 
 // ── the record's own bytes ──────────────────────────────────────────────────
 // WORLD/marks/the-town/the-think-tank/mark.md @ world main 243cc57b
@@ -73,6 +78,7 @@ function storeWith(marks, predicates = []) {
     edge.run(p.parent, p.id);
   }
   db.close();
+  publishWorld(path);
   return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
@@ -83,7 +89,7 @@ const ALL_FIVE = CIVIC_QUARTER.map((l) => ({ id: l.place, body: `plaque for ${l.
 test("the answer wears the world's shape — read / of / five rows / reading_law", () => {
   const { path, cleanup } = storeWith(ALL_FIVE);
   try {
-    const a = civicQuarter({ worldDb: path });
+    const a = civicQuarter();
     assert.equal(a.read, "asks");
     assert.equal(a.of, "the-civic-quarter");
     assert.equal(a.quarter.length, 5, "five buildings, five rows — a caller who has to ask five times has to know five names");
@@ -114,7 +120,7 @@ test("the body is the record's bytes — byte for byte, and this door holds no c
     { id: "the-town/the-quest-guild", body: GUILD_BODY },
   ]);
   try {
-    const a = civicQuarter({ worldDb: path });
+    const a = civicQuarter();
     assert.equal(a.quarter.find((r) => r.lane === "ideas").body, TANK_BODY);
     assert.equal(a.quarter.find((r) => r.lane === "quests").body, GUILD_BODY);
   } finally { cleanup(); }
@@ -145,13 +151,13 @@ test("predicates fold off the describes edge, slot -> value, from the record", (
     { id: "the-town/tank-back", parent: "the-town/the-think-tank", slot: "back", value: 'town do:"stake"' },
   ]);
   try {
-    const tank = civicQuarter({ worldDb: path }).quarter.find((r) => r.lane === "ideas");
+    const tank = civicQuarter().quarter.find((r) => r.lane === "ideas");
     assert.deepEqual(tank.predicates, { back: 'town do:"stake"', post: TANK_POST_VALUE });
     // THE VERB THAT OPENS THE LANE, which is the whole point of the round:
     // residents will never do something they don't know they can do.
     assert.equal(tank.predicates.post, 'town do:"post" class:"idea"');
     // and a plaque with no predicated children is {}, never undefined
-    assert.deepEqual(civicQuarter({ worldDb: path }).quarter.find((r) => r.lane === "votes").predicates, {});
+    assert.deepEqual(civicQuarter().quarter.find((r) => r.lane === "votes").predicates, {});
   } finally { cleanup(); }
 });
 
@@ -166,7 +172,8 @@ test("a predicate is folded by SUBKIND — the store's key, not the file's front
       .run(JSON.stringify({ slot: "ghost", value: "should not be folded" }));
     db.prepare("INSERT INTO edges (src, dst, type) VALUES ('the-town/the-think-tank','the-town/not-a-predicate','describes')").run();
     db.close();
-    const tank = civicQuarter({ worldDb: path }).quarter.find((r) => r.lane === "ideas");
+    publishWorld(path);   // the edited rows, republished
+    const tank = civicQuarter().quarter.find((r) => r.lane === "ideas");
     assert.equal(tank.predicates.ghost, undefined,
       "a sited child on a describes edge is not a predicate — the fold reads subkind");
   } finally { cleanup(); }
@@ -183,7 +190,7 @@ test("EVERY predicate the record carries is folded — including the ballot hous
     { id: "the-town/the-tally", parent: "the-town/the-ballot-house", slot: "fn:tally", value: "tools/ballot.mjs::tally" },
   ]);
   try {
-    const ballot = civicQuarter({ worldDb: path }).quarter.find((r) => r.lane === "votes");
+    const ballot = civicQuarter().quarter.find((r) => r.lane === "votes");
     assert.deepEqual(Object.keys(ballot.predicates).sort(), ["fn:tally", "vote"]);
   } finally { cleanup(); }
 });
@@ -193,7 +200,7 @@ test("EVERY predicate the record carries is folded — including the ballot hous
 test("a plaque absent from the store reads standing: false with a NULL body — never an invented sentence", () => {
   const { path, cleanup } = storeWith(ALL_FIVE.filter((m) => m.id !== "the-town/the-marketplace"));
   try {
-    const a = civicQuarter({ worldDb: path });
+    const a = civicQuarter();
     const market = a.quarter.find((r) => r.lane === "listings");
     assert.equal(market.standing, false);
     assert.equal(market.body, null);
@@ -206,20 +213,22 @@ test("a plaque absent from the store reads standing: false with a NULL body — 
 });
 
 test("the store unreadable is DISCLOSED, and is not the same answer as an empty quarter", () => {
-  const a = civicQuarter({ worldDb: "Z:/nowhere/never-a-store.db" });
+  const a = (clearWorld(), civicQuarter());
   assert.equal(a.source, "floor");
   assert.match(a.disclosed, /no world store/);
   assert.equal(a.quarter.length, 5, "the five lanes are still named — the office knows the quarter exists");
   for (const r of a.quarter) { assert.equal(r.standing, false); assert.equal(r.body, null); }
   // "An answer given without its inputs must never wear the grammar of an
   // answer that had them" — the-town/the-disclosure, slot `disclosure`.
-  const good = civicQuarter({ worldDb: storeWithCleanup() });
+  storeWithCleanup();
+  const good = civicQuarter();
   assert.notEqual(a.source, good.source);
   assert.equal(good.disclosed, undefined, "a good read discloses nothing, and that is how the two are told apart");
 });
 let _tmpStore = null;
 function storeWithCleanup() {
   if (!_tmpStore) _tmpStore = storeWith(ALL_FIVE);
+  publishWorld(_tmpStore.path);
   return _tmpStore.path;
 }
 test.after(() => { _tmpStore?.cleanup(); });
@@ -350,9 +359,9 @@ test("the office settles first-idea from the TANK, per household — the mark, n
   const idea = (by, slug) => ({ id: `${by}/${slug}`, by, slug });
   const { path, cleanup } = tankWith([idea("wright", "a-newcomers-first-hour")]);
   try {
-    assert.deepEqual(injectedComplete("wright", { worldDb: path }), { "first-idea": true },
+    assert.deepEqual(injectedComplete("wright"), { "first-idea": true },
       "the household published an idea — that is the doing the row is about");
-    assert.deepEqual(injectedComplete("alden", { worldDb: path }), { "first-idea": false },
+    assert.deepEqual(injectedComplete("alden"), { "first-idea": false },
       "…and a household that has not is told so, which is what makes the true answer worth anything");
   } finally { cleanup(); }
 });
@@ -366,22 +375,22 @@ test("ONCE PER HOUSEHOLD: a HOUSEMATE's idea settles your row, and a stranger's 
   const { injectedComplete } = await import("../src/queries.mjs");
   const { path, cleanup } = tankWith([{ id: "rei/the-quay-at-dusk", by: "rei" }]);
   try {
-    assert.deepEqual(injectedComplete("wright", { worldDb: path, house: ["wright", "rei"] }),
+    assert.deepEqual(injectedComplete("wright", { house: ["wright", "rei"] }),
       { "first-idea": true }, "rei published; wright shares her roof, so the household's row is settled");
-    assert.deepEqual(injectedComplete("wright", { worldDb: path, house: ["wright"] }),
+    assert.deepEqual(injectedComplete("wright", { house: ["wright"] }),
       { "first-idea": false }, "…and alone under his own roof it is not — the two answers differ, which is the whole point");
   } finally { cleanup(); }
 });
 
 test("the store unreadable settles NOTHING — a hydration blip must not un-earn a paying row", async () => {
   const { injectedComplete } = await import("../src/queries.mjs");
-  assert.equal(injectedComplete("wright", { worldDb: "Z:/nowhere/never-a-store.db" }), null,
+  assert.equal((clearWorld(), injectedComplete("wright")), null,
     "not injected, so the row stays null: 'this surface did not look' is not 'you have not done it'");
   // The direction matters. A floor read that answered `false` would tell a
   // household that has published an idea to go publish one — and that row PAYS.
   const { path, cleanup } = tankWith([{ id: "wright/an-idea", by: "wright" }]);
   try {
-    assert.notEqual(injectedComplete("wright", { worldDb: path }), null,
+    assert.notEqual(injectedComplete("wright"), null,
       "…and a store that DOES answer settles it — otherwise this test could not tell the two apart");
   } finally { cleanup(); }
 });
@@ -435,5 +444,6 @@ function tankWith(ideas) {
     else if (i.standing_at !== null) place.run(i.ground ?? "the-town/the-think-tank", i.id, "contains");
   }
   db.close();
+  publishWorld(path);
   return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }

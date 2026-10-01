@@ -46,6 +46,11 @@ import { join } from "node:path";
 import { STAKE_LANES, ELSEWHERE, laneBounce, townStake, townUnstake, townStakeRead, TOWN_STAKE_TOOLS }
   from "../src/town-stake.mjs";
 import { markClass } from "../src/world-classes.mjs";
+import { NO_WORLD_DB, clearWorld, publishWorld } from "./helpers/world-rows.mjs";
+
+// The guard reads the world graph snapshot (POS-270 lane W 3a): storeWith()
+// publishes its rows as one, and world.db's path points nowhere.
+process.env.WORLD_STORE_DB = NO_WORLD_DB;
 import { WORLD_STAKE_TOOLS } from "../src/world-stake.mjs"; // POS-83: the one-owner check reads the world card rather than a typed copy of it
 
 // THE CLASS BLURBS, verbatim, read by the falsifiers below rather than
@@ -70,6 +75,7 @@ function storeWith(rows) {
   for (const r of rows) ins.run(r.id, r.kind ?? "mark", r.by ?? "wright", r.tier ?? "market",
     JSON.stringify({ ...(r.class === undefined ? {} : { class: r.class }), ...(r.props ?? {}) }));
   db.close();
+  publishWorld(path);
   return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
@@ -97,8 +103,8 @@ test("THE LANES ARE THE DOOR'S OWN TWO, and they grow by ruling", () => {
 test("A BOUNTY AND AN IDEA PASS THE GUARD — the two lanes, by class", () => {
   const { path, cleanup } = storeWith([{ id: IDEA, class: "idea" }, { id: BOUNTY, class: "bounty", by: "rei" }]);
   try {
-    assert.equal(laneBounce(IDEA, { worldDb: path }), null, "an idea in the tank is this door's own lane");
-    assert.equal(laneBounce(BOUNTY, { worldDb: path }), null, "…and so is a bounty on the board");
+    assert.equal(laneBounce(IDEA), null, "an idea in the tank is this door's own lane");
+    assert.equal(laneBounce(BOUNTY), null, "…and so is a bounty on the board");
   } finally { cleanup(); }
 });
 
@@ -113,7 +119,7 @@ test("CLASS, NOT GROUND: a bounty standing nowhere near the board still stakes h
   try {
     // The fixture holds no `contains` edge from the-town/the-bounty-board at
     // all — this mark is on no lane's ground — and the guard passes it anyway.
-    assert.equal(laneBounce(BOUNTY, { worldDb: path }), null,
+    assert.equal(laneBounce(BOUNTY), null,
       "a housekeeping move must not become a custody rule: its backers are still its backers");
   } finally { cleanup(); }
 });
@@ -122,7 +128,7 @@ test("CLASS, NOT GROUND: a bounty standing nowhere near the board still stakes h
 test("REFUSED BY NAME: another class is named, and the door that does stake it is named beside it", () => {
   const { path, cleanup } = storeWith([{ id: HOME, class: "home", by: "rei" }]);
   try {
-    const r = laneBounce(HOME, { worldDb: path });
+    const r = laneBounce(HOME);
     assert.equal(r.error, "bounce");
     assert.equal(r.code, 422);
     assert.match(r.defect, /is a home mark/, "the class is named BY NAME — not 'unsupported class'");
@@ -154,22 +160,22 @@ test("THE TYPE/INSTANCE SEAM: the class mark that defines a lane is not a mark s
   ]);
   try {
     for (const [id, klass, lane] of [["the-town/idea", "idea", "ideas"], ["the-town/bounty", "bounty", "bounties"]]) {
-      const r = laneBounce(id, { worldDb: path });
+      const r = laneBounce(id);
       assert.equal(r?.code, 422, `${id} carries class:${klass} and must STILL be refused — it is the law, not a notice`);
       assert.match(r.defect, /is the class mark that DEFINES/);
       assert.equal(r.defines_class, true);
       assert.match(r.hint, new RegExp(`town \\{ read: "${lane}" \\}`), "…and the refusal names the read that lists what this door DOES stake");
     }
     // and the instances beside them are untouched — the seam narrows nothing else
-    assert.equal(laneBounce(IDEA, { worldDb: path }), null);
-    assert.equal(laneBounce(BOUNTY, { worldDb: path }), null);
+    assert.equal(laneBounce(IDEA), null);
+    assert.equal(laneBounce(BOUNTY), null);
     // ORDER MATTERS, and this is the falsifier for it. `the-town/home` is a
     // class mark too. Asking "is this a class mark?" before "is this class one
     // of my lanes?" would answer a caller holding a HOME with a sentence about
     // the home *lane* — a lane this door does not have and must not appear to.
     // Not-my-lane is answered as not-my-lane; the seam only ever speaks about
     // the two classes it can be reached holding.
-    const home = laneBounce("the-town/home", { worldDb: path });
+    const home = laneBounce("the-town/home");
     assert.equal(home.code, 422);
     assert.match(home.defect, /is a home mark — the town door stakes its own lanes/,
       "a refusal that invents a lane to explain itself is worse than a blunt one");
@@ -177,15 +183,15 @@ test("THE TYPE/INSTANCE SEAM: the class mark that defines a lane is not a mark s
     assert.equal(home.defines_class, undefined);
     // markClass names the seam itself, from the roster gate rather than a
     // retyped tier check, so one definition moves both readers
-    assert.equal(markClass("the-town/idea", { worldDb: path }).defines_class, true);
-    assert.equal(markClass(IDEA, { worldDb: path }).defines_class, false);
+    assert.equal(markClass("the-town/idea").defines_class, true);
+    assert.equal(markClass(IDEA).defines_class, false);
   } finally { cleanup(); }
 });
 
 test("A CLASSLESS MARK is refused for what it is, not for what it isn't", () => {
   const { path, cleanup } = storeWith([{ id: PLAIN }]);
   try {
-    const r = laneBounce(PLAIN, { worldDb: path });
+    const r = laneBounce(PLAIN);
     assert.equal(r.code, 422);
     assert.match(r.defect, /carries no class/,
       "an ordinary sited mark has no class to name, so the refusal names the absence rather than inventing a class for it");
@@ -203,13 +209,13 @@ test("A CLASSLESS MARK is refused for what it is, not for what it isn't", () => 
 test("THE THREE RUNGS: absent mark is 404, unreadable store is 503, and they never wear each other's sentence", () => {
   const { path, cleanup } = storeWith([{ id: IDEA, class: "idea" }]);
   try {
-    const absent = laneBounce("nobody/never-was", { worldDb: path });
+    const absent = laneBounce("nobody/never-was");
     assert.equal(absent.code, 404);
     assert.match(absent.defect, /stands in the town's published record/);
     assert.match(absent.hint, /your own unpublished drafts are not in it yet/,
       "…and it says WHY a draft is missing, because backing your own draft is what publishes it and that happens at the world door");
 
-    const blind = laneBounce(IDEA, { worldDb: "Z:/nowhere/never-a-store.db" });
+    const blind = (clearWorld(), laneBounce(IDEA));
     assert.equal(blind.code, 503);
     assert.match(blind.defect, /could not read the record/);
     assert.match(blind.hint, /Nothing was staked/, "a caller must never be left guessing whether escrow moved");
@@ -221,13 +227,13 @@ test("markClass keeps the rungs apart at the source", () => {
   const { path, cleanup } = storeWith([{ id: IDEA, class: "idea" }, { id: PLAIN }]);
   try {
     assert.deepEqual({ known: true, found: true, class: "idea" },
-      { known: markClass(IDEA, { worldDb: path }).known, found: markClass(IDEA, { worldDb: path }).found, class: markClass(IDEA, { worldDb: path }).class });
-    const plain = markClass(PLAIN, { worldDb: path });
+      { known: markClass(IDEA).known, found: markClass(IDEA).found, class: markClass(IDEA).class });
+    const plain = markClass(PLAIN);
     assert.equal(plain.found, true, "the record ANSWERED — a mark with no class is found, not missing");
     assert.equal(plain.class, null);
-    const gone = markClass("nobody/never-was", { worldDb: path });
+    const gone = markClass("nobody/never-was");
     assert.equal(gone.known, true); assert.equal(gone.found, false);
-    const blind = markClass(IDEA, { worldDb: "Z:/nowhere/never-a-store.db" });
+    const blind = (clearWorld(), markClass(IDEA));
     assert.equal(blind.known, false, "…and an unreadable store knows nothing, rather than answering false");
     assert.match(blind.disclosed, /no world store/);
   } finally { cleanup(); }
@@ -244,22 +250,22 @@ test("markClass keeps the rungs apart at the source", () => {
 test("NOTHING REACHES THE LEDGER through a refused lane — the guard is first, not a filter after", async () => {
   const { path, cleanup } = storeWith([{ id: HOME, class: "home", by: "rei" }]);
   try {
-    const staked = await townStake({ mark: HOME, stamps: 2, handle: "wright" }, null, { worldDb: path });
+    const staked = await townStake({ mark: HOME, stamps: 2, handle: "wright" }, null);
     assert.equal(staked.code, 422);
     assert.match(staked.defect, /is a home mark/);
     assert.equal(staked.class, "home");
-    const back = await townUnstake({ mark: HOME, stamps: 2, handle: "wright" }, null, { worldDb: path });
+    const back = await townUnstake({ mark: HOME, stamps: 2, handle: "wright" }, null);
     assert.equal(back.code, 422, "unstake carries the SAME guard — a lane you cannot stake is a lane you have nothing in");
     assert.match(back.defect, /is a home mark/);
   } finally { cleanup(); }
 });
 
 test("no mark named at all bounces before the record is even consulted", async () => {
-  const staked = await townStake({ stamps: 1 }, null, { worldDb: "Z:/nowhere/never-a-store.db" });
+  const staked = await (clearWorld(), townStake({ stamps: 1 }, null));
   assert.equal(staked.code, 422);
   assert.match(staked.defect, /which mark\?/);
   assert.match(staked.hint, /bounty or idea/, "…and the ask names the lanes, so the next call can be right");
-  const read = await townStakeRead({}, { worldDb: "Z:/nowhere/never-a-store.db" });
+  const read = await (clearWorld(), townStakeRead({}));
   assert.equal(read.code, 422);
   assert.match(read.hint, /town \{ read: "stake"/);
 });
@@ -268,7 +274,7 @@ test("no mark named at all bounces before the record is even consulted", async (
 test("THE READ IS GUARDED LIKE THE ACT — and the refusal redirects rather than withholds", async () => {
   const { path, cleanup } = storeWith([{ id: HOME, class: "home", by: "rei" }]);
   try {
-    const r = await townStakeRead({ mark: HOME }, { worldDb: path });
+    const r = await townStakeRead({ mark: HOME });
     assert.equal(r.code, 422,
       "a town read that answered for a mark this door can never stake would teach the caller the door is wider than it is");
     assert.match(r.hint, /world \{ do: "stake"/,
