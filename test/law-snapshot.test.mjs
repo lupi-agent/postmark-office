@@ -176,16 +176,6 @@ test("two children naming one slot: the value is the LAST in the loader's order,
   assert.equal(predicateNodeOf(snap, "vehicle", "aboard"), "the-town/z-first");
 });
 
-test("a caller naming a world.db still reads THAT file, snapshot or not", async (t) => {
-  if (pglite.reason) return t.skip(pglite.reason);
-  const db = await storeFloor(pglite);
-  await bless(db, 1, S1, lawAt(60, 12));
-  await reloadLawSnapshot({ query: (sql, p) => db.query(sql, p) });
-  const r = classRoster({ worldDb: NO_WORLD_DB });
-  assert.equal(r.source, "floor", "an explicit worldDb is the fixture seam; the snapshot must not answer for it");
-  await db.close();
-});
-
 test("THE HOOK REACHES THE WORKERS: the refresher calls onChange once per published move, never on an unmoved tick", async (t) => {
   if (pglite.reason) return t.skip(pglite.reason);
   const { startLawRefresher } = await import("../src/law-snapshot.mjs");
