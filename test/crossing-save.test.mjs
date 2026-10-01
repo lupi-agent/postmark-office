@@ -24,6 +24,7 @@ import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "no
 import { join } from "node:path";
 
 import { fixtureWorldClone, fixtureWorldDb, mainShaOf, scratchDir, crossingStart } from "./dynamic-fixture.mjs";
+import { NO_WORLD_DB, clearWorld, rowsEnv } from "./helpers/world-rows.mjs";
 
 const scratch = scratchDir("save");
 const repo = fixtureWorldClone({ label: "save" });
@@ -39,7 +40,10 @@ const FIX = join(scratch, "record.json");
 // The replay check runs in THIS process and reads the sound class off the
 // store, as the save's own process does.
 process.env.WORLD_CLONE = repo;
-process.env.WORLD_STORE_DB = worldDbPath;
+// The world is the rows (POS-270 lane W 3a): fixtureWorldDb publishes them in
+// this process, the save is handed them as WORLD_GRAPH_ROWS, and world.db's
+// path points nowhere in both.
+process.env.WORLD_STORE_DB = NO_WORLD_DB;
 process.env.WORLD_EMISSIONS = "1";
 
 const N = 300;
@@ -65,7 +69,9 @@ const DEPARTURES = [
 
 // No WORLD_DYNAMIC_DB: nothing here may need one. `dynPath` is only the place
 // the suite looks to prove none was made.
-const env = () => ({ ...process.env, WORLD_CLONE: repo, WORLD_STORE_DB: worldDbPath, WORLD_EMISSIONS: "1", TOWN_PUSH: "" });
+const env = () => ({ ...process.env, WORLD_CLONE: repo,
+  ...(existsSync(worldDbPath) ? rowsEnv(worldDbPath, scratch) : { WORLD_STORE_DB: NO_WORLD_DB }),
+  WORLD_EMISSIONS: "1", TOWN_PUSH: "" });
 
 const run = (script, args = [], { fixture = true } = {}) => {
   const out = execFileSync(process.execPath, [join("tools", script), "--world", repo, ...(fixture ? ["--record-fixture", FIX] : []), ...args],
@@ -226,6 +232,7 @@ test("an absent world store REFUSES and leaves STATE/ untouched", () => {
   const snapBefore = readFileSync(join(STATE, "snapshot", String(N), "entities.json"), "utf8");
 
   rmSync(worldDbPath, { force: true });
+  clearWorld();
   let failed = false;
   try { run("crossing-save.mjs", ["--at", new Date(NEXT).toISOString(), "--state", STATE]); }
   catch (e) { failed = true; assert.match(String(e.stderr ?? ""), /GATE REFUSED world-store/); }

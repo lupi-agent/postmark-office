@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { SCHEMA } from "../src/world-store.mjs";
+import { clearWorld, publishWorld } from "./helpers/world-rows.mjs";
 
 export const EPOCH = Date.UTC(2026, 5, 12);
 export const CROSSING_MS = 12 * 3600 * 1000;
@@ -316,6 +317,10 @@ export function fixtureWorldDb(path, {
     }));
   }
   } finally { db.close(); }   // an unclosed handle would lock the file on Windows and turn one bad fixture into a whole failing suite
+  // The office stands on the world graph snapshot, never the file (POS-270 lane
+  // W 3a): an OK world is published as one; a failed hydration leaves none,
+  // since the store is never given a failed snapshot.
+  if (status === "OK") publishWorld(path); else clearWorld();
   return path;
 }
 
