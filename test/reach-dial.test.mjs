@@ -51,7 +51,11 @@ test("THE DOOR'S REACH IS THE RECORD'S NUMBER — 137 in the store is 137 at the
     }));
   db.close();
 
-  process.env.WORLD_STORE_DB = path;
+  // The record is the world graph snapshot (POS-270 lane W 3a): published from
+  // these rows before the chain's first import, and world.db's path points nowhere.
+  const { NO_WORLD_DB, publishWorld } = await import("./helpers/world-rows.mjs");
+  publishWorld(path);
+  process.env.WORLD_STORE_DB = NO_WORLD_DB;
   // FIRST import of the chain, with the env already set — voices.mjs reads here.
   const { EARSHOT_M, standsWithin, withinArmsLength, reachDisclosure } = await import("../src/reach.mjs");
 
@@ -94,8 +98,8 @@ test("AN ABSENT RECORD falls back to this repo's number and says the sentence a 
   // is exactly the condition an un-hydrated office is in — and the value it
   // falls back to must be the repo's 60, not the 137 this process read.
   const { dialNumber } = await import("../src/world-classes.mjs");
-  const nowhere = join(TMP, "there-is-no-such-store.db");
-  const fell = dialNumber("say", "earshot_m", 60, { worldDb: nowhere, min: 0 });
+  const { withNoWorld } = await import("./helpers/world-rows.mjs");
+  const fell = await withNoWorld(() => dialNumber("say", "earshot_m", 60, { min: 0 }));
   assert.equal(fell.read, false, "an absent store must not report itself as read");
   assert.equal(fell.source, "fallback");
   assert.equal(fell.value, 60, "and the fallback is this repo's own constant, not the record's 137");

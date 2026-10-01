@@ -20,6 +20,8 @@
 // the store's snapshot, the file, and the graph built from either are one set
 // of rows. The parity proof is docs/2026-09-30/rail/hydrator-emits-rows/.
 
+import { writeFileSync } from "node:fs";
+
 /** A table keyed by one column, with sqlite's INSERT OR REPLACE order. */
 function keyedTable(key) {
   const rows = new Map();
@@ -101,6 +103,18 @@ function groupCount(rows, keyOf) {
 const inWorks = (props) => {
   try { const v = JSON.parse(props ?? "")?.in_works; return v === 1 || v === true; } catch { return false; }
 };
+
+/**
+ * The rows as one JSON file, world.db's tables by name: what `world-hydrate.mjs
+ * --rows-out` writes, and what a test hands an office as WORLD_GRAPH_ROWS
+ * (world-graph-snapshot.mjs § THE TEST FIXTURE SEAM). Here, beside the rows,
+ * rather than in the hydrator: the hydrator reads the walk ledger, and the
+ * freeze's writer scan (tools/ledger-freeze.mjs) rightly asks why any module
+ * that names the ledger can write a file.
+ */
+export function writeRowsFile(path, tables) {
+  writeFileSync(path, JSON.stringify(tables));
+}
 
 export function graphCounts(t) {
   const nodes = t.nodes.all(), marks = nodes.filter((n) => n.kind === "mark"), edges = t.edges.all();

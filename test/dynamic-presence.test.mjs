@@ -28,6 +28,7 @@ import { join } from "node:path";
 import {
   fixtureWorldCloneWithEngine, fixtureWorldDb, mainShaOf, scratchDir, crossingStart,
 } from "./dynamic-fixture.mjs";
+import { NO_WORLD_DB } from "./helpers/world-rows.mjs";
 
 const scratch = scratchDir("presence");
 const FRAME = "the-town/let-there-be-light";
@@ -37,7 +38,7 @@ const MARKS = [
 ];
 const worldDbPath = join(scratch, "world.db");
 
-process.env.WORLD_STORE_DB = worldDbPath;
+process.env.WORLD_STORE_DB = NO_WORLD_DB;   // the world is the published fixture (POS-270 lane W 3a), never the file
 delete process.env.WORLD_PRESENCE;
 delete process.env.WORLD_EMISSIONS;
 

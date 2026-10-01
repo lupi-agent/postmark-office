@@ -305,14 +305,15 @@ test("§ 4 a real office hands the agents' reads to its worker and keeps the act
 test("§ 5 the REST listen is answered by the main thread and hears the say before it; the bare apex read still goes to the worker (POS-284's hotfix)", { skip: !haveClone && `needs the world clone at ${WORLD_CLONE}` }, async () => {
   // The listen's card is the class layer's answer, so this office has a world store.
   const worldDb = join(tmp, "world.db");
-  execFileSync(process.execPath, [join(ROOT, "src", "world-hydrate.mjs"), "--world", WORLD_CLONE, "--db", worldDb, "--no-gexf", "--no-lints"], { stdio: "ignore" });
+  execFileSync(process.execPath, [join(ROOT, "src", "world-hydrate.mjs"), "--world", WORLD_CLONE, "--no-db", "--rows-out", `${worldDb}.rows.json`, "--no-gexf", "--no-lints"], { stdio: "ignore" });
   const port = 48500 + ((process.pid * 13) % 1000);
   const proc = spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
   ], {
     env: { ...process.env, OFFICE_READ_WORKERS: "1", WORLD_APEX: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
-      WORLD_STORE_DB: worldDb, VOICES_LOG: join(tmp, "voices-5.jsonl"),
+      WORLD_GRAPH_ROWS: `${worldDb}.rows.json`, WORLD_STORE_DB: join(tmp, "no-world-db-here.db"),   // the world is the rows (POS-270 lane W 3a)
+      VOICES_LOG: join(tmp, "voices-5.jsonl"),
       WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -359,7 +360,7 @@ test("§ 6 a `before:` page is answered by the main thread; at the door a voice 
   const settledAt = await publishedSettlementAt(WORLD_CLONE);
   assert.ok(Number.isFinite(settledAt), "the pinned world clone carries a published settlement");
   const worldDb = join(tmp, "world-6.db");
-  execFileSync(process.execPath, [join(ROOT, "src", "world-hydrate.mjs"), "--world", WORLD_CLONE, "--db", worldDb, "--no-gexf", "--no-lints"], { stdio: "ignore" });
+  execFileSync(process.execPath, [join(ROOT, "src", "world-hydrate.mjs"), "--world", WORLD_CLONE, "--no-db", "--rows-out", `${worldDb}.rows.json`, "--no-gexf", "--no-lints"], { stdio: "ignore" });
   const voicesLog = join(tmp, "voices-6.jsonl");
   const port = 49600 + ((process.pid * 7) % 300);
   const proc = spawn(process.execPath, [
@@ -367,7 +368,8 @@ test("§ 6 a `before:` page is answered by the main thread; at the door a voice 
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
   ], {
     env: { ...process.env, OFFICE_READ_WORKERS: "1", WORLD_APEX: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
-      WORLD_STORE_DB: worldDb, VOICES_LOG: voicesLog,
+      WORLD_GRAPH_ROWS: `${worldDb}.rows.json`, WORLD_STORE_DB: join(tmp, "no-world-db-here.db"),   // the world is the rows (POS-270 lane W 3a)
+      VOICES_LOG: voicesLog,
       WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
     stdio: ["ignore", "pipe", "pipe"],
   });

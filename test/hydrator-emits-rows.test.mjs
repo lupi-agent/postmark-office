@@ -95,7 +95,7 @@ test("THE COUNTS: equal to the SQL they replaced — every count, every group, t
 });
 
 const CLONE = NO_WORLD ? null : worldClone();
-test("THE OUTPUTS: --no-db writes no world.db, and its counts are the file's", (t) => {
+test("THE OUTPUTS: --no-db writes no world.db, and the rows it emits carry the counts it reports", (t) => {
   if (NO_WORLD) return t.skip(NO_WORLD);
   const dir = mkdtempSync(join(tmpdir(), "hydrator-rows-"));
   // A FIXED, EMPTY OFFICE, so the two hydrations read the same office. The
@@ -112,18 +112,17 @@ test("THE OUTPUTS: --no-db writes no world.db, and its counts are the file's", (
   try {
     const run = (args) => JSON.parse(execFileSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"), "--world", CLONE, "--office", office, "--no-gexf", "--no-lints", "--json", ...args],
       { encoding: "utf8", env: { ...process.env, ...privateTmp, WORLD_STORE_DB: join(dir, "unused.db") }, stdio: ["ignore", "pipe", "ignore"] }));
-    const withFile = run(["--db", join(dir, "world.db")]);
-    const without = run(["--no-db", "--db", join(dir, "absent.db")]);
-    assert.equal(existsSync(join(dir, "world.db")), true);
+    const rowsPath = join(dir, "rows.json");
+    const out = run(["--no-db", "--db", join(dir, "absent.db"), "--rows-out", rowsPath]);
     assert.equal(existsSync(join(dir, "absent.db")), false, "--no-db wrote a world.db");
-    assert.equal(without.db, null);
-    assert.deepStrictEqual(without.counts, withFile.counts, "the rows-only hydration counted a different world");
-    const db = new DatabaseSync(join(dir, "world.db"), { readOnly: true });
-    try {
-      const meta = JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'counts'").get().value);
-      assert.deepStrictEqual(meta, withFile.counts, "the counts in the file are not the counts reported");
-      assert.equal(db.prepare("SELECT value FROM meta WHERE key = 'hydration_status'").get().value, "OK");
-    } finally { db.close(); }
+    assert.equal(out.db, null);
+    // The rows are what the store's snapshot and a test's fixture are made of:
+    // their own meta carries the counts the run reported, stamped OK.
+    const rows = JSON.parse(readFileSync(rowsPath, "utf8"));
+    const meta = Object.fromEntries(rows.meta.map((r) => [r.key, r.value]));
+    assert.deepStrictEqual(JSON.parse(meta.counts), out.counts, "the counts in the rows are not the counts reported");
+    assert.equal(meta.hydration_status, "OK");
+    assert.equal(rows.nodes.length, out.counts.nodes_total, "the rows hold the nodes the run counted");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

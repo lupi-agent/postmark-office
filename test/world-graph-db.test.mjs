@@ -26,7 +26,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { worldClone, NO_WORLD, OFFICE_ROOT } from "./fixture-paths.mjs";
 import { loadPglite, storeFloor } from "./helpers/pglite-store.mjs";
-import { CLASS_ROSTER_GATE_SQL, readWorldDbTables } from "../src/world-store.mjs";
+import { CLASS_ROSTER_GATE_SQL } from "../src/world-store.mjs";
+import { publishWorld, tablesOfFixture, writeFixtureDb } from "./helpers/world-rows.mjs";
 import { graphDb, twinnedStatements } from "../src/world-graph-db.mjs";
 // The modules that register twins, loaded so their statements are in the census.
 import "../src/world-apex.mjs";
@@ -52,9 +53,14 @@ before(() => {
   if (why) return;
   dir = mkdtempSync(join(tmpdir(), "graph-db-"));
   file = join(dir, "world.db");
-  execFileSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"), "--world", CLONE, "--ref", newestBlessing(CLONE).sha, "--db", file, "--no-gexf"],
-    { stdio: "ignore", env: { ...process.env, TMP: dir, TEMP: dir, TMPDIR: dir, WORLD_STORE_DB: file } });   // its own tmp root: the shared world cache is pruned by other hydrations
-  tables = readWorldDbTables(file);
+  // The hydration's ROWS (--rows-out), and the SQL's file built from them here:
+  // the office never opens a world.db (POS-270 lane W 3a); only this test's own
+  // handle asks the statements of one, to hold each twin to its SQL.
+  const rows = join(dir, "rows.json");
+  execFileSync(process.execPath, [join(OFFICE_ROOT, "src", "world-hydrate.mjs"), "--world", CLONE, "--ref", newestBlessing(CLONE).sha, "--no-db", "--rows-out", rows, "--no-gexf"],
+    { stdio: "ignore", env: { ...process.env, TMP: dir, TEMP: dir, TMPDIR: dir } });   // its own tmp root: the shared world cache is pruned by other hydrations
+  tables = JSON.parse(readFileSync(rows, "utf8"));
+  writeFixtureDb(tables, file);
 });
 after(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
 
@@ -127,7 +133,7 @@ test("THE SEEDED WORLD: a NULL roster gate and a closed bounty, each twin still 
       w.prepare("INSERT INTO edges (src, dst, type) VALUES ('the-town/the-bounty-board', ?, 'contains')").run(id);
   } finally { w.close(); }
   const sqlite = new DatabaseSync(seeded, { readOnly: true });
-  const store = graphDb(readWorldDbTables(seeded));
+  const store = graphDb(tablesOfFixture(seeded));
   try {
     const plain = (rows) => JSON.stringify(rows.map((r) => ({ ...r })));
     const gate = plain(sqlite.prepare(`SELECT (${CLASS_ROSTER_GATE_SQL}) AS g FROM nodes WHERE id = ?`).all(SEEDS[0][0]));
@@ -174,12 +180,14 @@ test("THE DOOR: with the snapshot loaded and world.db absent, openStore() answer
         assert.deepStrictEqual(JSON.stringify(gatherGroundActions(store.db, { spineIds })), JSON.stringify(gatherGroundActions(fileDb, { spineIds })), "the ground channel differs");
       }
     } finally { fileDb.close(); }
-    // 2(b): the frame law's class read, from the store, equal to the file's.
+    // 2(b): the frame law's class read, from the store, equal to the file's rows
+    // (published as a snapshot of their own: the reader has no file to open).
     const { classFieldsFromStore, resetClassFieldsCache } = await import("../src/world-frames.mjs");
     resetClassFieldsCache();
     const fromStore = classFieldsFromStore();
+    publishWorld(file, "the file's rows");
     resetClassFieldsCache();
-    const fromFile = classFieldsFromStore({ worldDb: file });
+    const fromFile = classFieldsFromStore();
     assert.equal(fromStore.gate.status, "PRESENT");
     assert.match(fromStore.gate.detail, /the store's graph snapshot/, "the class read did not come from the store");
     assert.deepStrictEqual([...fromStore.fields], [...fromFile.fields], "the class fields from the store differ from the file's");
@@ -197,7 +205,7 @@ test("THE WALK'S GROUND LOOKUP asks the snapshot's handle first (2b), world.db o
     "the walk desk opens world.db for its portal-ground lookup even when the snapshot has loaded");
 });
 
-test("2(c) THE READERS, from the store: world-classes' readers, the sound class and the walk ledger answer what the file answers", async (t) => {
+test("2(c) THE READERS, from the store: world-classes' readers, the sound class and the walk ledger answer what the file's rows answer", async (t) => {
   if (why) return t.skip(why);
   if (pglite.reason) return t.skip(pglite.reason);
   const { graphSnapshotFromTables, writeGraphSnapshot } = await import("../world2/tools/graph-ingest.mjs");
@@ -209,38 +217,45 @@ test("2(c) THE READERS, from the store: world-classes' readers, the sound class 
   const db = await storeFloor(pglite);
   const was = process.env.WORLD_STORE_DB;
   try {
-    resetLawSnapshot();   // the class layer's law snapshot must not answer first here: this is the world.db half
+    resetLawSnapshot();   // the class layer's law snapshot must not answer first here: this is the world graph half
+    process.env.WORLD_STORE_DB = join(dir, "no-such-world.db");
+    // Every reader asked twice, by the same code: over the FILE's rows (read by
+    // SQL, published as a snapshot) and over the STORE's (written to Postgres by
+    // graph-ingest and loaded back). Equal answers mean the store's copy is the
+    // file's, row for row, as every reader sees it.
+    const places = tables.nodes.filter((n) => n.at_x != null && n.extent_w > 6).slice(0, 8).map((n) => n.id);
+    const ids = tables.nodes.slice(0, 200).map((n) => n.id).concat(["no/such"]);
+    const classes = ["say", "resident", "sound", "bounty", "no-such-class"];
+    const answers = () => {
+      wc.resetClassRosterCache();
+      resetClassCache();
+      const roster = wc.classRoster();
+      return {
+        roster, rosterNames: [...roster.roster].sort(),
+        ideasTank: wc.ideasTank(), civicQuarter: wc.civicQuarter(), bountyBoard: wc.bountyBoard(),
+        markClass: ids.map((id) => wc.markClass(id)),
+        freeCellIn: places.map((p) => wc.freeCellIn(p, "seed")),
+        classDials: classes.map((c) => wc.classDials(c)),
+        classPredicates: classes.map((c) => wc.classPredicates(c)),
+        soundClass: soundClass(),
+        departures: readDepartureEvents(),
+      };
+    };
+    publishWorld(tablesOfFixture(file), "the file's rows");
+    const F = answers();
     await writeGraphSnapshot(db, graphSnapshotFromTables(tables));
     resetWorldGraph();
     await reloadWorldGraph({ query: (sql, p) => db.query(sql, p) });
-    process.env.WORLD_STORE_DB = join(dir, "no-such-world.db");
-    const fileArg = { worldDb: file };
-    const strip = (o) => JSON.parse(JSON.stringify(o, (k, v) => (k === "path" ? undefined : v)));
-    const same = (label, fromStore, fromFile) => assert.deepStrictEqual(strip(fromStore), strip(fromFile), `${label}: the store's answer differs from the file's`);
-    wc.resetClassRosterCache();
-    const roster = wc.classRoster();
-    assert.equal(roster.source, "store");
-    wc.resetClassRosterCache();
-    same("classRoster", [...roster.roster].sort(), [...wc.classRoster(fileArg).roster].sort());
-    same("ideasTank", wc.ideasTank(), wc.ideasTank(fileArg));
-    same("civicQuarter", wc.civicQuarter(), wc.civicQuarter(fileArg));
-    same("bountyBoard", wc.bountyBoard(), wc.bountyBoard(fileArg));
-    for (const id of tables.nodes.slice(0, 200).map((n) => n.id).concat(["no/such"])) same(`markClass ${id}`, wc.markClass(id), wc.markClass(id, fileArg));
-    const places = tables.nodes.filter((n) => n.at_x != null && n.extent_w > 6).slice(0, 8).map((n) => n.id);
-    for (const p of places) same(`freeCellIn ${p}`, wc.freeCellIn(p, "seed"), wc.freeCellIn(p, "seed", fileArg));
-    for (const c of ["say", "resident", "sound", "bounty", "no-such-class"]) {
-      same(`classDials ${c}`, wc.classDials(c), wc.classDials(c, fileArg));
-      same(`classPredicates ${c}`, wc.classPredicates(c), wc.classPredicates(c, fileArg));
-    }
-    resetClassCache();
-    const sFile = soundClass(fileArg);
-    resetClassCache();
-    same("soundClass", soundClass(), sFile);
-    const ev = readDepartureEvents(), evFile = readDepartureEvents(fileArg);
-    assert.equal(ev.refused, undefined, JSON.stringify(ev.refused ?? null));
-    same("readDepartureEvents", ev.events, evFile.events);
-    assert.equal(ev.as_of_world, evFile.as_of_world);
-    assert.ok(roster.roster.size > 0 && ev.events.length > 0, "the proof read an empty world");
+    const S = answers();
+    assert.equal(S.roster.source, "store");
+    const strip = (o) => JSON.parse(JSON.stringify(o, (k, v) => (k === "path" || k === "detail" || k === "source_label" ? undefined : v)));
+    for (const k of Object.keys(S).filter((k) => k !== "roster" && k !== "soundClass" && k !== "departures"))
+      assert.deepStrictEqual(strip(S[k]), strip(F[k]), `${k}: the store's answer differs from the file's rows'`);
+    assert.deepStrictEqual(strip({ ...S.soundClass, store: undefined }), strip({ ...F.soundClass, store: undefined }), "soundClass: the store's answer differs from the file's rows'");
+    assert.equal(S.departures.refused, undefined, JSON.stringify(S.departures.refused ?? null));
+    assert.deepStrictEqual(S.departures.events, F.departures.events, "readDepartureEvents: the store's events differ from the file's rows'");
+    assert.equal(S.departures.as_of_world, F.departures.as_of_world);
+    assert.ok(S.roster.roster.size > 0 && S.departures.events.length > 0, "the proof read an empty world");
   } finally {
     if (was === undefined) delete process.env.WORLD_STORE_DB; else process.env.WORLD_STORE_DB = was;
     resetWorldGraph();

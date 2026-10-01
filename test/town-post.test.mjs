@@ -24,6 +24,11 @@ import { DatabaseSync } from "node:sqlite";
 
 import { freeCellIn } from "../src/world-classes.mjs";
 import { townPost, POST_PLACES } from "../src/world.mjs";
+import { NO_WORLD_DB, clearWorld, publishWorld } from "./helpers/world-rows.mjs";
+
+// The placement pen reads the world graph snapshot (POS-270 lane W 3a): each
+// fixtureStore() is published as one when built, and world.db's path points nowhere.
+process.env.WORLD_STORE_DB = NO_WORLD_DB;
 
 const TANK = "the-town/the-think-tank";
 
@@ -46,6 +51,7 @@ function fixtureStore(marks = []) {
     ins.run(m.id, m.by ?? "someone", m.props?.at?.x ?? null, m.props?.at?.y ?? null,
       m.props?.extent?.w ?? null, m.props?.extent?.h ?? null, JSON.stringify(m.props ?? {}));
   d.close();
+  publishWorld(p);
   return { path: p, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
@@ -54,7 +60,7 @@ function fixtureStore(marks = []) {
 test("a free cell lands strictly INSIDE the tank — inset from every edge, never edge-riding", () => {
   const s = fixtureStore();
   try {
-    const c = freeCellIn(TANK, "wright/a-first-idea", { worldDb: s.path });
+    const c = freeCellIn(TANK, "wright/a-first-idea");
     assert.ok(c.at, "an empty tank places");
     // tank spans x 270..300, y -189.5..-169.5; a 1×1 at the cell spans ±0.5 —
     // the 1.5 inset keeps the whole mark at least 1m inside the walls (the
@@ -67,10 +73,10 @@ test("a free cell lands strictly INSIDE the tank — inset from every edge, neve
 test("placement is DETERMINISTIC per author/slug — a retry lands the same cell, a different seed spreads", () => {
   const s = fixtureStore();
   try {
-    const a1 = freeCellIn(TANK, "wright/one", { worldDb: s.path });
-    const a2 = freeCellIn(TANK, "wright/one", { worldDb: s.path });
+    const a1 = freeCellIn(TANK, "wright/one");
+    const a2 = freeCellIn(TANK, "wright/one");
     assert.deepEqual(a1.at, a2.at, "same seed, same cell — a resident retrying a bounced call must not scatter");
-    const b = freeCellIn(TANK, "little-bird/another", { worldDb: s.path });
+    const b = freeCellIn(TANK, "little-bird/another");
     assert.notDeepEqual(a1.at, b.at, "different seeds spread instead of queueing at one corner");
   } finally { s.done(); }
 });
@@ -78,10 +84,10 @@ test("placement is DETERMINISTIC per author/slug — a retry lands the same cell
 test("the probe walks PAST a mark the store knows — the cell a neighbour holds is never handed out", () => {
   const empty = fixtureStore();
   let target;
-  try { target = freeCellIn(TANK, "wright/claim", { worldDb: empty.path }).at; } finally { empty.done(); }
+  try { target = freeCellIn(TANK, "wright/claim").at; } finally { empty.done(); }
   const s = fixtureStore([{ id: "someone/sat-here", props: { at: target, extent: { w: 1, h: 1 } } }]);
   try {
-    const c = freeCellIn(TANK, "wright/claim", { worldDb: s.path });
+    const c = freeCellIn(TANK, "wright/claim");
     assert.ok(c.at, "still places");
     assert.notDeepEqual(c.at, target, "…but not on the occupied cell");
   } finally { s.done(); }
@@ -92,7 +98,7 @@ test("a WIDE mark blocks every cell under its extent, not just its centre", () =
   try {
     // exhaust: every seed must land outside the wide mark's footprint
     for (const seed of ["a/a", "b/b", "c/c", "d/d", "e/e"]) {
-      const c = freeCellIn(TANK, seed, { worldDb: s.path });
+      const c = freeCellIn(TANK, seed);
       const inside = Math.abs(c.at.x - 285) < 5.5 && Math.abs(c.at.y - -179) < 3.5;
       assert.equal(inside, false, `${seed} → ${JSON.stringify(c.at)} must clear the furniture`);
     }
@@ -109,7 +115,7 @@ test("an ANCESTOR ground never blocks placement — a container is the floor, no
     { id: "the-town/the-town-centre", props: { at: { x: 285, y: -150 }, extent: { w: 400, h: 300 } } },
   ]);
   try {
-    const c = freeCellIn(TANK, "wright/first", { worldDb: s.path });
+    const c = freeCellIn(TANK, "wright/first");
     assert.ok(c.at, "the empty tank places despite the root and the district overlapping every cell");
   } finally { s.done(); }
 });
@@ -118,15 +124,15 @@ test("a full ground says FULL with its cell count; a missing store is an ERROR, 
   // a mark as wide as the tank itself leaves no cell
   const s = fixtureStore([{ id: "someone/blanket", props: { at: { x: 285, y: -179.5 }, extent: { w: 30, h: 20 } } }]);
   try {
-    const c = freeCellIn(TANK, "wright/late", { worldDb: s.path });
+    const c = freeCellIn(TANK, "wright/late");
     assert.equal(c.full, true);
     assert.ok(c.cells > 0, "the refusal carries how many cells the ground holds");
   } finally { s.done(); }
-  const gone = freeCellIn(TANK, "wright/x", { worldDb: "Z:/nowhere/never-a-store.db" });
+  const gone = (clearWorld(), freeCellIn(TANK, "wright/x"));
   assert.match(gone.error, /no world store/, "the floor is disclosed, never silently improvised");
   const noGround = fixtureStore();
   try {
-    const g = freeCellIn("the-town/no-such-ground", "w/x", { worldDb: noGround.path });
+    const g = freeCellIn("the-town/no-such-ground", "w/x");
     assert.match(g.error, /no sited ground/);
   } finally { noGround.done(); }
 });
