@@ -12,7 +12,7 @@
 // reader that still reached for the file would find nothing and the test would
 // say so. `source` is a tables object, a rows JSON file, or a sqlite fixture.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -92,6 +92,7 @@ export const clearWorld = () => resetWorldGraph();
  */
 export function writeFixtureDb(source, path) {
   const t = tablesOf(source);
+  rmSync(path, { force: true });
   const db = new DatabaseSync(path);
   try {
     db.exec(SCHEMA);
