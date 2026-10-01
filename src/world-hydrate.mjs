@@ -44,7 +44,7 @@
 //   over historical events never re-decides history when a mark moves.
 
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, rmSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve, dirname, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -52,7 +52,7 @@ import {
   SCHEMA, EDGE_TYPES, WORLD_CLONE, OFFICE_ROOT, DEFAULT_DB,
   git, materializeWorldAtSha, geometryIndex, graphFromTables,
 } from "./world-store.mjs";
-import { createGraphRows, graphTablesOf, graphCounts } from "./world-graph-rows.mjs";
+import { createGraphRows, graphTablesOf, graphCounts, writeRowsFile } from "./world-graph-rows.mjs";
 import { blessed } from "./world-branches.mjs";
 
 const argOf = (name, fallback) => { const i = process.argv.indexOf(name); return i !== -1 ? process.argv[i + 1] : fallback; };
@@ -1227,7 +1227,7 @@ if (empties.length) {
   // The file is still written, stamped FAILED, exactly as before: a reader
   // refuses it by name. The store is never given a failed snapshot.
   if (WRITE_DB) writeWorldDb(DB_PATH, graphTablesOf(T));
-  if (ROWS_OUT) writeFileSync(resolve(ROWS_OUT), JSON.stringify(graphTablesOf(T)));
+  if (ROWS_OUT) writeRowsFile(resolve(ROWS_OUT), graphTablesOf(T));
   console.error(`\nGATE FAILED silent-empty-table — ${detail}`);
   console.error(`world.db is stamped FAILED and will not load; fix the input and rehydrate.`);
   process.exit(1);
@@ -1269,7 +1269,7 @@ putMeta.run("hydration_status", "OK");
 // ── THE OUTPUTS, each written from the rows ─────────────────────────────────
 const tables = graphTablesOf(T);
 if (WRITE_DB) writeWorldDb(DB_PATH, tables);
-if (ROWS_OUT) writeFileSync(resolve(ROWS_OUT), JSON.stringify(tables));
+if (ROWS_OUT) writeRowsFile(resolve(ROWS_OUT), tables);
 let stored = null;
 if (TO_STORE) {
   const { graphSnapshotFromTables, writeGraphSnapshot } = await import("../world2/tools/graph-ingest.mjs");
