@@ -17,7 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { publishWorldGraphForTest } from "../../src/world-graph-snapshot.mjs";
+import { publishWorldGraphForTest, resetWorldGraph, worldGraphSnapshot } from "../../src/world-graph-snapshot.mjs";
+import { graphFromTables } from "../../src/world-store.mjs";
 
 /** Where no world.db is, ever: the file floor answers nothing from here. */
 export const NO_WORLD_DB = join(tmpdir(), "pm-test-no-world-db-here.db");
@@ -59,3 +60,27 @@ export function rowsEnv(source, dir) {
   writeFileSync(path, JSON.stringify(tablesOf(source)));
   return { WORLD_GRAPH_ROWS: path, WORLD_STORE_DB: NO_WORLD_DB };
 }
+
+/** The graph and its companions from rows, through the one construction every reader uses. */
+export function graphOf(source, { label = "test world", allowFailed = false } = {}) {
+  return graphFromTables(tablesOf(source), { source: label, allowFailed });
+}
+
+/** Run fn with this world published, then put back whatever stood before. */
+export async function withWorld(source, fn, label = "test world") {
+  const prev = worldGraphSnapshot();
+  publishWorld(source, label);
+  try { return await fn(); }
+  finally { if (prev) publishWorldGraphForTest(prev.tables, { label: "restored" }); else resetWorldGraph(); }
+}
+
+/** Run fn with NO world graph at all (the floor), then put back what stood. */
+export async function withNoWorld(fn) {
+  const prev = worldGraphSnapshot();
+  resetWorldGraph();
+  try { return await fn(); }
+  finally { if (prev) publishWorldGraphForTest(prev.tables, { label: "restored" }); }
+}
+
+/** No world graph at all, from here on (the "no store" cases). */
+export const clearWorld = () => resetWorldGraph();
