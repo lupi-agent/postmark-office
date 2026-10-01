@@ -27,8 +27,12 @@ import { settlePass } from "../deploy/settle-pass.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { REGISTRY_PATH, PINS_PATH } from "../src/residency.mjs";
 
-// 43947 — checked against every port literal in test/ before this line.
-const GH_PORT = 43947;
+// THE PORT IS ASKED FOR, NEVER CHOSEN (join-pr-at-the-cosign.test.mjs § the
+// port). This was 43947, "checked against every port literal in test/", and
+// still a lock on a door the whole box shares: the file lives in all five pool
+// trees, and under parallel pool runs on 2026-10-01 it went red 3 of 8 (a 418
+// from another tree's stub, a fetch failed, one 300 s hang). The fake GitHub
+// listens on 0, and the port the OS handed back is what the pen dials.
 
 // ── a mock GitHub, exactly as wide as the door's and the pass's reads ───────
 //
@@ -46,7 +50,7 @@ before(async () => {
     const url = new URL(req.url, "http://x");
     const p = url.pathname;
     asked.push(`${req.method} ${p}${url.search}`);
-    const send = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    const send = (code, body) => { res.writeHead(code, { "content-type": "application/json", connection: "close" }); res.end(JSON.stringify(body)); };
     if (req.method !== "GET") return send(418, {});
     if (p.endsWith("/pulls") && url.searchParams.get("head")) {
       const ref = url.searchParams.get("head").split(":")[1];
@@ -64,11 +68,15 @@ before(async () => {
     if (u) return users[u[1]] ? send(200, { login: u[1], id: users[u[1]] }) : send(404, { message: "Not Found" });
     return send(418, {});
   });
-  await new Promise((ok) => server.listen(GH_PORT, "127.0.0.1", ok));
+  await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+  PEN.apiBase = `http://127.0.0.1:${server.address().port}`;
 });
 after(async () => { await new Promise((ok) => server.close(ok)); });
 
-const PEN = { apiBase: `http://127.0.0.1:${GH_PORT}`, token: "a-mock-pen-token", owner: "postmark-town", repo: "postmark", baseBranch: "main" };
+// `apiBase` is filled in by before(), once the fake GitHub has its port.
+// `connection: close` on every answer above, for the reason join-pr's names:
+// a pooled keep-alive socket closed between two tests dies mid-request.
+const PEN = { apiBase: null, token: "a-mock-pen-token", owner: "postmark-town", repo: "postmark", baseBranch: "main" };
 
 // The pen's own body, the shape `src/residency.mjs § joinBody` writes.
 const penBody = (login, id) =>
