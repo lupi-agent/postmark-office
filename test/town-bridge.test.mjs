@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import { runTownDrain, townLockHeld, TOWN_DOORS, drainLine } from "../src/town-bridge.mjs";
 import {
   appendTownJournal, ensureTownJournal, pendingRows, townDrainCursor,
@@ -705,21 +706,19 @@ test("F11 · PARITY: the same fixture, both skins, deep-equal", async () => {
     });
     o.close();
 
-    const PORT = 43877;
-    const BASE = `http://127.0.0.1:${PORT}`;
+    // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+    // asked for); it was the fixed 43877, a door every pool tree on the box shares.
+    let PORT;
+    let BASE;
     const KEY = "paritykey";
-    child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath, "--oauth-db", odbPath], {
+    ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath, "--oauth-db", odbPath], {
       env: {
         ...process.env, WORLD_GRAPH_NONE: "1", TOWN_SINGLE_LOG: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
         TOWN_CLONE: clone, WORLD_CLONE: join(tmp, "no-world"), VOICES_LOG: join(tmp, "voices.jsonl"), TOWN_PUSH: "",
       },
       stdio: ["ignore", "pipe", "pipe"],
-    });
-    await new Promise((ok, no) => {
-      const t = setTimeout(() => no(new Error("server never listened")), 15_000);
-      child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-      child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-    });
+    })));
+    BASE = `http://127.0.0.1:${PORT}`;
 
     // THE REST SKIN
     const rest = await (await fetch(`${BASE}/doorstep/wright`, { headers: { authorization: `Bearer ${KEY}` } })).json();

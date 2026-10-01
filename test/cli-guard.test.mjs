@@ -200,6 +200,15 @@ const ROSTER = {
   "world2/tools/falsifier-pen-flip.mjs": { args: ["--help"], env: NO_PG, code: 0, needle: "usage" },
   "world2/tools/falsifier-projection-equality.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: falsifier-projection-equality.mjs" },
   "world2/tools/falsifier-review-closure.mjs": { args: [], env: NO_PG, code: 2, needle: "WORLD2_PG_URL missing" },
+  // No --base: stops on usage before any HTTP (POS-142).
+  "world2/tools/falsifier-twins-equality.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: falsifier-twins-equality.mjs" },
+  // Behind its entry guard since 2026-10-01 (POS-142 S3): no --world-repo stops
+  // on usage before any env rewrite, import of the pens, or Postgres connect.
+  "world2/tools/falsifier-guard-equality.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: falsifier-guard-equality.mjs" },
+  // The guard's G5 alone, read-only: no --world-repo stops on usage first.
+  "world2/tools/falsifier-guard-g5.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: falsifier-guard-g5.mjs" },
+  // No --world-repo: stops on usage before any git read or Postgres connect (POS-142 S3 item 3).
+  "world2/tools/prod-flip-falsifiers.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: prod-flip-falsifiers.mjs" },
   "world2/tools/law-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: law-ingest.mjs" },
   "world2/tools/graph-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: graph-ingest.mjs" },
   "tools/arena-archive.mjs": { args: [], env: {}, code: 2, needle: "usage: arena-archive.mjs" },

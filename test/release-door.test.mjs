@@ -31,10 +31,12 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 43857;
-const BASE = `http://127.0.0.1:${PORT}`;
+// The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+// asked for); it was the fixed 43857, a door every pool tree on the box shares.
+let PORT, BASE;
 
 const TAG = "release/2026-w35.7";
 const SHA = "1234567890abcdef1234567890abcdef12345678";
@@ -51,9 +53,9 @@ before(async () => {
 
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
-  child = spawn(process.execPath, [
+  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"),
-    "--port", String(PORT),
+    "--port", String(port),
     "--db", dbPath,
     "--release-root", stampDir,
   ], {
@@ -64,14 +66,8 @@ before(async () => {
       WORLD_CLONE: join(tmp, "no-world-clone"),
     },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  await new Promise((ok, no) => {
-    const timeout = setTimeout(() => no(new Error("server never listened")), 10_000);
-    child.stdout.on("data", (data) => {
-      if (String(data).includes("listening")) { clearTimeout(timeout); ok(); }
-    });
-    child.on("exit", (code) => no(new Error(`server exited early (${code})`)));
-  });
+  })));
+  BASE = `http://127.0.0.1:${PORT}`;
 });
 
 after(async () => {

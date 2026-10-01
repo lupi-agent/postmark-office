@@ -12,6 +12,8 @@
 #     → REVOKE clearing_job FROM rehearsal_runner;
 #   GRANT law_ingester TO rehearsal_runner WITH INHERIT FALSE, SET TRUE
 #     → REVOKE law_ingester FROM rehearsal_runner;
+#   GRANT office_api TO rehearsal_runner WITH INHERIT FALSE, SET TRUE
+#     → REVOKE office_api FROM rehearsal_runner;
 #   ROLE rehearsal_runner (LOGIN, NOINHERIT, NOCREATEDB, NOCREATEROLE)
 #     → DROP ROLE rehearsal_runner;      (it owns nothing once the copy is gone)
 #   FILE /srv/world2-lab/rehearsal/runner.pw   → removed
@@ -38,6 +40,7 @@ if [ "$(pgsu -d postgres -c "SELECT count(*) FROM pg_roles WHERE rolname = 'rehe
   pgsu -d postgres <<'SQL' || exit 1
 REVOKE clearing_job FROM rehearsal_runner;
 REVOKE law_ingester FROM rehearsal_runner;
+REVOKE office_api FROM rehearsal_runner;
 DROP ROLE rehearsal_runner;
 SQL
 fi

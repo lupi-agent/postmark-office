@@ -86,6 +86,16 @@ export function orderByParent(claims, { label = "this batch" } = {}) {
  * when this version of the record was ruled.
  *
  * `amends` maps a claim id (as a string) to the standing mark row it continues.
+ *
+ * A REVIVE STANDS THE AUTHOR'S OWN RETIRED ROW BACK UP (POS-241 phase 1, ruled
+ * 2026-09-26: "a mark keeps one id for life"). Not a new row, for the same reason
+ * an amend is not: the slug is unique across every status, so an INSERT under a
+ * retired row's slug is `marks_slug_key` and the whole caller's transaction rolls
+ * back (window 212, 09-26). The row keeps its id, takes the claim's record as an
+ * amend does, goes `standing`, and drops `retired_window`; the caller records
+ * what it overwrote. `revives` maps a claim id to that retired row, and only the
+ * clearing resolves it (clearing-job.mjs § step 1). Every other caller passes
+ * none and keeps exactly the behaviour it had.
  */
 /**
  * THE OWNERSHIP GRAIN IS THE CLAIMANT'S, RESOLVED — never the claim's scope
@@ -218,13 +228,25 @@ export async function ownerHouseholdFor(q, owner) {
   return key;
 }
 
-export async function materializeClaims(q, { claims, amends = new Map(), windowId, label }) {
+export async function materializeClaims(q, { claims, amends = new Map(), revives = new Map(), windowId, label }) {
   const named = claims.filter((c) => slugOf(c));   // a stake or escrow claim names no mark
   const ordered = orderByParent(named, { label: label ?? `window ${windowId}` });
   for (const c of ordered) {
     const slug = slugOf(c);
     const amended = amends.get(String(c.id));
+    const revived = revives.get(String(c.id));
     const grain = await ownerHouseholdFor(q, c.claimant); // NOT c.household — § the ownership grain above
+    if (revived) {
+      const { rowCount } = await q(
+        `UPDATE marks SET status = 'standing', retired_window = NULL, kind = $2, owner = $3, household = $4,
+                          body = $5, geometry = $6, bbox = $7, data = $8, parent = $9, locked_window = $10
+           WHERE id = $1 AND status = 'retired'`,
+        [revived.id, c.class, c.claimant, grain, c.body, c.geometry, c.bbox,
+         c.data, c.parent, windowId]);
+      if (rowCount !== 1)
+        throw new Error(`${label ?? `window ${windowId}`}: ${slug}'s retired row ${revived.id} was not retired when its revive materialized`);
+      continue;
+    }
     if (amended) {
       await q(
         `UPDATE marks SET kind = $2, owner = $3, household = $4, body = $5, geometry = $6,

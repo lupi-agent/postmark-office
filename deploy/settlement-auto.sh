@@ -112,6 +112,10 @@
 #   SETTLEMENT_ISOLATE 0 disables the isolation pass — a red suite refuses the town, as before
 #   SETTLEMENT_RACE_ATTEMPTS  how many times a LOST RACE re-runs the whole crossing (default 3)
 #   SETTLEMENT_ATTEMPT set by the retry wrapper on each child; never set it by hand
+#   SETTLEMENT_DRY     1 runs the whole crossing to its receipt and writes nothing
+#                      outside its own clone and that receipt — see § THE DRY LEG.
+#                      Store source only; it needs its own SETTLEMENT_CLONE and a
+#                      SETTLEMENT_REPORT outside /srv/postmark-harbor.
 # Cwd: $OFFICE_ROOT. Exit: 0 published/quiet · 1 refused · 2 race.
 
 set -eu
@@ -181,6 +185,67 @@ if [ "$BY_HAND" = "1" ]; then
   echo "[settlement-auto] BY HAND — this crossing is an operator's act; the docket is the newest unfolded window, not a fresh close" >&2
 fi
 
+# ── THE DRY LEG (POS-242) ────────────────────────────────────────────────────
+#
+# The rehearsal copy could clear a window but could not cross it: everything
+# after the harm gate published unconditionally, so the only way to see what a
+# train's settlement would do was to let it do it. `SETTLEMENT_DRY=1` runs the
+# same script, the same steps in the same order, to the same receipt, and every
+# act that leaves this run is WITHHELD and named on that receipt instead:
+#
+#   world main's push            publish_main, both crossings that call it
+#   the sketchbook lease pushes  none to withhold: `$WORK/tips` is empty on the
+#                                store path by construction, and DRY is store-only
+#   the photograph's commit      state-log-write --write gets --dry-run; its
+#                                penCommit pushes when TOWN_PUSH=1, which the
+#                                office env sets, and it runs BEFORE the gate
+#   the store's retirement       retire-unpublished --dry-run: it names the marks
+#                                and opens no connection
+#   every escalation             no GitHub issue, and no lookup either — the
+#                                escalate tool's own --dry-run still reads GitHub
+#   the history line             the roll-call and `--recurring` read that log
+#   the public receipt           /srv/postmark-harbor is served, and the keeper
+#                                reads settlement-auto.json before he blesses
+#   the suite log                beside the dry receipt, never in the office
+#
+# What it still writes: its own clone (the registry commit, the write-down's
+# local sketchbooks, the sweep's local main), its scratch, its receipt, and the
+# town clone's fetch (remote-tracking refs, which every crossing moves). No tag
+# and no notary: neither has ever been this script's (the keeper tags; the
+# notary is its own unit).
+#
+# STORE SOURCE ONLY. The git path's drain truncates the journal and delivers to
+# origin before anything else runs; a git dry leg would have to skip it and so
+# would rehearse a different crossing. The box crosses from the store.
+#
+# ITS OWN CLONE, NAMED. The live clone is the timer's working tree; a dry run
+# beside a scheduled crossing in the same tree is two writers. And a clone the
+# dry leg makes for itself is given no credential helper, so even a push this
+# list missed has nothing to push with.
+DRY="${SETTLEMENT_DRY:-0}"
+case "$DRY" in
+  0|1) ;;
+  *) echo "[settlement-auto] SETTLEMENT_DRY=\"$DRY\" is not \`0\` or \`1\` — refusing rather than guessing whether this crossing may write" >&2; exit 1 ;;
+esac
+if [ "$DRY" = "1" ]; then
+  if [ "$SOURCE" != "store" ]; then
+    echo "[settlement-auto] SETTLEMENT_DRY=1 rehearses the store crossing only — the git path's drain writes before anything can be withheld; refusing" >&2; exit 1
+  fi
+  case "${SETTLEMENT_REPORT:-}" in
+    "") echo "[settlement-auto] SETTLEMENT_DRY=1 needs its own SETTLEMENT_REPORT — the default is the public receipt the keeper blesses from; refusing" >&2; exit 1 ;;
+    /srv/postmark-harbor/*) echo "[settlement-auto] SETTLEMENT_DRY=1 will not write a receipt under /srv/postmark-harbor — that directory is served; refusing" >&2; exit 1 ;;
+  esac
+  if [ -z "${SETTLEMENT_CLONE:-}" ] || [ "$SWEEP" = "$OFFICE/settlement-clone" ]; then
+    echo "[settlement-auto] SETTLEMENT_DRY=1 needs its own SETTLEMENT_CLONE — the live clone is the timer's working tree; refusing" >&2; exit 1
+  fi
+  echo "[settlement-auto] *** DRY RUN *** every write that leaves this run is withheld and named on the receipt at $OUT" >&2
+fi
+# One line per withheld act, read by the receipt. Under DRY=0 nothing calls it.
+withheld() {
+  printf '%s\n' "$1" >> "$WORK/withheld"
+  echo "[settlement-auto] DRY — withheld: $1" >&2
+}
+
 # ── A STORE CROSSING LEAVES THE CLONE AS IT FOUND IT ─────────────────────────
 #
 # The store path's sketchbooks are scratch by construction — this crossing makes
@@ -211,14 +276,18 @@ if [ ! -d "$SWEEP/.git" ]; then
   # The pen needs its name and its key (both bit the first run, separately):
   git -C "$SWEEP" config user.name  "the settlement sweep (box)"
   git -C "$SWEEP" config user.email "postmark-settlement@users.noreply.github.com"
-  git -C "$SWEEP" config credential.helper "store --file $OFFICE/.git-credentials"
+  if [ "$DRY" != "1" ]; then
+    git -C "$SWEEP" config credential.helper "store --file $OFFICE/.git-credentials"
+  fi
 fi
 
 # THE RECEIPT. Every channel the crossing has a word for, or the honest absence
 # of one — composed by a node helper because a receipt assembled with printf is
 # exactly how `left_drafted` came to be missing from it for three days.
 report() { # status detail
+  LAST_STATUS="$1"; LAST_DETAIL="$2"
   SETTLEMENT_STATUS="$1" SETTLEMENT_DETAIL="$2" \
+  SETTLEMENT_DRY="$DRY" SETTLEMENT_WITHHELD="$WORK/withheld" \
   SETTLEMENT_AT="$STAMP" SETTLEMENT_TOWN_SHA="${TOWN_SHA:-}" \
   SETTLEMENT_WORLD_FROM="${WORLD_FROM:-}" SETTLEMENT_WORLD_TO="${WORLD_TO:-}" \
   SETTLEMENT_SWEEP_JSON="${SWEEP_JSON:-}" SETTLEMENT_DRAIN_JSON="${DRAIN_JSON:-}" \
@@ -240,8 +309,25 @@ report() { # status detail
   #
   # `--attempt` is how the log knows a lost race inside the retry is not a
   # DECISION yet; settlement-history.mjs carries that rule and its reason.
+  #
+  # A dry crossing decided nothing, so it is no line in the log the roll-call
+  # and `--recurring` read.
+  if [ "$DRY" = "1" ]; then return 0; fi
   node "$OFFICE/deploy/settlement-history.mjs" \
     --receipt "$OUT" --history "$HISTORY" --attempt "${SETTLEMENT_ATTEMPT:-}" >/dev/null 2>&1 || true
+}
+
+# THE ESCALATION, in one place. A crossing is never failed by its own alarm, so
+# every call is `|| true`. Under DRY the alarm is named and nobody is told: the
+# receipt is recomposed so it carries the withheld line, because every
+# escalation follows the report() it escalates.
+escalate() { # --class <class> [args…]
+  if [ "$DRY" = "1" ]; then
+    withheld "escalation: $2"
+    if [ -n "${LAST_STATUS:-}" ]; then report "$LAST_STATUS" "$LAST_DETAIL"; fi
+    return 0
+  fi
+  node "$OFFICE/deploy/settlement-escalate.mjs" "$@" >&2 || true
 }
 
 # ── THE RACE RETRY (v1 #7, 2026-08-30) ───────────────────────────────────────
@@ -290,7 +376,7 @@ if [ -z "${SETTLEMENT_ATTEMPT:-}" ]; then
     || true
   node "$OFFICE/deploy/settlement-history.mjs" --receipt "$OUT" --history "$HISTORY" --attempt "" >/dev/null 2>&1 || true
   echo "[settlement-auto] RACED OUT after $SETTLEMENT_RACE_ATTEMPTS attempts — publishing nothing" >&2
-  node "$OFFICE/deploy/settlement-escalate.mjs" --class race --receipt "$OUT" >&2 || true
+  escalate --class race --receipt "$OUT"
   exit 2
 fi
 
@@ -731,6 +817,11 @@ if [ "$SOURCE" = "store" ]; then
   DOCKET_JSON="$WORK/docket.json"
   BY_HAND_FLAG=""
   if [ "$BY_HAND" = "1" ]; then BY_HAND_FLAG="--by-hand"; fi
+  # A DRY crossing asks the shadow's question — the newest CLOSED window — because
+  # nothing clears after a rehearsal starts: on the copy the runner has already
+  # cleared the window it wants crossed, and between crossings on the box no
+  # window clears at all. By hand, it rehearses the operator's door instead.
+  if [ "$DRY" = "1" ] && [ "$BY_HAND" != "1" ]; then BY_HAND_FLAG="--rehearse"; fi
   if ! (cd "$OFFICE" && node "$OFFICE/world2/tools/await-clearing.mjs" \
         --since "$STAMP" --timeout-s "${SETTLEMENT_CLEARING_WAIT_S:-240}" $BY_HAND_FLAG) > "$DOCKET_JSON" 2>"$WORK/docket.err"; then
     # The DETAIL carries the tool's own reason word — `clearing-did-not-run` for
@@ -857,8 +948,15 @@ if [ "$SOURCE" = "store" ]; then
     esac
     STATE_LOG_JSON="$WORK/state-log.json"
     if [ "$STATE_LOG_MODE" = "store" ]; then
+      # DRY renders the photograph and writes nothing: penCommit pushes world
+      # main when TOWN_PUSH=1, and here that is before the harm gate has spoken.
+      STATE_LOG_DRY_FLAG=""
+      if [ "$DRY" = "1" ]; then
+        STATE_LOG_DRY_FLAG="--dry-run"
+        withheld "the photograph's commit and push (STATE/log, window $DOCKET_WINDOW): rendered, not written"
+      fi
       if (cd "$OFFICE" && node "$OFFICE/world2/tools/state-log-write.mjs" \
-            --world "$SWEEP" --window "$DOCKET_WINDOW" --write \
+            --world "$SWEEP" --window "$DOCKET_WINDOW" --write $STATE_LOG_DRY_FLAG \
             --last-drained "${STATE_LOG_LAST_DRAINED:-182.2538}" \
             --as-of-world "$WORLD_FROM") > "$STATE_LOG_JSON" 2>"$WORK/state-log.err"; then
         echo "[settlement-auto] photograph: $(node -e 'const r=require(process.argv[1]);const w=r.windows||[];process.stdout.write("window "+String(r.window)+" -> "+w.length+" journal file(s) ["+w.map((x)=>x.crossing).join(", ")+"], "+w.reduce((n,x)=>n+x.lines,0)+" line(s)"+(r.state_commit?" at "+String(r.state_commit).slice(0,9):" (unchanged: "+String(r.state_note||"")+")")+(w.some((x)=>(x.unnamed_households||[]).length)?"; UNNAMED HOUSEHOLD(S): "+[...new Set(w.flatMap((x)=>x.unnamed_households||[]))].join(", "):""))' "$STATE_LOG_JSON" 2>/dev/null || echo 'written')" >&2
@@ -1039,7 +1137,7 @@ SWEEP_JSON="$WORK/sweep.json"
     # and the operator round is twelve hours away.
     if node "$OFFICE/deploy/settlement-history.mjs" --history "$HISTORY" --recurring 3 >/dev/null 2>&1; then
       echo "[settlement-auto] THIRD UNSETTLED CROSSING IN A ROW — escalating" >&2
-      node "$OFFICE/deploy/settlement-escalate.mjs" --class recurring-refusal --receipt "$OUT" >&2 || true
+      escalate --class recurring-refusal --receipt "$OUT"
     fi
     exit 1
   fi
@@ -1066,7 +1164,7 @@ SWEEP_JSON="$WORK/sweep.json"
     # next crossing composes the same red. That is the one case that must reach a
     # person rather than a log line nobody is watching at 02:39Z.
     if [ "$(node -e 'const r=require(process.argv[1]);process.stdout.write(String(r.class))' "$REFUSAL_JSON" 2>/dev/null)" = "canon-bad" ]; then
-      node "$OFFICE/deploy/settlement-escalate.mjs" --class canon-bad --receipt "$OUT" >&2 || true
+      escalate --class canon-bad --receipt "$OUT"
       RECURRING_ESCALATED=1
     fi
   fi
@@ -1085,7 +1183,7 @@ SWEEP_JSON="$WORK/sweep.json"
   if [ "${RECURRING_ESCALATED:-0}" != "1" ] \
      && node "$OFFICE/deploy/settlement-history.mjs" --history "$HISTORY" --recurring 3 >/dev/null 2>&1; then
     echo "[settlement-auto] THIRD UNSETTLED CROSSING IN A ROW — escalating" >&2
-    node "$OFFICE/deploy/settlement-escalate.mjs" --class recurring-refusal --receipt "$OUT" >&2 || true
+    escalate --class recurring-refusal --receipt "$OUT"
   fi
   exit 1
 }
@@ -1130,7 +1228,7 @@ if [ ! -f "$SWEEP/tools/harm-gate.mjs" ]; then
   HARM_JSON=""
   report refused "the harm gate could not gate: world $(git -C "$SWEEP" rev-parse --short main 2>/dev/null) carries no tools/harm-gate.mjs — nothing measured, nothing published"
   echo "[settlement-auto] HARM GATE COULD NOT GATE (no tools/harm-gate.mjs at this world sha) — publishing nothing" >&2
-  node "$OFFICE/deploy/settlement-escalate.mjs" --class harm --receipt "$OUT" >&2 || true
+  escalate --class harm --receipt "$OUT"
   exit 1
 fi
 if (cd "$SWEEP" && node tools/harm-gate.mjs --repo "$SWEEP" --sweep "$SWEEP_JSON" --base "$WORLD_BASE" --stakes "$WORK/stakes.json" --json) > "$HARM_JSON" 2>"$WORK/harm.err"; then
@@ -1149,7 +1247,7 @@ else
   # A crisis reaches a person on the first occurrence (#2793's rule, kept).
   # `|| true`: a crossing is never failed by its own alarm; the refusal above is
   # already the finding.
-  node "$OFFICE/deploy/settlement-escalate.mjs" --class harm --receipt "$OUT" >&2 || true
+  escalate --class harm --receipt "$OUT"
   exit 1
 fi
 
@@ -1178,6 +1276,10 @@ fi
 # means; and `WORLD_TO` assigned inside it is the script's own variable, which is
 # what the salvage branch means. Both are POSIX and both are load-bearing.
 publish_main() {
+  if [ "$DRY" = "1" ]; then
+    withheld "world main's push: $(git -C "$SWEEP" rev-parse main) over origin/main $WORLD_FROM"
+    return 0
+  fi
   git -C "$SWEEP" push -q origin main:main || {
     git -C "$SWEEP" fetch -q origin main
     MB="$(git -C "$SWEEP" merge-base main origin/main)"
@@ -1282,7 +1384,18 @@ done < "$WORK/tips"
 # crossing whose retirement is owed — but it does not retract a real publication.
 # The step is idempotent, so the next crossing picks up what this one missed.
 RETIRE_JSON=""
-if [ "${SETTLEMENT_RETIRE:-1}" = "1" ] && [ -n "${WORLD2_CLEARING_URL:-}" ]; then
+if [ "$DRY" = "1" ] && [ "${SETTLEMENT_RETIRE:-1}" = "1" ]; then
+  # DRY: the tool's own --dry-run names the marks and exits before it reads
+  # WORLD2_CLEARING_URL, so it needs no pen and opens no connection.
+  RETIRE_JSON="$WORK/retire.json"
+  if (cd "$OFFICE" && node "$OFFICE/world2/tools/retire-unpublished.mjs" \
+        --sweep "$SWEEP_JSON" --dry-run) > "$RETIRE_JSON" 2>"$WORK/retire.err"; then
+    withheld "the store's retirement: $(node -e 'const r=require(process.argv[1]);const w=r.would_retire||[];process.stdout.write(w.length+" mark(s)"+(w.length?" ("+w.join(", ")+")":""))' "$RETIRE_JSON" 2>/dev/null || echo "?")"
+  else
+    node -e 'const fs=require("node:fs");fs.writeFileSync(process.argv[1],JSON.stringify({ran:false,reason:process.argv[2]},null,1)+"\n")' \
+      "$RETIRE_JSON" "the retire step's dry run refused: $(head -c 200 "$WORK/retire.err" | tr '\n"' ' .')" 2>/dev/null || RETIRE_JSON=""
+  fi
+elif [ "${SETTLEMENT_RETIRE:-1}" = "1" ] && [ -n "${WORLD2_CLEARING_URL:-}" ]; then
   RETIRE_JSON="$WORK/retire.json"
   if (cd "$OFFICE" && node "$OFFICE/world2/tools/retire-unpublished.mjs" \
         --sweep "$SWEEP_JSON") > "$RETIRE_JSON" 2>"$WORK/retire.err"; then
@@ -1317,8 +1430,12 @@ if (cd "$SWEEP" && TMPDIR="$SUITE_TMP" TMP="$SUITE_TMP" TEMP="$SUITE_TMP" npm ru
   node -e 'const fs=require("node:fs");fs.writeFileSync(process.argv[1],JSON.stringify({ran:true,red:false,reds:[],reds_total:0,log:null},null,1)+"\n")' "$SUITE_JSON" 2>/dev/null || SUITE_JSON=""
   SUITE_WORD="suite green"
 else
-  cp "$WORK/suite.log" "$OFFICE/settlement-last-suite.log" 2>/dev/null || true
-  node -e 'const fs=require("node:fs");const log=fs.readFileSync(process.argv[2],"utf8");const reds=log.split(/\r?\n/).filter((l)=>/^not ok\b/.test(l));fs.writeFileSync(process.argv[1],JSON.stringify({ran:true,red:true,reds:reds.slice(0,40),reds_total:reds.length,log:"settlement-last-suite.log"},null,1)+"\n")' "$SUITE_JSON" "$WORK/suite.log" 2>/dev/null || SUITE_JSON=""
+  # DRY keeps the log beside its own receipt: the office's copy is the live
+  # crossing's, and the escalation that quotes it reads that one.
+  SUITE_KEEP="$OFFICE/settlement-last-suite.log"
+  if [ "$DRY" = "1" ]; then SUITE_KEEP="${OUT%.json}-suite.log"; fi
+  cp "$WORK/suite.log" "$SUITE_KEEP" 2>/dev/null || true
+  node -e 'const fs=require("node:fs");const log=fs.readFileSync(process.argv[2],"utf8");const reds=log.split(/\r?\n/).filter((l)=>/^not ok\b/.test(l));fs.writeFileSync(process.argv[1],JSON.stringify({ran:true,red:true,reds:reds.slice(0,40),reds_total:reds.length,log:process.argv[3]},null,1)+"\n")' "$SUITE_JSON" "$WORK/suite.log" "$(basename "$SUITE_KEEP")" 2>/dev/null || SUITE_JSON=""
   echo "[settlement-auto] SUITE WARNING — the town is published; the grammar suite went red after the push, and a person is told" >&2
   grep -E "^not ok" "$WORK/suite.log" >&2 || tail -40 "$WORK/suite.log" >&2
   SUITE_WORD="suite RED after the push — a warning, filed"
@@ -1327,7 +1444,11 @@ report published "$(node -e 'const s=require(process.argv[1]);const n=(k)=>((s[k
 if [ -n "$SUITE_JSON" ] && [ "$(node -e 'const r=require(process.argv[1]);process.stdout.write(String(r.red===true))' "$SUITE_JSON" 2>/dev/null)" = "true" ]; then
   # after the receipt, so the issue quotes a receipt that says `published` with
   # `suite.red: true` — a warning over a crossing that landed, in its own words
-  node "$OFFICE/deploy/settlement-escalate.mjs" --class suite-warning --receipt "$OUT" --suite-log "$WORK/suite.log" >&2 || true
+  escalate --class suite-warning --receipt "$OUT" --suite-log "$WORK/suite.log"
+fi
+if [ "$DRY" = "1" ]; then
+  echo "[settlement-auto] DRY — would publish: $WORLD_FROM -> $WORLD_TO ($SUITE_WORD); nothing left this run — receipt at $OUT"
+  exit 0
 fi
 echo "[settlement-auto] published: $WORLD_FROM -> $WORLD_TO ($SUITE_WORD, leases held)"
 exit 0

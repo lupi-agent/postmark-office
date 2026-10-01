@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import { openOauthDb } from "../src/oauth.mjs";
 import { REGISTRY_PATH } from "../src/residency.mjs";
 import {
@@ -278,21 +279,19 @@ test("S7 · REST AND MCP: writes bounce, reads pass, lift reopens, revoke shuts 
     const odbPath = join(work, "oauth.db");
     openOauthDb(odbPath).close();
 
-    const PORT = 43917;
-    const BASE = `http://127.0.0.1:${PORT}`;
+    // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+    // asked for); it was the fixed 43917, a door every pool tree on the box shares.
+    let PORT;
+    let BASE;
     const KEY = "standingkey";
-    child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath, "--oauth-db", odbPath], {
+    ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath, "--oauth-db", odbPath], {
       env: {
         ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
         TOWN_CLONE: clone, WORLD_CLONE: join(work, "no-world"), VOICES_LOG: join(work, "voices.jsonl"), TOWN_PUSH: "",
       },
       stdio: ["ignore", "pipe", "pipe"],
-    });
-    await new Promise((ok, no) => {
-      const t = setTimeout(() => no(new Error("server never listened")), 15_000);
-      child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-      child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-    });
+    })));
+    BASE = `http://127.0.0.1:${PORT}`;
     const auth = { authorization: `Bearer ${KEY}`, "content-type": "application/json" };
 
     const patch = (body) => fetch(`${BASE}/profile/wright`, { method: "PATCH", headers: auth, body: JSON.stringify(body) });

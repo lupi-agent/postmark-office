@@ -28,6 +28,9 @@
 // Every terminal state gets a listener, and every rejection carries the stream
 // that explains it.
 
+import { createServer } from "node:net";
+import { once } from "node:events";
+
 const tail = (s, n = 2000) => (s.length > n ? `…${s.slice(-n)}` : s);
 
 /**
@@ -71,4 +74,65 @@ export function awaitListening(child, { budgetMs = 30_000, ready = "listening" }
     child.on("exit", (code, signal) => fail(
       `the office exited before it was ready (code ${code}${signal ? `, signal ${signal}` : ""})`));
   });
+}
+
+// ── the port, asked for ──────────────────────────────────────────────────────
+//
+// THE PORT IS ASKED FOR, NEVER CHOSEN (join-pr-at-the-cosign.test.mjs § the
+// port). A fixed port is a lock on a door every pool tree on the box shares,
+// and a pid-derived one is a smaller guess at the same door. An in-process
+// server listens on 0 and reads its own port back; a SPAWNED office cannot,
+// because `--port 0` would key every office's loop-lag state file on "0"
+// (src/loop-lag.mjs § stateFileFor) and trade a port collision for a file one.
+// So the test asks the OS for a free port, lets it go, and hands it to the
+// office as `--port`. Between the probe and the child's bind is a small window
+// someone else could take the port in; `bootOnFreePort` closes it the only way a
+// test can — by noticing EADDRINUSE and asking once more, aloud.
+
+/** A port the OS just said was free, on the interfaces an office binds (all). */
+export function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.unref();
+    probe.on("error", reject);
+    probe.listen(0, () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
+/**
+ * Boot a spawned office on a port asked of the OS, and wait for it to listen.
+ * `start(port)` spawns the child with that port and returns it (each suite keeps
+ * its own argv and env). If the child dies with EADDRINUSE — the window between
+ * the probe and its bind lost — it is started ONCE more on a fresh port, and the
+ * retry is logged; a second loss rejects like any other failed boot.
+ * Resolves `{ child, port }`.
+ */
+export async function bootOnFreePort(start, { probe = freePort, log = console.log, ...wait } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    const port = await probe();
+    const child = start(port);
+    // Its own copy of stderr: `exit` can fire before the streams drain, so the
+    // verdict waits for `close`, by which time every byte has arrived.
+    let err = "";
+    child.stderr?.on("data", (d) => { err += d; });
+    try {
+      await awaitListening(child, wait);
+      return { child, port };
+    } catch (e) {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        await Promise.race([once(child, "close"), new Promise((ok) => setTimeout(ok, 2_000))]);
+      }
+      if (attempt === 1 && /EADDRINUSE/.test(err + e.message)) {
+        log(`bootOnFreePort: port ${port} was taken between the probe and the bind (EADDRINUSE); retrying once on a fresh port`);
+        continue;
+      }
+      // Until it resolves, the child is the helper's: a caller handed a
+      // rejection never received it, so nothing else could stop it.
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      throw e;
+    }
+  }
 }

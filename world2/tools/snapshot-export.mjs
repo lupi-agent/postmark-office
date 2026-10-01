@@ -615,6 +615,129 @@ function excerpt(a, b, width = 120) {
   return { at: i, a: cut(a), b: cut(b) };
 }
 
+// ── DECLARED RE-FREEZES (POS-242 item 3, shape A ruled 2026-10-01) ──────────
+//
+// A migration or backfill that changes already-archived history declares it,
+// in its own PR, in world2/schema/REFREEZES.json — and this pen re-freezes ONLY
+// the differing archives whose difference VERIFIES as a declared class. Every
+// other difference still refuses, exactly as below. The case it is built from:
+// 2026-09-28, migration 025 dropped acts.journal_seq and the w40.3 backfill
+// (office #220) put acts into closed windows; 26 archives re-derived
+// differently and the notary stayed red until a hand re-froze them through the
+// operator door (notary repo 85da0af17, Keemin's go).
+//
+//   { "declarations": [ {
+//       "id":     "025-drop-journal-seq",         unique; consumed ONCE
+//       "class":  "drop-field" | "field-change" | "rows-added",
+//       "field":  "journal_seq",                  drop-field / field-change only
+//       "reason": "<what changed history, and why>",
+//       "go":     "<whose go, and when>" } ] }
+//
+// THE CLASSES, as a re-derived archive is compared with the frozen one, act by act:
+//   drop-field <f>   every frozen act is still derived, and on each the only
+//                    difference is <f> becoming null or absent. NULL COUNTS AS
+//                    DROPPED, measured rather than chosen: ACT_FIELDS is fixed,
+//                    so archiveLine renders a dropped column as `"f":null` —
+//                    09-28's window 201 diff is exactly `journal_seq: 3720 -> null`.
+//   field-change <f> on each still-derived act, <f> may differ (or newly appear).
+//   rows-added       acts may appear that the frozen archive does not hold.
+// Classes compose: 09-28 was a drop-field and a rows-added over the same
+// windows. No class removes an act, and no class excuses any field it does not
+// name: a payload that moved under a drop-field declaration refuses.
+//
+// SCOPE IS THE CLASS, NOT A LIST: any CLOSED window whose difference matches.
+// The author of a backfill cannot know in advance which windows it touches.
+//
+// CONSUMED ONCE, in the notary repo: REFREEZES-CONSUMED.json records each id with the
+// windows it re-froze, in the same commit. A consumed id never excuses again.
+export const DECLARATION_CLASSES = new Set(["drop-field", "field-change", "rows-added"]);
+export const REFREEZES_MANIFEST = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "schema", "REFREEZES.json");
+export const CONSUMED_FILE = "REFREEZES-CONSUMED.json";
+
+/**
+ * The manifest, validated whole, minus every id the target's ledger has
+ * consumed. A manifest this pen cannot read in full is Cannot (exit 2): a
+ * declaration half-understood must not excuse anything.
+ */
+export function loadDeclarations(manifestText, consumedText = null) {
+  let m;
+  try { m = JSON.parse(manifestText); } catch (e) { throw new Cannot(`REFREEZES.json is not readable JSON: ${e.message}`); }
+  if (!m || !Array.isArray(m.declarations)) throw new Cannot("REFREEZES.json carries no `declarations` list");
+  const seen = new Set();
+  for (const d of m.declarations) {
+    const where = `REFREEZES.json declaration ${JSON.stringify(d?.id ?? null)}`;
+    if (typeof d?.id !== "string" || !/^[a-z0-9][a-z0-9._-]*$/.test(d.id)) throw new Cannot(`${where}: id must be a lowercase slug`);
+    if (seen.has(d.id)) throw new Cannot(`${where}: the id is declared twice`);
+    seen.add(d.id);
+    if (!DECLARATION_CLASSES.has(d.class)) throw new Cannot(`${where}: class must be one of ${[...DECLARATION_CLASSES].join(", ")}`);
+    if (d.class === "rows-added" ? d.field !== undefined : (typeof d.field !== "string" || !/^[a-z_][a-z0-9_]*$/.test(d.field))) {
+      throw new Cannot(`${where}: ${d.class === "rows-added" ? "rows-added names no field" : `${d.class} must name its field`}`);
+    }
+    for (const k of ["reason", "go"]) if (typeof d[k] !== "string" || !d[k].trim()) throw new Cannot(`${where}: ${k} is required — a re-freeze nobody owns is the thing this pen exists to catch`);
+  }
+  let consumed = [];
+  if (consumedText !== null) {
+    try { consumed = JSON.parse(consumedText).consumed; } catch (e) { throw new Cannot(`${CONSUMED_FILE} is not readable JSON: ${e.message}`); }
+    if (!Array.isArray(consumed)) throw new Cannot(`${CONSUMED_FILE} carries no \`consumed\` list`);
+  }
+  const spent = new Set(consumed.map((c) => c.id));
+  return { declarations: m.declarations.filter((d) => !spent.has(d.id)), consumed };
+}
+
+/**
+ * Does the difference between a frozen archive and its re-derivation verify as
+ * the declared classes? `{ ok: true, used }` names the declarations it needed;
+ * `{ ok: false, why }` names the first act and field that no class excuses.
+ */
+export function verifyDeclared(have, want, declarations) {
+  const parse = (bytes, side) => {
+    const out = new Map();
+    for (const [i, l] of bytes.replace(/\n$/, "").split("\n").filter(Boolean).entries()) {
+      let o; try { o = JSON.parse(l); } catch { return { bad: `${side} line ${i + 1} is not JSON` }; }
+      out.set(o.id, o);
+    }
+    return { rows: out };
+  };
+  const a = parse(have, "the frozen archive's"), b = parse(want, "the re-derived");
+  if (a.bad || b.bad) return { ok: false, why: a.bad ?? b.bad };
+  const of = (cls) => declarations.filter((d) => d.class === cls);
+  const used = new Set();
+  for (const [id] of a.rows) if (!b.rows.has(id)) return { ok: false, why: `act ${id} is frozen but no longer derived — no class removes an act` };
+  const added = [...b.rows.keys()].filter((id) => !a.rows.has(id));
+  if (added.length) {
+    const r = of("rows-added");
+    if (!r.length) return { ok: false, why: `${added.length} act(s) appear (ids ${added.slice(0, 5).join(", ")}${added.length > 5 ? ", …" : ""}) and no rows-added is declared` };
+    used.add(r[0].id);
+  }
+  for (const [id, o] of a.rows) {
+    const n = b.rows.get(id);
+    for (const k of new Set([...Object.keys(o), ...Object.keys(n)])) {
+      if (canonical(o[k] ?? null) === canonical(n[k] ?? null) && (k in o) === (k in n)) continue;
+      const change = of("field-change").find((d) => d.field === k);
+      if (change) { used.add(change.id); continue; }
+      const drop = of("drop-field").find((d) => d.field === k);
+      if (drop && k in o && (n[k] === undefined || n[k] === null)) { used.add(drop.id); continue; }
+      return { ok: false, why: `act ${id}: ${k} ${canonical(o[k] ?? null).slice(0, 60)} -> ${canonical(n[k] ?? null).slice(0, 60)}, which no declared class excuses${drop ? ` (drop-field ${k} covers only a value that becomes null or absent)` : ""}` };
+    }
+  }
+  // In the manifest's own order, so the receipt reads the way the declarations were written.
+  return { ok: true, used: declarations.filter((d) => used.has(d.id)).map((d) => d.id) };
+}
+
+/** The ledger after this run's declared re-freezes: each id once, with its windows. */
+export function consumeDeclarations(consumed, plan, at) {
+  const byId = new Map();
+  for (const a of plan) {
+    if (a.action !== "refreeze-declared") continue;
+    for (const id of a.declarations) {
+      if (!byId.has(id)) byId.set(id, []);
+      byId.get(id).push(a.window);
+    }
+  }
+  const next = [...consumed, ...[...byId].map(([id, windows]) => ({ id, windows, at }))];
+  return `${JSON.stringify({ consumed: next }, null, 1)}\n`;
+}
+
 /**
  * THE APPEND-ONLY CHECK. "frozen-on-write, an input never re-derived-into."
  *
@@ -635,7 +758,7 @@ function excerpt(a, b, width = 120) {
  * than widens: every other differing archive refuses exactly as before, which
  * is why the refusal test above stays untouched and green.
  */
-export function checkArchives(target, archives, { refreeze = null } = {}) {
+export function checkArchives(target, archives, { refreeze = null, declared = [] } = {}) {
   const findings = [];
   const plan = [];
   const wanted = refreeze === null ? null : new Set((Array.isArray(refreeze) ? refreeze : [refreeze]).map(Number));
@@ -647,6 +770,11 @@ export function checkArchives(target, archives, { refreeze = null } = {}) {
 
     if (wanted !== null && wanted.has(Number(a.window))) {
       plan.push({ ...a, action: "refreeze", was: have, oldSha: sha256(have), newSha: sha256(a.bytes) });
+      continue;
+    }
+    const verdict = declared.length ? verifyDeclared(have, a.bytes, declared) : null;
+    if (verdict?.ok) {
+      plan.push({ ...a, action: "refreeze-declared", was: have, oldSha: sha256(have), newSha: sha256(a.bytes), declarations: verdict.used });
       continue;
     }
 
@@ -665,7 +793,8 @@ export function checkArchives(target, archives, { refreeze = null } = {}) {
       `${a.path} is an ARCHIVE and already exists, and re-deriving it does not reproduce it.\n` +
       `    ${detail.join("\n    ")}\n` +
       `    An archive is frozen on write (gold §2). This is drift and a FINDING — the notary will not overwrite it.\n` +
-      `    Either the file was edited, or the office rewrote history in a window it had already closed. Both want a human.`);
+      `    Either the file was edited, or the office rewrote history in a window it had already closed. Both want a human.` +
+      (verdict ? `\n    It does not verify as a declared re-freeze (${declared.map((d) => d.id).join(", ")}): ${verdict.why}` : ""));
   }
   return { plan, findings };
 }
@@ -709,6 +838,24 @@ export function refreezeManyCommitMessage(list, reason, d) {
     `\n\nreason: ${reason}\n\n` +
     `No window outside this list was touched. Every other differing archive still refuses.\n` +
     `window cursor ${d.windowCursor} · acts cursor ${d.cursors.acts_cursor}\n\nWritten by ${TOOL}.`;
+}
+
+/**
+ * THE DECLARED RE-FREEZE'S RECEIPT. The declaration ids and their reasons ride
+ * the first line; each window's two sha256s and the ids that explained it are
+ * in the body, so the commit is still the whole receipt.
+ */
+export function declaredRefreezeSection(list, declarations) {
+  const ids = [...new Set(list.flatMap((a) => a.declarations))];
+  const decl = new Map(declarations.map((d) => [d.id, d]));
+  return {
+    head: `notary: refreeze ${list.length} archive(s) (${list.map((a) => a.window).join(", ")}) as declared — ` +
+      ids.map((id) => `${id}: ${decl.get(id)?.reason ?? "?"}`).join("; "),
+    body: `Re-frozen as DECLARED in world2/schema/REFREEZES.json: each window's difference verified as the named class(es).\n` +
+      list.map((a) => `archives/acts/${a.window}.jsonl · ${a.declarations.join(" + ")} · old sha256 ${a.oldSha} · ${lineCount(a.was)} line(s) → new sha256 ${a.newSha} · ${a.lines} line(s)`).join("\n") +
+      `\n\n` + ids.map((id) => { const d = decl.get(id) ?? {}; return `${id} (${d.class}${d.field ? ` ${d.field}` : ""}) — go: ${d.go}`; }).join("\n") +
+      `\nConsumed once: recorded in ${CONSUMED_FILE}.`,
+  };
 }
 
 /**
@@ -776,11 +923,16 @@ export function writeMarks(target, rendered, { dryRun }) {
   return { written, unchanged, removed };
 }
 
-async function runExport(client, { target, dryRun, allowDetached, now = Date.now(), refreeze = null, reason = null }) {
+export async function runExport(client, { target, dryRun, allowDetached, now = Date.now(), refreeze = null, reason = null, manifestText = null }) {
   assertUsableTarget(target, { allowDetached });
   const d = await derive(client, { now });
 
-  const { plan, findings } = checkArchives(target, d.archives, { refreeze });
+  const consumedPath = path.join(target, CONSUMED_FILE);
+  const { declarations, consumed } = loadDeclarations(
+    manifestText ?? (existsSync(REFREEZES_MANIFEST) ? readFileSync(REFREEZES_MANIFEST, "utf8") : '{"declarations":[]}'),
+    existsSync(consumedPath) ? readFileSync(consumedPath, "utf8") : null);
+  const { plan, findings } = checkArchives(target, d.archives, { refreeze, declared: declarations });
+  const declaredPlan = plan.filter((a) => a.action === "refreeze-declared");
   if (findings.length) throw new Red(`the append-only archive lane refuses this run`, findings);
 
   // A door that silently does nothing is not a door. If the operator named a
@@ -841,7 +993,7 @@ async function runExport(client, { target, dryRun, allowDetached, now = Date.now
   }
   const preview = writeMarks(target, d.rendered, { dryRun: true });
   const wouldChange = certChanged || preview.written > 0 || preview.removed.length > 0
-    || plan.some((a) => a.action === "write" || a.action === "refreeze");
+    || plan.some((a) => a.action === "write" || a.action === "refreeze" || a.action === "refreeze-declared");
 
   if (tagged && !wouldChange) {
     return { status: "already-certified", tag, cert, derived: d, wrote: null };
@@ -849,12 +1001,13 @@ async function runExport(client, { target, dryRun, allowDetached, now = Date.now
 
   const marksResult = writeMarks(target, d.rendered, { dryRun });
   for (const a of plan) {
-    if ((a.action !== "write" && a.action !== "refreeze") || dryRun) continue;
+    if ((a.action !== "write" && a.action !== "refreeze" && a.action !== "refreeze-declared") || dryRun) continue;
     const full = path.join(target, a.path);
     mkdirSync(path.dirname(full), { recursive: true });
     writeFileSync(full, a.bytes);
   }
   if (!dryRun) writeFileSync(certPath, writeCert(cert));
+  if (!dryRun && declaredPlan.length) writeFileSync(consumedPath, consumeDeclarations(consumed, plan, cert.exported_at ?? new Date().toISOString()));
 
   if (dryRun) return { status: tagged ? "dry-run-repair" : "dry-run", tag, cert, derived: d, wrote: { marks: marksResult, archives: plan } };
 
@@ -862,9 +1015,14 @@ async function runExport(client, { target, dryRun, allowDetached, now = Date.now
   // whatever else the caller keeps in this checkout is none of the notary's
   // business, and sweeping it in would make the certification a claim about
   // files the certification does not describe.
-  git(target, ["add", "--", CERT_FILE, "archives", "WORLD2/marks"]);
+  git(target, ["add", "--", CERT_FILE, "archives", "WORLD2/marks", ...(declaredPlan.length ? [CONSUMED_FILE] : [])]);
+  const declaredMsg = declaredPlan.length ? declaredRefreezeSection(declaredPlan, declarations) : null;
   if (git(target, ["diff", "--cached", "--name-only"]).length) {
-    git(target, ["commit", "-m", refrozen.length > 1
+    git(target, ["commit", "-m", declaredMsg && !refrozen.length
+      ? `${declaredMsg.head}\n\n${declaredMsg.body}\n\nwindow cursor ${d.windowCursor} · acts cursor ${d.cursors.acts_cursor}\n\nWritten by ${TOOL}.`
+      : declaredMsg
+      ? `${refrozen.length > 1 ? refreezeManyCommitMessage(refrozen, reason, d) : refreezeCommitMessage(refrozen[0], reason, d)}\n\n${declaredMsg.head}\n${declaredMsg.body}`
+      : refrozen.length > 1
       ? refreezeManyCommitMessage(refrozen, reason, d)
       : refrozen.length
       ? refreezeCommitMessage(refrozen[0], reason, d)
@@ -1087,6 +1245,8 @@ async function main() {
       held: derived.held.map((h) => ({ window: h.id, ferry: h.ferry, sails_at: h.sailsAt })),
       refrozen: (wrote?.archives ?? []).filter((a) => a.action === "refreeze")
         .map((a) => ({ window: a.window, old_sha256: a.oldSha, new_sha256: a.newSha, reason })),
+      refrozen_declared: (wrote?.archives ?? []).filter((a) => a.action === "refreeze-declared")
+        .map((a) => ({ window: a.window, old_sha256: a.oldSha, new_sha256: a.newSha, declarations: a.declarations })),
       certification: cert,
     }, null, 2));
     process.exit(0);
@@ -1105,7 +1265,8 @@ async function main() {
   console.log(`  windows closed ${derived.windows.map((w) => w.id).join(", ")} · acts cursor ${derived.cursors.acts_cursor} · marks ${derived.cursors.marks_count}`);
   for (const a of wrote.archives) {
     console.log(`  archives/acts/${a.window}.jsonl — ${a.lines} act(s) [${a.action}]` +
-      (a.action === "refreeze" ? `\n      old sha256 ${a.oldSha}\n      new sha256 ${a.newSha}\n      reason: ${reason}` : ""));
+      (a.action === "refreeze" ? `\n      old sha256 ${a.oldSha}\n      new sha256 ${a.newSha}\n      reason: ${reason}` : "") +
+      (a.action === "refreeze-declared" ? `\n      old sha256 ${a.oldSha}\n      new sha256 ${a.newSha}\n      declared: ${a.declarations.join(" + ")}` : ""));
   }
   // The two reasons an act has no archive, said apart. "Their window has not
   // closed" was the ONLY sentence this pen had, and it was the wrong one for

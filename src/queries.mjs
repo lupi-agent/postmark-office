@@ -242,10 +242,18 @@ export const TOWN_OFFICES_CAP = 25;
 export function townSummary(db, meta) {
   const all = db.prepare("SELECT handle, json FROM residents").all()
     .filter((r) => isOffice(JSON.parse(r.json))).map((r) => r.handle).sort();
+  return townSummaryOf(meta, all, residentList(db).length);
+}
+
+/**
+ * The town card from the index's meta, every office handle (sorted) and the
+ * roll's length. Shared with the store's twin.
+ */
+export function townSummaryOf(meta, all, residents) {
   const offices = all.slice(0, TOWN_OFFICES_CAP);
   const complete = offices.length === all.length;
   return { as_of: meta.as_of,
-    counts: { ...JSON.parse(meta.hydrated_counts ?? "{}"), residents: residentList(db).length },
+    counts: { ...JSON.parse(meta.hydrated_counts ?? "{}"), residents },
     offices,
     offices_total: all.length,
     offices_shown: offices.length,
@@ -302,8 +310,14 @@ function readRoll(db) {
     .filter((r) => isResidentHandle(r.handle))
     // `joined` rides the row so the `since` filter below can be CHECKED: a
     // filter whose field the answer never shows is a filter nobody can audit.
-    .map((r) => { const d = JSON.parse(r.json); return { handle: r.handle, display: d.display ?? d.name ?? r.handle, github: d.github ?? d.address?.data?.github ?? null, is_office: isOffice(d), joined: d.address?.data?.joined ?? null, last_active: d.last_active ?? null }; });
+    .map((r) => rollEntry(r.handle, JSON.parse(r.json)));
 }
+
+/** One resident's line on the roll, from their stored card. Shared with the store's twin. */
+export const rollEntry = (handle, d) => ({ handle, display: d.display ?? d.name ?? handle, github: d.github ?? d.address?.data?.github ?? null, is_office: isOffice(d), joined: d.address?.data?.joined ?? null, last_active: d.last_active ?? null });
+
+/** Is a card an office's? queries.mjs's one reading of the flag, for the store's twin. */
+export const isOfficeCard = (d) => isOffice(d);
 
 // The roster the DOOR serves — bounded, counted, walkable, and filterable.
 //
@@ -317,10 +331,14 @@ function readRoll(db) {
 // mean "how many of the first 50 joined lately", which is not a fact anybody
 // asked for. (investigate's own scar: children sliced before the exclusion
 // filter ran, and a true child got reported as a neighbour of its own container.)
-export function residentPage(db, { limit, offset, since, office } = {}) {
+export function residentPage(db, opts = {}) {
+  return residentPageOf(residentList(db), opts);
+}
+
+/** The roster page from the whole roll (residentList's rows). Shared with the store's twin. */
+export function residentPageOf(roll, { limit, offset, since, office } = {}) {
   const n = Math.min(Math.max(Number(limit) || ROSTER_PAGE, 1), 200);
   const start = Math.max(Number(offset) || 0, 0);
-  const roll = residentList(db);
   let matched = roll;
   if (since) matched = matched.filter((r) => r.joined && r.joined >= String(since));
   if (office === true || office === false) matched = matched.filter((r) => r.is_office === office);
@@ -346,7 +364,10 @@ const ROSTER_PAGE = 50;
 
 // The town's office handles — used by the exclude-office letter filter.
 export function officeHandles(db) {
-  return db.prepare("SELECT handle, json FROM residents").all()
+  // `ORDER BY handle` names the order (POS-268): it was the table's insert
+  // order, which the store's twin has no way to copy. The one caller
+  // (letterList's exclude-office filter) reads it as a set.
+  return db.prepare("SELECT handle, json FROM residents ORDER BY handle").all()
     .filter((r) => isOffice(JSON.parse(r.json))).map((r) => r.handle);
 }
 
@@ -390,7 +411,17 @@ export function resident(db, handle, fresh = null) {
   // the AMBIENT one while the compose read the injected one — see the profile
   // bubble's own note for what that cost.
   const ctx = withFresh(db, handle, fresh);
-  const d = JSON.parse(row.json);
+  const pages = {};
+  for (const box of ["inbox", "outbox"]) pages[box] = mailPage(db, handle, box, { limit: CARD_MAIL });
+  return residentOf(JSON.parse(row.json), pages, handle, ctx);
+}
+
+/**
+ * The composed address card from the stored card, the newest CARD_MAIL of each
+ * box ({ inbox, outbox } pages) and the freshness context. Shared with the
+ * store's twin.
+ */
+export function residentOf(d, pages, handle, ctx) {
   const out = { ...d, is_office: isOffice(d) };
   // ── THE MAIL BOUND (2026-08-25) ─────────────────────────────────────────
   // The address card is an identity read, and the hydrated blob it spreads
@@ -415,7 +446,7 @@ export function resident(db, handle, fresh = null) {
   // count is the right one to publish, because it is the count of the set the
   // pointer below actually leads to.
   for (const box of ["inbox", "outbox"]) {
-    const page = mailPage(db, handle, box, { limit: CARD_MAIL });
+    const page = pages[box];
     out[box] = page.letters;
     out[`${box}_total`] = page.total;
   }
@@ -1210,8 +1241,11 @@ export function mailAwaitingOf(law, asOfDay, handle, { limit = LEDGER_PAGE, offs
 export function windowRead(db, handle, fresh = null) {
   const row = db.prepare("SELECT json FROM residents WHERE handle = ?").get(handle);
   if (!row) return null;
-  const state = JSON.parse(row.json).window_state ?? null;
-  const ctx = withFresh(db, handle, fresh);
+  return windowReadOf(JSON.parse(row.json).window_state ?? null, handle, withFresh(db, handle, fresh));
+}
+
+/** The window read from the stored window state and the freshness context. Shared with the store's twin. */
+export function windowReadOf(state, handle, ctx) {
   // Composed BEFORE the note is written, because the note branches on whether a
   // pane exists — and a resident who hung their first pane two minutes ago must
   // not be told "no pane hung yet" by an index that has not caught up. The
@@ -1601,12 +1635,48 @@ function slimStamps(s) {
 // rather than to compose at the doors.
 // `slim` is the CONNECTOR SKIN's bound and only mcp.mjs passes it — see the
 // bounds note above, and the three helpers directly overhead.
-export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOffset = 0, fresh = null, slim = false } = {}) {
+export function doorstep(db, handle, asOf, opts = {}) {
+  const { nowMs = Date.now(), conversationsOffset = 0, fresh = null, slim = false } = opts;
   const selfRow = db.prepare("SELECT json FROM residents WHERE handle = ?").get(handle);
   if (!selfRow) return null;
   const one = (sql, ...p) => Object.values(db.prepare(sql).get(...p))[0];
-  const latestArrivals = db.prepare("SELECT handle, json FROM residents").all()
-    .map((r) => { const d = JSON.parse(r.json); return { handle: r.handle, joined: d.address?.data?.joined ?? null, is_office: isOffice(d) }; })
+  const offset = Math.max(Number(conversationsOffset) || 0, 0);
+  const mailLimit = slim ? DOORSTEP_INBOX_SLIM : DOORSTEP_INBOX;
+  return doorstepOf({
+    arrivals: db.prepare("SELECT handle, json FROM residents").all()
+      .map((r) => { const d = JSON.parse(r.json); return { handle: r.handle, joined: d.address?.data?.joined ?? null, is_office: isOffice(d) }; }),
+    awaiting: mailAwaiting(db, handle, { offset }),
+    mail: mailList(db, handle, "inbox", { limit: mailLimit }),
+    stamps: stampsDetail(db, handle),
+    bulletin: bulletinTeaser(db, { limit: DOORSTEP_BULLETIN }),
+    pulse: metricsMail(db, { days: DOORSTEP_PULSE_DAYS }),
+    window: windowRead(db, handle, fresh),
+    psa: psaFold(db, { now: nowMs }),
+    pendingOutbox: outboxSettled(db, handle),
+    counts: {
+      received: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery' AND to_h = ?", handle),
+      sent: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery' AND from_h = ?", handle),
+    },
+    town: {
+      residents: one("SELECT COUNT(*) FROM residents"),
+      deliveries: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery'"),
+      lastDelivery: one("SELECT MAX(date) FROM ledger WHERE kind = 'delivery'"),
+    },
+  }, handle, asOf, opts);
+}
+
+/** The doorstep sizes the store's twin reads its segments at, as doorstep does. */
+export const DOORSTEP_SIZES = Object.freeze({ get inbox() { return DOORSTEP_INBOX; }, get inboxSlim() { return DOORSTEP_INBOX_SLIM; }, get bulletin() { return DOORSTEP_BULLETIN; }, get pulseDays() { return DOORSTEP_PULSE_DAYS; } });
+
+/**
+ * The doorstep bundle from its segments' answers, each read by its own reader:
+ * every resident's handle, joined date and office flag (the arrivals), the awaiting view, the inbox page,
+ * the stamps detail, the bulletin teaser, the town pulse, the window read, the
+ * PSA fold, the settled outbox, and the ledger's counts. Shared with the
+ * store's twin; the slim skin is applied here, to both.
+ */
+export function doorstepOf(parts, handle, asOf, { conversationsOffset = 0, slim = false } = {}) {
+  const latestArrivals = parts.arrivals
     .filter((a) => a.joined)
     .sort((a, b) => b.joined.localeCompare(a.joined) || a.handle.localeCompare(b.handle))
     .slice(0, 5);
@@ -1615,9 +1685,7 @@ export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOf
   // Composed before the page rather than inside it, for one reason: `moved`
   // below names the per-row fields this cut dropped, and it can only name the
   // ones that were really there if it reads them off the cut that happened.
-  const awaitingAnswer = slim
-    ? slimAwaiting(mailAwaiting(db, handle, { offset }))
-    : mailAwaiting(db, handle, { offset });
+  const awaitingAnswer = slim ? slimAwaiting(parts.awaiting) : parts.awaiting;
   return {
     handle, as_of: asOf,
     the_bundle: BUNDLE_LAW,
@@ -1631,7 +1699,7 @@ export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOf
     // the limit it says it was asked at. `total` and `next_offset` already
     // carried the rest, on both skins, before this existed.
     mail: segment("household.mail", { handle, view: "inbox", limit: mailLimit },
-      mailList(db, handle, "inbox", { limit: mailLimit })),
+      parts.mail),
     // The mail-state law: the threads awaiting your reply, your merged-but-
     // unsailed replies, and the conversation ledger itself, bounded. This one
     // segment is what `correspondence` and `awaiting_reply` both used to be.
@@ -1648,15 +1716,15 @@ export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOf
     // shown a single number of. `household read: "stamps"` stays exactly what
     // it is and is one call away for a caller who wants their whole house.
     stamps: segment("town.stamps", { handle },
-      slim ? { handle, ...slimStamps(stampsDetail(db, handle)) } : { handle, ...stampsDetail(db, handle) }),
+      slim ? { handle, ...slimStamps(parts.stamps) } : { handle, ...parts.stamps }),
     // Teaser + pointer, per the refactor: the entries are already the authors'
     // own listing lines, so the cut costs a reader nothing but the tail, and
     // the total says how long the tail is.
     bulletin: segment("town.bulletin", { limit: DOORSTEP_BULLETIN },
-      bulletinTeaser(db, { limit: DOORSTEP_BULLETIN })),
+      parts.bulletin),
     town_pulse: segment("town.metrics", { days: DOORSTEP_PULSE_DAYS },
-      metricsMail(db, { days: DOORSTEP_PULSE_DAYS })),
-    window: segment("household.window", { handle }, windowRead(db, handle, fresh)),
+      parts.pulse),
+    window: segment("household.window", { handle }, parts.window),
 
     // ── the bundle's own, which no other read serves ─────────────────────────
     // The two-clocks question (Liv's find, Keemin-ruled 2026-08-10: disclose,
@@ -1668,23 +1736,15 @@ export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOf
     // The registrar's week, as text (Keemin 2026-08-22) — the half of the
     // bulletin a resident can act on without leaving the page. Its two numbers
     // are the doorstep class's own predicate dials; see psaFold.
-    psa: slim ? slimPsa(psaFold(db, { now: nowMs })) : psaFold(db, { now: nowMs }),
+    psa: slim ? slimPsa(parts.psa) : parts.psa,
     // HALF THE ANSWER, and deliberately so: this is the INDEX's count, and a
     // letter sent under the town log is a row for up to twelve hours before it
     // becomes a file this COUNT(*) can reach. `doorstepBundle` finishes the
     // number for its own sender and attaches `pending_outbox_freshness` beside
     // it — the ownership gate and the town log both live there, not here.
-    pending_outbox: outboxSettled(db, handle),
-    counts: {
-      received: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery' AND to_h = ?", handle),
-      sent: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery' AND from_h = ?", handle),
-    },
-    town: {
-      residents: one("SELECT COUNT(*) FROM residents"),
-      deliveries: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery'"),
-      lastDelivery: one("SELECT MAX(date) FROM ledger WHERE kind = 'delivery'"),
-      latestArrivals,
-    },
+    pending_outbox: parts.pendingOutbox,
+    counts: parts.counts,
+    town: { ...parts.town, latestArrivals },
     // WHERE THE RETIRED KEYS WENT. The bundle refactor moved six top-level
     // fields into segments, and a cached reader finding them absent deserves
     // the door that serves them rather than silence — psaFold's `more_note`
@@ -1753,7 +1813,7 @@ export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOf
  * Degrades rather than throws: a checkout too old to carry the onboarding fold
  * yields a null, and the doorstep simply carries no next-steps block.
  */
-export async function nextStepsFor(db, meta, handle, clone, { own = false, worldBlock: injected, key = null } = {}) {
+export async function nextStepsFor(db, meta, handle, clone, { own = false, worldBlock: injected, key = null, ix = null } = {}) {
   try {
     const tools = await questTools(clone);
     if (typeof tools.composeNextSteps !== "function") return null; // older checkout
@@ -1797,7 +1857,7 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // Absent means ASK, exactly as before, at exactly the old cost, for exactly
     // that case. (Measured on a fresh index of the live town: 182 of 182 rows
     // carry all six, so this is the deploy window and not the common path.)
-    const facts = onboardingFactsFromStanding(standingFor(db, handle))
+    const facts = onboardingFactsFromStanding(ix ? await ix.standing(handle) : standingFor(db, handle))
       ?? tools.onboardingFactsFor(clone, handle);
     // THE 08-15 GATE. Keemin's ruling, verbatim: "the gaps are yours to see, not
     // theirs to be seen by." A stranger's read of your doorstep gets exactly
@@ -1812,7 +1872,7 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // and the saved world read is the expensive half of this call besides.
     const worldSited = own ? await worldSitedFor(handle, { worldBlock }) : null;
     const onboarding = tools.onboardingBoard(registry, facts, handle, { worldSited });
-    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key }) : null;
+    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key, ix }) : null;
     // THE VERDICT RIDES DOWN, NOT THE READER (#2773, and the 08-15 gate is why).
     // `worldSited` above is already this doorstep's decision: the world read for
     // an own door, and a deliberate NON-read — null, nobody looked — for a
@@ -1820,7 +1880,7 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // the very question the gate skipped, one layer down where the skip is
     // invisible; handing it the verdict keeps the gate whole and keeps the whole
     // doorstep to one world open.
-    const questBoard = await questBoardFor(db, meta, handle, clone, { worldSited });
+    const questBoard = ix ? await ix.questBoard(handle, { worldSited }) : await questBoardFor(db, meta, handle, clone, { worldSited });
     // ── WHAT THE COMPOSER IS HANDED, AND WHY IT IS NOT THE BOARD VERBATIM ────
     //
     // `composeNextSteps` writes a step's tail as `(${q.progress}/${q.target}
@@ -2599,6 +2659,19 @@ export const officeIndex = (db, meta, clone) => ({
   stampsDetail: async (handle) => stampsDetail(db, handle),
   questBoard: async (handle, opts) => questBoardFor(db, meta, handle, clone, opts),
   potBoard: async (extraInvalid) => potBoard(db, extraInvalid),
+  // the doorstep's and the house's reads (group 3)
+  asOf: async () => indexAsOf(db),
+  doorstep: async (handle, asOf, opts) => doorstep(db, handle, asOf, opts),
+  residentSegments: async (handle, fresh) => (await import("./house-bundle.mjs")).residentSegments(db, handle, fresh),
+  hasResident: async (handle) => { try { return Boolean(db.prepare("SELECT 1 FROM residents WHERE handle = ?").get(handle)); } catch { return false; } },
+  lastActive: async (handle) => {
+    try { const row = db.prepare("SELECT json FROM residents WHERE handle = ?").get(handle); return row ? (JSON.parse(row.json).last_active ?? null) : null; }
+    catch { return null; }
+  },
+  mailAwaiting: async (handle, opts) => mailAwaiting(db, handle, opts),
+  standing: async (handle) => standingFor(db, handle),
+  home: async (handle, fresh) => home(db, handle, fresh),
+  deliveredTo: async (handle) => (await import("./unread-store.mjs")).deliveredTo(db, handle),
 });
 
 /** questBoardWith's reads, from office.db. */
@@ -2930,18 +3003,23 @@ export function parsePsaEntries(body) {
  * Returns `{ entries, window_days, max, dials, note }`, or `null` when the wall
  * is not in this index at all — an honest absence, never an invented quiet week.
  */
-export function psaFold(db, { now = Date.now() } = {}) {
-  const windowDial = dialNumber("doorstep", "psa_window_days", 7, { min: 0 });
-  const maxDial = dialNumber("doorstep", "psa_max", 5, { min: 0 });
+export function psaFold(db, opts = {}) {
   let row;
   try { row = db.prepare("SELECT json FROM bulletin WHERE slug = ?").get(PSA_SLUG); }
   catch { row = null; }
-  if (!row) {
+  return psaFoldOf(row?.json ?? null, opts);
+}
+
+/** The PSA fold from the PSA posting's stored json (null: the checkout carries none). Shared with the store's twin. */
+export function psaFoldOf(json, { now = Date.now() } = {}) {
+  const windowDial = dialNumber("doorstep", "psa_window_days", 7, { min: 0 });
+  const maxDial = dialNumber("doorstep", "psa_max", 5, { min: 0 });
+  if (json == null) {
     return { entries: [], window_days: windowDial.value, max: maxDial.value,
       dials: { psa_window_days: windowDial.source, psa_max: maxDial.source },
       note: `the town checkout behind this office carries no ${PSA_SLUG} — the week's news is absent, not empty` };
   }
-  const parsed = parsePsaEntries(JSON.parse(row.json).body);
+  const parsed = parsePsaEntries(JSON.parse(json).body);
   const fresh = parsed.filter((e) => {
     const age = ageInDays(e.date, now);
     return age !== null && age >= 0 && age <= windowDial.value;

@@ -27,12 +27,19 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { fixtureDb } from "./fixture.mjs";
-import { awaitListening } from "./spawn-office.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 43881;
-const GH_PORT = 43882;
-const BASE = `http://127.0.0.1:${PORT}`;
+// The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+// asked for); it was the fixed 43881, a door every pool tree on the box shares.
+let PORT;
+// THE PORT IS ASKED FOR, NEVER CHOSEN (join-pr-at-the-cosign.test.mjs § the
+// port): this fake GitHub was fixed at 43882, a door every pool tree on the box shares.
+// It listens on 0, and the port the OS handed back is what the office dials;
+// every answer says `connection: close`, so no idle keep-alive socket is
+// left for the office's next fetch to reuse and die on mid-request.
+let GH_PORT = null;
+let BASE;
 const KEY = "statickey";
 
 // The fixture town's own resident (fixture.mjs seeds `wright`), pinned to the
@@ -107,6 +114,7 @@ before(async () => {
   }));
 
   ghServer = createServer((req, res) => {
+    res.setHeader("connection", "close");
     const url = new URL(req.url, `http://127.0.0.1:${GH_PORT}`);
     if (url.pathname === "/login/oauth/authorize") {
       const back = new URL(url.searchParams.get("redirect_uri"));
@@ -125,15 +133,16 @@ before(async () => {
     }
     res.writeHead(404); res.end();
   });
-  await new Promise((ok) => ghServer.listen(GH_PORT, ok));
+  await new Promise((ok) => ghServer.listen(0, "127.0.0.1", ok));
+  GH_PORT = ghServer.address().port;
 
-  child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT),
+  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", dbPath, "--oauth-db", (OAUTH_DB.path = join(tmp, "oauth.db"))], {
     env: {
       ...process.env, WORLD_GRAPH_NONE: "1",
       OFFICE_KEYS: `${KEY}=keemin:${HANDLE}`,
       TOWN_CLONE: clone, TOWN_PUSH: "",
-      PUBLIC_BASE: BASE,
+      PUBLIC_BASE: `http://127.0.0.1:${port}`,
       POSTMARK_OAUTH_GITHUB_CLIENT_ID: "mock-gh-app",
       POSTMARK_OAUTH_GITHUB_CLIENT_SECRET: "mock-gh-secret",
       GITHUB_AUTH_URL: `http://127.0.0.1:${GH_PORT}/login/oauth/authorize`,
@@ -141,11 +150,10 @@ before(async () => {
       GITHUB_API_URL: `http://127.0.0.1:${GH_PORT}`,
     },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  // The wait that used to live here had no `error` listener and kept no
-  // stderr, so every spawn-level fault arrived as "server never listened" with
-  // its cause thrown away. See test/spawn-office.mjs.
-  await awaitListening(child);
+  })));
+  // The wait is spawn-office.mjs § awaitListening, inside bootOnFreePort: it
+  // names the fault it was handed rather than reporting a timeout.
+  BASE = `http://127.0.0.1:${PORT}`;
 });
 
 after(async () => {

@@ -900,7 +900,12 @@ test("F7c5d · EVERY CLOCK READ ON THE PAGE IS THREADED — the bare forms are a
     [/nextCrossingForDoorstep\(\s*nowMs\s*\)/, /nextCrossingForDoorstep\(\s*\)/, "the header's boat"],
     [/doorstepRulings\([^)]*\bnowMs\b/, /doorstepRulings\(\s*handle\s*,\s*\{\s*key\s*\}\s*\)/, "the rulings segment's crossing cursor"],
     [/doorstepStakes\([^)]*\bnow:\s*new Date\(\s*nowMs\s*\)/, /doorstepStakes\(\s*handle\s*,\s*\{\s*key\s*\}\s*\)/, "the stakes segment's settlement"],
-    [/doorstep\(\s*db\s*,\s*handle\s*,\s*asOf\s*,[^;]*\bnowMs\b/, null, "the index's PSA window"],
+    // POS-268: the doorstep's options are built once and handed to whichever
+    // index answers (office.db's doorstep, or the store's through `ix`), so the
+    // instant is pinned where the options are built, and both calls must take them.
+    [/const opts = \{.*\bnowMs\b.*\};/, null, "the index's PSA window"],
+    [/ix\.doorstep\(\s*handle\s*,\s*asOf\s*,\s*opts\s*\)/, null, "the store's doorstep taking the page's options"],
+    [/doorstep\(\s*db\s*,\s*handle\s*,\s*asOf\s*,\s*opts\s*\)/, null, "office.db's doorstep taking the page's options"],
   ]) {
     assert.match(code, present, `${what} is no longer threaded from the page's one instant`);
     if (absent) assert.ok(!absent.test(code), `${what} is called with no instant somewhere in this file — the default puts the wall clock back`);

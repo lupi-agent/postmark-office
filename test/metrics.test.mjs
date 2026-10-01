@@ -11,10 +11,13 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 43833;
-const BASE = `http://127.0.0.1:${PORT}`;
+// The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+// asked for); it was the fixed 43833, a door every pool tree on the box shares.
+let PORT;
+let BASE;
 const KEY = "testkey";
 
 let child, tmp;
@@ -23,7 +26,7 @@ before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-office-metrics-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
-  child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath], {
+  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath], {
     env: {
       ...process.env, WORLD_GRAPH_NONE: "1",
       OFFICE_KEYS: `${KEY}=keemin:wright`,
@@ -32,12 +35,8 @@ before(async () => {
       TOWN_CLONE: join(tmp, "no-clone-here"),
     },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  await new Promise((ok, no) => {
-    const t = setTimeout(() => no(new Error("server never listened")), 10_000);
-    child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-    child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-  });
+  })));
+  BASE = `http://127.0.0.1:${PORT}`;
 });
 
 after(async () => {

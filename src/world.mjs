@@ -91,6 +91,7 @@ export const WORLD_CLONE = process.env.WORLD_CLONE
 // always read `currentCrossing` from `world.mjs` still does.
 export { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs";
 import { CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
+import { myMarksRefused } from "./claim-effects.mjs"; // POS-241 part 5: my-marks hears what the candle refused
 
 // ── engine + world cache ─────────────────────────────────────────────────────
 let _mods = null;         // { verbs, build }
@@ -2183,7 +2184,9 @@ export async function worldFind(args = {}, key = null, { words } = {}) {
  * Never throws: a store that will not open yields no block, exactly as an
  * unreadable receipt is absent rather than empty.
  */
-async function thingStandsBlock(id, w, r) {
+// Exported for `/world2/investigate` (POS-142): the twin hands it the world it
+// assembled from rows and the engine's answer, and the block is this one.
+export async function thingStandsBlock(id, w, r) {
   try {
     // ⚑ IT READS THE STORE (POS-162, Everything Reads the Store). Both halves —
     // who holds it and where it was set down — come from `acts`, in ONE read-only
@@ -2567,6 +2570,12 @@ export async function worldMyMarks(key = null, { offset = 0 } = {}) {
     docket: k.page,
     published: p.page,
     backed: b.page,
+    // WHAT THE CANDLE REFUSED (POS-241 part 5): your own claims refused in the
+    // last two crossings, each with its window and the check that refused it.
+    // Before this a refused amend simply left the docket and the page fell
+    // silent about it. claim-effects.mjs § myMarksRefused is the one derivation
+    // (the doorstep's `outcomes`, kept to yours), and the twin calls it too.
+    refused: await myMarksRefused(stake.residents, { key }),
     // THE TWO LABELS, on the page rather than in a doc nobody reads beside it.
     // The walk's sentence was "either the town leaks, or the word 'draft' means
     // something I was not told" — a resident who reads these two lines cannot
@@ -3448,8 +3457,13 @@ async function journalWithdraw({ by, slug, household }, { crossing = currentCros
     // stranding check both read the live layer (runbook §4 B1).
     const live = await guardedLiveMarks(null, { household });
     const wasPublished = canon.ids.has(id);
-    if (!live.some((m) => m.id === id) && !wasPublished)
+    if (!live.some((m) => m.id === id) && !wasPublished) {
+      // A retired mark is named as one (POS-241 phase 1), not as a mark that never was.
+      const { markStandingStatus, withdrawRetiredRefusal } = await import("./world2-claims.mjs");
+      const retired = withdrawRetiredRefusal(id, await markStandingStatus({ slug: id }).catch(() => null));
+      if (retired) throw bounce(retired.code, retired.defect, retired.hint);
       throw bounce(404, `no mark "${id}" in your world`, "ids are <by>/<slug> — you can withdraw your drafts and your published marks; check world_my_marks");
+    }
 
     // The store's answer to `holdsChildren`: a withdrawal may not strand what
     // stands on it. Canon's children count too — a published description of

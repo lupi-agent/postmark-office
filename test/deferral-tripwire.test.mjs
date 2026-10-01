@@ -52,6 +52,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import { openOauthDb } from "../src/oauth.mjs";
 import {
   appendTownJournal, ensureTownJournal, pendingRows, readTownJournal,
@@ -328,10 +329,12 @@ test("T5 · THE IDENTITY FENCE: neither join door will append a row without a ve
     const odbPath = join(work, "oauth.db");
     openOauthDb(odbPath).close();
 
-    const PORT = 43921;
-    const BASE = `http://127.0.0.1:${PORT}`;
+    // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+    // asked for); it was the fixed 43921, a door every pool tree on the box shares.
+    let PORT;
+    let BASE;
     const STATIC = "statickey";
-    child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath, "--oauth-db", odbPath], {
+    ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath, "--oauth-db", odbPath], {
       env: {
         ...process.env, WORLD_GRAPH_NONE: "1", TOWN_SINGLE_LOG: "1", OFFICE_KEYS: `${STATIC}=keemin:wright`,
         TOWN_CLONE: clone, WORLD_CLONE: join(work, "no-world"), VOICES_LOG: join(work, "voices.jsonl"), TOWN_PUSH: "",
@@ -341,12 +344,8 @@ test("T5 · THE IDENTITY FENCE: neither join door will append a row without a ve
         POSTMARK_PEN_TOKEN: "fixture-pen-token",
       },
       stdio: ["ignore", "pipe", "pipe"],
-    });
-    await new Promise((ok, no) => {
-      const t = setTimeout(() => no(new Error("server never listened")), 15_000);
-      child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-      child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-    });
+    })));
+    BASE = `http://127.0.0.1:${PORT}`;
 
     const rows = async () => {
       const o = openOauthDb(odbPath);
@@ -397,20 +396,18 @@ test("T6 · THE BERTH ARC OPENS NO WINDOW: `begin` parks a declaration, it does 
     const odbPath = join(work, "oauth.db");
     openOauthDb(odbPath).close();
 
-    const PORT = 43922;
-    const BASE = `http://127.0.0.1:${PORT}`;
-    child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath, "--oauth-db", odbPath], {
+    // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+    // asked for); it was the fixed 43922, a door every pool tree on the box shares.
+    let PORT;
+    let BASE;
+    ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath, "--oauth-db", odbPath], {
       env: {
         ...process.env, WORLD_GRAPH_NONE: "1", TOWN_SINGLE_LOG: "1", OFFICE_KEYS: "unused=keemin:wright",
         TOWN_CLONE: clone, WORLD_CLONE: join(work, "no-world"), VOICES_LOG: join(work, "voices.jsonl"), TOWN_PUSH: "",
       },
       stdio: ["ignore", "pipe", "pipe"],
-    });
-    await new Promise((ok, no) => {
-      const t = setTimeout(() => no(new Error("server never listened")), 15_000);
-      child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-      child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-    });
+    })));
+    BASE = `http://127.0.0.1:${PORT}`;
 
     const rows = async () => {
       const o = openOauthDb(odbPath);

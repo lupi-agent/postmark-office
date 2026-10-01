@@ -22,10 +22,12 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 43861;
-const BASE = `http://127.0.0.1:${PORT}`;
+// The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+// asked for); it was the fixed 43861, a door every pool tree on the box shares.
+let PORT, BASE;
 
 // Short enough that the suite does not spend a minute waiting out a
 // production-sized grace; long enough that the sweep is still a SECOND tick
@@ -80,27 +82,26 @@ before(async () => {
   writeFileSync(junkPath, "this is not a database, it is a sentence about one\n");
   copyFileSync(aPath, dbPath);
 
-  child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath], {
-    env: {
-      ...process.env,
-      OFFICE_KEYS: "reloadkey=keemin:wright",
-      TOWN_CLONE: join(tmp, "no-clone-here"),
-      WORLD_CLONE: join(tmp, "no-world-clone"),
-      WORLD_GRAPH_NONE: "1",   // this office swaps its INDEX; it serves no world graph (POS-270 lane W 3b)
-      VOICES_LOG: join(tmp, "voices-log.jsonl"),
-      TOWN_PUSH: "",
-      OFFICE_RELOAD_POLL_MS: String(POLL_MS),
-      OFFICE_RETIRE_GRACE_MS: String(GRACE_MS),
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  child.stdout.on("data", (d) => { out.stdout += String(d); });
-  child.stderr.on("data", (d) => { out.stderr += String(d); });
-  await new Promise((ok, no) => {
-    const t = setTimeout(() => no(new Error("server never listened")), 10_000);
-    child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-    child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-  });
+  ({ child, port: PORT } = await bootOnFreePort((port) => {
+    const c = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath], {
+      env: {
+        ...process.env,
+        OFFICE_KEYS: "reloadkey=keemin:wright",
+        TOWN_CLONE: join(tmp, "no-clone-here"),
+        WORLD_CLONE: join(tmp, "no-world-clone"),
+        WORLD_GRAPH_NONE: "1",   // this office swaps its INDEX; it serves no world graph (POS-270 lane W 3b)
+        VOICES_LOG: join(tmp, "voices-log.jsonl"),
+        TOWN_PUSH: "",
+        OFFICE_RELOAD_POLL_MS: String(POLL_MS),
+        OFFICE_RETIRE_GRACE_MS: String(GRACE_MS),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    c.stdout.on("data", (d) => { out.stdout += String(d); });
+    c.stderr.on("data", (d) => { out.stderr += String(d); });
+    return c;
+  }));
+  BASE = `http://127.0.0.1:${PORT}`;
 });
 
 after(async () => {
