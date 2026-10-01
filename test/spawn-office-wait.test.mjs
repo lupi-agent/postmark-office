@@ -17,6 +17,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createServer } from "node:net";
 import { awaitListening, bootOnFreePort, freePort } from "./spawn-office.mjs";
 
@@ -137,4 +138,14 @@ test("A SECOND LOSS IS A FAILED BOOT — the helper retries once, not forever", 
   assert.ok(err, "it must reject");
   assert.match(err.message, /exited before it was ready/, "the rejection is the wait's own sentence");
   assert.equal(said.length, 1, "one retry was said, and only one was made");
+});
+
+test("A BOOT THAT TIMES OUT LEAVES NO OFFICE BEHIND — the caller never got it to stop", async () => {
+  let spawned;
+  const err = await rejection(bootOnFreePort((port) => (spawned = spawn(process.execPath,
+    ["-e", "setInterval(() => {}, 1000)", String(port)], { stdio: ["ignore", "pipe", "pipe"] })), { budgetMs: 1_500 }));
+  assert.ok(err, "it must reject");
+  assert.match(err.message, /never said "listening"/);
+  if (spawned.exitCode === null && spawned.signalCode === null) await once(spawned, "exit");
+  assert.ok(spawned.killed, "the helper stopped the child it could not hand back");
 });

@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { fixtureDb, fixtureKey } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import {
   hotLetters, hotMailBlock, logLetter, MAIL_ACT, MAIL_DOOR,
   preflightEnvelope, replayLetter, sendLetterAsRow, STANDING,
@@ -131,11 +132,13 @@ async function office(clone, env, run) {
   const tmp = mkdtempSync(join(tmpdir(), "pm-mailsrv-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
-  const port = 43900 + Math.floor(Math.random() * 60);
   // --oauth-db is a FLAG, not an env var, and it is where the town journal
   // lives: without it every spawned office in this file would share the repo's
   // own oauth.db and read the previous test's pending letters as its own.
-  const child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"),
+  // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+  // asked for); it was 43900 + a random 0..59, sixty doors every pool tree on
+  // the box shares.
+  const { child, port } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"),
     "--port", String(port), "--db", dbPath, "--oauth-db", join(tmp, "oauth.db")], {
     env: {
       // two households at the door: wright's, and the recipient's own — the
@@ -145,13 +148,8 @@ async function office(clone, env, run) {
       TOWN_PUSH: "", OAUTH_DB: join(tmp, "oauth.db"), ...env,
     },
     stdio: ["ignore", "pipe", "pipe"],
-  });
+  }));
   try {
-    await new Promise((okp, no) => {
-      const t = setTimeout(() => no(new Error("server never listened")), 15_000);
-      child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); okp(); } });
-      child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-    });
     const base = `http://127.0.0.1:${port}`;
     return await run({
       rest: (payload) => fetch(`${base}/letters`, {

@@ -129,6 +129,9 @@ export async function bootOnFreePort(start, { probe = freePort, log = console.lo
         log(`bootOnFreePort: port ${port} was taken between the probe and the bind (EADDRINUSE); retrying once on a fresh port`);
         continue;
       }
+      // Until it resolves, the child is the helper's: a caller handed a
+      // rejection never received it, so nothing else could stop it.
+      if (child.exitCode === null && child.signalCode === null) child.kill();
       throw e;
     }
   }
