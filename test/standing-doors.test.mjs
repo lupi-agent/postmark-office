@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
 import { openOauthDb } from "../src/oauth.mjs";
 import { REGISTRY_PATH } from "../src/residency.mjs";
@@ -37,6 +38,12 @@ import {
 } from "../src/standing.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { townApex } from "../src/town-apex.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 delete process.env.TOWN_PUSH; // nothing here may leave the machine
@@ -276,6 +283,7 @@ test("S7 · REST AND MCP: writes bounce, reads pass, lift reopens, revoke shuts 
   try {
     const dbPath = join(work, "fixture.db");
     fixtureDb(dbPath).close();
+    const IX_ENV = await storeFor(dbPath);
     const odbPath = join(work, "oauth.db");
     openOauthDb(odbPath).close();
 
@@ -286,7 +294,7 @@ test("S7 · REST AND MCP: writes bounce, reads pass, lift reopens, revoke shuts 
     const KEY = "standingkey";
     ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath, "--oauth-db", odbPath], {
       env: {
-        ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`,
+        ...process.env, ...IX_ENV, OFFICE_KEYS: `${KEY}=keemin:wright`,
         TOWN_CLONE: clone, WORLD_CLONE: join(work, "no-world"), VOICES_LOG: join(work, "voices.jsonl"), TOWN_PUSH: "",
       },
       stdio: ["ignore", "pipe", "pipe"],

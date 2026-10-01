@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { editClone, fixtureDb } from "./fixture.mjs";
 import { worldStoreFixture, AS_OF_WORLD } from "./world-graph-fixture.mjs";
 import { rowsEnv } from "./helpers/world-rows.mjs";
+import { indexStore, testIndex } from "./helpers/office-under-test.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const KEY = "testkey";
@@ -21,12 +22,16 @@ const KEY = "testkey";
 // this file the one test in the suite that two lanes on the same box cannot run
 // at once: the second spawn dies EADDRINUSE and every read here goes red for a
 // reason that has nothing to do with the office.
-let child, tmp, BASE;
+let child, tmp, BASE, ix;
 
 before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-office-srv-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  // The town index the offices read: the store, seeded from this fixture. Every
+  // office in this file stands on the same fixture town (fixtureDb is the same
+  // town each call), so one store serves them all.
+  ix = await indexStore(dbPath);
   // A world store at a KNOWN path, so the window's tests do not depend on
   // whether the machine running them happens to have hydrated one. Pointed at
   // by WORLD_STORE_DB, the same override an operator uses to run an office
@@ -39,7 +44,7 @@ before(async () => {
   // passed its own `--oauth-db`; this is that idiom applied to every spawn here.
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", "0", "--db", dbPath,
     "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db")], {
-    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: join(tmp, "no-clone-here"), WORLD_CLONE: join(tmp, "no-world-clone"), VOICES_LOG: join(tmp, "voices-log.jsonl"), TOWN_PUSH: "", ...rowsEnv(join(tmp, "world.db"), tmp) },   // the world is the rows (POS-270 lane W 3a), never the file
+    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: join(tmp, "no-clone-here"), WORLD_CLONE: join(tmp, "no-world-clone"), VOICES_LOG: join(tmp, "voices-log.jsonl"), TOWN_PUSH: "", ...rowsEnv(join(tmp, "world.db"), tmp), ...ix.env },   // the world is the rows (POS-270 lane W 3a), never the file
     stdio: ["ignore", "pipe", "pipe"],
   });
   await new Promise((ok, no) => {
@@ -58,6 +63,7 @@ after(async () => {
     child.kill();
     await gone; // Windows: the db file stays locked until the child is truly down
   }
+  await ix?.stop();
   rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
@@ -70,12 +76,19 @@ test("reads are public: unauthenticated GET /town → 200", async () => {
   assert.equal((await res.json()).error, undefined);
 });
 
+// An office reading the town index from the store is pointed at the record, so
+// the heard counts are the record's (none, in this fixture). The office not
+// pointed at the record exists only in the old way (OFFICE_TEST_INDEX=office),
+// until office.db's deletion makes it unbootable.
 test("GET /ops/heard is keyless and answers counts only; an office not pointed at the record says so, never zeroes (POS-292)", async () => {
   const res = await get("/ops/heard", null);
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.equal(body.weeks, null);
-  assert.match(body.note, /not pointed at the record/);
+  if (testIndex() === "store") assert.deepEqual(body.weeks, [], "the record's counts: none in this fixture");
+  else {
+    assert.equal(body.weeks, null);
+    assert.match(body.note, /not pointed at the record/);
+  }
   assert.match(body.small_counts, /fewer than 3/);
   assert.equal(body.choices.youtube, "YouTube");
 });
@@ -228,7 +241,7 @@ test("PATCH /profile/{handle}/avatar reaches the REST image door and keeps its b
   fixtureDb(dbPath).close();
   const avatarServer = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", "0", "--db", dbPath,
     "--oauth-db", join(dir, "oauth.db"), "--roles-db", join(dir, "roles.db")], {
-    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: clone, WORLD_CLONE: join(dir, "no-world-clone"), TOWN_PUSH: "" },
+    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: clone, WORLD_CLONE: join(dir, "no-world-clone"), TOWN_PUSH: "", ...ix.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   try {
@@ -619,7 +632,7 @@ test("with NO store at all the window 404s — never an empty graph, which would
   let port;
   const bare = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", "0", "--db", join(tmp, "fixture.db"),
     "--oauth-db", join(tmp, "oauth-bare.db"), "--roles-db", join(tmp, "roles-bare.db")], {
-    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: join(tmp, "no-clone-here"), WORLD_CLONE: join(tmp, "no-world-clone"), VOICES_LOG: join(tmp, "voices-log-2.jsonl"), TOWN_PUSH: "", WORLD_STORE_DB: join(tmp, "no-store-here.db") },
+    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: join(tmp, "no-clone-here"), WORLD_CLONE: join(tmp, "no-world-clone"), VOICES_LOG: join(tmp, "voices-log-2.jsonl"), TOWN_PUSH: "", WORLD_STORE_DB: join(tmp, "no-store-here.db"), ...ix.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   try {
@@ -788,7 +801,7 @@ test("POST /berth: one keyless POST mints ephemeral standing; names are single-o
   fixtureDb(dbPath).close();
   const child2 = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", "0", "--db", dbPath,
     "--oauth-db", join(dir, "oauth.db"), "--roles-db", join(dir, "roles.db")], {
-    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: join(dir, "no-clone"), WORLD_CLONE: join(dir, "no-world-clone"), VOICES_LOG: join(dir, "voices.jsonl"), TOWN_PUSH: "" },
+    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: join(dir, "no-clone"), WORLD_CLONE: join(dir, "no-world-clone"), VOICES_LOG: join(dir, "voices.jsonl"), TOWN_PUSH: "", ...ix.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   try {

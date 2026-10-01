@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
 import { openOauthDb } from "../src/oauth.mjs";
 import { readTownJournal, ensureTownJournal } from "../src/town-journal.mjs";
@@ -41,6 +42,12 @@ import { updateProfile, updateHome, updateWindow, updateAddressBody, updateAddre
 import * as doorsModule from "../src/edit.mjs";
 import { runTownDrain, TOWN_DOORS } from "../src/town-bridge.mjs";
 import { withRecordFrom } from "./registry-pool-stub.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 delete process.env.TOWN_PUSH; // nothing here may leave the machine
@@ -99,6 +106,7 @@ test("P1-P4 · EVERY SKIN LOGS: REST PATCH, household apex, flat tool — one ro
   try {
     const dbPath = join(tmp, "fixture.db");
     fixtureDb(dbPath).close();
+    const IX_ENV = await storeFor(dbPath);
     const odbPath = join(tmp, "oauth.db");
     openOauthDb(odbPath).close();
 
@@ -109,7 +117,7 @@ test("P1-P4 · EVERY SKIN LOGS: REST PATCH, household apex, flat tool — one ro
     const KEY = "seamkey";
     ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath, "--oauth-db", odbPath], {
       env: {
-        ...process.env, TOWN_SINGLE_LOG: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
+        ...process.env, ...IX_ENV, TOWN_SINGLE_LOG: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
         TOWN_CLONE: clone, WORLD_CLONE: join(tmp, "no-world"), VOICES_LOG: join(tmp, "voices.jsonl"), TOWN_PUSH: "",
       },
       stdio: ["ignore", "pipe", "pipe"],

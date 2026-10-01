@@ -61,6 +61,7 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { callTool, TOOLS } from "../src/mcp.mjs";
@@ -69,6 +70,12 @@ import {
   CONVERSATION_IS_THE_ROOT, THREAD_FIELD_IS_A_PARENT, THREAD_IS_THE_LETTER_ID,
   THREE_STRINGS, threadlessReplyHint, unansweredFrom,
 } from "../src/mail-thread.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -381,8 +388,9 @@ before(async () => {
   restTmp = mkdtempSync(join(tmpdir(), "pm-thread-rest-"));
   const p = join(restTmp, "fixture.db");
   fixtureDb(p).close();
+  const IX_ENV = await storeFor(p);
   ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", p], {
-    env: { ...process.env, OFFICE_KEYS: `${REST_KEY}=keemin:wright`, TOWN_CLONE: mailClone(),
+    env: { ...process.env, ...IX_ENV, OFFICE_KEYS: `${REST_KEY}=keemin:wright`, TOWN_CLONE: mailClone(),
       WORLD_CLONE: join(restTmp, "no-world-clone") },
     stdio: ["ignore", "pipe", "pipe"],
   })));
