@@ -31,6 +31,11 @@
 #                     First made from the lab's ingest clones (a local read),
 #                     then fetched from GitHub; the live lane's clones are never
 #                     checked out, fetched or cleaned from here.
+#   dry/     the dry crossing's own world clone (dry/sweep, cloned once from
+#            GitHub, refreshed by the crossing itself) and its receipt
+#            (dry/settlement-dry.json) — POS-242 item 2: the train's
+#            settlement-auto.sh runs under SETTLEMENT_DRY=1 on the window the
+#            runner just cleared, and withholds every write that leaves the run.
 #   receipt-<utc>.json   the runner's receipt, kept.
 # The runner is THIS checkout's `world2/tools/rehearse.mjs`, not the tree's —
 # so a train that predates the runner can still be rehearsed.
@@ -118,7 +123,7 @@ if [ "$SEED" = true ]; then
   [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "registry-drain --check did not exit 0 — the clearing is not run on a registry that disagrees with the town" >&2; exit 1; }
 fi
 
-ARGS=(--json "$RECEIPT")
+ARGS=(--json "$RECEIPT" --dry-dir "$REHEARSAL_DIR/dry")
 [ -n "$ARM" ] && ARGS+=(--arm "$ARM")
 [ "$CLEAR" = true ] || ARGS+=(--no-clear)
 run "${ARGS[@]}"
