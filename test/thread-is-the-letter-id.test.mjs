@@ -379,7 +379,7 @@ before(async () => {
   const p = join(restTmp, "fixture.db");
   fixtureDb(p).close();
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", p], {
-    env: { ...process.env, OFFICE_KEYS: `${REST_KEY}=keemin:wright`, TOWN_CLONE: mailClone(),
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: `${REST_KEY}=keemin:wright`, TOWN_CLONE: mailClone(),
       WORLD_CLONE: join(restTmp, "no-world-clone") },
     stdio: ["ignore", "pipe", "pipe"],
   });

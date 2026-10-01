@@ -12,6 +12,7 @@
 // reader that still reached for the file would find nothing and the test would
 // say so. `source` is a tables object, a rows JSON file, or a sqlite fixture.
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,4 +116,19 @@ export function writeFixtureDb(source, path) {
     db.exec("COMMIT");
   } finally { db.close(); }
   return path;
+}
+
+/**
+ * Hydrate a world checkout into rows (world-hydrate.mjs --rows-out) and return
+ * the rows file's path — the world a test stands on when it needs the record
+ * itself, not a fixture. Its own tmp root: the shared world cache is pruned by
+ * other hydrations (hydrator-emits-rows' lesson). `ref`: a sha, "blessed", or
+ * null for the checkout's HEAD.
+ */
+export function hydrateWorldRows({ clone, ref = null, dir, lints = false }) {
+  const rows = join(dir, `world-rows-${process.pid}.json`);
+  execFileSync(process.execPath, [join(import.meta.dirname, "..", "..", "src", "world-hydrate.mjs"),
+    "--world", clone, ...(ref ? ["--ref", ref] : []), "--rows-out", rows, "--no-gexf", ...(lints ? [] : ["--no-lints"])],
+  { stdio: "ignore", env: { ...process.env, TMP: dir, TEMP: dir, TMPDIR: dir } });
+  return rows;
 }

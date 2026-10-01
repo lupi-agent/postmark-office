@@ -129,7 +129,7 @@ before(async () => {
   fixtureDb(dbPath).close();
   writeFileSync(join(tmp, "release.json"), JSON.stringify({ tag: "t", sha: "s", target: "dev" }));
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath, "--release-root", tmp], {
-    env: { ...process.env, OFFICE_KEYS: "loop-lag-test-key=keemin:wright", TOWN_CLONE: join(tmp, "no-clone"), WORLD_CLONE: join(tmp, "no-world") },
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: "loop-lag-test-key=keemin:wright", TOWN_CLONE: join(tmp, "no-clone"), WORLD_CLONE: join(tmp, "no-world") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   await new Promise((ok, no) => {

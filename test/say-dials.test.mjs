@@ -15,21 +15,38 @@
 // STORE — world.db, or WORLD_STORE_DB — and when there is none they SKIP with a
 // reason rather than passing on a fallback, because a green test standing on a
 // fallback is the bug it is meant to catch.
-import { test, describe } from "node:test";
+import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { classDials, classPredicates, dialNode, dialNumber } from "../src/world-classes.mjs";
+import { CLASS_GATE_C, classDials, classPredicates, dialNode, dialNumber } from "../src/world-classes.mjs";
+import { CLASS_ROSTER_GATE_SQL } from "../src/world-store.mjs";
+import { NO_WORLD, worldClone } from "./fixture-paths.mjs";
+import { hydrateWorldRows, publishWorld, withNoWorld, writeFixtureDb } from "./helpers/world-rows.mjs";
+
+// THE RECORD, AS ROWS (POS-270 lane W 3b). world.db is retired, so the world
+// this file reads is the checkout's newest blessing, hydrated to rows and
+// published as the world graph snapshot; the SQL cross-checks below ask the
+// test's own sqlite, built from the same rows. No checkout, no world: the
+// record-reading block skips by name rather than pass on a fallback.
+const WORLD_DIR = mkdtempSync(join(tmpdir(), "say-dials-"));
+after(() => rmSync(WORLD_DIR, { recursive: true, force: true }));
+let DB = null;
+if (!NO_WORLD) {
+  const rows = hydrateWorldRows({ clone: worldClone(), ref: "blessed", dir: WORLD_DIR });
+  publishWorld(rows, "the newest blessing");
+  DB = writeFixtureDb(rows, join(WORLD_DIR, "world.db"));
+}
+
 // The class name lives beside its reader in voices.mjs, for the same reason
 // STRIDE_CLASS_NAME lives beside departurePace — one place to rename, one test
-// that fails when the record renames out from under it.
-import { SAY_CLASS_NAME } from "../src/voices.mjs";
-import { CLASS_ROSTER_GATE_SQL } from "../src/world-store.mjs";
-import { storeDbPath } from "../src/world-serve.mjs";
-
-const DB = storeDbPath();
-const haveStore = existsSync(DB);
+// that fails when the record renames out from under it. voices.mjs reads its
+// dials when it loads, so it loads AFTER the world is published.
+const { SAY_CLASS_NAME } = await import("../src/voices.mjs");
+const haveStore = DB != null;
 const storeHasSay = haveStore && (() => {
   try {
     const db = new DatabaseSync(DB, { readOnly: true });
@@ -40,19 +57,26 @@ const storeHasSay = haveStore && (() => {
   } catch { return false; }
 })();
 
-// The values the record is expected to carry — the same seven the node declares.
-const EXPECTED = {
-  earshot_m: 60,
-  fade_min: 5,
-  conversation_lull_min: 30,
-  speak_every_s: 15,
-  text_max: 500,
-  hear_max: 20,
-  presence_min: 15,
-};
+// The seven slots speech reads, and the values the RECORD carries for them —
+// read here by the test's own SQL over the say class's predicate children, not
+// pinned: these numbers are law, and a copy of law in a test is a copy that
+// decays (it did: this file asserted fade_min 5 for weeks after the record said
+// 15, unseen, because it only ever ran beside a hand-hydrated world.db).
+const SLOTS = ["earshot_m", "fade_min", "conversation_lull_min", "speak_every_s", "text_max", "hear_max", "presence_min"];
+const EXPECTED = DB == null ? {} : (() => {
+  const db = new DatabaseSync(DB, { readOnly: true });
+  try {
+    const rows = db.prepare(`SELECT json_extract(p.props, '$.slot') AS slot, json_extract(p.props, '$.value') AS value
+                                FROM nodes c JOIN edges e ON e.src = c.id AND e.type = 'describes'
+                                JOIN nodes p ON p.id = e.dst AND p.subkind = 'predicated'
+                               WHERE ${CLASS_GATE_C} AND json_extract(c.props, '$.class') = 'say'`).all();
+    return Object.fromEntries(rows.filter((r) => SLOTS.includes(String(r.slot))).map((r) => [String(r.slot), Number(r.value)]));
+  } finally { db.close(); }
+})();
 
-describe("the say dials, read off the live world store", { skip: storeHasSay ? false : `no hydrated world store carrying the-town/say at ${DB} — run: npm run hydrate:world (skipping rather than passing on a fallback, which is the bug this file exists to catch)` }, () => {
+describe("the say dials, read off the live world store", { skip: storeHasSay ? false : `no world checkout carrying the-town/say at its newest blessing (${NO_WORLD || "the record lacks it"}) — skipping rather than passing on a fallback, which is the bug this file exists to catch` }, () => {
   test("every one of speech's seven numbers reads from the record", () => {
+    assert.deepEqual(Object.keys(EXPECTED).sort(), [...SLOTS].sort(), "the record does not carry all seven of speech's slots");
     const preds = classPredicates(SAY_CLASS_NAME);
     for (const [slot, want] of Object.entries(EXPECTED)) {
       const d = dialNumber(SAY_CLASS_NAME, slot, -1, { min: 0 });
@@ -142,16 +166,17 @@ test("an absent dial falls back, and NEVER pretends it read", () => {
   assert.equal(d.source, "fallback");
 });
 
-test("an unreadable store names no dial node — and that is the SAME condition as the fallback", () => {
-  const store = "G:/nowhere/there-is-no-store.db";
-  assert.equal(dialNode(SAY_CLASS_NAME, "presence_min", { worldDb: store }), null);
-  assert.equal(dialNumber(SAY_CLASS_NAME, "presence_min", 15, { worldDb: store }).source, "fallback",
-    "the two must agree: a surface carrying both says one thing — we are on a constant, and there is no node to point you at");
+test("no world names no dial node — and that is the SAME condition as the fallback", async () => {
+  await withNoWorld(() => {
+    assert.equal(dialNode(SAY_CLASS_NAME, "presence_min"), null);
+    assert.equal(dialNumber(SAY_CLASS_NAME, "presence_min", 15).source, "fallback",
+      "the two must agree: a surface carrying both says one thing — we are on a constant, and there is no node to point you at");
+  });
 });
 
-test("an unreadable store falls back for every dial, and the disclosure names them", async () => {
-  const d = dialNumber(SAY_CLASS_NAME, "earshot_m", 999, { worldDb: "G:/nowhere/there-is-no-store.db" });
-  assert.equal(d.source, "fallback", "a store that will not open must not answer as the record");
+test("no world falls back for every dial, and the disclosure names them", async () => {
+  const d = await withNoWorld(() => dialNumber(SAY_CLASS_NAME, "earshot_m", 999));
+  assert.equal(d.source, "fallback", "a world that has not loaded must not answer as the record");
   assert.equal(d.value, 999);
 });
 
@@ -159,7 +184,7 @@ test("classDials keeps its old meaning — frontmatter only, predicates are thei
   // Every dial is a predicate does not say every predicate is a dial: say's
   // `clocks` clause and doorstep's `psa-fold` clause are law, not knobs, and a
   // dials map that carried them would let a sentence answer to a number's name.
-  const frontmatter = classDials(SAY_CLASS_NAME, { worldDb: DB });
+  const frontmatter = classDials(SAY_CLASS_NAME);
   assert.equal(Object.hasOwn(frontmatter, "earshot_m"), false,
     "classDials must not have grown a predicate reader — that is classPredicates' question");
 });

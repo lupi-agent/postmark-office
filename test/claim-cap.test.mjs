@@ -51,7 +51,7 @@ before(async () => {
 
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT),
     "--db", dbPath, "--oauth-db", join(tmp, "oauth.db")], {
-    env: { ...process.env, OFFICE_KEYS: "statickey=keemin:wright", TOWN_CLONE: clone, TOWN_PUSH: "", PUBLIC_BASE: BASE },
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: "statickey=keemin:wright", TOWN_CLONE: clone, TOWN_PUSH: "", PUBLIC_BASE: BASE },
     stdio: ["ignore", "pipe", "pipe"],
   });
   // The wait that used to live here had no `error` listener and kept no

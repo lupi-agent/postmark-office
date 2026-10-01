@@ -25,7 +25,7 @@ before(async () => {
   fixtureDb(dbPath).close();
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath], {
     env: {
-      ...process.env,
+      ...process.env, WORLD_GRAPH_NONE: "1",
       OFFICE_KEYS: `${KEY}=keemin:wright`,
       OFFICE_BOUNCER_KEYLESS_PER_MINUTE: "3",
       OFFICE_BOUNCER_KEYLESS_BURST: "3",

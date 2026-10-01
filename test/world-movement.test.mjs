@@ -543,9 +543,8 @@ test("the freeze names who the seam would move, and offers the FILING REPAIR", a
 // ── the town's own numbers ───────────────────────────────────────────────────
 
 test("vessel parity against the real ledger reproduces the doctrine's own residuals", async (t) => {
-  const store = process.env.WORLD_STORE_DB ?? join(import.meta.dirname, "..", "world.db");
-  if (!existsSync(join(WORLD_CLONE, "WORLD", "walk-ledger.md")) || !existsSync(store))
-    return t.skip(`needs the world clone at ${WORLD_CLONE} and a hydrated ${store}`);
+  if (!existsSync(join(WORLD_CLONE, "WORLD", "walk-ledger.md")))
+    return t.skip(`needs the world clone at ${WORLD_CLONE}`);
 
   const T = (f) => import(pathToFileURL(join(WORLD_CLONE, "tools", f)).href);
   const [walk, vessel, fold] = await Promise.all([T("walk.mjs"), T("vessel.mjs"), T("marks-fold.mjs")]);
@@ -556,8 +555,13 @@ test("vessel parity against the real ledger reproduces the doctrine's own residu
   const vesselDepartures = departures.filter((d) => d.handle === service.vessel.handle);
   if (vesselDepartures.length < 3) return t.skip(`the live ledger holds ${vesselDepartures.length} vessel departures`);
 
-  const { readGeometryVersions } = await import("../tools/vessel-parity.mjs");
-  const { versions } = readGeometryVersions(store);
+  // The geometry history from the checkout's own hydration, as rows (POS-270
+  // lane W 3b: world.db, which this read off by hand, is retired).
+  const { geometryVersionsOf } = await import("../tools/vessel-parity.mjs");
+  const { hydrateWorldRows, tablesOf } = await import("./helpers/world-rows.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "vessel-parity-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { versions } = geometryVersionsOf(tablesOf(hydrateWorldRows({ clone: WORLD_CLONE, dir })));
   const rows = parityRows({ vesselDepartures, marks, versions, vessel, vesselHandle: service.vessel.handle });
 
   assert.equal(rows[0].as_of.metres, 0, "the maiden scheduled departure is on the pin");

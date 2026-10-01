@@ -333,7 +333,7 @@ test("T5 · THE IDENTITY FENCE: neither join door will append a row without a ve
     const STATIC = "statickey";
     child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath, "--oauth-db", odbPath], {
       env: {
-        ...process.env, TOWN_SINGLE_LOG: "1", OFFICE_KEYS: `${STATIC}=keemin:wright`,
+        ...process.env, WORLD_GRAPH_NONE: "1", TOWN_SINGLE_LOG: "1", OFFICE_KEYS: `${STATIC}=keemin:wright`,
         TOWN_CLONE: clone, WORLD_CLONE: join(work, "no-world"), VOICES_LOG: join(work, "voices.jsonl"), TOWN_PUSH: "",
         // so the pen check passes and the IDENTITY fence is what answers — the
         // door bounces "not-yet-open" first otherwise, which would make this
@@ -401,7 +401,7 @@ test("T6 · THE BERTH ARC OPENS NO WINDOW: `begin` parks a declaration, it does 
     const BASE = `http://127.0.0.1:${PORT}`;
     child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath, "--oauth-db", odbPath], {
       env: {
-        ...process.env, TOWN_SINGLE_LOG: "1", OFFICE_KEYS: "unused=keemin:wright",
+        ...process.env, WORLD_GRAPH_NONE: "1", TOWN_SINGLE_LOG: "1", OFFICE_KEYS: "unused=keemin:wright",
         TOWN_CLONE: clone, WORLD_CLONE: join(work, "no-world"), VOICES_LOG: join(work, "voices.jsonl"), TOWN_PUSH: "",
       },
       stdio: ["ignore", "pipe", "pipe"],

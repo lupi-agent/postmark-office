@@ -130,7 +130,7 @@ before(async () => {
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT),
     "--db", dbPath, "--oauth-db", (OAUTH_DB.path = join(tmp, "oauth.db"))], {
     env: {
-      ...process.env,
+      ...process.env, WORLD_GRAPH_NONE: "1",
       OFFICE_KEYS: `${KEY}=keemin:${HANDLE}`,
       TOWN_CLONE: clone, TOWN_PUSH: "",
       PUBLIC_BASE: BASE,

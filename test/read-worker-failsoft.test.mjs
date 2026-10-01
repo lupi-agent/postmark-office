@@ -39,7 +39,7 @@ async function withOffice(dynamicDb, fn) {
     join(ROOT, "src", "server.mjs"), "--port", "0",
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
   ], {
-    env: { ...process.env, OFFICE_READ_WORKERS: String(WORKERS), WORLD_DYNAMIC_DB: dynamicDb,
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_READ_WORKERS: String(WORKERS), WORLD_DYNAMIC_DB: dynamicDb,
       WORLD_POSITIONS: "1", WORLD_MOVEMENT_V2: "1", WORLD_PRESENCE: "1", TOWN_CLONE: join(ROOT, "town-clone") },
     stdio: ["ignore", "pipe", "pipe"],
   });

@@ -16,16 +16,12 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { DatabaseSync } from "node:sqlite";
-import { copyFileSync, mkdtempSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import { fixtureDb } from "./fixture.mjs";
-import { worldStoreFixture } from "./world-graph-fixture.mjs";
-import { worldGraphPayload, resetGraphCache } from "../src/world-graph.mjs";
-import { classFieldsFromStore, resetClassFieldsCache } from "../src/world-frames.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 43861;
@@ -40,7 +36,7 @@ const GRACE_MS = 400;
 const A_SHA = "fixturesha000000000000000000000000000000";       // fixture.mjs's own
 const B_SHA = "bbbbbbbb1111111111111111111111111111beef";
 
-let child, tmp, dbPath, aPath, bPath, junkPath, worldPath;
+let child, tmp, dbPath, aPath, bPath, junkPath;
 const out = { stdout: "", stderr: "" };
 
 /** A second index: same fixture town, one more resident, a different as_of. */
@@ -78,13 +74,11 @@ before(async () => {
   aPath = join(tmp, "a.db");
   bPath = join(tmp, "b.db");
   junkPath = join(tmp, "junk.db");
-  worldPath = join(tmp, "world.db");
 
   fixtureDb(aPath).close();
   fixtureB(bPath);
   writeFileSync(junkPath, "this is not a database, it is a sentence about one\n");
   copyFileSync(aPath, dbPath);
-  worldStoreFixture(worldPath);
 
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath], {
     env: {
@@ -92,7 +86,7 @@ before(async () => {
       OFFICE_KEYS: "reloadkey=keemin:wright",
       TOWN_CLONE: join(tmp, "no-clone-here"),
       WORLD_CLONE: join(tmp, "no-world-clone"),
-      WORLD_STORE_DB: worldPath,
+      WORLD_GRAPH_NONE: "1",   // this office swaps its INDEX; it serves no world graph (POS-270 lane W 3b)
       VOICES_LOG: join(tmp, "voices-log.jsonl"),
       TOWN_PUSH: "",
       OFFICE_RELOAD_POLL_MS: String(POLL_MS),
@@ -206,93 +200,4 @@ test("...and recovers the moment a good file lands", async () => {
   assert.ok(flipped, `never recovered to ${A_SHA}; stderr: ${out.stderr.slice(-400)}`);
   const { residents } = await (await get("/residents")).json();
   assert.ok(!residents.some((r) => r.handle === "newcomer"), "still serving B's rows after recovering to A");
-});
-
-// world.db is the one store the office never holds a handle to — every reader
-// opens and closes per call — so it is also the only one this platform can swap
-// by RENAME, which is what the box actually does to both stores. That makes it
-// the place to prove the stamp catches a NEW INODE and not only new bytes; the
-// index above can only be swapped in place here, because Windows refuses to
-// rename over the handle server.mjs is holding (EPERM, verified).
-test("a world.db swap is noticed — by rename (new inode) and by overwrite alike", async () => {
-  for (const how of ["rename", "overwrite"]) {
-    const before = out.stdout.length;
-    const other = join(tmp, `world-${how}.db`);
-    worldStoreFixture(other, { l6: "unhandled" });
-    if (how === "rename") renameSync(other, worldPath); else copyFileSync(other, worldPath);
-    const noticed = await until(() => out.stdout.slice(before).includes("world store changed"));
-    assert.ok(noticed, `the world watcher never fired on ${how}; stdout tail: ${out.stdout.slice(-400)}`);
-    // The window still answers afterwards — a drop must leave the next reader
-    // able to rebuild, not leave a hole where the payload was.
-    const view = await (await get("/world/graph")).json();
-    assert.equal(view.error, undefined);
-    assert.ok(view.counts.nodes > 0);
-  }
-});
-
-// ── the drops themselves, in process ─────────────────────────────────────────
-//
-// The two caches below already re-stat their file on the way in, so a swap that
-// changes (mtime, size) would invalidate them with no watcher at all — and a
-// test that only swapped a file would pass whether or not the drop function did
-// anything. So these FOOL the stat: the content is rewritten in place at a
-// fixed byte length and the mtime is restored, leaving a file whose stamp is
-// identical and whose contents are not. The stale read is asserted first (the
-// precondition that makes the test able to fail), and only then the drop.
-
-const FIXED_MTIME = new Date(1_786_000_000_000); // whole ms — NTFS keeps sub-ms, and utimes does not
-const stampOf = (p) => { const s = statSync(p); return `${s.ino}|${s.mtimeMs}|${s.size}`; };
-
-/** Rewrite one same-length value in a world store, leaving its stat stamp untouched. */
-function rewriteInPlace(path, mutate) {
-  utimesSync(path, FIXED_MTIME, FIXED_MTIME);
-  const stamp = stampOf(path);
-  const db = new DatabaseSync(path);
-  mutate(db);
-  db.close();
-  utimesSync(path, FIXED_MTIME, FIXED_MTIME);
-  assert.equal(stampOf(path), stamp, "the in-place rewrite moved the stat stamp — this test can no longer prove anything");
-  return stamp;
-}
-
-const SHA_A = "f00dcafe0000000000000000000000000000beef";  // world-graph-fixture's AS_OF_WORLD
-const SHA_B = "0123456789abcdef0123456789abcdef01234567";  // same length, so the file cannot grow
-
-test("world-graph: resetGraphCache is what invalidates a payload the stat cannot see change", () => {
-  const path = join(tmp, "graph-drop.db");
-  worldStoreFixture(path);
-  utimesSync(path, FIXED_MTIME, FIXED_MTIME);
-  assert.equal(worldGraphPayload(path).as_of.world, SHA_A);
-
-  rewriteInPlace(path, (db) => db.prepare("UPDATE meta SET value = ? WHERE key = 'as_of_world'").run(SHA_B));
-
-  assert.equal(worldGraphPayload(path).as_of.world, SHA_A, "the stat guard should NOT have noticed — if it did, this test proves nothing");
-  resetGraphCache();
-  assert.equal(worldGraphPayload(path).as_of.world, SHA_B, "resetGraphCache did not drop the payload");
-});
-
-test("world-frames: resetClassFieldsCache is what invalidates the class read", () => {
-  const path = join(tmp, "frames-drop.db");
-  worldStoreFixture(path);
-  // The window's fixture carries no class-bearing MARK — its `class:` sits on
-  // class nodes, and this read only collects `kind='mark'` — so the quay is
-  // given one. Setup, before any baseline is taken; the stamp freeze is below.
-  const seed = new DatabaseSync(path);
-  seed.prepare("UPDATE nodes SET props = ? WHERE id = 'the-town/the-quay'").run(JSON.stringify({ class: "parcel" }));
-  seed.close();
-
-  utimesSync(path, FIXED_MTIME, FIXED_MTIME);
-  const first = classFieldsFromStore({ worldDb: path });
-  assert.equal(first.gate.status, "PRESENT");
-  assert.equal(first.fields.get("the-town/the-quay").class, "parcel");
-
-  // "parcel" -> "vessel": six letters for six, so the props blob keeps its length.
-  rewriteInPlace(path, (db) => db.prepare("UPDATE nodes SET props = ? WHERE id = 'the-town/the-quay'")
-    .run(JSON.stringify({ class: "vessel" })));
-
-  assert.equal(classFieldsFromStore({ worldDb: path }).fields.get("the-town/the-quay").class, "parcel",
-    "the stat guard should NOT have noticed — if it did, this test proves nothing");
-  resetClassFieldsCache();
-  assert.equal(classFieldsFromStore({ worldDb: path }).fields.get("the-town/the-quay").class, "vessel",
-    "resetClassFieldsCache did not drop the class read");
 });

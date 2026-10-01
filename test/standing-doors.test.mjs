@@ -283,7 +283,7 @@ test("S7 · REST AND MCP: writes bounce, reads pass, lift reopens, revoke shuts 
     const KEY = "standingkey";
     child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath, "--oauth-db", odbPath], {
       env: {
-        ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`,
+        ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
         TOWN_CLONE: clone, WORLD_CLONE: join(work, "no-world"), VOICES_LOG: join(work, "voices.jsonl"), TOWN_PUSH: "",
       },
       stdio: ["ignore", "pipe", "pipe"],

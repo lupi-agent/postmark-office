@@ -113,7 +113,7 @@ before(async () => {
     size: 2,
     entry: new URL("../src/server.mjs", import.meta.url),
     argv: ["--port", "0", "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db")],
-    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: `${KEY}=keemin:wright`, WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
     log: { error: () => {} },
   });
   await until("both workers to be ready", () => pool.disclose().ready === 2);
@@ -258,7 +258,7 @@ test("§ 4 a real office hands the agents' reads to its worker and keeps the act
     join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
   ], {
-    env: { ...process.env, OFFICE_READ_WORKERS: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_READ_WORKERS: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
       WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -436,7 +436,7 @@ test("§ 7 a keyed full letter read stays on the main thread; a keyless one goes
   // Clear of § 6's 49600–49899 (POS-226), which this range overlapped until the rebase.
   const port = 50500 + ((process.pid * 17) % 400);
   const KEY2 = "read-workers-test-key-limen";
-  const env = { ...process.env, OFFICE_READ_WORKERS: "1", WORLD_APEX: "1",
+  const env = { ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_READ_WORKERS: "1", WORLD_APEX: "1",
     OFFICE_KEYS: `${KEY}=keemin:wright;${KEY2}=limen-house:limen`,
     WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") };
   delete env.WORLD2_PG; delete env.WORLD2_PG_URL;

@@ -16,17 +16,18 @@
 //                    week. So the wall itself is the input.
 //   the DIALS half — read off the hydrated world store, per the same
 //                    departure→depart lesson say-dials.test.mjs carries.
-import { test, describe } from "node:test";
+import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { parsePsaEntries, psaFold, PSA_SLUG } from "../src/queries.mjs";
 import { dialNumber } from "../src/world-classes.mjs";
-import { storeDbPath } from "../src/world-serve.mjs";
 import { CLASS_ROSTER_GATE_SQL } from "../src/world-store.mjs";
-import { townClone } from "./fixture-paths.mjs";
+import { NO_WORLD, townClone, worldClone } from "./fixture-paths.mjs";
+import { hydrateWorldRows, publishWorld, writeFixtureDb } from "./helpers/world-rows.mjs";
 
 // The town checkout the office is pointed at. Every candidate the repo's own
 // tooling uses; the test says which it found rather than inventing a wall.
@@ -112,8 +113,20 @@ describe("the fold", { skip: wallText ? false : "no town checkout carrying the P
   });
 });
 
-const DB = storeDbPath();
-const storeHasDoorstep = existsSync(DB) && (() => {
+// THE RECORD, AS ROWS (POS-270 lane W 3b). world.db is retired, so the world
+// this file reads is the checkout's newest blessing, hydrated to rows and
+// published as the world graph snapshot; the SQL cross-checks below ask the
+// test's own sqlite, built from the same rows. No checkout, no world: the
+// record-reading block skips by name rather than pass on a fallback.
+const WORLD_DIR = mkdtempSync(join(tmpdir(), "doorstep-psa-"));
+after(() => rmSync(WORLD_DIR, { recursive: true, force: true }));
+let DB = null;
+if (!NO_WORLD) {
+  const rows = hydrateWorldRows({ clone: worldClone(), ref: "blessed", dir: WORLD_DIR });
+  publishWorld(rows, "the newest blessing");
+  DB = writeFixtureDb(rows, join(WORLD_DIR, "world.db"));
+}
+const storeHasDoorstep = DB != null && (() => {
   try {
     const db = new DatabaseSync(DB, { readOnly: true });
     const row = db.prepare(
@@ -123,7 +136,7 @@ const storeHasDoorstep = existsSync(DB) && (() => {
   } catch { return false; }
 })();
 
-describe("the dials come off the record", { skip: storeHasDoorstep ? false : `no hydrated world store carrying the-town/doorstep at ${DB} — run: npm run hydrate:world` }, () => {
+describe("the dials come off the record", { skip: storeHasDoorstep ? false : `no world checkout carrying the-town/doorstep at its newest blessing (${NO_WORLD || "the record lacks it"})` }, () => {
   test("the window and the cap are the doorstep node's own predicates, not numbers in this repo", () => {
     for (const [slot, want] of Object.entries({ psa_window_days: 7, psa_max: 5 })) {
       const d = dialNumber("doorstep", slot, -1, { min: 0 });

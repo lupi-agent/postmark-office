@@ -140,7 +140,7 @@ async function office(clone, env, run) {
     env: {
       // two households at the door: wright's, and the recipient's own — the
       // mail law's second half cannot be read without a key that holds limen
-      ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright;${LIMEN_KEY}=limen-house:limen`, TOWN_CLONE: clone,
+      ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: `${KEY}=keemin:wright;${LIMEN_KEY}=limen-house:limen`, TOWN_CLONE: clone,
       WORLD_CLONE: join(tmp, "no-world-clone"), VOICES_LOG: join(tmp, "voices.jsonl"),
       TOWN_PUSH: "", OAUTH_DB: join(tmp, "oauth.db"), ...env,
     },

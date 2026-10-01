@@ -147,7 +147,7 @@ before(async () => {
   fixtureDb(dbPath).close();
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath], {
     // a static key (no ghId → never principal) + the principal pin + no clone
-    env: { ...process.env, OFFICE_KEYS: "shellkey=keemin:wright", PRINCIPAL_GH_ID: PRINCIPAL_ID, TOWN_CLONE: join(tmp, "no-clone"), TOWN_PUSH: "" },
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: "shellkey=keemin:wright", PRINCIPAL_GH_ID: PRINCIPAL_ID, TOWN_CLONE: join(tmp, "no-clone"), TOWN_PUSH: "" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   await new Promise((ok, no) => {
