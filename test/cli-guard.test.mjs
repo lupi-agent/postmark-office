@@ -114,6 +114,9 @@ const ROSTER = {
   // snapshot, so with no store reachable each one says it has no world graph.
   "src/world-lints.mjs": { args: [], env: NO_PG, code: 1, needle: "no world graph" },
   "src/world-serve.mjs": { args: [], env: { WORLD_CLONE: NOWHERE }, code: 0, needle: "{" },
+  // Not a CLI: it reads process.argv[1] only to NAME the process in its boot
+  // line. Run bare with no store, that line is the whole tail (lane W 3b).
+  "src/world-graph-snapshot.mjs": { args: [], env: { ...NO_PG, WORLD_GRAPH_PG_URL: undefined, NODE_TEST_CONTEXT: undefined }, code: 0, needle: "world-graph-snapshot.mjs stands on its floor" },
   // Was KNOWN RED ON ANY HYDRATED TREE: the tail read `OFFICE_ROOT/world.db`
   // whatever the env said, so it exited 0 wherever one had ever been hydrated.
   // It reads the store's snapshot now (lane W 3b), and NO_PG is a control that
