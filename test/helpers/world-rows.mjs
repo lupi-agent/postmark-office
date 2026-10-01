@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { publishWorldGraphForTest, resetWorldGraph, worldGraphSnapshot } from "../../src/world-graph-snapshot.mjs";
-import { graphFromTables } from "../../src/world-store.mjs";
+import { graphFromTables, SCHEMA } from "../../src/world-store.mjs";
 
 /** Where no world.db is, ever: the file floor answers nothing from here. */
 export const NO_WORLD_DB = join(tmpdir(), "pm-test-no-world-db-here.db");
@@ -84,3 +84,34 @@ export async function withNoWorld(fn) {
 
 /** No world graph at all, from here on (the "no store" cases). */
 export const clearWorld = () => resetWorldGraph();
+
+/**
+ * world.db's tables written as a sqlite file, for a test that holds the SQL
+ * itself to account (world-graph-db.test: every twin equal to its statement).
+ * The office never opens it; only the test's own handle does.
+ */
+export function writeFixtureDb(source, path) {
+  const t = tablesOf(source);
+  const db = new DatabaseSync(path);
+  try {
+    db.exec(SCHEMA);
+    db.exec("BEGIN");
+    const meta = db.prepare("INSERT INTO meta VALUES (?, ?)");
+    for (const r of t.meta) meta.run(r.key, r.value);
+    const node = db.prepare("INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?,?)");
+    for (const r of t.nodes) node.run(r.id, r.kind, r.subkind, r.tier, r.by, r.at_x, r.at_y, r.extent_w, r.extent_h, r.props);
+    const edge = db.prepare("INSERT INTO edges (seq, src, dst, type, props, born_at) VALUES (?,?,?,?,?,?)");
+    for (const r of t.edges) edge.run(r.seq, r.src, r.dst, r.type, r.props, r.born_at);
+    const ev = db.prepare("INSERT INTO events (seq, at, actor, type, payload) VALUES (?,?,?,?,?)");
+    for (const r of [...t.events].sort((a, b) => a.seq - b.seq)) ev.run(r.seq, r.at, r.actor, r.type, r.payload);
+    const type = db.prepare("INSERT INTO edge_type_registry VALUES (?, ?)");
+    for (const r of t.edgeTypes ?? []) type.run(r.type, r.note);
+    const geom = db.prepare("INSERT INTO geometry_versions (seq, mark_id, at_x, at_y, extent_w, extent_h, valid_from_iso, valid_to_iso, sha, path, subject, authored_iso, change) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    for (const r of [...t.geometryVersions].sort((a, b) => a.seq - b.seq))
+      geom.run(r.seq, r.mark_id, r.at_x, r.at_y, r.extent_w, r.extent_h, r.valid_from_iso, r.valid_to_iso, r.sha, r.path, r.subject, r.authored_iso, r.change);
+    const lint = db.prepare("INSERT INTO lint_findings (lint, verdict, headline, evidence, hydrated_at, as_of_world) VALUES (?,?,?,?,?,?)");
+    for (const r of t.lintFindings) lint.run(r.lint, r.verdict, r.headline, r.evidence, r.hydrated_at, r.as_of_world);
+    db.exec("COMMIT");
+  } finally { db.close(); }
+  return path;
+}
