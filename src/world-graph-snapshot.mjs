@@ -53,7 +53,7 @@ export async function graphTablesAt(query, { tag_sha, office_sha }) {
   return out;
 }
 
-const state = { snap: null, key: null, inflight: null, lastError: null, timer: null };
+const state = { snap: null, key: null, inflight: null, lastError: null, timer: null, rowsRefused: null };
 
 /** One assignment: a reader sees the old graph or the new one. */
 function publish(tables, pin, key, source) {
@@ -87,11 +87,18 @@ export function publishWorldGraphForTest(tables, { label = "test rows" } = {}) {
   publish(t, testPin(t), `test:${label}:${Date.now()}:${Math.random()}`, label);
 }
 
-/** WORLD_GRAPH_ROWS, read once per change of the file. True when the variable is set. */
+/**
+ * WORLD_GRAPH_ROWS, read once per change of the file. True when this process
+ * stands on a test's rows; false when there are none, AND when they are
+ * refused — a refused fixture must leave the store's load to run, or an office
+ * with a stray WORLD_GRAPH_ROWS would publish no world at all. The refusal is
+ * kept in its own field, so it stays disclosed after the store has published
+ * (publish() clears lastError).
+ */
 function loadRowsFixture() {
   const path = process.env.WORLD_GRAPH_ROWS;
   if (!path) return false;
-  if (!inNodeTest()) { state.lastError = `WORLD_GRAPH_ROWS is a test fixture and is refused outside node --test (${path})`; return true; }
+  if (!inNodeTest()) { state.rowsRefused = `WORLD_GRAPH_ROWS is a test fixture and is refused outside node --test (${path})`; return false; }
   try {
     const st = statSync(path);
     const key = `rows:${path}:${st.mtimeMs}:${st.size}`;
@@ -111,18 +118,28 @@ export const worldGraphSnapshot = () => state.snap;
 /** Which source the graph readers stand on, for a door or a health line. */
 export function worldGraphStanding() {
   const s = state.snap;
-  if (s) return { source: "store", settlement: s.pin.settlement, tag_sha: s.pin.tag_sha, office_sha: s.pin.office_sha };
+  const refused = state.rowsRefused ? { refused: state.rowsRefused } : {};
+  if (s) return { source: "store", settlement: s.pin.settlement, tag_sha: s.pin.tag_sha, office_sha: s.pin.office_sha, ...refused };
   return {
     source: "floor",
-    disclosed: `the world graph snapshot has not loaded${state.lastError ? ` (${state.lastError})` : ""}; graph reads answer from world.db where there is one`,
+    disclosed: `the world graph snapshot has not loaded${state.lastError ? ` (${state.lastError})` : ""}${state.rowsRefused ? ` (${state.rowsRefused})` : ""}; graph reads answer from world.db where there is one`,
+    ...refused,
   };
 }
 
-async function defaultQuery(sql, params) {
+async function storeQuery(sql, params) {
   const { world2ServeEnabled, world2Pool } = await import("./world2-serve.mjs");
   if (!world2ServeEnabled()) throw new Error("the world 2.0 store is not engaged at this office (WORLD2_PG/WORLD2_PG_URL)");
   return (await world2Pool()).query(sql, params);
 }
+
+// What a reload asks when no query is handed in: the store. A child process
+// can stand a stub in for it (__setDefaultQueryForTest), so the path an office
+// actually takes — the fixture check, then the store — is driven end to end,
+// including outside node --test, where the fixture must be refused.
+let defaultQuery = storeQuery;
+/** Tests only: what an argument-less reload asks; null puts the store back. */
+export function __setDefaultQueryForTest(fn) { defaultQuery = fn ?? storeQuery; }
 
 /**
  * Ask whether a newer snapshot has been copied in, and if so load it and
@@ -170,5 +187,5 @@ export function startWorldGraphRefresher({ intervalMs = Number(process.env.WORLD
 /** Tests only: forget everything, stop the timer. */
 export function resetWorldGraph() {
   if (state.timer) clearInterval(state.timer);
-  Object.assign(state, { snap: null, key: null, inflight: null, lastError: null, timer: null });
+  Object.assign(state, { snap: null, key: null, inflight: null, lastError: null, timer: null, rowsRefused: null });
 }
