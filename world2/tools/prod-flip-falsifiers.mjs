@@ -3,15 +3,16 @@
 // against prod's store before the prod flip (POS-142, lane S3, item 3).
 //
 //   WORLD2_PG_URL=<a reader URL> node world2/tools/prod-flip-falsifiers.mjs \
-//     --world-repo <a world checkout at the store's world-marks head> [--only apex,standing,live] [--law-sha <sha>]
+//     --world-repo <a world checkout at the store's world-marks head> [--only apex,standing,live,guard-g5] [--law-sha <sha>]
 //
 // DESIGN-standing-flip.md § 5.6 moves no read until its falsifier is green on
 // prod. Three of the four store falsifiers read and only read: apex, standing
-// and live. This runs them as children, one after another, and every session
-// any of them opens is READ ONLY. A write would be refused by Postgres instead
-// of landing. The fourth, the guard falsifier, WRITES a population into a
-// scratch database, so it is not here; its own command runs on POS-242's
-// rehearsal copy (see the lane's SUNDAY.md).
+// and live. The fourth, the guard, reads the real store in ONE of its six
+// equalities, G5, and that one runs here as `guard-g5` (falsifier-guard-g5.mjs).
+// Its other five write a population into an empty scratch and are CI's
+// `guard-falsifier` workflow's, on every PR (Wright's G-c, 2026-10-01). This
+// runs them as children, one after another, and every session any of them
+// opens is READ ONLY. A write would be refused by Postgres instead of landing.
 //
 // ── READ ONLY, TWO LAYERS, AND THE SECOND DOES NOT TRUST THE FIRST ──────────
 //
@@ -76,6 +77,10 @@ export const FALSIFIERS = Object.freeze([
   { id: "apex", file: "falsifier-apex-equality.mjs", proof: "--prove-can-fail" },
   { id: "standing", file: "falsifier-standing-equality.mjs", proof: null },
   { id: "live", file: "falsifier-live-equality.mjs", proof: "--can-fail-proof" },
+  // The guard falsifier's G5, the one equality of six that reads the real store
+  // (falsifier-guard-g5.mjs, which imports the guard module's own functions).
+  // G1–G4 and G6 write a scratch population and stay CI's (Wright's G-c).
+  { id: "guard-g5", file: "falsifier-guard-g5.mjs", proof: "--prove-can-fail" },
 ]);
 
 export const PASS_THROUGH = Object.freeze(["WORLD_STORE_DB", "TOWN_CLONE", "WORLD2_PGHOST", "WORLD2_PGPORT"]);
@@ -115,7 +120,7 @@ async function main() {
   const die = (m) => { console.error(`CANNOT RUN · ${m}`); process.exit(2); };
 
   const worldRepo = arg("--world-repo");
-  if (!worldRepo) die("usage: prod-flip-falsifiers.mjs --world-repo <checkout> [--only apex,standing,live] [--law-sha <sha>] [--allow-skew]  (WORLD2_PG_URL = a reader URL)");
+  if (!worldRepo) die("usage: prod-flip-falsifiers.mjs --world-repo <checkout> [--only apex,standing,live,guard-g5] [--law-sha <sha>] [--allow-skew]  (WORLD2_PG_URL = a reader URL)");
   const REPO = resolve(worldRepo);
   if (!existsSync(REPO)) die(`no checkout at ${REPO}`);
   const URL0 = process.env.WORLD2_PG_URL;

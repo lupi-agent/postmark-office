@@ -47,6 +47,14 @@ test("standing gets NO proof flag: its proof writes inside a rolled-back transac
   assert.ok(FALSIFIERS.find((f) => f.id === "live").proof);
 });
 
+test("the guard's G5 runs as a fourth read-only check, through its own entry, with its own in-memory breaks", () => {
+  const g5 = FALSIFIERS.find((f) => f.id === "guard-g5");
+  assert.ok(g5, "guard-g5 is on the runner");
+  assert.equal(g5.file, "falsifier-guard-g5.mjs");
+  assert.equal(g5.proof, "--prove-can-fail");
+  assert.ok(!FALSIFIERS.some((f) => f.file === "falsifier-guard-equality.mjs"), "the whole guard (which writes a scratch) is never on the read-only runner");
+});
+
 test("the worst exit wins, and a child that died without a code is CANNOT RUN", () => {
   assert.equal(worst([0, 0, 0]), 0);
   assert.equal(worst([0, 1, 0]), 1);
