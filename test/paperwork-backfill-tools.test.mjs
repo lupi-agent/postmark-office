@@ -16,14 +16,10 @@
 //   T3  tools/backfill-home-shelf.mjs § openLedger: a live run spends quota on
 //       office_media, and a dry run on the store commits nothing
 //
-// It needs a DISPOSABLE Postgres that already carries the migrations, the same
-// as test/paperwork-store.test.mjs (docs/2026-10-02/rail/pos-271/proof-tools.mjs
-// builds one):
-//
-//   PAPERWORK_TEST_PG_OWNER_URL  world2_owner on that store (the import's pen)
-//   PAPERWORK_TEST_PG_API_URL    office_api on that store (the office's pen)
-//
-// Without both it SKIPS, and says so in its title.
+// It runs on the suite's store (test/helpers/embedded-store.mjs, POS-268): a
+// real Postgres this file starts, with every migration, as world2_owner for the
+// import and office_api for the office. Without one it FAILS with the reason —
+// a store test that skips reads as green.
 //
 //   node --test test/paperwork-backfill-tools.test.mjs
 
@@ -35,10 +31,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const OWNER_URL = process.env.PAPERWORK_TEST_PG_OWNER_URL;
-const API_URL = process.env.PAPERWORK_TEST_PG_API_URL;
-const SKIP = OWNER_URL && API_URL ? false
-  : "SKIPPED: no disposable store — set PAPERWORK_TEST_PG_OWNER_URL and PAPERWORK_TEST_PG_API_URL (docs/2026-10-02/rail/pos-271/proof-tools.mjs does)";
+import { startStore } from "./helpers/embedded-store.mjs";
 
 // media.mjs reads these at load; the PUT is a stub in every run, so nothing
 // here can reach a bucket.
@@ -46,7 +39,6 @@ process.env.R2_ACCOUNT_ID = "test-account";
 process.env.R2_ACCESS_KEY_ID = "test-key";
 process.env.R2_SECRET_ACCESS_KEY = "test-secret";
 
-const SWITCHED = { OFFICE_PAPERWORK_STORE: "1", WORLD2_PG: "1", WORLD2_PG_URL: API_URL };
 const UNSWITCHED = { OFFICE_PAPERWORK_STORE: "", WORLD2_PG: "", WORLD2_PG_URL: "" };
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const quiet = (s) => String(s ?? "").split("\n").filter((l) => !/ExperimentalWarning|trace-warnings/.test(l)).join("\n");
@@ -69,7 +61,12 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
 const JPG = Buffer.from("/9j/2wBDAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIfIiEmKzcvJik0KSEiMEExNDk7Pj4+JS5ESUM8SDc9Pjv/2wBDAQoLCw4NDhwQEBw7KCIoOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozv/wAARCAACAAIDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAwb/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCXACnH/9k=", "base64");
 const door = (household, handles) => ({ household, handles: new Set(handles) });
 
-test(`THE BACKFILL TOOLS READ THE STORE WHEN SWITCHED, and answer as the files did: T1–T3 ${SKIP ? `(${SKIP})` : ""}`, { skip: SKIP }, async (t) => {
+test("THE BACKFILL TOOLS READ THE STORE WHEN SWITCHED, and answer as the files did: T1–T3", async (t) => {
+  const store = await startStore({ db: "paperwork_tools_test" });
+  t.after(() => store.stop());
+  const OWNER_URL = store.url("world2_owner");
+  const API_URL = store.url("office_api");
+  const SWITCHED = { OFFICE_PAPERWORK_STORE: "1", WORLD2_PG: "1", WORLD2_PG_URL: API_URL };
   const pg = (await import("pg")).default;
   const { openOauthDb } = await import("../src/oauth.mjs");
   const { openRolesDb, grantRole } = await import("../src/roles.mjs");
