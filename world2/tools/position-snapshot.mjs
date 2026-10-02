@@ -12,7 +12,9 @@
 //        [--compare-era-one --world-repo <checkout>]
 //                               read-only: the store's `_ledger` rows against the git walk ledger
 //                               at the checkout's main, line for line and as governing records
-//                               with the store's other eras (POS-302 PR 3); exit 1 on a difference
+//                               with the store's other eras (POS-302 PR 3); exit 1 on a difference.
+//                               It connects as `snapshot_reader` and nothing else (it refuses any
+//                               other role) and reads inside BEGIN READ ONLY, rolled back.
 //
 //   env: WORLD2_PG_URL (the office's own connection, `office_api`, the pen 053
 //        grants INSERT to), or PG* as `w2_pgenv` exports them, or --pg-url.
@@ -204,7 +206,14 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
     if (flag("compare-era-one")) {
       const repo = arg("world-repo");
       if (!repo) { console.error("--compare-era-one needs --world-repo <checkout>"); process.exit(2); }
-      const c = await compareEraOne(client, { worldRepo: repo });
+      // Read-only by role AND by transaction (Wright, 2026-10-02): the one role
+      // that writes nothing, and a transaction Postgres holds read-only.
+      const { rows: [who] } = await client.query("SELECT current_user AS u");
+      if (who.u !== "snapshot_reader") { console.error(`--compare-era-one connects as snapshot_reader only; this connection is ${who.u}`); process.exit(2); }
+      await client.query("BEGIN READ ONLY");
+      let c;
+      try { c = await compareEraOne(client, { worldRepo: repo }); }
+      finally { await client.query("ROLLBACK").catch(() => {}); }
       console.log(`era one · ${c.verdict} · ${c.carried} _ledger row(s) against ${c.git} git line(s) · ${c.lines.length} line(s) differ · ${c.governing.length} governing place(s) differ`);
       if (c.verdict !== "EQUAL") console.log(JSON.stringify({ lines: c.lines.slice(0, 20), governing: c.governing.slice(0, 20) }, null, 2));
       code = c.verdict === "EQUAL" ? 0 : 1;

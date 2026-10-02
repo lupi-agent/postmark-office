@@ -105,6 +105,27 @@ test("THE CONVERTER and THE PARTITION: each _ledger row is its git line, key for
   assert.ok(git.slice(stored.length).every((d) => Date.parse(d.iso) >= boundary), "a line the store left out is older than the journal");
 });
 
+test("THE OVERLAP, NAMED: 13 lines over 8 handles, none of them ONLY in the overlap, and 12 of them are the walkers door's era-order-overlap", async (t) => {
+  if (needsClone(t)) return;
+  const stored = await storeLedgerDepartures();
+  const overlap = git.slice(stored.length);
+  const handles = [...new Set(overlap.map((d) => d.handle))];
+  assert.equal(overlap.length, 13, "the backfill left a different number of lines to the journal; re-measure before trusting the merge");
+  assert.deepEqual(handles, ["postmaster", "jetto-of-starforge", "wright", "sol-am-lichterfenster", "vermillion", "rei", "spark-the-builder", "dylan"]);
+  // The load-bearing half: a handle that appeared ONLY in the overlap would take
+  // a different first-appearance place when era one comes from the store.
+  const head = new Set(stored.map((d) => d.handle));
+  assert.deepEqual(handles.filter((h) => !head.has(h)), [], "a handle appears only in the overlap: the store's era one would move its place");
+  // #330's `era-order-overlap: 12`: the store records older than the ledger's newest line.
+  const newest = git.reduce((m, d) => Math.max(m, Date.parse(d.iso) || 0), 0);
+  const { records } = await storedDepartures({ atMs: Date.now() });
+  const older = records.filter((r) => (Date.parse(r.iso) || 0) < newest);
+  assert.equal(older.length, 12);
+  const key = (d) => `${d.iso}|${d.handle}`;
+  const overlapKeys = new Set(overlap.map(key));
+  assert.ok(older.every((r) => overlapKeys.has(key(r))), "an older store record is not one of the overlap's lines");
+});
+
 test("THE RECORD: the store's era one, with the store's other eras, governs every handle as the git ledger does", async (t) => {
   if (needsClone(t)) return;
   const stored = await storeLedgerDepartures();
@@ -119,6 +140,20 @@ test("THE RECORD: the store's era one, with the store's other eras, governs ever
   const differ = [...alone(git)].filter(([h, d]) => JSON.stringify(alone(stored).get(h)) !== JSON.stringify(d)).map(([h]) => h);
   const overlapHandles = [...new Set(git.slice(stored.length).map((d) => d.handle))];
   assert.ok(differ.every((h) => overlapHandles.includes(h)), `era one alone differs outside the overlap: ${differ}`);
+});
+
+test("THE BOX COMMAND: --compare-era-one runs as snapshot_reader, read-only, and refuses any other role", async (t) => {
+  if (needsClone(t)) return;
+  const { spawnSync } = await import("node:child_process");
+  const tool = join(WORLD_CLONE, "..", "world2", "tools", "position-snapshot.mjs");
+  const run = (role) => spawnSync(process.execPath, [tool, "--compare-era-one", "--world-repo", WORLD_CLONE, "--pg-url", store.url(role)],
+    { encoding: "utf8", env: { ...process.env, WORLD2_PG_URL: "", PGUSER: "", PGDATABASE: "" } });
+  const ok = run("snapshot_reader");
+  assert.equal(ok.status, 0, ok.stderr || ok.stdout);
+  assert.match(ok.stdout, /^era one · EQUAL · \d+ _ledger row\(s\) against \d+ git line\(s\)/);
+  const refused = run("office_api");
+  assert.equal(refused.status, 2);
+  assert.match(refused.stderr, /connects as snapshot_reader only; this connection is office_api/);
 });
 
 test("THE COMMAND: --compare-era-one reads EQUAL on this record, and DIFFERENT once the store carries a line git does not", async (t) => {
