@@ -68,7 +68,7 @@ import { worldGraphSnapshot } from "./world-graph-snapshot.mjs"; // stage 1: pub
 import { emissionsEnabled } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's flag
 import { world2Enabled } from "./world2-acts.mjs"; // the write-path closure: is the shadow mirror on at all
 import { VESSEL_HANDLE, ridesTheVessel } from "./dynamic-entities.mjs"; // the aboard test, one home for two readers
-import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, movementV2Enabled, roadTerms, storedDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
+import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, movementV2Enabled, roadTerms, storedDepartures, storedGoverningDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
 import { arrivedNotice, doorstepTransport, isVehicleStop, rideStateFrom, stopAnnotationFor, stopUnderfoot, transportAt } from "./world-ride.mjs"; // #2986 § 11: the derived visibility of a vehicle, off the same timetable; POS-165: the walk verb asks the same predicate the ride verb does
 import { findMarks } from "./world-find.mjs"; // find a mark by name from anywhere (2026-09-26)
 import { byBand, presenceEnabled, presentNear, near as presenceNear, everyone as presenceEveryone, PRESENCE_DIALS } from "./dynamic-presence.mjs"; // stage 2: residents revealed to each other
@@ -410,7 +410,14 @@ const walkLedgerAtMain = (repo) => readAtRef(repo, mainRef(repo), "WORLD/walk-le
 //
 // `db` IS GONE (POS-154): era two came from a sqlite handle a caller could pass
 // in, and it comes from the record now, which has no handle to hand over.
-export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Date.now() } = {}) {
+//
+// `fromSnapshot` (POS-302) is for the positions projection alone: era two then
+// comes from the newest clearing's snapshot plus the acts since
+// (`world-movement.mjs § storedGoverningDepartures`), a list `governingOf`
+// reduces exactly as it reduces every record, and NOT every record. A snapshot
+// that is discarded is disclosed (`positions-snapshot-discarded`) and the whole
+// record answers; no snapshot at all answers from the whole record silently.
+export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Date.now(), fromSnapshot = false } = {}) {
   const disclosed = [];
   let ledger = [], ledgerUnreadable = null;
   try {
@@ -422,7 +429,14 @@ export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Da
   }
   if (!movementV2Enabled()) return { departures: ledger, eras: ["ledger"], disclosed, ledgerUnreadable };
 
-  const { records, absent } = await storedDepartures({ atMs });
+  const newestLedger = ledger.reduce((m, d) => Math.max(m, Date.parse(d.iso) || 0), 0);
+  let kept = null;
+  if (fromSnapshot) {
+    const got = await storedGoverningDepartures({ atMs, newestLedgerMs: newestLedger });
+    if (got.records) kept = got;
+    else if (got.fallback) disclosed.push(`positions-snapshot-discarded: ${got.fallback} — the whole record served`);
+  }
+  const { records, absent } = kept ?? await storedDepartures({ atMs });
   if (absent) {
     // NAMES THE RECORD, NOT THE TABLE (POS-154). This said
     // `movements-unreadable`, which was true of a sqlite file and is false of
@@ -431,15 +445,15 @@ export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Da
     disclosed.push(`record-unreadable: ${absent} — reading the founding era alone`);
     return { departures: ledger, eras: ["ledger"], disclosed, ledgerUnreadable };
   }
-  if (!records.length) return { departures: ledger, eras: ["ledger", "store"], disclosed, ledgerUnreadable };
+  const snapshot = kept ? { snapshot: kept.snapshot } : {};
+  if (!records.length) return { departures: ledger, eras: ["ledger", "store"], disclosed, ledgerUnreadable, ...snapshot };
 
-  const newestLedger = ledger.reduce((m, d) => Math.max(m, Date.parse(d.iso) || 0), 0);
   const overlap = records.filter((r) => (Date.parse(r.iso) || 0) < newestLedger);
   if (overlap.length) {
     disclosed.push(`era-order-overlap: ${overlap.length} store record(s) predate the newest ledger line — the freeze assumption that era two is strictly later no longer holds, and append order may not be latest-wins for them`);
   }
   const merged = [...ledger, ...records];
-  return { departures: merged, eras: ["ledger", "store"], disclosed, ledgerUnreadable, store_records: records.length };
+  return { departures: merged, eras: ["ledger", "store"], disclosed, ledgerUnreadable, store_records: kept ? kept.store_records : records.length, ...snapshot };
 }
 
 /** The array alone, for the many callers that want only that. */
@@ -465,7 +479,7 @@ export const departuresNow = async (worldClone = WORLD_CLONE, opts = {}) =>
 // it answered before this block existed.
 export const positionsProjected = () => process.env.WORLD_POSITIONS === "1";
 export const positionProjection = createPositionProjection({
-  rebuild: (atMs) => departuresAcrossEras(WORLD_CLONE, { atMs }),
+  rebuild: (atMs) => departuresAcrossEras(WORLD_CLONE, { atMs, fromSnapshot: true }),
 });
 
 // THE READ WORKERS' COPY (POS-266). Each worker keeps its own projection and

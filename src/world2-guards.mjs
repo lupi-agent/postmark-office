@@ -560,6 +560,49 @@ export async function storeDepartureRows() {
   });
 }
 
+/**
+ * THE POSITIONS SNAPSHOT AND THE ACTS SINCE IT (POS-302), in ONE read-only
+ * transaction, so the snapshot, the recount and the delta are one view of the
+ * record.
+ *
+ * The snapshot is the newest one whose every record is at or before `atMs`
+ * (`max_iso`): a snapshot is taken on the keep tick after its window closed and
+ * can hold acts that landed after the close, so a past read at the close itself
+ * takes the snapshot before it, plus the delta up to the instant.
+ *
+ * Null when there is nothing to read from: the office is not pointed at the
+ * record, 053 is not applied, or no snapshot qualifies. The caller then reads
+ * the whole record, as it did before 053, and says nothing: no snapshot yet is
+ * the ordinary state of a fresh store, not a disagreement.
+ */
+export async function storeDepartureSnapshot({ atMs = Date.now() } = {}) {
+  if (!world2Enabled()) return null;
+  const snap = await import("./position-snapshot.mjs");
+  return reading(async (client) => {
+    const { rows: [has] } = await client.query("SELECT to_regclass('position_snapshots') IS NOT NULL AS ok");
+    if (!has?.ok) return null;
+    const { rows: [header] } = await client.query(
+      `SELECT window_id, hw_id, hw_count, last_at, last_id, min_iso, max_iso FROM position_snapshots
+        WHERE max_iso IS NULL OR max_iso::timestamptz <= $1
+        ORDER BY window_id DESC LIMIT 1`, [new Date(atMs).toISOString()]);
+    if (!header) return null;
+    const hw = String(header.hw_id);
+    const { rows } = await client.query(
+      "SELECT handle, first_ordinal, record FROM position_snapshot_rows WHERE window_id = $1 ORDER BY first_ordinal", [header.window_id]);
+    const { rows: since } = await client.query(snap.RECOUNT_AND_DELTA_SQL, [snap.DEPARTURE_ACTIONS, hw]);
+    const delta = since.filter((r) => r.id != null).map(({ recount, ...r }) => r);
+    return {
+      window: Number(header.window_id),
+      header: {
+        hw_id: Number(header.hw_id), hw_count: Number(header.hw_count),
+        last_at: header.last_at instanceof Date ? header.last_at.toISOString() : header.last_at, last_id: header.last_id == null ? null : Number(header.last_id),
+        min_iso: header.min_iso, max_iso: header.max_iso,
+      },
+      rows, recount: since[0]?.recount ?? null, delta,
+    };
+  });
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // NOT A GUARD · the investigate door's `stands` block, read from the store
 // ═════════════════════════════════════════════════════════════════════════════
