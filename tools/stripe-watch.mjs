@@ -32,7 +32,16 @@
 //
 // ── HOW ONE SESSION RESOLVES ────────────────────────────────────────────────
 //
-//   pot   `client_reference_id`, if it names a pot the town posts AND that pot
+//   ref   `client_reference_id` is `<pot>` or, since POS-317 (Keemin, 2026-10-02),
+//         `<pot>_g<id>`: the pot and the SIGNED-IN payer's GitHub account, minted
+//         by the fund page so nobody types anything. The account resolves through
+//         src/fund-holder.mjs to its household and to the one resident who holds
+//         its stamps, and `from:` names that handle (the close reads `from:` as a
+//         handle: docs/2026-10-02/rail/fund-household/measure-from.out). An account
+//         no household holds is a gift under outside:stripe. A bare `<pot>` (older
+//         sessions, the bare link, a signed-out payer) keeps the two channels below.
+//
+//   pot   the pot part of `client_reference_id`, if it names a pot the town posts AND that pot
 //         is open (potGate, the /fund door's own gate). Anything else —
 //         missing, unknown, draft, closed — journals as `needs-pot`. The first
 //         real $10 (2026-08-25) predates the parameter and lands here; every
@@ -208,6 +217,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { CROSSING_MS } from "../src/crossings.mjs";
 import { fundGuards, penRecorder } from "../src/fund.mjs";
 import { townLoginHands } from "../src/household-logins.mjs";
+import { parseFundRef, resolveAccount, readFundRegistry, meepLawOf } from "../src/fund-holder.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -451,7 +461,7 @@ const anomaly = (kind, why, rule, resolves) => ({ disposition: "anomaly", anomal
  * will file to darko-fund as an outside gift because `jetto-of-starfoge` is not
  * a household" and fix it, rather than learning after the ref is spent.
  */
-export function resolveSession(s, { engine, entries, clone, households, loginHands = null, now = Date.now(), graceMs = CROSSING_MS, minUsd = MIN_USD, allowTestmode = false }) {
+export function resolveSession(s, { engine, entries, clone, households, loginHands = null, registry = null, isMeep = () => false, now = Date.now(), graceMs = CROSSING_MS, minUsd = MIN_USD, allowTestmode = false }) {
   const { receipts } = engine.foldPotReceipts(entries);
   const prior = receipts.find((r) => String(r.ref) === s.receipt_ref);
   if (prior) return { disposition: "already", ...s, pot: prior.pot, from: prior.from, date: prior.date, usd_recorded: prior.usd };
@@ -492,7 +502,8 @@ export function resolveSession(s, { engine, entries, clone, households, loginHan
   // THE POT. `client_reference_id` or nothing — never a guess, and never a
   // default. A watcher that fell back to "the only open pot" would be choosing
   // where a stranger's money goes on the day a second pot opens.
-  const named = s.client_reference_id == null ? null : String(s.client_reference_id).trim();
+  const ref = parseFundRef(s.client_reference_id, "stripe");
+  const named = ref.pot;
   if (!named)
     return { ...s, usd_total: usdTotal, usd: whole, ...anomaly("needs-pot", "the session names no pot (no client_reference_id)", "\"a receipt needs the pot it pays\" — tools/epoch-close.mjs, on refusing a receipt with no pot file behind it", "the founder, by hand: record it against the pot the payer meant. Sessions created after site main b2260e7a carry the pot automatically, so this queue should approach zero") };
 
@@ -500,9 +511,17 @@ export function resolveSession(s, { engine, entries, clone, households, loginHan
   if (!gate.ok)
     return { ...s, usd_total: usdTotal, usd: whole, pot_named: named, ...anomaly("needs-pot", gate.defect, "\"a receipt needs the pot it pays\" — a draft or closed pot takes no dollars", "the founder: open the pot, or record the dollars against the pot the payer meant. The next tick re-reads it") };
 
-  // THE HAND. Two channels, asked in order; anything else is a gift.
+  // THE HAND. A minted account reference first (POS-317): the signed-in payer's
+  // household, by its one holder. Without one, the two typed channels, in order;
+  // anything else is a gift. A payer part that is not an account is not guessed at.
   const typed = s.handle_typed || null;
-  const hand = resolveHand(typed, households, loginHands);
+  if (ref.account && !registry)
+    return { ...s, usd_total: usdTotal, usd: whole, pot: named, ...anomaly("no-registry", `the session names account g${ref.account}, and the office could not read the town's household registry to resolve it`, "a payment in a household's name is credited to that household, never guessed", "the next tick, once the town clone's tools/households.json reads") };
+  const hand = ref.account
+    ? resolveAccount(ref.account, { registry, isMeep, outside: OUTSIDE_FROM })
+    : ref.typed
+      ? { attributed: false, from: OUTSIDE_FROM, via: null, gift_note: `the reference names "${ref.typed}", which is not an account reference (g<id>), so these dollars are witnessed as a gift under ${OUTSIDE_FROM} and mint no holo.` }
+      : resolveHand(typed, households, loginHands);
   const { attributed, from } = hand;
 
   // THE CAP, through the /fund door's own guards so D5 is one copy of one rule.
@@ -522,6 +541,8 @@ export function resolveSession(s, { engine, entries, clone, households, loginHan
     attributed,
     ...(hand.via ? { attributed_via: hand.via } : {}),
     ...(hand.pin_note ? { pin_note: hand.pin_note } : {}),
+    ...(hand.household ? { household: hand.household, household_note: hand.household_note } : {}),
+    ...(ref.account ? { account: `g${ref.account}` } : {}),
     handle_typed: typed,
     // The receipt of a foreign presentment. Journal-only: record() takes pot,
     // usd, from and ref, so nothing here can reach the ledger row.
@@ -678,7 +699,7 @@ export function unwitnessedSeen(rows) {
  * "what Stripe has shown us", and this is a fix TO a cursor bug, so it must not
  * quietly be a second change to what the cursor means.
  */
-export function decide({ sessions, journal = [], settlements = null, engine, entries, clone, households, loginHands = null, now = Date.now(), graceMs = CROSSING_MS, minUsd = MIN_USD, allowTestmode = false, cursor = null }) {
+export function decide({ sessions, journal = [], settlements = null, engine, entries, clone, households, loginHands = null, registry = null, isMeep = () => false, now = Date.now(), graceMs = CROSSING_MS, minUsd = MIN_USD, allowTestmode = false, cursor = null }) {
   // `settlements` is `readSettlements(...)`'s map, read by the caller so this
   // stays pure. Applied to live and journal rows alike; a row that already
   // carries its settlement keeps it.
@@ -702,7 +723,7 @@ export function decide({ sessions, journal = [], settlements = null, engine, ent
 
   const buckets = { already: [], hold: [], witness: [], anomaly: [] };
   for (const s of decoded) {
-    const r = resolveSession(s, { engine, entries, clone, households, loginHands, now, graceMs, minUsd, allowTestmode });
+    const r = resolveSession(s, { engine, entries, clone, households, loginHands, registry, isMeep, now, graceMs, minUsd, allowTestmode });
     buckets[r.disposition].push(r);
   }
   return {
@@ -837,6 +858,9 @@ async function main() {
   // The second channel's map, derived by the town's own resolver. Built here
   // and handed down so the rule stays pure and a falsifier can withhold it.
   const loginHands = townLoginHands(clone, engine);
+  // POS-317: the registry the account references resolve through, and the town's meep law today.
+  const registry = readFundRegistry(clone);
+  const isMeep = meepLawOf(engine, entries, new Date().toISOString().slice(0, 10));
 
   // THE SECOND READ. The journal is read ONCE here and used twice: to re-decide
   // the rows the cursor has left behind (#2973), and immediately below to
@@ -861,7 +885,7 @@ async function main() {
   for (const [session, settled] of remembered) if (!settlements.has(session)) settlements.set(session, settled);
 
   const { report, todo, cursor: next } = decide({
-    sessions, journal: behind, settlements, engine, entries, clone, households, loginHands, cursor,
+    sessions, journal: behind, settlements, engine, entries, clone, households, loginHands, registry, isMeep, cursor,
   });
   if (coldStart) report.coldstart = `no cursor: this run read only the last ${COLDSTART_DAYS} days. A session older than ${iso(coldFloor)} was NOT read — sweep it with --since.`;
 

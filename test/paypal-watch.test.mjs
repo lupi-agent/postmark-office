@@ -118,11 +118,13 @@ test("1 · custom_id is `<pot>|<handle>`, trimmed and bounded, and parses back",
   assert.equal(customIdFor("darko-fund", "  paz  "), "darko-fund|paz");
   assert.equal(customIdFor("darko-fund", ""), "darko-fund|");
   assert.equal(customIdFor("keep", "x".repeat(300)).length, CUSTOM_MAX);
-  assert.deepEqual(parseCustom("darko-fund|paz"), { pot: "darko-fund", handle: "paz" });
-  assert.deepEqual(parseCustom("darko-fund|"), { pot: "darko-fund", handle: null });
-  assert.deepEqual(parseCustom("darko-fund"), { pot: "darko-fund", handle: null });
-  assert.deepEqual(parseCustom(null), { pot: null, handle: null });
-  assert.deepEqual(parseCustom("keep|a|b"), { pot: "keep", handle: "a|b" }, "only the first bar splits");
+  assert.deepEqual(parseCustom("darko-fund|paz"), { pot: "darko-fund", handle: "paz", account: null });
+  assert.deepEqual(parseCustom("darko-fund|"), { pot: "darko-fund", handle: null, account: null });
+  assert.deepEqual(parseCustom("darko-fund"), { pot: "darko-fund", handle: null, account: null });
+  assert.deepEqual(parseCustom(null), { pot: null, handle: null, account: null });
+  assert.deepEqual(parseCustom("keep|a|b"), { pot: "keep", handle: "a|b", account: null }, "only the first bar splits");
+  // POS-317: a signed-in giver's order carries their account, not a typed handle
+  assert.deepEqual(parseCustom("darko-fund|g273009068"), { pot: "darko-fund", handle: null, account: "273009068" });
 });
 
 // ── 2 ───────────────────────────────────────────────────────────────────────
