@@ -76,6 +76,8 @@ export const LANDED = {
   "038_world_graph_events.sql":    { probe: rel("world_graph_events") },
   // 049 (POS-142 Proposal B): which settlement first carried each mark.
   "049_mark_carried.sql":          { probe: rel("mark_carried") },
+  // 051 (POS-246): a world act's retry key is spent once.
+  "051_world_act_nonce.sql":       { probe: rel("acts_world_nonce_once") },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */

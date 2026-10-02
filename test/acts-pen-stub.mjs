@@ -167,12 +167,18 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
       // The say's spent-nonce lookup (POS-265) asks by actor and nonce.
       const wantActor = /\bactor = \$(\d+)/i.exec(q);
       const wantNonce = /\bnonce = \$(\d+)/i.exec(q);
+      // A world act's spent-nonce lookup (POS-246) asks among the key's
+      // residents, and never among says (they keep their own key).
+      const wantActors = /\bactor = ANY\(\$(\d+)(?:::text\[\])?\)/i.exec(q);
+      const notSay = /\baction <> 'say'/i.test(q);
       const rows = state.acts
         .filter((r) => (wantClass ? r.class === params[Number(wantClass[1]) - 1] : true))
         .filter((r) => (wantAction ? r.action === params[Number(wantAction[1]) - 1] : true))
         .filter((r) => (wantObjects ? params[Number(wantObjects[1]) - 1].includes(r.object) : true))
         .filter((r) => (wantActor ? r.actor === params[Number(wantActor[1]) - 1] : true))
         .filter((r) => (wantNonce ? r.nonce === params[Number(wantNonce[1]) - 1] : true))
+        .filter((r) => (wantActors ? params[Number(wantActors[1]) - 1].includes(r.actor) : true))
+        .filter((r) => (notSay ? r.action !== "say" : true))
         .map((r) => ({
           ...r,
           at: r.at instanceof Date ? r.at : new Date(r.at),

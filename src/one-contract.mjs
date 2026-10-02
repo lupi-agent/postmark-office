@@ -69,16 +69,20 @@ export const FIELD_ALIASES = Object.freeze({
 //
 // THE FIVE PAPER ACTS TAKE IT TOO (POS-70 §5, ruled 2026-09-24). Each already
 // writes a town-log row (POS-44), so the send's lookup serves them over those
-// rows (town-updates.mjs § paperDoor). Every other act still refuses a nonce
-// BY NAME: the world acts until `027_act_nonce.sql` gives their store a place
-// to keep one, and the household acts that write no town-log row at all.
+// rows (town-updates.mjs § paperDoor). The household acts that write no
+// town-log row at all still refuse a nonce BY NAME.
 //
-// THE SAY IS THE ONE WORLD ACT THAT TAKES IT (POS-265), and not from this
-// list: world_say's schema is its door's own — `since` and `handle` already
-// stand there — so the nonce is declared beside them and every door that
-// speaks reads it from the one schema. The say keeps its spent nonces in the
-// voices module's memory, not the acts table (voices.mjs § THE RETRY KEY says
-// what that costs); the other world acts still wait for 027.
+// THE SAY TAKES IT ON ITS OWN SCHEMA (POS-265), not from this list:
+// world_say's schema is its door's own — `since` and `handle` already stand
+// there — so the nonce is declared beside them. It is kept on the say's act
+// (`027_act_nonce.sql`, NOT unique: one conversation lull, voices.mjs § THE
+// RETRY KEY).
+//
+// THE OTHER WORLD ACTS TAKE IT HERE (POS-246): the world door reads it off the
+// act's fields and keeps it on the act's first row in 027's column, spent once
+// (`051_world_act_nonce.sql`) — act-nonce.mjs says how, and what a repeat
+// answers. The world door judges its own envelope (world-apex.mjs § Stage ②)
+// and skips exactly what this list names for the tool it dispatches to.
 const NONCE = Object.freeze(["nonce"]);
 export const DOOR_FIELDS = Object.freeze({
   send_letter: NONCE,
@@ -87,6 +91,17 @@ export const DOOR_FIELDS = Object.freeze({
   update_home: NONCE,
   update_profile: NONCE,
   update_window: NONCE,
+  world_walk: NONCE,
+  world_leave_mark: NONCE,
+  world_withdraw_mark: NONCE,
+  world_stake: NONCE,
+  world_unstake: NONCE,
+  world_note: NONCE,
+  world_hold: NONCE,
+  world_enter: NONCE,
+  world_exit: NONCE,
+  world_ride: NONCE,
+  world_declare_stance: NONCE,
 });
 
 /** One `renamed` row — the same shape for a field, a read and a segment. */
@@ -230,5 +245,15 @@ export function judgeRoute(route, body, { schemas }) {
   if (!spec) return { bounce: { code: 500, defect: `the contract names no route "${route}"`, hint: "this is the office's wiring, not your call" } };
   const declared = schemas?.[spec.tool];
   if (!declared) return { bounce: { code: 500, defect: `this office cannot say what ${spec.tool} takes`, hint: "the route was called without its schema map — the office's wiring, not your call" } };
+  // THE WORLD ROUTES KEEP NO RETRY KEY (POS-246). A world act's nonce is the
+  // WORLD DOOR's field (world-apex.mjs reads it, act-nonce.mjs keeps it); these
+  // plain twins do not read it, so they refuse it by name rather than take a
+  // key they would drop — and say where it is kept.
+  if (spec.door === "world" && body && typeof body === "object" && !("nonce" in declared)
+      && Object.prototype.hasOwnProperty.call(body, "nonce")) {
+    return { bounce: { code: 422, defect: `${spec.tool} does not take: nonce`,
+      hint: `this plain route keeps no retry key; the world door does — world { do: "${String(spec.act).split("|")[0]}", args: { …, nonce: … } }`,
+      unknown_fields: ["nonce"], allowed: Object.keys(declared) } };
+  }
   return judgeActFields({ tool: spec.tool, declared, fields: body, exempt: [...(spec.path ?? []), ...(spec.extra ?? [])] });
 }
