@@ -1,4 +1,4 @@
--- 051 — a world act's retry key is spent ONCE (POS-246, w41)
+-- 052 — a world act's retry key is spent ONCE (POS-246, w41)
 --
 -- LAW-TIER, per 001's discipline note and anti-rebake rule 4 ("Schema DDL is
 -- law-tier: it goes through REVIEW like a grant change, because it is one").

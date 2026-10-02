@@ -80,7 +80,7 @@ export const FIELD_ALIASES = Object.freeze({
 //
 // THE OTHER WORLD ACTS TAKE IT HERE (POS-246): the world door reads it off the
 // act's fields and keeps it on the act's first row in 027's column, spent once
-// (`051_world_act_nonce.sql`) — act-nonce.mjs says how, and what a repeat
+// (`052_world_act_nonce.sql`) — act-nonce.mjs says how, and what a repeat
 // answers. The world door judges its own envelope (world-apex.mjs § Stage ②)
 // and skips exactly what this list names for the tool it dispatches to.
 const NONCE = Object.freeze(["nonce"]);

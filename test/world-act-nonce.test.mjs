@@ -4,7 +4,7 @@
 // the real write path: `appendJournal` → `penWrite` → `insertAct` →
 // `actsInsert`, which asks the scope for the key. The first half runs on the
 // acts-pen stub; the second on a REAL Postgres with every schema file applied,
-// because migration 051's partial unique index and the 23505 a racing twin
+// because migration 052's partial unique index and the 23505 a racing twin
 // meets exist only there ("a round trip through a JS stub is not a round trip
 // through Postgres"). Without EMBEDDED_PG_DIR the second half SKIPS by name.
 //
@@ -162,7 +162,7 @@ const owner = async (sql, params = []) => {
   try { return await c.query(sql, params); } finally { await c.end(); }
 };
 
-test("051 stands on a real store: partial, unique, and not over says", { skip: store.skip }, async () => {
+test("052 stands on a real store: partial, unique, and not over says", { skip: store.skip }, async () => {
   const { rows: [ix] } = await owner("SELECT indexdef FROM pg_indexes WHERE indexname = 'acts_world_nonce_once'");
   assert.match(ix.indexdef, /UNIQUE/);
   assert.match(ix.indexdef, /COALESCE\(household, ''::text\)/);

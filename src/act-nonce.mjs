@@ -36,7 +36,7 @@
 // keep its key; it lands, and says so (`nonce_honoured: false`), exactly as a
 // paper act says so on an office with no town log.
 //
-// Migration 051 is the guard between two offices (or two calls that race past
+// Migration 052 is the guard between two offices (or two calls that race past
 // the lookup): a unique index refuses the second row, and that refusal answers
 // as the first act's receipt rather than as a refused pen.
 
