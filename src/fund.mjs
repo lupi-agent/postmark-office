@@ -46,6 +46,7 @@
 // change" — but R1 rules stamps, not dollars, so this leans on it by analogy
 // and wants the founder's word before it is called law.
 
+import { parseAccountRef, readFundRegistry, fundHolder, meepLawOf } from "./fund-holder.mjs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
@@ -169,18 +170,30 @@ export async function fundVerify(clone, body, {
   // have. Null reads the shipped file, which is what production does.
   potMap = null,
 } = {}) {
-  const { txhash, pot, handle } = body ?? {};
+  const { txhash, pot } = body ?? {};
+  let handle = body?.handle;
+  // POS-317 (Keemin, 2026-10-02): a signed-in payer's form carries their account,
+  // `household: "g<id>"`, minted by the fund page, and types nothing. It resolves
+  // through src/fund-holder.mjs to the household's one holder, whose handle the
+  // receipt's `from:` names, exactly as the card and PayPal rails resolve it.
+  // A form that sends `handle` (older pages, a hand-built call) keeps that path.
+  const account = body?.household;
+  let holder = null;
 
   // 1 · shape
-  if (!txhash || !pot || !handle)
-    throw bounce(422, "incomplete", 'required: { "txhash", "pot", "handle" } — the transaction you sent, the pot you meant, and who you are in town');
+  if (!txhash || !pot || (!handle && !account))
+    throw bounce(422, "incomplete", 'required: { "txhash", "pot", and "household" (your account, g<id>, which the fund page fills in when you are signed in) or "handle" } — the transaction you sent, the pot you meant, and whose name it goes in');
+  if (account && handle)
+    throw bounce(422, "household and handle are two answers to one question", "send one: the fund page sends household when you are signed in");
+  if (account && !parseAccountRef(account))
+    throw bounce(422, "that is not an account reference", 'household is "g" followed by your GitHub account id, as the fund page fills it in');
   if (!TXHASH_RE.test(String(txhash)))
     throw bounce(422, "that is not a transaction hash", "a Base tx hash is 0x followed by 64 hex characters — copy it from your wallet or from basescan");
   if (!POT_RE.test(String(pot)))
     throw bounce(422, "that is not a pot name", "pot names are lowercase letters, digits and single hyphens — e.g. keeping-ec2");
   if (String(pot) === TREASURY_POT)
     throw bounce(422, `"${TREASURY_POT}" is the town's own direct line, not a pot`, "it takes direct-to-town receipts recorded by the founder's hand, never a funding page — pick a posted need from /board/");
-  if (!isResidentHandle(String(handle)))
+  if (handle && !isResidentHandle(String(handle)))
     throw bounce(422, "that is not a handle", "lowercase letters, digits and single hyphens — the name you keep house under in town");
 
   const eng = engine ?? await townEngine(clone);
@@ -194,6 +207,16 @@ export async function fundVerify(clone, body, {
   // 2 · the pot, BEFORE the chain (see potGate — the order is load-bearing)
   const gate = potGate({ engine: eng, clone, pot: String(pot) });
   if (!gate.ok) throw bounce(gate.code, gate.defect, gate.hint);
+
+  // 3a · the household's holder, when the form named the account (POS-317).
+  if (account) {
+    const registry = readFundRegistry(clone);
+    if (!registry) throw bounce(503, "the town's household registry could not be read", "nothing was recorded — try again shortly");
+    holder = fundHolder(parseAccountRef(account), { registry, isMeep: meepLawOf(eng, entries, new Date().toISOString().slice(0, 10)) });
+    if (!holder)
+      throw bounce(404, `no household holds account ${account}`, "holo mints to a town household, so this door needs a household the town knows. Not in town yet? Join first — or write to the postmaster and your dollars will be recorded by hand.");
+    handle = holder.handle;
+  }
 
   // 3 · the resident. § 8's holo law is household-shaped: a payer earns holo
   // only as a town household. An outsider's dollars are still welcome and are
@@ -267,6 +290,8 @@ export async function fundVerify(clone, body, {
     recorded: true,
     pot: String(pot),
     handle: String(handle),
+    // POS-317: the household the payment is in the name of, when the form named it
+    ...(holder ? { household: holder.household, household_name: holder.name } : {}),
     txhash: w.txhash,
     usd_witnessed: w.usd,
     usd_recorded: whole,

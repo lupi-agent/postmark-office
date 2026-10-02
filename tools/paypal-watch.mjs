@@ -12,7 +12,13 @@
 //    that carries no pot, or a pot the town does not hold open, is journalled
 //    `needs-pot` for the founder's hand, never guessed at.
 //
-// 2. THE HAND IS TYPED, NEVER GUESSED. The handle after the `|` is the text the
+// 2. THE HOUSEHOLD IS MINTED (POS-317, Keemin 2026-10-02). A signed-in giver's
+//    order carries `<pot>|g<id>`, their GitHub account, which resolves through
+//    src/fund-holder.mjs to their household and the one resident who holds its
+//    stamps; an account no household holds is a gift. Older orders made before
+//    that carry `<pot>|<handle>` and keep the rule below.
+//
+//    THE HAND IS TYPED, NEVER GUESSED (orders before POS-317). The handle after the `|` is the text the
 //    giver typed in the same field the card path uses, trimmed. It resolves
 //    through stripe-watch's own `resolveHand` (the exact-handle channel, then
 //    the town's reviewed login pins), so one rule serves both rails. Anything
@@ -90,6 +96,7 @@ import { CROSSING_MS } from "../src/crossings.mjs";
 import { fundGuards, penRecorder } from "../src/fund.mjs";
 import { townLoginHands } from "../src/household-logins.mjs";
 import { resolveHand, potGateOf, townEngine, ledgerEntries, readJournal, appendJournal, readState, writeState, MIN_USD } from "./stripe-watch.mjs";
+import { parseFundRef, resolveAccount, readFundRegistry, meepLawOf } from "../src/fund-holder.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -120,14 +127,14 @@ export function customIdFor(pot, handle) {
   return `${pot}${CUSTOM_SEP}${h}`.slice(0, CUSTOM_MAX);
 }
 
-/** `{ pot, handle }` from a custom_field: the pot before the first `|`, the typed handle after it (empty is none). */
+/**
+ * `{ pot, handle, account }` from a custom_field: the pot before the first `|`;
+ * after it, an account reference `g<id>` (POS-317) or an older order's typed
+ * handle (empty is none). The shape is src/fund-holder.mjs § parseFundRef's.
+ */
 export function parseCustom(field) {
-  if (field == null || String(field).trim() === "") return { pot: null, handle: null };
-  const s = String(field);
-  const i = s.indexOf(CUSTOM_SEP);
-  const pot = (i === -1 ? s : s.slice(0, i)).trim() || null;
-  const handle = i === -1 ? null : (s.slice(i + 1).trim() || null);
-  return { pot, handle };
+  const { pot, account, typed } = parseFundRef(field, "paypal");
+  return { pot, handle: typed, account };
 }
 
 // ── the PayPal read ─────────────────────────────────────────────────────────
@@ -209,7 +216,7 @@ export async function listTransactions({ paypal, startMs, endMs, pageSize = PAGE
 export function decodeTransaction(t, { live }) {
   const i = t?.transaction_info ?? {};
   const amt = i.transaction_amount ?? {};
-  const { pot, handle } = parseCustom(i.custom_field);
+  const { pot, handle, account } = parseCustom(i.custom_field);
   const value = Number(amt.value);
   return {
     txn: String(i.transaction_id ?? ""),
@@ -224,6 +231,7 @@ export function decodeTransaction(t, { live }) {
     custom_field: i.custom_field ?? null,
     pot_named: pot,
     handle_typed: handle,
+    account,
     email: t?.payer_info?.email_address ?? null,
     live: live === true,
   };
@@ -240,7 +248,7 @@ const STATUS_WORD = { P: "pending", D: "denied", V: "reversed", F: "partially re
  * What happens to ONE decoded transaction. Pure: no network, no writes, no clock of its own.
  * Returns one of already | skip | hold | witness | anomaly, as stripe-watch's resolveSession does.
  */
-export function resolveTransaction(s, { engine, entries, clone, households, loginHands = null, now = Date.now(), graceMs = CROSSING_MS, minUsd = MIN_USD, allowSandbox = false }) {
+export function resolveTransaction(s, { engine, entries, clone, households, loginHands = null, registry = null, isMeep = () => false, now = Date.now(), graceMs = CROSSING_MS, minUsd = MIN_USD, allowSandbox = false }) {
   const { receipts } = engine.foldPotReceipts(entries);
   const prior = receipts.find((r) => String(r.ref) === s.receipt_ref);
   if (prior) return { disposition: "already", ...s, pot: prior.pot, from: prior.from, date: prior.date, usd_recorded: prior.usd };
@@ -275,7 +283,11 @@ export function resolveTransaction(s, { engine, entries, clone, households, logi
   if (!gate.ok)
     return { ...s, usd_total: usdTotal, usd: whole, ...anomaly("needs-pot", gate.defect, "\"a receipt needs the pot it pays\" — a draft or closed pot takes no dollars", "the founder: open the pot, or record the dollars against the pot the giver meant. The next tick re-reads it") };
 
-  const hand = resolveHand(s.handle_typed, households, loginHands, OUTSIDE_FROM);
+  if (s.account && !registry)
+    return { ...s, usd_total: usdTotal, usd: whole, ...anomaly("no-registry", `the order names account g${s.account}, and the office could not read the town's household registry to resolve it`, "a payment in a household's name is credited to that household, never guessed", "the next tick, once the town clone's tools/households.json reads") };
+  const hand = s.account
+    ? resolveAccount(s.account, { registry, isMeep, outside: OUTSIDE_FROM })
+    : resolveHand(s.handle_typed, households, loginHands, OUTSIDE_FROM);
   const { attributed, from } = hand;
   const g = fundGuards({ engine, entries, clone, pot: s.pot_named, handle: from, usd: whole, receiptRef: s.receipt_ref });
   if (!g.ok)
@@ -286,6 +298,8 @@ export function resolveTransaction(s, { engine, entries, clone, households, logi
     pot: s.pot_named, from, usd: whole, rail: RAIL, ref: s.receipt_ref, attributed,
     ...(hand.via ? { attributed_via: hand.via } : {}),
     ...(hand.pin_note ? { pin_note: hand.pin_note } : {}),
+    ...(hand.household ? { household: hand.household, household_note: hand.household_note } : {}),
+    ...(s.account ? { account: `g${s.account}` } : {}),
     handle_typed: s.handle_typed,
     ...(cents > 0 ? { cents_note: `$${usdTotal.toFixed(2)} arrived; the ledger records whole dollars, so $${whole} is witnessed against the pot and the remaining $${cents.toFixed(2)} is money the town holds that priced nothing.` } : {}),
     ...(attributed ? {} : { gift_note: hand.gift_note }),
@@ -309,7 +323,7 @@ export function unwitnessedSeen(rows) {
 }
 
 /** One tick, decided and NOT performed: { report, todo, cursor }. The live read wins over the journal's snapshot. */
-export function decide({ transactions, lastRefreshed = null, journal = [], live, engine, entries, clone, households, loginHands = null, now = Date.now(), graceMs = CROSSING_MS, allowSandbox = false, cursor = null }) {
+export function decide({ transactions, lastRefreshed = null, journal = [], live, engine, entries, clone, households, loginHands = null, registry = null, isMeep = () => false, now = Date.now(), graceMs = CROSSING_MS, allowSandbox = false, cursor = null }) {
   const fresh = transactions.map((t) => decodeTransaction(t, { live }));
   const byId = new Map(fresh.map((s) => [s.txn, s]));
   let rechecked = 0;
@@ -322,7 +336,7 @@ export function decide({ transactions, lastRefreshed = null, journal = [], live,
   const decoded = [...byId.values()].sort((a, b) => a.created - b.created || a.txn.localeCompare(b.txn));
   const buckets = { already: [], skip: [], hold: [], witness: [], anomaly: [] };
   for (const s of decoded) {
-    const r = resolveTransaction(s, { engine, entries, clone, households, loginHands, now, graceMs, allowSandbox });
+    const r = resolveTransaction(s, { engine, entries, clone, households, loginHands, registry, isMeep, now, graceMs, allowSandbox });
     buckets[r.disposition].push(r);
   }
   return {
@@ -406,12 +420,14 @@ export async function main(argv = process.argv.slice(2), { fetchImpl = fetch, lo
   const entries = ledgerEntries(clone, engine);
   const households = engine.householdKeys(clone);
   const loginHands = townLoginHands(clone, engine);
+  const registry = readFundRegistry(clone);
+  const isMeep = meepLawOf(engine, entries, new Date(now).toISOString().slice(0, 10));
   const journalRows = readJournal(journalPath);
   const behind = unwitnessedSeen(journalRows);
 
   const { report, todo, cursor: next } = decide({
     transactions: listed.rows, lastRefreshed: listed.last_refreshed, journal: behind, live: which === "live",
-    engine, entries, clone, households, loginHands, now, allowSandbox, cursor,
+    engine, entries, clone, households, loginHands, registry, isMeep, now, allowSandbox, cursor,
   });
   if (coldStart) report.coldstart = `no cursor: this run read only the last ${COLDSTART_DAYS} days.`;
   report.dry_run = dryRun;

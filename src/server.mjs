@@ -1273,7 +1273,15 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
     const me = identityOf(key);
     // the registry view per handle — household is the primary column (2026-08-07)
     try { if (me?.handles) { const hh = Object.fromEntries(me.handles.map((h) => [h, householdOf(h)])); if (Object.values(hh).some(Boolean)) me.households = hh; } } catch { /* garnish only */ }
-    return j(res, 200, me);
+    // POS-317: the household a payment by this account goes in, and the one
+    // resident who holds its stamps, from the SAME function the payment watchers
+    // resolve the minted reference through (src/fund-holder.mjs). The fund page
+    // shows "for <household name>" from this. Garnish: absent, the page offers
+    // the payment as an outside gift, which is what the watcher would make of it.
+    if (key.ghId == null) return j(res, 200, me);
+    return import("./fund-holder.mjs").then(({ fundHolderAtOffice }) => fundHolderAtOffice(TOWN_CLONE, key.ghId))
+      .then((h) => j(res, 200, h ? { ...me, fund_holder: { household: h.household, name: h.name, handle: h.handle, rule: h.rule } } : me))
+      .catch(() => j(res, 200, me));
   }
 
   try {
