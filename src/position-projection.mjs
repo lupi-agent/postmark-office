@@ -121,6 +121,8 @@ export function createPositionProjection({ rebuild, maxAgeMs = PROJECTION_MAX_AG
           eras: got?.eras ?? [],
           ledgerUnreadable: got?.ledgerUnreadable ?? null,
           ...(got?.store_records != null ? { store_records: got.store_records } : {}),
+          // POS-302: the clearing's snapshot this rebuild stood on, and how many acts past it.
+          ...(got?.snapshot ? { snapshot: got.snapshot } : {}),
         };
         builtAt = startedAt;
         recorded = 0;

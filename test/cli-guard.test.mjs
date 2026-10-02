@@ -217,6 +217,8 @@ const ROSTER = {
   // No --world-repo: stops on usage before any git or Postgres (POS-142).
   "world2/tools/marks-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: marks-ingest.mjs" },
   "world2/tools/pointer-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: pointer-ingest.mjs --world-repo" },
+  // No connection named: stops before any Postgres (POS-302).
+  "world2/tools/position-snapshot.mjs": { args: [], env: NO_PG, code: 2, needle: "no --pg-url, no PG* environment, and no WORLD2_PG_URL" },
   "world2/tools/replay-ingest.mjs": { args: ["--help"], env: NO_PG, code: 0, needle: "usage: replay-ingest.mjs" },
   // No --tree: stops on usage before any git read or Postgres connect (POS-242).
   "world2/tools/rehearse.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: rehearse.mjs" },

@@ -80,6 +80,8 @@ export const LANDED = {
   "051_berth_rules_read.sql":      { probe: col("oauth_berths", "rules_read_at") },
   // 052 (POS-246): a world act's retry key is spent once.
   "052_world_act_nonce.sql":       { probe: rel("acts_world_nonce_once") },
+  // 053 (POS-302): each resident's governing departure, kept once per clearing.
+  "053_position_snapshots.sql":    { probe: `${rel("position_snapshots")} AND ${rel("position_snapshot_rows")} AND ${col("position_snapshot_rows", "first_ordinal")}` },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */

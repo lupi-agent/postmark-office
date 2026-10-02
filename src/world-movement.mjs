@@ -273,6 +273,38 @@ export async function vehicleStandpoint(handle, worldState, { repo = WORLD_CLONE
 // ── the store's own movement record ──────────────────────────────────────────
 
 /**
+ * One departure record as `storedDepartures` hands it over: the ledger's own
+ * shape. Exported so the positions snapshot (POS-302) keeps exactly these
+ * bytes; `storedDepartures` itself calls it, so there is one shape.
+ */
+export function storedShapeOf(r, { withActId = false } = {}) {
+  return {
+    // THE LEDGER'S OWN SHAPE, so a merged list is one vocabulary — and the
+    // port's own bookkeeping (`line`, `era`, `act_id`) is dropped here rather
+    // than passed on. `era` is the trap: the name collides with the era
+    // `recordsAcrossEras` stamps and carries a different vocabulary
+    // (`journal`/`movement-store` against `store`/`ledger`), so a
+    // pass-through would re-key `dedupeRecords` in silence.
+    iso: r.iso, handle: r.handle,
+    from: r.from, toward: r.toward, at: r.at,
+    targetExtent: r.targetExtent ?? null, targetMarkId: r.targetMarkId ?? null, pace: r.pace ?? null,
+    // LOAD-BEARING, not decoration. `recordsAcrossEras` maps era one with
+    // `era: r.source === "store" ? "store" : "ledger"`, `dedupeRecords` keys
+    // on that era, and `dynamic-presence.mjs` puts `era: "store"` in front of
+    // a resident off this exact value.
+    source: "store",
+    // OPT-IN, AND OFF BY DEFAULT, so not one of the four standing callers
+    // sees a key it did not see yesterday. `act_id` is the register's own
+    // row id and the only monotone sequence this record carries — POS-196's
+    // `storedDepartureEvents` needs it for the `<N>.jsonl` line's `seq`, and
+    // it is asked for by name rather than leaked to everybody, because the
+    // block above is a deliberate list of what this road does NOT pass on
+    // and a silent addition would make that list a lie.
+    ...(withActId ? { act_id: r.act_id ?? null } : {}),
+  };
+}
+
+/**
  * Every movement this entity has declared into the RECORD, oldest first, in the
  * shape `walk.mjs` and `vessel.mjs` read.
  *
@@ -313,30 +345,7 @@ export async function storedDepartures({ atMs = Date.now(), withActId = false } 
         return { records: [], absent: `a departure record carries an unreadable instant: ${String(r.iso).slice(0, 60)}` };
       }
       if (ms > atMs) continue;
-      cut.push({
-        // THE LEDGER'S OWN SHAPE, so a merged list is one vocabulary — and the
-        // port's own bookkeeping (`line`, `era`, `act_id`) is dropped here rather
-        // than passed on. `era` is the trap: the name collides with the era
-        // `recordsAcrossEras` stamps and carries a different vocabulary
-        // (`journal`/`movement-store` against `store`/`ledger`), so a
-        // pass-through would re-key `dedupeRecords` in silence.
-        iso: r.iso, handle: r.handle,
-        from: r.from, toward: r.toward, at: r.at,
-        targetExtent: r.targetExtent ?? null, targetMarkId: r.targetMarkId ?? null, pace: r.pace ?? null,
-        // LOAD-BEARING, not decoration. `recordsAcrossEras` maps era one with
-        // `era: r.source === "store" ? "store" : "ledger"`, `dedupeRecords` keys
-        // on that era, and `dynamic-presence.mjs` puts `era: "store"` in front of
-        // a resident off this exact value.
-        source: "store",
-        // OPT-IN, AND OFF BY DEFAULT, so not one of the four standing callers
-        // sees a key it did not see yesterday. `act_id` is the register's own
-        // row id and the only monotone sequence this record carries — POS-196's
-        // `storedDepartureEvents` needs it for the `<N>.jsonl` line's `seq`, and
-        // it is asked for by name rather than leaked to everybody, because the
-        // block above is a deliberate list of what this road does NOT pass on
-        // and a silent addition would make that list a lie.
-        ...(withActId ? { act_id: r.act_id ?? null } : {}),
-      });
+      cut.push(storedShapeOf(r, { withActId }));
     }
     return { records: cut, absent: null };
   } catch (e) {
@@ -348,6 +357,44 @@ export async function storedDepartures({ atMs = Date.now(), withActId = false } 
     const why = e?.cause?.message ? `${e.message} (${e.cause.message})` : String(e?.message ?? e);
     return { records: [], absent: why.slice(0, 200) };
   }
+}
+
+/**
+ * THE STORE ERA FROM THE NEWEST CLEARING'S SNAPSHOT, PLUS THE ACTS SINCE
+ * (POS-302). For a reader that reduces the record with `governingOf` and
+ * nothing else — the positions projection's rebuild. The list is NOT every
+ * record: it is each handle's governing record, in first-appearance order, then
+ * the delta, which `governingOf` reduces exactly as it reduces the whole record
+ * (position-snapshot.mjs § WHY IT IS EXACT).
+ *
+ * Answers `{ records, absent: null, store_records, overlap, snapshot: { window, delta } }`,
+ * or `{ fallback: null }` when there is no snapshot to stand on, or
+ * `{ fallback: <reason> }` when one was DISCARDED. Either way the caller reads
+ * the whole record; only a discard is disclosed.
+ *
+ * `newestLedgerMs` is the frozen ledger's newest instant. `departuresAcrossEras`
+ * discloses store records older than it (`era-order-overlap`, with a count);
+ * the snapshot kept that count at write time, and `overlap` here is the same
+ * number the whole record would say.
+ *
+ * `POSITIONS_SNAPSHOT=off` is the operator's switch back to the whole record.
+ */
+export async function storedGoverningDepartures({ atMs = Date.now(), newestLedgerMs = 0 } = {}) {
+  if (process.env.POSITIONS_SNAPSHOT === "off") return { fallback: null };
+  let snap;
+  try {
+    const { storeDepartureSnapshot } = await import("./world2-guards.mjs");
+    snap = await storeDepartureSnapshot({ atMs });
+  } catch (e) {
+    return { fallback: `the snapshot could not be read (${String(e?.message ?? e).slice(0, 160)})` };
+  }
+  if (!snap) return { fallback: null };
+  const { composeSnapshot } = await import("./position-snapshot.mjs");
+  let got;
+  try { got = composeSnapshot(snap, { atMs, newestLedgerMs }); }
+  catch (e) { return { fallback: `the delta since window ${snap.window} could not be read (${String(e?.message ?? e).slice(0, 160)})` }; }
+  if (got.discard) return { fallback: got.discard };
+  return { records: got.records, absent: null, store_records: got.store_records, overlap: got.overlap, snapshot: got.snapshot };
 }
 
 /** One entity's stored records, oldest first. The per-handle slice of the above. */

@@ -166,6 +166,18 @@ else
   echo "[office-keep] settlements or carried rows NOT written (non-fatal) — $settled — the next tick tries again; world2/tools/settlements-backfill.mjs --verify and mark-carried-backfill.mjs --verify say where the tables stand" >&2
 fi
 
+# ── the positions snapshot, once per clearing (POS-302, 053) ─────────────────
+# The newest closed window's snapshot of each resident's governing departure,
+# written if that window has none, so the office's positions rebuild replays
+# only the acts since. NON-FATAL and outside the clearing (Wright 2026-10-02): a
+# failed snapshot never blocks a clearing or this tick, and the office reads the
+# whole record until one exists. Same connection as the settlements rows above.
+if snapped="$(node world2/tools/position-snapshot.mjs --apply --prod --quiet --world-repo "$WORLD_CLONE" 2>&1)"; then
+  echo "[office-keep] $snapped"
+else
+  echo "[office-keep] positions snapshot NOT written (non-fatal) — $snapped — the next tick tries again; world2/tools/position-snapshot.mjs --verify says where it stands" >&2
+fi
+
 # ── outside the lock: the panes, from the frozen snapshot ────────────────────
 # publish-windows keeps its stage-and-swap: a failed publish leaves the live
 # webroot untouched and fails the tick loudly.
