@@ -98,6 +98,9 @@ import { myMarksRefused } from "./claim-effects.mjs"; // POS-241 part 5: my-mark
 let _mods = null;         // { verbs, build }
 let _where = null;        // the clone's where-is.mjs — the one position join
 const _worlds = new Map(); // ref+sha -> assembled composed view
+let _worldAsks = 0;        // how many times world() was asked (test/one-world-per-hearing.test.mjs counts them)
+/** Tests only: how many times `world()` has been asked in this process. */
+export const __worldAsksForTest = () => _worldAsks;
 
 // THE ENGINE COMES FROM A REF, NOT THE WORKING TREE (2026-08-04).
 //
@@ -150,6 +153,7 @@ async function geomMod() {
 // to thread a key through here so a drafter could be handed a different, folded
 // world; there is no such world any more, so there is no key to thread.
 async function world() {
+  _worldAsks += 1;
   const selected = publishedState(WORLD_CLONE);
   const cached = _worlds.get(selected.ref);
   if (cached?.sha === selected.sha) return cached.world;
@@ -496,9 +500,12 @@ async function walkClock() {
  * carrier's frame (POS-247), so the answer is the position floor for everyone,
  * and the records it used to read per voice changed nothing.
  */
-export async function projectedHeardFrom(voice, t) {
+export async function projectedHeardFrom(voice, t, room = null) {
   try {
-    return await heardFromV2(voice, await world(), { repo: WORLD_CLONE, atMs: t });
+    // One world per hearing snapshot (voices.mjs § snapshot's `room`): the
+    // promise is kept, so voices asked concurrently share one resolve.
+    const w = room ? await (room.world ??= world()) : await world();
+    return await heardFromV2(voice, w, { repo: WORLD_CLONE, atMs: t });
   } catch { return null; }
 }
 
