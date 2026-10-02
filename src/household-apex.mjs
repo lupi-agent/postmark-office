@@ -1697,7 +1697,7 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
       }
       case "fund-verify": {
         const { fundVerifyViaOffice } = await import("./fund.mjs");
-        result = await fundVerifyViaOffice(clone, fields);
+        result = await fundVerifyViaOffice(clone, fields, { key });
         break;
       }
       // ── round 2's three ──────────────────────────────────────────────────

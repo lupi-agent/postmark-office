@@ -229,3 +229,25 @@ test("the page's answer is the watcher's: fundHolderAtOffice reads the clone's r
   assert.equal(await fundHolderAtOffice(town.repo, null), null);
   rmSync(town.repo, { recursive: true, force: true });
 });
+
+// ── the key, not the body, says whose account (Wright's review of #331) ─────
+
+test("USDC: a signed-in key's account wins — key A with body g<B> is refused by name; no body account takes the key's; signed out keeps the body's", { skip: SKIP }, async () => {
+  const town = seamTown();
+  const recorded = [];
+  const record = async (r) => { recorded.push(r); return { line: "x", commit: null }; };
+  const opts = (key) => ({ verify: verified, record, engine: ENGINE, potMap: new Map(), key });
+  const A = { ghId: 101, ghLogin: "harbor-gh", handles: new Set(["bram"]) };
+  await assert.rejects(fundVerify(town.repo, { txhash: TX, pot: "keep", household: "g202" }, opts(A)),
+    (e) => e.code === 403 && /household g202 is not the account you are signed in as \(g101\)/.test(e.defect));
+  assert.equal(recorded.length, 0, "a refused claim wrote nothing");
+  const own = await fundVerify(town.repo, { txhash: TX, pot: "keep" }, opts(A));
+  assert.deepEqual([own.household, recorded.at(-1).from], ["the-harbor", "bram"], "no body account: the key's own household");
+  const same = await fundVerify(town.repo, { txhash: TX, pot: "keep", household: "g101" }, opts(A));
+  assert.equal(same.household, "the-harbor", "the body naming the key's own account is fine");
+  const out = await fundVerify(town.repo, { txhash: TX, pot: "keep", household: "g202" }, opts(null));
+  assert.equal(out.household, "carols", "signed out: the body's word, as before");
+  const staticKey = await fundVerify(town.repo, { txhash: TX, pot: "keep", household: "g202" }, opts({ household: "carols", handles: new Set(["carol"]) }));
+  assert.equal(staticKey.household, "carols", "a static household key carries no account, so the body's word stands");
+  rmSync(town.repo, { recursive: true, force: true });
+});
