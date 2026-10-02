@@ -76,6 +76,8 @@ export const LANDED = {
   "038_world_graph_events.sql":    { probe: rel("world_graph_events") },
   // 049 (POS-142 Proposal B): which settlement first carried each mark.
   "049_mark_carried.sql":          { probe: rel("mark_carried") },
+  // 051 (POS-300): when a berth acknowledged the town's rules for visitors.
+  "051_berth_rules_read.sql":      { probe: col("oauth_berths", "rules_read_at") },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */

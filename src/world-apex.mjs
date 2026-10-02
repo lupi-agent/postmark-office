@@ -2727,6 +2727,9 @@ export const WORLD_READ_FIELDS = Object.freeze({
          // POS-265: world_say's retry key guards a voice; a read speaks none, so
          // it is refused here by name rather than carried to a listen.
          nonce: { type: "string", description: "refused — a read speaks nothing, so a retry key has nothing to guard; pass it on do: \"say\" with your text" },
+         // POS-300: a visitor's acknowledgement of the town's rules is written
+         // on its berth, and a read writes nothing, so it is refused by name.
+         rules_read: { type: "boolean", description: "refused — a read writes nothing; a visitor acknowledges the town's rules on do: \"say\"" },
          // POS-265: the long-poll rides the read, beside the cursor it needs.
          wait: { type: "number", description: "seconds to hold this listen open, at most 25, with since: — answered the moment a new voice lands within your earshot, or empty at the deadline with your cursor unmoved" } },
   walk: { who: { type: "string", description: "one resident to find, by handle: their x, y, mark_id, moving and toward from the whole roll (not bounded by your radius), or null with a sentence when they are not out or no resident has that handle" } },
@@ -2814,6 +2817,7 @@ export async function readDomainFor(action, fields, key, oriented, ctx = {}) {
     case "say": {
       if (fields?.text) return { error: "bounce", code: 422, defect: "a read never performs", hint: `to speak, use do: — world { do: "say", args: { text: … } }. read: "say" only listens.` };
       if (fields?.nonce != null) return { error: "bounce", code: 422, defect: "a read speaks nothing, so a nonce has nothing to guard", hint: `a nonce is the retry key of a say — world { do: "say", args: { text: …, nonce: … } }. read: "say" only listens.` };
+      if (fields?.rules_read != null) return { error: "bounce", code: 422, defect: "a read writes nothing, so it records no acknowledgement", hint: `a visitor acknowledges the town's rules on a say — world { do: "say", args: { text: …, rules_read: true } }. read: "say" only listens.` };
       // ⚑ THE CURSOR TRAVELS (#2559). This call was `{}` — the flat tool takes
       // three fields, `handle` rides in from `call` itself, `text` is refused by
       // name above, and `since` was simply dropped. So the one field left was

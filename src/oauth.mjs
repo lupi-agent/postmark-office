@@ -87,7 +87,7 @@ export function oauthSchema(db) {
     CREATE TABLE IF NOT EXISTS berths  (slug TEXT PRIMARY KEY, token_hash TEXT UNIQUE,
       created INTEGER, expires INTEGER, card TEXT,
       cosigned_gh_id INTEGER, cosigned_gh_login TEXT, cosigned_at INTEGER,
-      from_town TEXT);
+      from_town TEXT, rules_read_at INTEGER);
     CREATE TABLE IF NOT EXISTS key_claims (
       ask_hash TEXT PRIMARY KEY,          -- the capability: sha256 of the link's secret
       handle TEXT, token_hash TEXT UNIQUE,
@@ -107,6 +107,9 @@ export function oauthSchema(db) {
   // (2026-08-16): a berth may DECLARE the town it sailed from. A claim, not a
   // paper — attestation is the deferred half of the portal.
   try { db.exec("ALTER TABLE berths ADD COLUMN from_town TEXT"); } catch { /* already there */ }
+  // When the berth acknowledged the town's rules for visitors (POS-300,
+  // visitor-rules.mjs). Null until then; the store's column is 051.
+  try { db.exec("ALTER TABLE berths ADD COLUMN rules_read_at INTEGER"); } catch { /* already there */ }
 }
 
 const sweep = async (odb) => {
@@ -358,13 +361,20 @@ export async function berthLookup(odb, db, clone, token) {
       // cosigned rides the upgraded shape too — /api/me was answering false
       // beside /api/household's berth-cosigned tier (#1817, defect 2).
       cosigned: true,
-      ...(hh.harbor ? { berth: row.slug, slug: row.slug } : {}) };
+      ...(hh.harbor ? { berth: row.slug, slug: row.slug, rulesRead: Boolean(row.rules_read_at) } : {}) };
   }
   return {
     berth: true, slug: row.slug,
     household: null, handles: new Set(),
     cosigned: Boolean(row.cosigned_gh_id),
+    rulesRead: Boolean(row.rules_read_at),
   };
+}
+
+/** The berth read the town's rules for visitors (POS-300). Once per berth: a
+ *  second acknowledgement keeps the first one's time. */
+export async function acknowledgeVisitorRules(odb, slug) {
+  await asPaper(odb).run("UPDATE berths SET rules_read_at = ? WHERE slug = ? AND rules_read_at IS NULL", now(), slug);
 }
 
 // ── claims (a rolled resident's own key — the self-serve lane, 2026-09-08) ───

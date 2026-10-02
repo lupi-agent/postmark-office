@@ -1313,10 +1313,10 @@ test("PARITY · an unknown envelope field on a shadow read bounces BY NAME, with
   assert.equal(r.error, "bounce");
   assert.equal(r.code, 422);
   assert.equal(r.defect, 'unknown argument "bogus" for world { read: "say" }');
-  // `nonce` (POS-265) is declared the way `text` is: named here, then answered
+  // `nonce` (POS-265) and `rules_read` (POS-300) are declared the way `text` is: named here, then answered
   // by the shadow's own teaching refusal rather than the generic one.
-  assert.equal(r.hint, "this read takes: text, since, before, nonce, wait", "and the hint names what this shadow does answer to");
-  assert.deepEqual(r.accepted, ["text", "since", "before", "nonce", "wait"]);
+  assert.equal(r.hint, "this read takes: text, since, before, nonce, rules_read, wait", "and the hint names what this shadow does answer to");
+  assert.deepEqual(r.accepted, ["text", "since", "before", "nonce", "rules_read", "wait"]);
 });
 
 // ── #2559 · THE SHADOW CARRIES THE CURSOR IT WAS HANDED ─────────────────────
@@ -1423,6 +1423,13 @@ test("POS-265 · a nonce on a say-read is refused by name — a read speaks noth
   assert.match(r.defect, /a read speaks nothing, so a nonce has nothing to guard/);
 });
 
+test("POS-300 · rules_read on a say-read is refused by name — a read writes no acknowledgement", async () => {
+  on();
+  const r = await worldApex({ read: "say", args: { rules_read: true } }, { berth: true, slug: "read-only-visitor", household: null, handles: new Set() });
+  assert.equal(r.code, 422);
+  assert.match(r.defect, /a read writes nothing, so it records no acknowledgement/);
+});
+
 test("PARITY · a documented envelope field answers exactly as before", async () => {
   on();
   const r = await worldApex({ read: "say" }, KEY_ALPHA);
@@ -1449,13 +1456,51 @@ test("PARITY · the top level is judged ONCE, by the door's own closed schema", 
 // ── the berth: emissions only, from the quay (arrival ruling 2026-08-15) ────
 
 const BERTH_KEY = { berth: true, slug: "field-tester", household: null, handles: new Set() };
+// A berth that has acknowledged the town's rules for visitors (POS-300): the
+// key carries what its row says, as berthLookup resolves it per request.
+const BERTH_KEY_READ = { ...BERTH_KEY, rulesRead: true };
 
 test("berth: say flows through the apex — the one write a berth holds", async () => {
   on();
-  const r = await worldApex({ do: "say", args: { text: "a voice from the gangplank" } }, BERTH_KEY);
+  const r = await worldApex({ do: "say", args: { text: "a voice from the gangplank" } }, BERTH_KEY_READ);
   assert.ok(!r.error, JSON.stringify(r).slice(0, 300));
   assert.equal(r.did, "say");
   assert.equal(r.result.spoke, true, "the berth's voice must actually land");
+});
+
+test("berth: the first say through the apex comes back with the town's rules for visitors, and nothing is said (POS-300)", async () => {
+  on();
+  const { VISITOR_RULES, useRulesRecorder } = await import("../src/visitor-rules.mjs");
+  const fresh = { ...BERTH_KEY, slug: "rules-reader" };
+  const words = "visit my hotline for agents";
+  const r = await worldApex({ do: "say", args: { text: words } }, fresh);
+  assert.equal(r.error, "bounce");
+  assert.equal(r.code, 403);
+  assert.deepEqual(r.visitor_rules, VISITOR_RULES, "the rules ride the apex's refusal");
+  const heard = await worldApex({ do: "say", args: {} }, BERTH_KEY_READ);
+  assert.ok(!JSON.stringify(heard).includes(words), "a refused say is never heard");
+  // The acknowledgement on the same say lands it, recorded under the berth's slug.
+  const seen = [];
+  useRulesRecorder(async (slug) => { seen.push(slug); });
+  try {
+    const ok = await worldApex({ do: "say", args: { text: "hello, quay", rules_read: true } }, fresh);
+    assert.ok(!ok.error, JSON.stringify(ok).slice(0, 300));
+    assert.equal(ok.result.spoke, true);
+    assert.deepEqual(seen, ["rules-reader"]);
+  } finally { useRulesRecorder(null); }
+});
+
+test("a resident is never shown the visitors' gate: the say lands, with or without rules_read (POS-300)", async () => {
+  on();
+  // The first lands. The second meets the voice's own 15-second limiter, which
+  // is not the gate: what it must not be is the visitors' refusal.
+  // gamma, because alpha speaks elsewhere in this file and the limiter is per speaker.
+  const first = await worldApex({ do: "say", args: { text: "a resident at the lantern", rules_read: true } }, KEY_GAMMA);
+  assert.ok(!first.error, JSON.stringify(first).slice(0, 300));
+  assert.equal(first.result.spoke, true);
+  const second = await worldApex({ do: "say", args: { text: "a resident again" } }, KEY_GAMMA);
+  assert.equal(second.visitor_rules, undefined, JSON.stringify(second).slice(0, 300));
+  assert.ok(!second.error || second.defect === "you just spoke", JSON.stringify(second).slice(0, 300));
 });
 
 test("berth: nothing durable — a mark refuses a berth at the dispatch, terms still shown", async () => {

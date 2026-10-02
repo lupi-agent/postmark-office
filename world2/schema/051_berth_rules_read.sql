@@ -1,0 +1,28 @@
+-- 051 — oauth_berths.rules_read_at: a berth acknowledged the town's rules for
+-- visitors (POS-300, w41)
+--
+-- A berth is shown the town's rules for visitors before its first say lands
+-- (src/visitor-rules.mjs). Its first say is refused with the rules, and it
+-- acknowledges them with `rules_read: true` on a say. The office records the
+-- acknowledgement ONCE, on the berth's own row, so a berth that acknowledged is
+-- never gated again, across restarts (src/oauth.mjs § acknowledgeVisitorRules:
+-- `UPDATE berths SET rules_read_at = ? WHERE slug = ? AND rules_read_at IS NULL`).
+--
+-- The file's berths table grows the same column additively (oauth.mjs §
+-- oauthSchema), so `world2/tools/paperwork-import.mjs`, which copies the file's
+-- columns one for one, needs this column in the store before it runs.
+--
+--   rules_read_at   epoch seconds, like `created`, `expires` and `cosigned_at`.
+--                   Null until the berth acknowledges.
+--
+-- No grant changes: 031 already gives office_api UPDATE on oauth_berths (the
+-- card and the co-sign update the row), and its row policy covers every column.
+--
+-- Additive and idempotent: an office that has not shipped the column reads the
+-- row as before (SELECT *), and a re-run changes nothing.
+--
+-- PROOF THAT IT LANDED (world2/tools/migrations-landed.mjs):
+--   SELECT EXISTS (SELECT 1 FROM information_schema.columns
+--     WHERE table_schema = 'public' AND table_name = 'oauth_berths' AND column_name = 'rules_read_at');
+
+ALTER TABLE oauth_berths ADD COLUMN IF NOT EXISTS rules_read_at bigint;

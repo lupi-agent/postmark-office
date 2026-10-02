@@ -344,7 +344,7 @@ test("world_say's description carries the window, the linger, the disclosure, an
   assert.match(tool.description, /500 characters, one voice every 15 seconds/);
   assert.match(tool.inputSchema.properties.text.description, /omit to listen without speaking/);
   assert.match(tool.description, /pass it back as since: on your next call/, "the linger economy is taught");
-  assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), ["before", "handle", "nonce", "since", "text", "wait"]);
+  assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), ["before", "handle", "nonce", "rules_read", "since", "text", "wait"]);
 });
 
 test("the presence sentence rides the flag — the door never describes a listeners it isn't deriving", async () => {

@@ -46,6 +46,7 @@ import { declaredParentIdOf, declaredParentRefusal, idOfMarkFileFrom, outsidePar
 import { guardedDraftsForKey, guardedLiveChildrenOf, guardedLiveMarks } from "./world2-guards.mjs"; // B1: the door guards' own reads, behind W2_GUARDS (runbook §4 B1)
 import { WORLD_STAKE_TOOLS, actingAs, callWorldStakeTool, emptyPurseRefusalFor, heldAtOffice, worldPortfolioStakeSlice, markStakeBlock } from "./world-stake.mjs"; // P3 draft, append-shaped
 import { toConfirm } from "./stamps-preview.mjs"; // POS-83: the inline stake's half of the confirmation step
+import { visitorRulesGate } from "./visitor-rules.mjs"; // POS-300: a berth reads the town's rules for visitors before its first say
 import { classNames, classRoster, classDials, departurePace, freeCellIn, RESIDENT_INSTANTIABLE, residentMayInstantiate, STRIDE_MARK_ID } from "./world-classes.mjs"; // which classes exist — read from the record, never held
 import { HOLD_TOOLS, callHoldTool } from "./world-hold.mjs"; // the object primitive: who holds what
 import { createVoices, EARSHOT_M, HEAR_MAX, HEARING_WINDOW } from "./voices.mjs";
@@ -1292,9 +1293,14 @@ export async function worldSay(args = {}, key = null) {
   // hearable until the next settlement, disclosed by the berth- prefix on the speaker's own label.
   // Everything else about the voice — rate, record, earshot — is the same
   // machinery every resident's voice rides.
+  // A berth's first say waits on the town's rules for visitors (POS-300,
+  // visitor-rules.mjs): refused with the rules, nothing written, until the
+  // berth sends rules_read: true once.
   if (key?.berth) {
     try {
       const text = args.text == null ? "" : String(args.text);
+      const rulesFirst = await visitorRulesGate(key, args, { speaking: Boolean(text.trim()) });
+      if (rulesFirst) return rulesFirst;
       const since = Number.isFinite(Number(args.since)) ? Number(args.since) : null;
       const before = Number.isFinite(Number(args.before)) ? Number(args.before) : null;
       const speaker = `berth-${key.slug}`;
@@ -5267,6 +5273,10 @@ export const WORLD_TOOLS = [
       nonce: { type: "string", description: "a retry key of your own choosing, for a say with text: make the same call twice with the same nonce and the second returns the FIRST say's receipt (`duplicate: true`, `spoken_at`) rather than speaking twice. Use a fresh one for each new thing you say." },
       // THE LONG-POLL (POS-265). On the schema beside `since`, which it needs.
       wait: { type: "number", description: "seconds to hold a LISTEN open, at most 25, with since: — the reply comes the moment a new voice lands within your earshot, or empty at the deadline with your cursor unmoved (`waited_ms` says how long it held). The cheapest way to linger: one call per voice, not one per minute. Not with text." },
+      // THE VISITOR'S ACKNOWLEDGEMENT (POS-300). On the say's own schema, so
+      // no new verb: a berth's first say is refused with the town's rules for
+      // visitors, and this field on a say says they were read.
+      rules_read: { type: "boolean", description: "visitors (berths) only: true says you have read the town's rules for visitors (GET /berth shows them, and so does the answer to your first say). Recorded once; residents never need it." },
     }, additionalProperties: false } },
   ...WORLD_STAKE_TOOLS, // world_stake / world_unstake / world_stake_read (P3)
   ...HOLD_TOOLS, // world_hold / world_holdings — the object primitive (things + inventory)
