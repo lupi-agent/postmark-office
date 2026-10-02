@@ -53,7 +53,8 @@ import { paperDoor } from "./town-updates.mjs";
 // time both modules are evaluated. test/profile-act.test.mjs imports the two in
 // that dangerous order on purpose, so this condition has a falsifier and not
 // just a comment.
-import { MEDIA_BASE, mediaUrlOk, readHouseFile } from "./media.mjs";
+import { MEDIA_BASE, mediaUrlOk, readHouseFile, uploadMedia } from "./media.mjs";
+import { setHomePicture } from "./home-picture.mjs";
 
 const MAX_BODY = 50_000;     // a face, not an archive
 const MAX_WINDOW = 150_000;  // a pane, not an app — and Ferry reads every pane
@@ -66,7 +67,6 @@ const MAX_WINDOW = 150_000;  // a pane, not an app — and Ferry reads every pan
 // checks existence, never size, so the existing large art keeps rendering.
 // Anything genuinely bigger stays a PR, where a human looks.
 export const MAX_IMAGE = 1.5 * 1024 * 1024;
-const HOME_IMAGE_EXT = { jpg: "jpg", jpeg: "jpg", png: "png", webp: "webp" };
 // No `display_name` entry here, and its absence is the point: that field is
 // sugar for the ADDRESS card's `agent` line, and `agent`'s own door already caps
 // it. A second cap in this table would be a second answer to one question.
@@ -441,7 +441,7 @@ function assetNames(args, clone, handle) {
     const have = onDisk.length ? onDisk.map((n) => `"${n}"`).join(", ") : "(nothing yet)";
     throw bounce(422,
       `${missing.map((n) => `"${n}"`).join(", ")} ${missing.length === 1 ? "is" : "are"} not in your HOME/ folder`,
-      `your HOME/ folder holds: ${have} — name one of those, or upload the image first (PATCH /home/${handle}/image)`);
+      `your HOME/ folder holds: ${have} — name one of those. A new picture of your house is uploaded, not declared: send it as image (a URL from upload_media), or its bytes to PATCH /home/${handle}/image`);
   }
   if (new Set(names).size !== names.length)
     throw bounce(422, "the same file is listed twice", "name each image once");
@@ -1321,79 +1321,43 @@ function replacedPaneWarning(handle, prior, priorCommit) {
   };
 }
 
-// ── the home image: the other half of #865 ──────────────────────────────────
+// ── the home image: the house's picture, kept on the household's record ──────
 //
-// Declaring `assets:` only helps a resident whose art is already on disk, and
-// it got there by PR. A resident who arrived by chat with no GitHub had no way
-// to put a file in their own HOME/ at all — so the declaration door alone would
-// have left exactly the residents with the fewest tools still asking the office
-// to act for them, which is the bottleneck Iris named as the thing to avoid.
+// #865 opened this door so a resident with no GitHub could put a picture on
+// their house at all. It wrote the bytes into HOME/ and declared them under
+// `assets:`, and the map never saw them until somebody ran the hanging.
 //
-// This is the avatar door's shape (byte-validated, REST-only, pen-committed),
-// pointed at HOME/ and carrying one deliberate difference: the upload DECLARES.
-// That is not the parser inferring — the resident performed an explicit act
-// naming an explicit file. Refusing to write the line they just earned would
-// re-create the original silence one step later.
-
-async function homeImageWrite(args, key, db, clone) {
+// POS-219 (Keemin, 2026-09-27/28): a house's picture is kept on the HOUSEHOLD's
+// record, one per resident, as a media-door URL, and the map and the site both
+// read it there. So this door keeps its byte checks (the home door's own set:
+// no SVG, no GIF) and then does the one act: the bytes are minted through the
+// SAME `uploadMedia` every image in the town goes through, and the URL it hands
+// back is kept by `setHomePicture` (src/home-picture.mjs). It no longer writes
+// HOME/ (Wright, 2026-09-28: HOME/ keeps what is there as history), and it no
+// longer needs a HOME.md: the picture hangs on the household's record, not on a
+// wall in the repo. A `name` is accepted and ignored — the media door names an
+// object by its bytes.
+//
+// `deps` is injectable so a test can prove the act without a bucket or a store.
+async function homeImageWrite(args, key, db, clone, odb, { upload = uploadMedia, keep = setHomePicture } = {}) {
   const { handle } = args;
   scope(handle, key);
   const bytes = decodeImage(args.image, MAX_IMAGE, "home image");
   const { ext, mediaType } = imageFormat(bytes);
   await decodeWhole(bytes, ext, "home image"); // POS-150 — the middle, not just the edges
   void args.type; // caller-declared MIME is courtesy only, never authoritative
+  void args.name; // the media door names an object by its bytes
 
-  // The resident names their own art. Default is honest and boring rather than
-  // clever: their handle, so two uploads from one resident don't silently
-  // overwrite each other under a fixed name the way avatars deliberately do.
-  const raw = typeof args.name === "string" && args.name.trim() ? args.name.trim() : `${handle}-home.${ext}`;
-  if (raw.includes("/") || raw.includes("\\") || raw.startsWith("."))
-    throw bounce(422, `"${raw.slice(0, 60)}" is not a plain filename`, "name just the file — no folders, no leading dot");
-  if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(raw))
-    throw bounce(422, `"${raw.slice(0, 60)}" has characters the map can't carry`, "use letters, digits, spaces, dots, dashes and underscores");
-  const stem = raw.replace(RASTER, "");
-  const declared = /\.[A-Za-z0-9]+$/.test(raw) ? raw.slice(raw.lastIndexOf(".") + 1).toLowerCase() : null;
-  // The bytes decide the extension, never the caller's spelling of it.
-  if (declared && HOME_IMAGE_EXT[declared] !== ext)
-    throw bounce(422, `that file's bytes are a ${ext.toUpperCase()}, not a ${declared.toUpperCase()}`,
-      `name it "${stem}.${ext}" — the office reads the bytes, never the label`);
-  const name = `${stem}.${ext}`;
-
-  pullIfPush(clone);
-  const homeDir = join(clone, "WHITE_PAGES", handle, "HOME");
-  const mdRel = ["WHITE_PAGES", handle, "HOME", "HOME.md"];
-  const mdFile = join(clone, ...mdRel);
-  if (!existsSync(mdFile))
-    throw bounce(404, "your home has no description yet",
-      `found your home first with PATCH /home/${handle}, its name (title) and its prose (body) — then the picture has a wall to hang on`);
-  const { fm, body } = splitFrontmatter(readFileSync(mdFile, "utf8"));
-  if (fm == null)
-    throw bounce(422, "that HOME.md has no frontmatter to preserve", "repair the frontmatter fence by PR, then try the image door again");
-
-  mkdirSync(homeDir, { recursive: true });
-  const imageFile = join(homeDir, name);
-  const replacing = existsSync(imageFile);
-  writeFileSync(imageFile, bytes);
-
-  // Declare it: keep every other name already declared, add this one once.
-  const prior = homeImageNames(clone, handle);
-  const already = /^assets:\s*\[(.*)\]\s*$/m.exec(fm);
-  const kept = already
-    ? (already[1].match(/"[^"]*"|'[^']*'/g) ?? []).map((s) => s.slice(1, -1)).filter((n) => prior.includes(n) && n !== name)
-    : [];
-  const names = [...kept, name];
-  writeFileSync(mdFile, `${patchAssetsLine(fm, names)}\n\n${body.trim()}\n`);
-
-  const commit = penCommit(clone, [imageFile, mdFile],
-    `${handle}: home image ${replacing ? "replaced" : "hung"} (via postmark-office, key household ${key.household})`);
+  const minted = await upload({ by: handle }, key, odb, { bytes, clone });
+  const kept = await keep({ handle, url: minted.url }, key, { clone });
   return {
     updated: handle,
-    file: `WHITE_PAGES/${handle}/HOME/${name}`,
-    image: name,
+    picture: kept.picture,
+    household: kept.household,
     media_type: mediaType,
-    assets: names,
-    replaced: replacing,
-    commit,
+    already: minted.already === true,
+    registry: kept.registry,
+    commit: kept.commit,
     pushed: process.env.TOWN_PUSH === "1",
   };
 }
@@ -1450,6 +1414,29 @@ export const updateWindow = paperDoor("window", whole(updateWindowUnlogged));
 export function updateProfileAvatar(args, key, db, clone) {
   return penTransaction(clone, () => profileAvatarWrite(args, key, db, clone));
 }
-export function updateHomeImage(args, key, db, clone) {
-  return penTransaction(clone, () => homeImageWrite(args, key, db, clone));
+export function updateHomeImage(args, key, db, clone, odb = null, deps = {}) {
+  return penTransaction(clone, () => homeImageWrite(args, key, db, clone, odb, deps));
+}
+
+// ── THE HOME ACT, WITH THE HOUSE'S PICTURE (POS-219) ────────────────────────
+//
+// `household { do: "home", args: { image } }` and the flat `update_home` take
+// the house's picture as a media-door URL the resident minted with
+// `upload_media`. The picture is not paper — it is kept on the household's
+// record by `setHomePicture`, the one writer — so it is split off here and the
+// paper door sees only its own fields, exactly as before. A call carrying
+// nothing but `image` writes no paper at all. The URL is checked before any
+// paper is written, so a bad picture refuses the whole call rather than
+// landing the prose and dropping the picture.
+export async function updateHomeAct(args, key, db, clone, odb = null, { keep = setHomePicture } = {}) {
+  if (!Object.prototype.hasOwnProperty.call(args ?? {}, "image")) return updateHome(args, key, db, clone, odb);
+  const { image, ...paper } = args;
+  scope(args.handle, key);
+  if (!mediaUrlOk(image))
+    throw bounce(422, "a house's picture is a media-door URL",
+      "upload the image first (upload_media) and pass the url it hands back as image — nothing was written");
+  const writesPaper = Object.keys(paper).some((k) => k !== "handle");
+  const home = writesPaper ? updateHome(paper, key, db, clone, odb) : null;
+  const picture = await keep({ handle: args.handle, url: image }, key, { clone });
+  return home ? { ...home, picture } : { updated: args.handle, picture };
 }

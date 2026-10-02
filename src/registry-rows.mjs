@@ -91,7 +91,7 @@ import { serializeRegistry, serializePins } from "./residency.mjs";
 // exactly as a NULL `name` does — see the two narrow predicates below.
 export const HOUSEHOLD_KEYS = Object.freeze([
   "name", "human", "accounts", "residents", "since", "member_of", "declared_by", "formerly",
-  "provisional",
+  "provisional", "home_images",
 ]);
 export const PIN_KEYS = Object.freeze([
   "login", "id", "pinned", "renamed", "note", "retired", "renamed_to",
@@ -131,7 +131,12 @@ export const ACCOUNT_KEYS = Object.freeze(["login", "id"]);
 // column is a scalar. If a later migration adds a second jsonb column, it
 // arrives with its row here in the same commit, or the drain renders it in
 // Postgres's order and reds on the first crossing.
-const NESTED_KEYS = Object.freeze({ accounts: ACCOUNT_KEYS });
+//
+// `home_images` (migration 050, POS-219) is the second jsonb column, and it is
+// an OBJECT keyed by handle with no fixed template: its empty template renders
+// every handle SORTED (`orderNested`'s tail), so the file's order never depends
+// on the (length, bytes) order jsonb hands the keys back in.
+const NESTED_KEYS = Object.freeze({ accounts: ACCOUNT_KEYS, home_images: Object.freeze([]) });
 
 // A pin's column names are the file's key names except one: `id` is a reserved
 // enough word in SQL company that the column is `gh_id`, and this is the single
@@ -166,10 +171,18 @@ const EMPTY_LIST_KEYS = new Set(["formerly"]);
 // of 0. Named narrowly, it can only ever do this one thing.
 const FALSE_IS_ABSENT_KEYS = new Set(["provisional"]);
 
+// THE FOURTH ABSENCE (migration 050, POS-219). `home_images` is `jsonb NOT NULL
+// DEFAULT '{}'`, and a house whose residents have uploaded no picture holds
+// `{}`. Rendered, that is `"home_images": {}` on every such house and a whole
+// file rewritten on the first crossing, so an empty map renders as no key, by
+// the same narrow rule as the two above.
+const EMPTY_MAP_KEYS = new Set(["home_images"]);
+
 const rendersAsAbsent = (key, v) =>
   isAbsent(v)
   || (EMPTY_LIST_KEYS.has(key) && Array.isArray(v) && v.length === 0)
-  || (FALSE_IS_ABSENT_KEYS.has(key) && v === false);
+  || (FALSE_IS_ABSENT_KEYS.has(key) && v === false)
+  || (EMPTY_MAP_KEYS.has(key) && v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0);
 
 /**
  * A nested value with its object keys put back in the FILE's order.
@@ -248,6 +261,8 @@ export function rowsFromRegistry(householdsJson, pinsJson) {
       // is the truth about every house that has ever declared. A NULL here would
       // reach a NOT NULL column and the seed would stop on it.
       provisional: rec?.provisional ?? false,
+      // And `home_images` (050): no key folds to the column's own `{}`.
+      home_images: rec?.home_images ?? {},
     });
   }
 
@@ -277,6 +292,24 @@ export function rowsFromRegistry(householdsJson, pinsJson) {
  * whatever the planner liked that morning and the file's bytes would then
  * depend on the weather.
  */
+/**
+ * The house picture a household's record keeps for one resident (POS-219,
+ * migration 050), read off the registry OBJECT — the store's fold or the
+ * town's rendered households.json, which are the same thing. Only an entry for
+ * one of THAT house's own residents counts, so a picture left behind when a
+ * resident moved house reads as none. The URL is not judged here: the one
+ * writer (src/home-picture.mjs) judged it, and every reader that draws it
+ * judges it again at its own door. Pure.
+ */
+export function homePictureIn(registry, handle) {
+  for (const rec of Object.values(registry?.households ?? {})) {
+    if (!(rec?.residents ?? []).includes(handle)) continue;
+    const url = rec?.home_images?.[handle];
+    return typeof url === "string" && url ? url : null;
+  }
+  return null;
+}
+
 export function registryFromRows(rows) {
   const out = {};
   for (const [k, v] of Object.entries(rows?.meta ?? {})) {
