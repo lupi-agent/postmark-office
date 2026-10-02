@@ -32,6 +32,7 @@ import {
 import { conformance, ownHandle, OWN_HANDLE_HINT } from "../src/declare.mjs";
 import { buildJoinCard } from "../src/residency.mjs";
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 // ── the instance, rebuilt ───────────────────────────────────────────────────
 
@@ -71,6 +72,12 @@ const cardOf = (dir) => readFileSync(join(dir, "WHITE_PAGES", "levi-kieran-acker
 const householdLine = (dir) => cardOf(dir).match(/^household: (.*)$/m)?.[1];
 
 // ── the join minute ─────────────────────────────────────────────────────────
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("THE JOIN MINUTE: an empty optional household writes the placeholder, not a blank", () => {
   const card = buildJoinCard({
