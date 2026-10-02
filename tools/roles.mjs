@@ -140,14 +140,31 @@ function pinsIndex(clonePath) {
   } catch { return { byLogin, source: null }; }
 }
 
-/** Logins the office has actually seen sign in. */
-function tokenIds(oauthDbPath, login) {
+/**
+ * Logins the office has actually seen sign in.
+ *
+ * THE SAME SWITCH AS THE REGISTRY (POS-271). With OFFICE_PAPERWORK_STORE=1 the
+ * sign-ins are the store's `oauth_tokens`, and oauth.db is only the rollback's
+ * mirror, so the lookup asks the store. A store that cannot answer is said, not
+ * read as "nobody signed in": that would turn an outage into "this login cannot
+ * be resolved", which sends the operator looking for a typo. Unswitched, the
+ * file is read as it always was, and an absent or unreadable file is an empty
+ * answer, as before.
+ */
+async function tokenIds(oauthDbPath, login) {
+  const SQL = "SELECT DISTINCT gh_id FROM tokens WHERE lower(gh_login) = ? AND gh_id IS NOT NULL";
+  if (paperworkStoreOn()) {
+    const paper = await openPaper(oauthDbPath, { readOnly: true }).catch((e) =>
+      die(`could not reach the store's sign-ins (OFFICE_PAPERWORK_STORE=1):\n  ${String(e?.message ?? e)}`));
+    const rows = await paper.all(SQL, login).catch((e) =>
+      die(`could not read the store's sign-ins (OFFICE_PAPERWORK_STORE=1):\n  ${String(e?.message ?? e)}`));
+    return new Set(rows.map((r) => String(r.gh_id)));
+  }
   if (!existsSync(oauthDbPath)) return new Set();
   let db;
   try {
     db = new DatabaseSync(oauthDbPath, { readOnly: true });
-    const rows = db.prepare("SELECT DISTINCT gh_id FROM tokens WHERE lower(gh_login) = ? AND gh_id IS NOT NULL").all(login);
-    return new Set(rows.map((r) => String(r.gh_id)));
+    return new Set(db.prepare(SQL).all(login).map((r) => String(r.gh_id)));
   } catch { return new Set(); }
   finally { try { db?.close(); } catch { /* nothing to close */ } }
 }
@@ -156,7 +173,7 @@ function tokenIds(oauthDbPath, login) {
  * Turn what the operator typed into a gh_id, or die explaining why not.
  * Returns { subject, login }.
  */
-function resolveSubject({ subject, ghId, login, clone, oauthDb }) {
+async function resolveSubject({ subject, ghId, login, clone, oauthDb }) {
   const given = [ghId && "--gh-id", login && "--login", subject && "--subject"].filter(Boolean);
   if (given.length === 0) die(`this command needs a subject: --subject <login|id>, or --gh-id <n>, or --login <name>\n\n${USAGE}`);
   if ((ghId && login) || (ghId && subject) || (login && subject))
@@ -172,7 +189,7 @@ function resolveSubject({ subject, ghId, login, clone, oauthDb }) {
   const asName = raw.toLowerCase();
   const { byLogin, source } = pinsIndex(clone);
   const fromPins = byLogin.get(asName) ?? new Set();
-  const fromTokens = tokenIds(oauthDb, asName);
+  const fromTokens = await tokenIds(oauthDb, asName);
   const found = new Set([...fromPins, ...fromTokens]);
 
   // A GitHub login MAY be all digits, so a bare --subject that looks like an id
@@ -238,7 +255,7 @@ async function main() {
     // rather than killing the command — `list` is how an operator finds out
     // what is true, and it should still answer.
     const filter = (SUBJECT || GH_ID || LOGIN)
-      ? resolveSubject({ subject: SUBJECT, ghId: GH_ID, login: LOGIN, clone: CLONE, oauthDb: OAUTH_DB }).subject
+      ? (await resolveSubject({ subject: SUBJECT, ghId: GH_ID, login: LOGIN, clone: CLONE, oauthDb: OAUTH_DB })).subject
       : null;
     const standing = await listRoles(rdb, { role: argOf("--role", null) });
     const trail = await auditTrail(rdb, {
@@ -279,7 +296,7 @@ async function main() {
   }
 
   // grant / revoke
-  const { subject, login } = resolveSubject({
+  const { subject, login } = await resolveSubject({
     subject: SUBJECT, ghId: GH_ID, login: LOGIN, clone: CLONE, oauthDb: OAUTH_DB,
   });
   const actor = resolveActor();
