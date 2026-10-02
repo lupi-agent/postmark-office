@@ -9,6 +9,10 @@
 //                               era-order overlap the snapshot keeps; required to write
 //        [--verify]             the newest snapshot plus the acts since, against the whole record; exit 1 on a difference
 //        [--quiet]              the one receipt line only (the tick's mode)
+//        [--compare-era-one --world-repo <checkout>]
+//                               read-only: the store's `_ledger` rows against the git walk ledger
+//                               at the checkout's main, line for line and as governing records
+//                               with the store's other eras (POS-302 PR 3); exit 1 on a difference
 //
 //   env: WORLD2_PG_URL (the office's own connection, `office_api`, the pen 053
 //        grants INSERT to), or PG* as `w2_pgenv` exports them, or --pg-url.
@@ -138,6 +142,38 @@ export async function verifySnapshot(client, { atMs = Date.now() } = {}) {
     : { verdict: "DIFFERENT", window, delta: got.snapshot.delta };
 }
 
+/**
+ * ERA ONE, THE STORE AGAINST GIT (POS-302 PR 3). Read-only. Answers
+ * `{ verdict: "EQUAL" | "DIFFERENT", carried, git, lines: [...], governing: [...] }`,
+ * `lines` naming each carried line that differs from its git line and
+ * `governing` each handle whose governing record or place moves when the store's
+ * `_ledger` rows stand in for the git ledger beside the store's other eras.
+ */
+export async function compareEraOne(client, { worldRepo }) {
+  const { execFileSync } = await import("node:child_process");
+  const { join } = await import("node:path");
+  const { pathToFileURL } = await import("node:url");
+  const live = await import("./live-reads.mjs");
+  const { parseWalkLedger } = await import(pathToFileURL(join(worldRepo, "tools", "walk.mjs")).href);
+  const git = parseWalkLedger(execFileSync("git", ["-C", worldRepo, "show", "main:WORLD/walk-ledger.md"], { encoding: "utf8" })).departures;
+  const { rows: ledgerActs } = await client.query(
+    `SELECT id, at, crossing, actor, action, payload FROM acts
+      WHERE action = ANY($1) AND payload->>'_ledger' IS NOT NULL ${live.DEPARTURE_ORDER_SQL}`, [DEPARTURE_ACTIONS]);
+  const stored = live.departureRecords(ledgerActs).records.map(live.ledgerRecordOf);
+  const { rows: rest } = await client.query(STORE_ERA_ROWS_SQL, [DEPARTURE_ACTIONS]);
+  const others = await recordsOf(rest);
+  const lines = [];
+  for (let i = 0; i < stored.length; i++) {
+    if (JSON.stringify(stored[i]) !== JSON.stringify(git[i])) lines.push({ at: i + 1, git: git[i] ?? null, store: stored[i] });
+  }
+  const a = [...governingOf([...git, ...others])], b = [...governingOf([...stored, ...others])];
+  const governing = [];
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if (JSON.stringify(a[i]) !== JSON.stringify(b[i])) governing.push({ place: i, git: a[i] ?? null, store: b[i] ?? null });
+  }
+  return { verdict: lines.length || governing.length ? "DIFFERENT" : "EQUAL", carried: stored.length, git: git.length, lines, governing };
+}
+
 /** Every store-era record in `storedDepartures`' shape, in order. */
 async function recordsOf(acts) {
   const { departureRecords } = await import("./live-reads.mjs");
@@ -165,7 +201,14 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
   try {
     const { rows: [has] } = await client.query("SELECT to_regclass('position_snapshots') IS NOT NULL AS ok");
     if (!has.ok) { console.error(`no \`position_snapshots\` table in ${dbName}: apply world2/schema/053_position_snapshots.sql first`); process.exit(2); }
-    if (verify) {
+    if (flag("compare-era-one")) {
+      const repo = arg("world-repo");
+      if (!repo) { console.error("--compare-era-one needs --world-repo <checkout>"); process.exit(2); }
+      const c = await compareEraOne(client, { worldRepo: repo });
+      console.log(`era one · ${c.verdict} · ${c.carried} _ledger row(s) against ${c.git} git line(s) · ${c.lines.length} line(s) differ · ${c.governing.length} governing place(s) differ`);
+      if (c.verdict !== "EQUAL") console.log(JSON.stringify({ lines: c.lines.slice(0, 20), governing: c.governing.slice(0, 20) }, null, 2));
+      code = c.verdict === "EQUAL" ? 0 : 1;
+    } else if (verify) {
       const v = await verifySnapshot(client);
       console.log(`positions snapshot · verify · ${v.verdict}${v.window != null ? ` · window ${v.window}` : ""}${v.delta != null ? ` + ${v.delta} act(s)` : ""}${v.reason ? ` · ${v.reason}` : ""}`);
       code = v.verdict === "EQUAL" || v.verdict === "NONE" ? 0 : 1;

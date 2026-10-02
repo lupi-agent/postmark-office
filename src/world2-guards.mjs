@@ -561,6 +561,29 @@ export async function storeDepartureRows() {
 }
 
 /**
+ * ERA ONE FROM THE STORE (POS-302 PR 3): the frozen walk ledger's lines as the
+ * backfill carried them into `acts` (`payload._ledger`), in the ledger's own
+ * order, each in `parseWalkLedger`'s shape (`live-reads.mjs § ledgerRecordOf`).
+ *
+ * It is NOT the whole ledger: `ledger-backfill.mjs § partitionWalks` carried
+ * only the lines older than the journal's first row, because the rest were
+ * already in the store as journal rows. So it equals the git ledger only
+ * together with the store's other eras, which is how the falsifier holds it.
+ */
+export async function storeLedgerDepartures() {
+  const off = unconfigured("departures");
+  if (off) throw off;
+  return reading(async (client) => {
+    const live = await import("../world2/tools/live-reads.mjs");
+    const { rows } = await client.query(
+      `SELECT id, at, crossing, actor, action, payload FROM acts
+        WHERE action = ANY($1) AND payload->>'_ledger' IS NOT NULL ${live.DEPARTURE_ORDER_SQL}`,
+      [live.DEPARTURE_ACTIONS]);
+    return live.departureRecords(rows).records.map(live.ledgerRecordOf);
+  });
+}
+
+/**
  * THE POSITIONS SNAPSHOT AND THE ACTS SINCE IT (POS-302), in ONE read-only
  * transaction, so the snapshot, the recount and the delta are one view of the
  * record.

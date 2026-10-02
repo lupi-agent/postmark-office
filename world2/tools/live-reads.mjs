@@ -565,6 +565,30 @@ export function departureRecords(rows, { strict = true } = {}) {
   return { records, refusals, eras };
 }
 
+/**
+ * An era-one record (`departureRecords`' `era: "ledger"`) in walk.mjs's
+ * `parseWalkLedger` shape, key for key and in its key order (POS-302 PR 3).
+ *
+ * The backfill stored the parse whole, but in `jsonb`, which sorts keys: the
+ * extent comes back `{ h, w }` where the parse says `{ w, h }`. So the nested
+ * objects are rebuilt in the parse's order, and nothing the parse does not
+ * carry (`era`, `act_id`) is passed on. With this, the store's `_ledger` rows
+ * answer what `parseWalkLedger(walk-ledger.md)` answers for the lines the
+ * backfill carried (test/era-one-from-the-store.test.mjs).
+ */
+export function ledgerRecordOf(r) {
+  const xy = (p) => (p == null ? p : { x: p.x, y: p.y });
+  return {
+    iso: r.iso, handle: r.handle,
+    from: xy(r.from), toward: xy(r.toward),
+    at: r.at,
+    targetExtent: r.targetExtent == null ? null : { w: r.targetExtent.w, h: r.targetExtent.h },
+    targetMarkId: r.targetMarkId ?? null,
+    pace: r.pace ?? null,
+    line: r.line,
+  };
+}
+
 /** What a break in each key means, in that key's own words. */
 function orderViolation(name, row, prev) {
   if (name === "era") {
