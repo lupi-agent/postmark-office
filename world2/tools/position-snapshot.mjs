@@ -57,16 +57,18 @@ export async function newestClosedWindow(q) {
 /**
  * The frozen walk ledger's newest instant, read as `world.mjs §
  * departuresAcrossEras` reads it: `WORLD/walk-ledger.md` at the checkout's
- * main, parsed by the checkout's own walk.mjs, the latest `iso`. Null when the
+ * `mainRef` (refs/heads/main, else refs/remotes/origin/main), parsed by the checkout's own walk.mjs, the latest `iso`. Null when the
  * ledger holds no line. Throws when it cannot be read: a snapshot measured
  * against nothing would be discarded by every reader that can read it.
  */
 export async function ledgerNewestIso(worldRepo) {
-  const { execFileSync } = await import("node:child_process");
   const { join } = await import("node:path");
   const { pathToFileURL } = await import("node:url");
   const { parseWalkLedger } = await import(pathToFileURL(join(worldRepo, "tools", "walk.mjs")).href);
-  const text = execFileSync("git", ["-C", worldRepo, "show", "main:WORLD/walk-ledger.md"], { encoding: "utf8" });
+  // The ref the office reads it at (world.mjs § walkLedgerAtMain), so the writer
+  // and the reader can never measure against two different mains.
+  const { mainRef, readAtRef } = await import("../../src/world-branches.mjs");
+  const text = readAtRef(worldRepo, mainRef(worldRepo), "WORLD/walk-ledger.md");
   const newest = parseWalkLedger(text).departures.reduce((m, d) => Math.max(m, Date.parse(d.iso) || 0), 0);
   return newest ? new Date(newest).toISOString() : null;
 }

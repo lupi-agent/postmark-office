@@ -243,3 +243,22 @@ test("LEDGER: a snapshot measured against another ledger instant is discarded, d
     JSON.stringify(got.kept.disclosed));
   assert.equal(got.keptMap, got.wholeMap);
 });
+
+test("THE REF: the writer measures the ledger at mainRef, so a clone holding only origin/main still writes", async (t) => {
+  if (needsClone(t)) return;
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { execFileSync } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "pos302-ref-"));
+  try {
+    const clone = join(dir, "w");
+    execFileSync("git", ["clone", "--quiet", "--local", WORLD_CLONE, clone]);
+    execFileSync("git", ["-C", clone, "checkout", "--quiet", "--detach"]);
+    if (execFileSync("git", ["-C", clone, "branch", "--list", "main"], { encoding: "utf8" }).trim())
+      execFileSync("git", ["-C", clone, "branch", "--quiet", "-D", "main"]);
+    assert.ok(execFileSync("git", ["-C", clone, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"], { encoding: "utf8" }).trim(),
+      "the fixture has no origin/main to fall back to");
+    assert.equal(execFileSync("git", ["-C", clone, "branch", "--list", "main"], { encoding: "utf8" }).trim(), "", "the fixture still has a local main");
+    assert.equal(await ledgerNewestIso(clone), await ledgerNewestIso(WORLD_CLONE));
+  } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+});
