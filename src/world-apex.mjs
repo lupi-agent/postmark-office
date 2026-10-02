@@ -36,7 +36,8 @@
 // law — refuse or disclose absent inputs, never quietly substitute.)
 
 import { DatabaseSync } from "node:sqlite";
-import { renamedRow } from "./one-contract.mjs"; // POS-70: the one rename shape
+import { renamedRow, DOOR_FIELDS } from "./one-contract.mjs"; // POS-70: the one rename shape; POS-246: the door's own fields
+import { actUnderNonce, nonceDefect } from "./act-nonce.mjs"; // POS-246: a world act's retry key
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -64,6 +65,7 @@ import {
   worldSayHuman,
   worldStateRaw,
   worldCanon,
+  actsHaveNonce,
 } from "./world.mjs";
 // v2.2 §B — the frame block and the three-shelf delta. Both compose the one
 // standpoint derivation; neither derives a position of its own.
@@ -2463,7 +2465,10 @@ async function apexDo(args, key, ctx = {}) {
       // is judged — otherwise the apex would print `to_x` in the card and then
       // refuse it by name, which is the worst of both spellings.
       const declaredNames = declared ? Object.keys(fieldsFor(action, null)).length ? Object.keys(fieldsFor(action, null)) : Object.keys(declared) : [];
-      const unknown = declared ? Object.keys(toFlatFields(action, envelope)).filter((k) => !(k in declared)) : [];
+      // The door's own fields (one-contract.mjs § DOOR_FIELDS) are the door's to
+      // read, not the act's to declare — today the retry key (POS-246).
+      const doorOwn = new Set(DOOR_FIELDS[handler.tool] ?? []);
+      const unknown = declared ? Object.keys(toFlatFields(action, envelope)).filter((k) => !(k in declared) && !doorOwn.has(k)) : [];
       if (unknown.length) {
         return bounce(422, `${handler.tool} does not take: ${unknown.join(", ")}`,
           `the fields it takes: ${declaredNames.join(", ")} — the action's \`fields\` block spells out each one`,
@@ -2484,6 +2489,16 @@ async function apexDo(args, key, ctx = {}) {
     // that promise holds on the failing path too.
     const { do: _dropped, telling: _t, args: _envelope, ...rest } = args;
     const fields = toFlatFields(action, envelope ? { ...rest, ...envelope } : rest);
+    // ── THE RETRY KEY (POS-246) ──────────────────────────────────────────────
+    // A door field: taken off before the handler sees its fields, and kept by
+    // act-nonce.mjs on the act's first row. The say keeps its own (027, one
+    // lull), so it rides through to world_say exactly as before.
+    const nonce = action !== "say" && fields.nonce != null ? fields.nonce : null;
+    if (nonce != null) {
+      const bad = nonceDefect(nonce);
+      if (bad) return bounce(422, bad.defect, bad.hint);
+      delete fields.nonce;
+    }
     // WHICH STANDING THIS ACT IS TAKEN FROM is decided by the CHANNEL that
     // granted it, and can only be asked once the match is known — the same
     // `say` is companioned when the human class grants it ambiently and
@@ -2508,6 +2523,7 @@ async function apexDo(args, key, ctx = {}) {
     // Declared out here, as it was when the arena's wheel on the crossing below
     // needed it too (the arena closed 2026-09-30); derived once, inside.
     let hand = null;
+    let nonceSays = null; // what the answer says about the retry key (POS-246)
     try {
       // THE ACTOR SEAM'S ONE EFFECT ON DISPATCH. A human's COMPANIONED say goes
       // to the human's own handler, which has owned the speaker label, the
@@ -2587,9 +2603,19 @@ async function apexDo(args, key, ctx = {}) {
         // and it is deliberately double-underscored, the `__action` precedent,
         // to say out loud that it is office plumbing rather than a field a
         // resident writes.
-        result = await handler.run(
+        const run = () => handler.run(
           hand ? { ...fields, as_human: hand, ...(seatedAt ? { __seated_ground: seatedAt } : {}) } : fields,
           key, ctx);
+        if (nonce == null) result = await run();
+        else {
+          const keyed = await actUnderNonce({ action, nonce, kept: await actsHaveNonce(), run,
+            // whose acts a spent key is looked for among: the key's own residents
+            // and its human's hand, so a nonce cannot be probed across households
+            actors: [...new Set([...(key?.handles ?? []), standingHandle(args, key), hand].filter(Boolean))] });
+          if (keyed.duplicate) return { ...done, result: keyed.duplicate };
+          result = keyed.result;
+          nonceSays = keyed.disclosure;
+        }
       }
     } catch (e) {
       if (!e?.code) throw e;
@@ -2610,9 +2636,9 @@ async function apexDo(args, key, ctx = {}) {
     // it had while the arena's wheel rode here too: `joined: { placed }`.
     if (action === "enter" && !result?.error) {
       const placed = await spawnOnEnter(args, key, hand || standingHandle(args, key));
-      if (placed) return { ...done, result, joined: { placed } };
+      if (placed) return { ...done, result, joined: { placed }, ...(nonceSays ?? {}) };
     }
-    return result?.error === "bounce" ? { ...result, ...done } : { ...done, result };
+    return result?.error === "bounce" ? { ...result, ...done } : { ...done, result, ...(nonceSays ?? {}) };
   } finally { store.db?.close(); }
 }
 
@@ -3008,6 +3034,11 @@ async function apexReadAction(args, key, ctx = {}) {
     // refused, because "this office has not built that shadow yet" is already
     // the answer that read gives and a field list would be a guess about a room
     // nobody has built.
+    // A retry key guards a write, and a read writes nothing (POS-246; the say's
+    // read says the same in its own words, below).
+    if (action !== "say" && envelope?.nonce != null)
+      return bounce(422, "a read performs nothing, so a nonce has nothing to guard",
+        `a nonce is the retry key of an act — world { do: "${action}", args: { …, nonce: … } }. read: "${action}" performs nothing.`);
     if (envelope && WORLD_READ_FIELDS[action]) {
       const bad = validateReadArgs({ read: action, tool: `world { read: "${action}" }`,
         properties: WORLD_READ_FIELDS[action], fields, exempt: ["handle"] });
