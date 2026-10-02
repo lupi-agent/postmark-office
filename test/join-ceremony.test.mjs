@@ -34,6 +34,7 @@ import {
 } from "../src/ceremony.mjs";
 import { drainRegistry, checkRegistry, ingestMissing, missingFromStore } from "../tools/registry-drain.mjs";
 import { conformance } from "../src/declare.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, "fixtures", "registry-2026-09-22");
@@ -147,6 +148,12 @@ const withPool = async (fn, pool = stubPool()) => {
 };
 
 // ── THE ALPHABET, AND WHO IT BINDS ──────────────────────────────────────────
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore((await import("./fixture.mjs")).fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("the household alphabet IS the handle's, and the two cannot drift apart", () => {
   // `src/ceremony.mjs` restates the rule rather than importing it, so it reads

@@ -28,10 +28,17 @@ import { enqueueLetter, nextCrossing } from "../src/write.mjs";
 import { sendLetterAsRow, duplicateReceipt } from "../src/town-mail.mjs";
 import { doorstepBundle } from "../src/doorstep-bundle.mjs";
 import { fixtureDb, tempClone, fixtureKey } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 delete process.env.TOWN_PUSH;
 const HOUR = 3600 * 1000;
 const onTheBeat = (iso) => { const d = new Date(iso); return d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0 && (d.getUTCHours() === 0 || d.getUTCHours() === 12); };
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("THE PROPERTY · for every instant T, the receipt's crossing is the FIRST 00:00Z/12:00Z strictly after T", () => {
   const start = Date.parse("2026-09-17T00:00:00Z");

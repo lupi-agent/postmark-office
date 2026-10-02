@@ -33,6 +33,7 @@ import {
   updateAddressBody, updateAddressFields, updateHome, updateProfile, updateWindow,
   updateProfileAvatar, updateHomeImage,
 } from "../src/edit.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sh = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -104,6 +105,12 @@ test.after(() => { for (const d of homes) rmSync(d, { recursive: true, force: tr
 // ═══════════════════════════════════════════════════════════════════════════
 // penCommit — whole or nothing over its own paths
 // ═══════════════════════════════════════════════════════════════════════════
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore((await import("./fixture.mjs")).fixtureDb()); // the fixture town holds wright and limen, as mailDb() does
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
+
 test("P1 · A PUSH THAT CANNOT LAND leaves HEAD at the recorded sha and the tree exactly as it was", async () => {
   const t = town();
   const before = snapshot(t.clone);
@@ -361,7 +368,7 @@ function execTown() {
 function runExec(t, exec, payload, { push = true } = {}) {
   const r = spawnSync(process.execPath, [join(ROOT, "src", exec), JSON.stringify(payload)], {
     encoding: "utf8",
-    env: { ...process.env, TOWN_CLONE: t.clone, STAMP_KEY: t.keyPath, TOWN_PUSH: push ? "1" : "", BOT_NAME: "fixture", BOT_EMAIL: "fixture@test.invalid" },
+    env: { ...process.env, ...IX.env, TOWN_CLONE: t.clone, STAMP_KEY: t.keyPath, TOWN_PUSH: push ? "1" : "", BOT_NAME: "fixture", BOT_EMAIL: "fixture@test.invalid" },
   });
   assert.equal(r.status, 0, `${exec} answers rather than trips: ${r.stderr}`);
   return JSON.parse(r.stdout.trim().split("\n").at(-1));
@@ -486,7 +493,7 @@ function stubbedTown() {
 function runStubbed(t, exec, payload) {
   const r = spawnSync(process.execPath, ["--import", pathToFileURL(t.register).href, join(ROOT, "src", exec), JSON.stringify(payload)], {
     encoding: "utf8",
-    env: { ...process.env, TOWN_CLONE: t.clone, TOWN_PUSH: "1", BOT_NAME: "fixture", BOT_EMAIL: "fixture@test.invalid",
+    env: { ...process.env, ...IX.env, TOWN_CLONE: t.clone, TOWN_PUSH: "1", BOT_NAME: "fixture", BOT_EMAIL: "fixture@test.invalid",
       PEN_TX_STUBS: JSON.stringify(t.stubs[exec]), PEN_TX_PARENT: `/src/${exec}` },
   });
   assert.equal(r.status, 0, `${exec} answers rather than trips: ${r.stderr}`);

@@ -37,6 +37,8 @@ import { requestResidency, REGISTRY_PATH, PINS_PATH, serializeRegistry, serializ
 import { bindUnderLock, BIND_REFUSALS } from "../src/join-bind.mjs";
 import { penTransaction } from "../src/write.mjs";
 import { rowsFromRegistry } from "../src/registry-rows.mjs";
+import { indexStore, testIndex } from "./helpers/office-under-test.mjs";
+import { UNREACHABLE_DEFECT } from "../src/index-probe.mjs";
 
 // THE PORT IS ASKED FOR, NEVER CHOSEN (world-apex.test.mjs § the port). This
 // was 43943, "checked against every port literal in test/" — and still a lock
@@ -118,6 +120,11 @@ const PEN = () => ({
 });
 
 const db = fixtureDb();
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(db);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 // ── the town, as a temp git clone holding the two printed registers ────────
 const git = (dir, ...a) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8" }).trim();
@@ -433,7 +440,15 @@ test("the exec under the town lock answers ONE JSON line, and an unreachable rec
     JSON.stringify({ args: { handle: "tulip", card: "hello" }, key: { ghId: 999, ghLogin: "keeminlee", handles: ["wright"] }, dbPath }), env);
   const lines = out.trim().split("\n");
   assert.equal(lines.length, 1);
-  assert.deepEqual(JSON.parse(lines[0]).error, {
+  // Switched, the exec reads its index from the store before the record, and a
+  // store it cannot reach is the store's 503 by name (POS-268, as ruled for the
+  // deletion: "record unreachable" becomes "store unreachable"). The old mode
+  // still answers the record's own refusal.
+  if (testIndex() === "store") {
+    const err = JSON.parse(lines[0]).error;
+    assert.equal(err.code, 503);
+    assert.equal(err.defect, UNREACHABLE_DEFECT);
+  } else assert.deepEqual(JSON.parse(lines[0]).error, {
     code: BIND_REFUSALS.NO_RECORD.code, field: null, defect: BIND_REFUSALS.NO_RECORD.defect, hint: BIND_REFUSALS.NO_RECORD.hint,
   });
 });

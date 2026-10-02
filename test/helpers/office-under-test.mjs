@@ -41,12 +41,24 @@ export async function indexStore(dbPath, { db: name = "office_test" } = {}) {
     finally { await w.end(); if (typeof dbPath === "string") db.close(); }
   };
   await seed();
+  let inProcess = null; // this process's index module, once useInProcess switched it
   const env = { TOWN_INDEX_READS: "store", WORLD2_PG: "1", WORLD2_PG_URL: s.url("office_api") };
   return {
     env,
     store: s,
-    /** Copy the office.db again, after the test changed it. */
-    reseed: seed,
+    /**
+     * Copy the office.db again, after the test changed it. In a switched process
+     * the held roll and probe are read again too: the fixture's head never moves,
+     * so nothing else would tell them the rows did.
+     */
+    async reseed() {
+      await seed();
+      if (!inProcess) return;
+      inProcess.__resetRosterForTest();
+      inProcess.__resetProbeForTest();
+      await inProcess.refreshStoreRoll();
+      await inProcess.refreshStoreProbe();
+    },
     /**
      * Switch THIS process to the store (for a test that calls mcp / household
      * in-process) and load the roll and the write path's probe. Answers a
@@ -64,6 +76,7 @@ export async function indexStore(dbPath, { db: name = "office_test" } = {}) {
       pool.on("error", () => {});
       const tis = await import("../../src/town-index-store.mjs");
       tis.__setTownIndexPoolForTest(pool);
+      inProcess = tis;
       // every fixture store has the fixture's head, so the memos keyed on a head are forgotten first
       tis.__resetRosterForTest();
       tis.__resetProbeForTest();
@@ -71,6 +84,7 @@ export async function indexStore(dbPath, { db: name = "office_test" } = {}) {
       await tis.refreshStoreProbe();
       return async () => {
         tis.__setTownIndexPoolForTest(null);
+        inProcess = null;
         await pool.end().catch(() => {});
         if (keep === undefined) delete process.env.TOWN_INDEX_READS; else process.env.TOWN_INDEX_READS = keep;
       };

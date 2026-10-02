@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { fixtureDb, fixtureKey } from "./fixture.mjs";
 import { MAIL_ACT, MAIL_DOOR, replayLetter } from "../src/town-mail.mjs";
 import { enqueueLetter } from "../src/write.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 delete process.env.TOWN_PUSH;
 
@@ -30,6 +31,12 @@ function mailClone() {
   git("-c", "user.name=fixture", "-c", "user.email=fixture@test.invalid", "commit", "-q", "-m", "fixture town");
   return dir;
 }
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("#2678 · drain replay preserves the id, path, and date accepted by the send door", () => {
   const clone = mailClone();
