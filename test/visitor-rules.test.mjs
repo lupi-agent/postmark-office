@@ -108,9 +108,10 @@ test("the berth's arc: rules first, nothing written; acknowledged once; never ga
   const at = rulesReadAt("lantern-visitor");
   assert.ok(Number.isInteger(at) && at > 0, `the row records when: ${at}`);
 
-  // A second acknowledgement keeps the first one's time (recorded ONCE). The
-  // say itself may meet the voice's own per-speaker limiter; that is not the
-  // gate, and the row is what is under test.
+  // A second acknowledgement keeps the first one's time: the gate lets an
+  // acknowledged berth straight through, so it never reaches the row again
+  // (the row's own once-clause is held in berth.test.mjs). The say itself may
+  // meet the voice's per-speaker limiter; that is not the gate.
   await new Promise((ok) => setTimeout(ok, 1100));
   const again = await (await say(base, b.key, { text: "a second hello", rules_read: true })).json();
   assert.notEqual(again.defect, RULES_FIRST.defect);

@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { openOauthDb, mintBerth, berthLookup, berthTaken, BERTH_SLUG, FROM_TOWN } from "../src/oauth.mjs";
+import { openOauthDb, mintBerth, berthLookup, berthTaken, acknowledgeVisitorRules, BERTH_SLUG, FROM_TOWN } from "../src/oauth.mjs";
 import { isReservedHandle } from "../src/residency.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "postmark-berth-"));
@@ -66,6 +66,19 @@ test("from_town: a traveler's claim is recorded at the mint; absence stays null"
   assert.equal(odb.prepare("SELECT from_town FROM berths WHERE slug = 'voyager'").get().from_town, "1f3d9");
   await mintBerth(odb, "local");
   assert.equal(odb.prepare("SELECT from_town FROM berths WHERE slug = 'local'").get().from_town, null);
+});
+
+test("the visitors' rules (POS-300): the acknowledgement is kept on the row, read back by the key, and written once", async () => {
+  const { key } = await mintBerth(odb, "rule-reader");
+  assert.equal((await berthLookup(odb, null, null, key)).rulesRead, false, "a fresh berth has not read them");
+  await acknowledgeVisitorRules(odb, "rule-reader");
+  assert.equal((await berthLookup(odb, null, null, key)).rulesRead, true);
+  // The door's gate stops a second acknowledgement before it reaches the row;
+  // the row's own clause is what holds two that race. Planted: a known time,
+  // then an acknowledgement, and the time must not move.
+  odb.prepare("UPDATE berths SET rules_read_at = 1000 WHERE slug = 'rule-reader'").run();
+  await acknowledgeVisitorRules(odb, "rule-reader");
+  assert.equal(odb.prepare("SELECT rules_read_at FROM berths WHERE slug = 'rule-reader'").get().rules_read_at, 1000, "written once");
 });
 
 test("the from_town grammar admits codepoint towns and plain names, refuses noise", async () => {
