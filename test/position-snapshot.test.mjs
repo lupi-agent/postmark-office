@@ -18,12 +18,20 @@
 //   LATE ID     an act committed under an id at or below the high-water after
 //               the snapshot: the recount moves, discarded, disclosed.
 //   VERIFY      the writer's --verify reads EQUAL over a kept snapshot.
+//   OVERLAP     the record holds store records older than the frozen ledger's
+//               newest line (prod held 12 on 2026-10-02): the snapshot keeps
+//               their count, and the `disclosed` array equals the whole
+//               record's, byte for byte, `era-order-overlap` included.
+//   LEDGER      a snapshot measured against a different ledger instant is
+//               discarded, disclosed.
 //
 // ── THE FLIPS (run after the commit; the red lines go in the report) ────────
 //
 //   1. composeSnapshot skips the sorts-inside check: INVERSION goes red.
 //   2. composeSnapshot skips the recount check: LATE ID goes red.
 //   3. storeDepartureSnapshot ignores max_iso <= at: THE CLOSE goes red.
+//   4. the reader discards a snapshot holding a record older than the ledger's
+//      newest line (#330's first shape): OVERLAP goes red.
 //
 // Run: WORLD_CLONE=<world clone> node --test test/position-snapshot.test.mjs
 
@@ -37,7 +45,7 @@ import { WORLD_CLONE } from "../src/world-store.mjs";
 import { useGuardReader } from "../src/world2-guards.mjs";
 import { normalizeRow } from "../src/world-journal.mjs";
 import { governingOf } from "../src/position-projection.mjs";
-import { writeSnapshot, verifySnapshot } from "../world2/tools/position-snapshot.mjs";
+import { writeSnapshot as write, verifySnapshot, ledgerNewestIso } from "../world2/tools/position-snapshot.mjs";
 
 const FLAGS = ["WORLD_MOVEMENT_V2", "WORLD2_PG", "WORLD2_PG_URL", "POSITIONS_SNAPSHOT"];
 const was = Object.fromEntries(FLAGS.map((k) => [k, process.env[k]]));
@@ -108,11 +116,20 @@ async function both(atMs) {
 }
 
 const at = (i) => B + i * 90_000;
+// The snapshot is measured against the clone's own frozen ledger, as the keep tick measures it.
+let LEDGER = null;
+const writeSnapshot = async (client, windowId, opts = {}) =>
+  write(client, windowId, { ledgerNewestIso: (LEDGER ??= await ledgerNewestIso(WORLD_CLONE)), ...opts });
+// Two store records OLDER than the ledger's newest line (2026-08-10T20:20Z on the
+// clone), as prod has twelve: the era-order overlap the whole record discloses.
+const EARLY = [Date.parse("2026-08-05T09:00:00.000Z"), Date.parse("2026-08-06T09:00:00.000Z")];
 const C1 = at(5) + 30_000;    // window 1 closes after walk 5
 const C2 = at(9) + 30_000;    // window 2 closes after walk 9
 
 test("EQUAL and THE CLOSE: snapshot + delta answers the whole record, and a read at a close takes the snapshot before it", async (t) => {
   if (needsClone(t)) return;
+  await walkAt(50, EARLY[0], { actor: "new-c" });
+  await walkAt(51, EARLY[1], { actor: "early-only" });
   for (let i = 0; i <= 5; i++) await walkAt(i, at(i));
   await windowClosed(1, C1);
   const w1 = await writeSnapshot(api, 1);
@@ -138,6 +155,11 @@ test("EQUAL and THE CLOSE: snapshot + delta answers the whole record, and a read
   assert.equal(now.keptMap, now.wholeMap, "snapshot + delta is not the whole record");
   assert.deepEqual(now.kept.disclosed, now.whole.disclosed);
   assert.equal(now.kept.store_records, now.whole.store_records);
+  // OVERLAP: the whole record says it, and the snapshot path says the same words.
+  assert.ok(now.whole.disclosed.some((d) => d.startsWith("era-order-overlap: 2 store record(s)")),
+    `the fixture's overlap did not reach the whole record: ${JSON.stringify(now.whole.disclosed)}`);
+  assert.equal(JSON.stringify(now.kept.disclosed), JSON.stringify(now.whole.disclosed));
+  assert.equal(JSON.stringify(close.kept.disclosed), JSON.stringify(close.whole.disclosed));
   assert.ok(governingOf(now.whole.departures).size >= WHO.length, "the record did not reach every walker");
 });
 
@@ -209,4 +231,15 @@ test("THE PROJECTION: its rebuild stands on the snapshot, and keeps the same gov
     assert.equal(JSON.stringify(kept.departures), JSON.stringify([...governingOf(whole.departures).values()]),
       "the projection's governing records differ from the whole record's");
   } finally { world.positionProjection.invalidate(); }
+});
+
+test("LEDGER: a snapshot measured against another ledger instant is discarded, disclosed", async (t) => {
+  if (needsClone(t)) return;
+  await windowClosed(5, at(19));
+  await writeSnapshot(api, 5, { ledgerNewestIso: "2026-08-11T00:00:00.000Z" });
+  const got = await both(at(20));
+  assert.equal(got.kept.snapshot, undefined, "a snapshot measured against another ledger was used");
+  assert.ok(got.kept.disclosed.some((d) => /^positions-snapshot-discarded: the frozen ledger's newest line moved since window 5's snapshot/.test(d)),
+    JSON.stringify(got.kept.disclosed));
+  assert.equal(got.keptMap, got.wholeMap);
 });

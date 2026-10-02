@@ -172,7 +172,7 @@ fi
 # only the acts since. NON-FATAL and outside the clearing (Wright 2026-10-02): a
 # failed snapshot never blocks a clearing or this tick, and the office reads the
 # whole record until one exists. Same connection as the settlements rows above.
-if snapped="$(node world2/tools/position-snapshot.mjs --apply --prod --quiet 2>&1)"; then
+if snapped="$(node world2/tools/position-snapshot.mjs --apply --prod --quiet --world-repo "$WORLD_CLONE" 2>&1)"; then
   echo "[office-keep] $snapped"
 else
   echo "[office-keep] positions snapshot NOT written (non-fatal) — $snapped — the next tick tries again; world2/tools/position-snapshot.mjs --verify says where it stands" >&2

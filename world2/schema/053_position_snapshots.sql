@@ -29,10 +29,16 @@
 --                           the snapshot is not used: a backfilled act with an
 --                           early instant and a late id can govern from inside
 --                           the record, and appending it would be wrong.
---     min_iso, max_iso      the earliest and latest record instant held. A past
---                           read at `at` uses a snapshot only if max_iso <= at;
---                           min_iso lets the reader check the era-order
---                           assumption against the frozen ledger.
+--     max_iso               the latest record instant held. A past read at `at`
+--                           uses a snapshot only if max_iso <= at.
+--     ledger_newest_iso,    the frozen walk ledger's newest instant the writer
+--     overlap_count         measured against, and how many of the snapshot's
+--                           records are older than it. The whole record
+--                           discloses that count as `era-order-overlap` (prod:
+--                           12 on 2026-10-02), so the snapshot keeps it and a
+--                           read says the same number. If the ledger's newest
+--                           line has moved since (it is frozen), the snapshot
+--                           is not used.
 --   position_snapshot_rows  one row per handle: its first-appearance ordinal in
 --                           the store's order, and its governing record as the
 --                           JSON text `storedDepartures` hands over. TEXT, not
@@ -81,8 +87,9 @@ CREATE TABLE IF NOT EXISTS position_snapshots (
   hw_count   integer NOT NULL CHECK (hw_count >= 0),
   last_at    timestamptz,
   last_id    bigint,
-  min_iso    text,
   max_iso    text,
+  ledger_newest_iso text,
+  overlap_count     integer NOT NULL DEFAULT 0 CHECK (overlap_count >= 0),
   built_at   timestamptz NOT NULL DEFAULT now()
 );
 

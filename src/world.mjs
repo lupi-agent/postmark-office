@@ -448,9 +448,10 @@ export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Da
   const snapshot = kept ? { snapshot: kept.snapshot } : {};
   if (!records.length) return { departures: ledger, eras: ["ledger", "store"], disclosed, ledgerUnreadable, ...snapshot };
 
-  const overlap = records.filter((r) => (Date.parse(r.iso) || 0) < newestLedger);
-  if (overlap.length) {
-    disclosed.push(`era-order-overlap: ${overlap.length} store record(s) predate the newest ledger line — the freeze assumption that era two is strictly later no longer holds, and append order may not be latest-wins for them`);
+  // A snapshot kept the count at write time (POS-302): the same number, not a re-count.
+  const overlapCount = kept ? kept.overlap : records.filter((r) => (Date.parse(r.iso) || 0) < newestLedger).length;
+  if (overlapCount) {
+    disclosed.push(`era-order-overlap: ${overlapCount} store record(s) predate the newest ledger line — the freeze assumption that era two is strictly later no longer holds, and append order may not be latest-wins for them`);
   }
   const merged = [...ledger, ...records];
   return { departures: merged, eras: ["ledger", "store"], disclosed, ledgerUnreadable, store_records: kept ? kept.store_records : records.length, ...snapshot };

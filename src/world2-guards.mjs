@@ -582,7 +582,7 @@ export async function storeDepartureSnapshot({ atMs = Date.now() } = {}) {
     const { rows: [has] } = await client.query("SELECT to_regclass('position_snapshots') IS NOT NULL AS ok");
     if (!has?.ok) return null;
     const { rows: [header] } = await client.query(
-      `SELECT window_id, hw_id, hw_count, last_at, last_id, min_iso, max_iso FROM position_snapshots
+      `SELECT window_id, hw_id, hw_count, last_at, last_id, max_iso, ledger_newest_iso, overlap_count FROM position_snapshots
         WHERE max_iso IS NULL OR max_iso::timestamptz <= $1
         ORDER BY window_id DESC LIMIT 1`, [new Date(atMs).toISOString()]);
     if (!header) return null;
@@ -596,7 +596,7 @@ export async function storeDepartureSnapshot({ atMs = Date.now() } = {}) {
       header: {
         hw_id: Number(header.hw_id), hw_count: Number(header.hw_count),
         last_at: header.last_at instanceof Date ? header.last_at.toISOString() : header.last_at, last_id: header.last_id == null ? null : Number(header.last_id),
-        min_iso: header.min_iso, max_iso: header.max_iso,
+        max_iso: header.max_iso, ledger_newest_iso: header.ledger_newest_iso, overlap_count: Number(header.overlap_count),
       },
       rows, recount: since[0]?.recount ?? null, delta,
     };

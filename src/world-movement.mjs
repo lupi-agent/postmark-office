@@ -367,15 +367,15 @@ export async function storedDepartures({ atMs = Date.now(), withActId = false } 
  * the delta, which `governingOf` reduces exactly as it reduces the whole record
  * (position-snapshot.mjs § WHY IT IS EXACT).
  *
- * Answers `{ records, absent: null, store_records, snapshot: { window, delta } }`,
+ * Answers `{ records, absent: null, store_records, overlap, snapshot: { window, delta } }`,
  * or `{ fallback: null }` when there is no snapshot to stand on, or
  * `{ fallback: <reason> }` when one was DISCARDED. Either way the caller reads
  * the whole record; only a discard is disclosed.
  *
  * `newestLedgerMs` is the frozen ledger's newest instant. `departuresAcrossEras`
- * discloses store records older than it (`era-order-overlap`, with a count),
- * and a snapshot cannot count them, so a snapshot whose earliest record is
- * older than the ledger's newest is discarded and the whole record answers it.
+ * discloses store records older than it (`era-order-overlap`, with a count);
+ * the snapshot kept that count at write time, and `overlap` here is the same
+ * number the whole record would say.
  *
  * `POSITIONS_SNAPSHOT=off` is the operator's switch back to the whole record.
  */
@@ -389,14 +389,12 @@ export async function storedGoverningDepartures({ atMs = Date.now(), newestLedge
     return { fallback: `the snapshot could not be read (${String(e?.message ?? e).slice(0, 160)})` };
   }
   if (!snap) return { fallback: null };
-  if (snap.header.min_iso != null && Date.parse(snap.header.min_iso) < newestLedgerMs)
-    return { fallback: `window ${snap.window}'s snapshot holds a record older than the frozen ledger's newest line, which only the whole record can count` };
   const { composeSnapshot } = await import("./position-snapshot.mjs");
   let got;
-  try { got = composeSnapshot(snap, { atMs }); }
+  try { got = composeSnapshot(snap, { atMs, newestLedgerMs }); }
   catch (e) { return { fallback: `the delta since window ${snap.window} could not be read (${String(e?.message ?? e).slice(0, 160)})` }; }
   if (got.discard) return { fallback: got.discard };
-  return { records: got.records, absent: null, store_records: got.store_records, snapshot: got.snapshot };
+  return { records: got.records, absent: null, store_records: got.store_records, overlap: got.overlap, snapshot: got.snapshot };
 }
 
 /** One entity's stored records, oldest first. The per-handle slice of the above. */

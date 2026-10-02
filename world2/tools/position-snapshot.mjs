@@ -5,6 +5,8 @@
 //   node world2/tools/position-snapshot.mjs
 //        [--dry-run]            the default: build the newest closed window's snapshot, print it, write nothing
 //        [--apply [--prod]]     write it, if that window has none (one transaction)
+//        --world-repo <checkout>  where the frozen walk ledger is read (its main), for the
+//                               era-order overlap the snapshot keeps; required to write
 //        [--verify]             the newest snapshot plus the acts since, against the whole record; exit 1 on a difference
 //        [--quiet]              the one receipt line only (the tick's mode)
 //
@@ -36,7 +38,7 @@
 // byte, order included. It is read-only.
 
 import pg from "pg";
-import { buildSnapshot, composeSnapshot, STORE_ERA_ROWS_SQL, RECOUNT_AND_DELTA_SQL, DEPARTURE_ACTIONS } from "../../src/position-snapshot.mjs";
+import { buildSnapshot, composeSnapshot, ledgerMsOf, STORE_ERA_ROWS_SQL, RECOUNT_AND_DELTA_SQL, DEPARTURE_ACTIONS } from "../../src/position-snapshot.mjs";
 import { governingOf } from "../../src/position-projection.mjs";
 
 const NL = "\n";
@@ -53,22 +55,39 @@ export async function newestClosedWindow(q) {
 }
 
 /**
+ * The frozen walk ledger's newest instant, read as `world.mjs §
+ * departuresAcrossEras` reads it: `WORLD/walk-ledger.md` at the checkout's
+ * main, parsed by the checkout's own walk.mjs, the latest `iso`. Null when the
+ * ledger holds no line. Throws when it cannot be read: a snapshot measured
+ * against nothing would be discarded by every reader that can read it.
+ */
+export async function ledgerNewestIso(worldRepo) {
+  const { execFileSync } = await import("node:child_process");
+  const { join } = await import("node:path");
+  const { pathToFileURL } = await import("node:url");
+  const { parseWalkLedger } = await import(pathToFileURL(join(worldRepo, "tools", "walk.mjs")).href);
+  const text = execFileSync("git", ["-C", worldRepo, "show", "main:WORLD/walk-ledger.md"], { encoding: "utf8" });
+  const newest = parseWalkLedger(text).departures.reduce((m, d) => Math.max(m, Date.parse(d.iso) || 0), 0);
+  return newest ? new Date(newest).toISOString() : null;
+}
+
+/**
  * Write window `windowId`'s snapshot if it has none. Answers `{ wrote, window,
  * header, handles }`. `client` is a connected pg client holding INSERT on 053's
  * tables. One transaction: the header and its rows land together or not at all.
  */
-export async function writeSnapshot(client, windowId) {
+export async function writeSnapshot(client, windowId, { ledgerNewestIso: ledgerIso = null } = {}) {
   const { rows: [have] } = await client.query("SELECT hw_id, hw_count FROM position_snapshots WHERE window_id = $1", [windowId]);
   if (have) return { wrote: false, window: windowId, header: { hw_id: Number(have.hw_id), hw_count: Number(have.hw_count) }, handles: null };
   const { rows: acts } = await client.query(STORE_ERA_ROWS_SQL, [DEPARTURE_ACTIONS]);
-  const snap = buildSnapshot(acts);
+  const snap = buildSnapshot(acts, { ledgerNewestIso: ledgerIso });
   const h = snap.header;
   await client.query("BEGIN");
   try {
     const ins = await client.query(
-      `INSERT INTO position_snapshots (window_id, hw_id, hw_count, last_at, last_id, min_iso, max_iso)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (window_id) DO NOTHING`,
-      [windowId, h.hw_id, h.hw_count, h.last_at, h.last_id, h.min_iso, h.max_iso]);
+      `INSERT INTO position_snapshots (window_id, hw_id, hw_count, last_at, last_id, max_iso, ledger_newest_iso, overlap_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (window_id) DO NOTHING`,
+      [windowId, h.hw_id, h.hw_count, h.last_at, h.last_id, h.max_iso, h.ledger_newest_iso, h.overlap_count]);
     if (ins.rowCount === 1) {
       for (const r of snap.rows) {
         await client.query(
@@ -93,7 +112,7 @@ const reduced = (records) => JSON.stringify([...governingOf(records)]);
  */
 export async function verifySnapshot(client, { atMs = Date.now() } = {}) {
   const { rows: [header] } = await client.query(
-    `SELECT window_id, hw_id, hw_count, last_at, last_id, min_iso, max_iso FROM position_snapshots
+    `SELECT window_id, hw_id, hw_count, last_at, last_id, max_iso, ledger_newest_iso, overlap_count FROM position_snapshots
       WHERE max_iso IS NULL OR max_iso::timestamptz <= $1 ORDER BY window_id DESC LIMIT 1`, [new Date(atMs).toISOString()]);
   if (!header) return { verdict: "NONE", window: null };
   const { rows } = await client.query(
@@ -104,9 +123,10 @@ export async function verifySnapshot(client, { atMs = Date.now() } = {}) {
   const got = composeSnapshot({
     window,
     header: { hw_id: Number(header.hw_id), hw_count: Number(header.hw_count), last_at: header.last_at instanceof Date ? header.last_at.toISOString() : header.last_at,
-              last_id: header.last_id == null ? null : Number(header.last_id), min_iso: header.min_iso, max_iso: header.max_iso },
+              last_id: header.last_id == null ? null : Number(header.last_id), max_iso: header.max_iso,
+              ledger_newest_iso: header.ledger_newest_iso, overlap_count: Number(header.overlap_count) },
     rows, recount: since[0]?.recount ?? null, delta: since.filter((r) => r.id != null).map(({ recount, ...r }) => r),
-  }, { atMs });
+  }, { atMs, newestLedgerMs: ledgerMsOf(header.ledger_newest_iso) });
   if (got.discard) return { verdict: "DISCARDED", window, reason: got.discard };
   // The whole record, cut at the instant as `storedDepartures` cuts it, and
   // reduced by the same `governingOf`: the comparison is of the two answers.
@@ -150,14 +170,19 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
     } else {
       const windowId = await newestClosedWindow(client);
       if (windowId == null) { console.error(`${dbName} holds no closed window yet: nothing to snapshot`); process.exit(2); }
+      const repo = arg("world-repo");
+      if (!repo) { console.error("--world-repo <checkout> is required: the snapshot keeps the era-order overlap against its frozen walk ledger"); process.exit(2); }
+      let ledgerIso;
+      try { ledgerIso = await ledgerNewestIso(repo); }
+      catch (e) { console.error(`the walk ledger at ${repo} cannot be read (${String(e?.message ?? e).slice(0, 160)}): nothing written`); process.exit(2); }
       if (apply) {
-        const w = await writeSnapshot(client, windowId);
+        const w = await writeSnapshot(client, windowId, { ledgerNewestIso: ledgerIso });
         console.log(w.wrote
           ? `positions snapshot · window ${windowId} written: ${w.handles} handle(s) over ${w.header.hw_count} act(s), high-water ${w.header.hw_id}`
           : `positions snapshot · window ${windowId} already kept (high-water ${w.header.hw_id}, ${w.header.hw_count} act(s)); nothing written`);
       } else {
         const { rows: acts } = await client.query(STORE_ERA_ROWS_SQL, [DEPARTURE_ACTIONS]);
-        const snap = buildSnapshot(acts);
+        const snap = buildSnapshot(acts, { ledgerNewestIso: ledgerIso });
         console.log(`positions snapshot · dry-run · window ${windowId} would hold ${snap.rows.length} handle(s) over ${snap.header.hw_count} act(s), high-water ${snap.header.hw_id}`);
         if (!quiet) console.log(JSON.stringify(snap.header, null, 2));
       }

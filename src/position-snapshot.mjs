@@ -38,6 +38,17 @@
 // A discarded snapshot is not an error: the full derivation serves and the read
 // says so (Keemin, 2026-10-02: the full derivation wins, disclosed).
 //
+// ── THE ERA-ORDER OVERLAP IS KEPT, NOT RE-COUNTED ────────────────────────────
+//
+// The whole record discloses `era-order-overlap: N store record(s) predate the
+// newest ledger line`, and prod has such records (12 on 2026-10-02). The ledger
+// is frozen and those rows never leave, so the count is a fixed fact at write
+// time: the snapshot keeps `overlap_count` and the ledger instant it was
+// measured against (`ledger_newest_iso`). A read adds the delta's own
+// overlapping records and says the same sentence with the same number. Only if
+// the ledger's newest line has moved since (it should not; it is frozen) is the
+// snapshot discarded.
+//
 // The frozen era-one ledger is not here. `world.mjs § departuresAcrossEras`
 // merges it at read, ledger first, as it always has.
 
@@ -80,18 +91,20 @@ function shaped(actRows) {
  * The snapshot of `actRows` (STORE_ERA_ROWS_SQL's answer, read in one
  * statement so the rows and their count are one set).
  *
- * Returns `{ header: { hw_id, hw_count, last_at, last_id, min_iso, max_iso },
- * rows: [{ handle, first_ordinal, record }] }`, `record` being the JSON text of
- * the governing record.
+ * `ledgerNewestIso` is the frozen ledger's newest instant, measured as
+ * `departuresAcrossEras` measures it (null for no ledger).
+ *
+ * Returns `{ header: { hw_id, hw_count, last_at, last_id, max_iso,
+ * ledger_newest_iso, overlap_count }, rows: [{ handle, first_ordinal, record }] }`,
+ * `record` being the JSON text of the governing record.
  */
-export function buildSnapshot(actRows = []) {
+export function buildSnapshot(actRows = [], { ledgerNewestIso = null } = {}) {
   const records = shaped(actRows);
   const governing = new Map();   // handle -> { first_ordinal, record }
-  let minIso = null, maxIso = null;
+  let maxIso = null;
   for (const r of records) {
     const prior = governing.get(r.handle);
     governing.set(r.handle, { first_ordinal: prior ? prior.first_ordinal : governing.size, record: r });
-    if (minIso == null || Date.parse(r.iso) < Date.parse(minIso)) minIso = r.iso;
     if (maxIso == null || Date.parse(r.iso) > Date.parse(maxIso)) maxIso = r.iso;
   }
   const last = actRows.at(-1) ?? null;
@@ -101,11 +114,19 @@ export function buildSnapshot(actRows = []) {
       hw_count: actRows.length,
       last_at: last ? new Date(ms(last.at)).toISOString() : null,
       last_id: last ? Number(last.id) : null,
-      min_iso: minIso, max_iso: maxIso,
+      max_iso: maxIso,
+      ledger_newest_iso: ledgerNewestIso,
+      overlap_count: overlapOf(records, ledgerMsOf(ledgerNewestIso)),
     },
     rows: [...governing].map(([handle, g]) => ({ handle, first_ordinal: g.first_ordinal, record: JSON.stringify(g.record) })),
   };
 }
+
+/** The ledger instant as `departuresAcrossEras` holds it: no ledger is 0. */
+export const ledgerMsOf = (iso) => (iso == null ? 0 : Date.parse(iso) || 0);
+
+/** `departuresAcrossEras`' own count: store records older than the ledger's newest line. */
+const overlapOf = (records, newestLedgerMs) => records.filter((r) => (Date.parse(r.iso) || 0) < newestLedgerMs).length;
 
 /** Does act row `r` sort after the key (lastAt, lastId) in DEPARTURE_ORDER's store era? */
 function sortsAfter(r, lastAt, lastId) {
@@ -121,12 +142,18 @@ function sortsAfter(r, lastAt, lastId) {
  * recount, delta }`, where `recount` is the count at id <= hw and `delta` the
  * acts after hw in DEPARTURE_ORDER.
  *
- * Answers `{ records, store_records, snapshot: { window, delta } }`, the records
- * being every handle's governing record in first-appearance order followed by
- * the delta's records — or `{ discard: <reason> }`.
+ * `newestLedgerMs` is the frozen ledger's newest instant as the reader holds it
+ * now; it must be the one the snapshot was measured against.
+ *
+ * Answers `{ records, store_records, overlap, snapshot: { window, delta } }`, the
+ * records being every handle's governing record in first-appearance order
+ * followed by the delta's records, and `overlap` the count the whole record's
+ * `era-order-overlap` would say — or `{ discard: <reason> }`.
  */
-export function composeSnapshot(snap, { atMs = Date.now() } = {}) {
+export function composeSnapshot(snap, { atMs = Date.now(), newestLedgerMs = 0 } = {}) {
   const { window, header, rows, recount, delta = [] } = snap;
+  if (ledgerMsOf(header.ledger_newest_iso) !== newestLedgerMs)
+    return { discard: `the frozen ledger's newest line moved since window ${window}'s snapshot was taken (${header.ledger_newest_iso ?? "no ledger"} then, ${newestLedgerMs ? new Date(newestLedgerMs).toISOString() : "no ledger"} now)` };
   if (Number(recount) !== Number(header.hw_count))
     return { discard: `a departure act committed under an id at or below the snapshot's high-water (${header.hw_id}) after window ${window}'s snapshot was taken (count ${recount}, kept ${header.hw_count})` };
   if (header.max_iso != null && Date.parse(header.max_iso) > atMs)
@@ -139,6 +166,7 @@ export function composeSnapshot(snap, { atMs = Date.now() } = {}) {
   return {
     records: [...kept, ...since],
     store_records: Number(header.hw_count) + since.length,
+    overlap: Number(header.overlap_count) + overlapOf(since, newestLedgerMs),
     snapshot: { window, delta: since.length },
   };
 }
