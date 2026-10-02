@@ -486,6 +486,17 @@ async function erasFor(worldClone) {
   return departuresAcrossEras(worldClone);
 }
 
+/**
+ * The departures a new leg starts from (POS-302). The walk door reads only the
+ * walker's GOVERNING record (`currentDeparture` takes the last one), so the
+ * projection's one record per handle answers it exactly as the whole record
+ * does — and the door stops paying for both eras on every walk.
+ */
+export async function departuresForWalk(worldClone) {
+  if (positionsProjected() && worldClone === WORLD_CLONE) return positionProjection.departures();
+  return departuresNow(worldClone);
+}
+
 // The clone's walk.mjs for the clock, held the way `whereMod` holds where-is:
 // once, at the blessed ref. `engineImport` re-materialises the tree per call.
 let _walkClock = null;
@@ -4445,8 +4456,8 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
   const at = fractionalCrossing();
   // BOTH ERAS, or a new leg starts from where this resident was standing before
   // the freeze — which for the thirty set down ashore is a berth they are no
-  // longer at.
-  const departures = await departuresNow(worldClone).catch(() => []);
+  // longer at. From the kept positions when this office keeps them (POS-302).
+  const departures = await departuresForWalk(worldClone).catch(() => []);
   const mine = currentDeparture(departures, who);
   const derived = mine ? positionAt(mine, at) : null;
   const home = await homeCoords(who, w);
