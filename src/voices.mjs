@@ -279,10 +279,12 @@ function threadOf(cluster, { live, voiceCap }) {
 // `vesselAt()` is the fifth (issue #5 §3): where the Post Office is at this
 // instant. Hearing needs it to re-frame voices spoken on her deck; see heardBy.
 //
-// `heardFrom(voice, t)` is the sixth, and it SUPERSEDES the fifth (Stage D): the
+// `heardFrom(voice, t, room)` is the sixth, and it SUPERSEDES the fifth (Stage D): the
 // point a voice is heard from, derived through the ATTACHMENT its source rides
 // rather than through a boolean about one boat. See the DECK RULE block on
-// `heardBy`.
+// `heardBy`. `room` is one plain object per hearing snapshot, the same for every
+// voice in it: the hook may keep what the whole room shares on it (world.mjs
+// keeps the world it resolved), and must not assume it is anything else.
 //
 // `structuralHearing()` is the seventh and it exists for one reason: this module
 // is CONSTRUCTED ONCE at import and the office's switches are environment reads
@@ -505,12 +507,18 @@ export function createVoices({
     const structural = Boolean(heardFrom) && structuralHearing() === true;
     const window = windowOf(t);
     const audible = [];
+    // ONE ROOM, ONE WORLD (Wright's shape A, 2026-10-01). Every voice in this
+    // snapshot is heard through the same `room`, so the hook resolves its world
+    // once per snapshot, not once per voice: under 80 agents the per-voice
+    // resolve was 52.6% of the office's thread (refStamp's statSyncs, the
+    // endurance run's profile). This module never looks inside the room.
+    const room = {};
     for (const v of hydrate()) {
       if (v.at > t || (window.since != null && v.at < window.since)) continue;
       if (structural) {
         let from = null;
         stats.heardFrom += 1;
-        try { from = await heardFrom(v, t); } catch { from = null; }
+        try { from = await heardFrom(v, t, room); } catch { from = null; }
         const point = from ?? { x: v.x, y: v.y };
         audible.push({ v, x: point.x, y: point.y, structural: true });
         continue;
