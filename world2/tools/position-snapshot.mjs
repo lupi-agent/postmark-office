@@ -151,12 +151,13 @@ export async function verifySnapshot(client) {
  * `_ledger` rows stand in for the git ledger beside the store's other eras.
  */
 export async function compareEraOne(client, { worldRepo }) {
-  const { execFileSync } = await import("node:child_process");
   const { join } = await import("node:path");
   const { pathToFileURL } = await import("node:url");
+  const { mainRef, readAtRef } = await import("../../src/world-branches.mjs");
   const live = await import("./live-reads.mjs");
   const { parseWalkLedger } = await import(pathToFileURL(join(worldRepo, "tools", "walk.mjs")).href);
-  const git = parseWalkLedger(execFileSync("git", ["-C", worldRepo, "show", "main:WORLD/walk-ledger.md"], { encoding: "utf8" })).departures;
+  // At the office's own ref (world.mjs § walkLedgerAtMain), as ledgerNewestIso reads it.
+  const git = parseWalkLedger(readAtRef(worldRepo, mainRef(worldRepo), "WORLD/walk-ledger.md")).departures;
   const { rows: ledgerActs } = await client.query(
     `SELECT id, at, crossing, actor, action, payload FROM acts
       WHERE action = ANY($1) AND payload->>'_ledger' IS NOT NULL ${live.DEPARTURE_ORDER_SQL}`, [DEPARTURE_ACTIONS]);
@@ -200,8 +201,11 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
   catch (e) { console.error(`cannot reach ${dbName}: ${String(e?.message ?? e)}`); process.exit(2); }
   let code = 0;
   try {
-    const { rows: [has] } = await client.query("SELECT to_regclass('position_snapshots') IS NOT NULL AS ok");
-    if (!has.ok) { console.error(`no \`position_snapshots\` table in ${dbName}: apply world2/schema/053_position_snapshots.sql first`); process.exit(2); }
+    // 053 is needed to write or verify a snapshot, never to compare era one:
+    // the compare reads only `acts` and the git ledger, and runs on prod before
+    // 053 lands (Wright's box run, 2026-10-02 10:59 EDT, refused here).
+    const has053 = async () => (await client.query("SELECT to_regclass('position_snapshots') IS NOT NULL AS ok")).rows[0]?.ok;
+    if (!flag("compare-era-one") && !(await has053())) { console.error(`no \`position_snapshots\` table in ${dbName}: apply world2/schema/053_position_snapshots.sql first`); process.exit(2); }
     if (flag("compare-era-one")) {
       const repo = arg("world-repo");
       if (!repo) { console.error("--compare-era-one needs --world-repo <checkout>"); process.exit(2); }

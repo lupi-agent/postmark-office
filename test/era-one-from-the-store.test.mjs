@@ -142,13 +142,24 @@ test("THE RECORD: the store's era one, with the store's other eras, governs ever
   assert.ok(differ.every((h) => overlapHandles.includes(h)), `era one alone differs outside the overlap: ${differ}`);
 });
 
-test("THE BOX COMMAND: --compare-era-one runs as snapshot_reader, read-only, and refuses any other role", async (t) => {
+test("THE BOX COMMAND: --compare-era-one runs as snapshot_reader, read-only, on a store without 053, and refuses any other role", async (t) => {
   if (needsClone(t)) return;
   const { spawnSync } = await import("node:child_process");
   const tool = join(WORLD_CLONE, "..", "world2", "tools", "position-snapshot.mjs");
   const run = (role) => spawnSync(process.execPath, [tool, "--compare-era-one", "--world-repo", WORLD_CLONE, "--pg-url", store.url(role)],
     { encoding: "utf8", env: { ...process.env, WORLD2_PG_URL: "", PGUSER: "", PGDATABASE: "" } });
-  const ok = run("snapshot_reader");
+  // WITHOUT 053, as prod stands until Sunday: the compare reads only `acts` and git.
+  await owner.query("ALTER TABLE position_snapshot_rows RENAME TO pos302_hidden_rows");
+  await owner.query("ALTER TABLE position_snapshots RENAME TO pos302_hidden");
+  let ok;
+  try {
+    const { rows: [{ gone }] } = await owner.query("SELECT to_regclass('position_snapshots') IS NULL AS gone");
+    assert.equal(gone, true, "the fixture still has 053");
+    ok = run("snapshot_reader");
+  } finally {
+    await owner.query("ALTER TABLE pos302_hidden RENAME TO position_snapshots");
+    await owner.query("ALTER TABLE pos302_hidden_rows RENAME TO position_snapshot_rows");
+  }
   assert.equal(ok.status, 0, ok.stderr || ok.stdout);
   assert.match(ok.stdout, /^era one · EQUAL · \d+ _ledger row\(s\) against \d+ git line\(s\)/);
   const refused = run("office_api");
