@@ -565,6 +565,30 @@ export function departureRecords(rows, { strict = true } = {}) {
   return { records, refusals, eras };
 }
 
+/**
+ * An era-one record (`departureRecords`' `era: "ledger"`) in walk.mjs's
+ * `parseWalkLedger` shape, key for key and in its key order (POS-302 PR 3).
+ *
+ * The backfill stored the parse whole, but in `jsonb`, which sorts keys: the
+ * extent comes back `{ h, w }` where the parse says `{ w, h }`. So the nested
+ * objects are rebuilt in the parse's order, and nothing the parse does not
+ * carry (`era`, `act_id`) is passed on. With this, the store's `_ledger` rows
+ * answer what `parseWalkLedger(walk-ledger.md)` answers for the lines the
+ * backfill carried (test/era-one-from-the-store.test.mjs).
+ */
+export function ledgerRecordOf(r) {
+  const xy = (p) => (p == null ? p : { x: p.x, y: p.y });
+  return {
+    iso: r.iso, handle: r.handle,
+    from: xy(r.from), toward: xy(r.toward),
+    at: r.at,
+    targetExtent: r.targetExtent == null ? null : { w: r.targetExtent.w, h: r.targetExtent.h },
+    targetMarkId: r.targetMarkId ?? null,
+    pace: r.pace ?? null,
+    line: r.line,
+  };
+}
+
 /** What a break in each key means, in that key's own words. */
 function orderViolation(name, row, prev) {
   if (name === "era") {
@@ -1149,7 +1173,7 @@ export function passageRecords(rows, { strict = true } = {}) {
 // true of the store as it is rather than true by law, so each gets a check that
 // fires when it stops being true instead of a comment nobody re-reads.
 
-export function admissionNotes({ marks = [], identities = [], roll = null, departureRecords: recs = [], world = null } = {}) {
+export function admissionNotes({ marks = [], identities = [], roll = null, departureRecords: recs = [], eras: erasIn = null, world = null } = {}) {
   const notes = [];
   const w = world ?? worldFromRows({ marks, identities });
 
@@ -1188,8 +1212,10 @@ export function admissionNotes({ marks = [], identities = [], roll = null, depar
                `and that stand-in wants a real column the day the two can differ.`);
   }
 
-  // 4. THE ERAS. A live walk act is a path nothing has exercised yet.
-  const eras = departureCensus(recs);
+  // 4. THE ERAS. A live walk act is a path nothing has exercised yet. `eras`
+  //    is the census when the caller holds it already (a snapshot's records are
+  //    one per handle, so their own census would undercount, POS-302).
+  const eras = erasIn ?? departureCensus(recs);
   if (eras.live) {
     notes.push(`${eras.live} live 'walk' act(s) are being read through the vendored DEPARTURE_RE. This is the ` +
                `first traffic on that era; the falsifier's line round-trip is what stands behind it.`);

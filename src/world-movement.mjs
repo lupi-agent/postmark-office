@@ -360,26 +360,26 @@ export async function storedDepartures({ atMs = Date.now(), withActId = false } 
 }
 
 /**
- * THE STORE ERA FROM THE NEWEST CLEARING'S SNAPSHOT, PLUS THE ACTS SINCE
- * (POS-302). For a reader that reduces the record with `governingOf` and
- * nothing else — the positions projection's rebuild. The list is NOT every
- * record: it is each handle's governing record, in first-appearance order, then
- * the delta, which `governingOf` reduces exactly as it reduces the whole record
+ * BOTH ERAS FROM THE NEWEST CLEARING'S SNAPSHOT, PLUS THE ACTS SINCE (POS-302).
+ * For a reader that reduces the record with `governingOf` and nothing else —
+ * the positions projection's rebuild. The list is NOT every record: it is each
+ * handle's governing record, in first-appearance order, then the delta, which
+ * `governingOf` reduces exactly as it reduces the whole record
  * (position-snapshot.mjs § WHY IT IS EXACT).
  *
- * Answers `{ records, absent: null, store_records, overlap, snapshot: { window, delta } }`,
- * or `{ fallback: null }` when there is no snapshot to stand on, or
- * `{ fallback: <reason> }` when one was DISCARDED. Either way the caller reads
- * the whole record; only a discard is disclosed.
+ * Era one comes from the store's `_ledger` rows, in `parseWalkLedger`'s shape
+ * (`live-reads.mjs § ledgerRecordOf`); the store's eras in `storedDepartures`'
+ * shape. Nothing here reads git: that is the point (Wright, 2026-10-02).
  *
- * `newestLedgerMs` is the frozen ledger's newest instant. `departuresAcrossEras`
- * discloses store records older than it (`era-order-overlap`, with a count);
- * the snapshot kept that count at write time, and `overlap` here is the same
- * number the whole record would say.
+ * Answers `{ records, absent: null, ledger_records, store_records, overlap,
+ * ledger_newest_iso, snapshot: { window, delta } }` — or `{ fallback: null }`
+ * when there is no snapshot to stand on, or `{ fallback: <reason> }` when one
+ * was DISCARDED. Either way the caller reads the whole record; only a discard
+ * is disclosed.
  *
  * `POSITIONS_SNAPSHOT=off` is the operator's switch back to the whole record.
  */
-export async function storedGoverningDepartures({ atMs = Date.now(), newestLedgerMs = 0 } = {}) {
+export async function storedGoverningDepartures({ atMs = Date.now() } = {}) {
   if (process.env.POSITIONS_SNAPSHOT === "off") return { fallback: null };
   let snap;
   try {
@@ -390,11 +390,18 @@ export async function storedGoverningDepartures({ atMs = Date.now(), newestLedge
   }
   if (!snap) return { fallback: null };
   const { composeSnapshot } = await import("./position-snapshot.mjs");
+  const { ledgerRecordOf } = await import("../world2/tools/live-reads.mjs");
   let got;
-  try { got = composeSnapshot(snap, { atMs, newestLedgerMs }); }
+  try { got = composeSnapshot(snap, { atMs }); }
   catch (e) { return { fallback: `the delta since window ${snap.window} could not be read (${String(e?.message ?? e).slice(0, 160)})` }; }
   if (got.discard) return { fallback: got.discard };
-  return { records: got.records, absent: null, store_records: got.store_records, overlap: got.overlap, snapshot: got.snapshot };
+  const records = got.records.map((r) => (r.era === "ledger" ? ledgerRecordOf(r) : storedShapeOf(r)));
+  return {
+    records, absent: null,
+    ledger_records: got.records.filter((r) => r.era === "ledger").length,
+    store_records: got.store_records, overlap: got.overlap,
+    ledger_newest_iso: snap.header.ledger_newest_iso, snapshot: got.snapshot,
+  };
 }
 
 /** One entity's stored records, oldest first. The per-handle slice of the above. */

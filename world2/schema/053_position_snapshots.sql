@@ -11,12 +11,18 @@
 --
 -- ── WHAT IS KEPT ─────────────────────────────────────────────────────────────
 --
--- The positions projection (src/position-projection.mjs) reduces the whole
--- departure record to one record per handle, in the order each handle first
--- appeared (`governingOf`). Before this file the office rebuilt that from every
--- departure act at boot and again every 60 s. A snapshot keeps the reduction
--- of the STORE'S era (the acts without `_ledger`) as of a high-water, and a
--- read replays only the acts after it.
+-- The positions projection (src/position-projection.mjs) and the 2.0
+-- endpoints (`/world2/positions`, `/world2/present`) reduce the whole departure
+-- record to one record per handle, in the order each handle first appeared
+-- (`governingOf`). Before this file the office rebuilt that from every
+-- departure act at boot, every 60 s and per request. A snapshot keeps the
+-- reduction of EVERY departure act, both eras, as of a high-water, and a read
+-- replays only the acts after it.
+--
+-- ERA ONE IS THE STORE'S `_ledger` ROWS (Wright, 2026-10-02, POS-302 PR 3):
+-- the git walk ledger is no longer read where a snapshot stands. The writer
+-- refuses to write over a store whose `_ledger` rows do not answer what the git
+-- ledger answers (world2/tools/position-snapshot.mjs § compareEraOne).
 --
 --   position_snapshots      one row per snapshot, keyed by the window it was
 --                           taken after:
@@ -24,13 +30,18 @@
 --                           the snapshot read. A read recounts id <= hw_id; a
 --                           different count means a row committed late under
 --                           a lower id, and the snapshot is not used.
---     last_at, last_id      the last row's key in DEPARTURE_ORDER (instant,
---                           then id). Every delta row must sort after it, or
---                           the snapshot is not used: a backfilled act with an
---                           early instant and a late id can govern from inside
---                           the record, and appending it would be wrong.
---     max_iso               the latest record instant held. A past read at `at`
+--     last_key              the last row's key in DEPARTURE_ORDER, as JSON
+--                           text: [era, instant ms, id]. Every delta row must
+--                           sort after it, or the snapshot is not used: a
+--                           backfilled act with an early instant and a late id
+--                           can govern from inside the record, and appending it
+--                           would be wrong.
+--     max_iso               the latest STORE-era record instant held (era one
+--                           is never cut by an instant). A past read at `at`
 --                           uses a snapshot only if max_iso <= at.
+--     eras                  the per-era census (`departureCensus`) over every
+--                           act the snapshot read, as JSON text so its key
+--                           order survives: the endpoints report it.
 --     ledger_newest_iso,    the frozen walk ledger's newest instant the writer
 --     overlap_count         measured against, and how many of the snapshot's
 --                           records are older than it. The whole record
@@ -40,13 +51,10 @@
 --                           line has moved since (it is frozen), the snapshot
 --                           is not used.
 --   position_snapshot_rows  one row per handle: its first-appearance ordinal in
---                           the store's order, and its governing record as the
---                           JSON text `storedDepartures` hands over. TEXT, not
---                           jsonb: jsonb sorts keys, and the equality is byte
---                           for byte.
---
--- The frozen era-one ledger (WORLD/walk-ledger.md in git) is NOT here. It is
--- merged at read, ledger first, exactly as `departuresAcrossEras` merges it.
+--                           the record's order, and its governing record as
+--                           the JSON text `departureRecords` hands over (era,
+--                           act_id and line included). TEXT, not jsonb: jsonb
+--                           sorts keys, and the equality is byte for byte.
 --
 -- ── THE WRITER ───────────────────────────────────────────────────────────────
 --
@@ -85,8 +93,8 @@ CREATE TABLE IF NOT EXISTS position_snapshots (
   window_id  integer PRIMARY KEY REFERENCES windows(id),
   hw_id      bigint NOT NULL,
   hw_count   integer NOT NULL CHECK (hw_count >= 0),
-  last_at    timestamptz,
-  last_id    bigint,
+  last_key   text,
+  eras       text NOT NULL,
   max_iso    text,
   ledger_newest_iso text,
   overlap_count     integer NOT NULL DEFAULT 0 CHECK (overlap_count >= 0),

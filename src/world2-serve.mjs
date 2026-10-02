@@ -73,6 +73,7 @@ export function housesKnown(idRows, rows) {
   return houses.size;
 }
 import * as live from "../world2/tools/live-reads.mjs";
+import { snapshotRead, composeSnapshot } from "./position-snapshot.mjs";
 // ── THE GROUNDLESS STANDPOINT, AT THE 2.0 DOOR (#2900, ruled 2026-09-17) ─────
 //
 // `live-reads.mjs` is a VERBATIM port of the world engine's tools/where-is.mjs
@@ -1000,17 +1001,17 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
   }
 
   if (path === "/world2/positions") {
+    // From the newest clearing's snapshot plus the acts since (POS-302 PR 3),
+    // or every departure act when there is none: `departuresForEndpoints`.
     // Every resident WITH A RECORD, at one instant. 1.0's `positionsAt`: "Placed
     // residents with no departure are not here: they have no record, so their
     // position is their home" — which is /world2/present's question, not this
     // one. Two doors because they are two questions, exactly as 1.0 has them.
     const at = clockOf(searchParams);
     if (at.error) return at.error;
-    const { rows } = await p.query(
-      `SELECT id, at, crossing, actor, action, payload FROM acts
-        WHERE action = ANY($1) ${live.DEPARTURE_ORDER_SQL}`, [live.DEPARTURE_ACTIONS]);
+    const dep = await departuresForEndpoints(p);
     let derived;
-    try { derived = live.departureRecords(rows); }
+    try { derived = dep.records ? dep : live.departureRecords(dep.rows); }
     catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: String(e.message).slice(0, 400) } }; }
     const fc = live.fractionalCrossing(at.ms);
     return { code: 200, body: {
@@ -1019,7 +1020,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
       count: Object.keys(derived.records.length ? live.positionsAt(derived.records, fc) : {}).length,
       walkers: live.publicWalkers(derived.records, fc),
       eras: derived.eras,
-      disclosed: [live.DISCLOSURES.frames],
+      disclosed: [live.DISCLOSURES.frames, ...discardedOf(dep)],
     } };
   }
 
@@ -1045,9 +1046,8 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     // HOUSEHOLD KEY comes from (`worldFromRows` → `world.households` →
     // `householdOf` → `parcelsFor`). Two rosters, two questions — the roll says
     // who to ask about, the identities say whose ground counts as yours.
-    const [{ rows: depRows }, { rows: markRows }, { rows: idRows }, { rows: rollRows }] = await Promise.all([
-      p.query(`SELECT id, at, crossing, actor, action, payload FROM acts
-                WHERE action = ANY($1) ${live.DEPARTURE_ORDER_SQL}`, [live.DEPARTURE_ACTIONS]),
+    const [dep, { rows: markRows }, { rows: idRows }, { rows: rollRows }] = await Promise.all([
+      departuresForEndpoints(p),
       p.query("SELECT slug, kind, owner, household, geometry, status, data FROM marks WHERE status = 'standing'"),
       p.query("SELECT handle, household FROM identities"),
       p.query(`SELECT r.handle FROM town_roll r
@@ -1055,7 +1055,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
                 ORDER BY r.handle`),
     ]);
     let derived;
-    try { derived = live.departureRecords(depRows); }
+    try { derived = dep.records ? dep : live.departureRecords(dep.rows); }
     catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: String(e.message).slice(0, 400) } }; }
     const world = live.worldFromRows({ marks: markRows, identities: idRows });
     const fc = live.fractionalCrossing(at.ms);
@@ -1068,7 +1068,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     // nothing downstream sees the porch.
     const residents = live.everyonePlaced({ world, departures: derived.records, at: fc, roll })
       .map((r) => (isGroundlessDefault(r) ? atOrigin(r) : r));
-    const notes = live.admissionNotes({ marks: markRows, identities: idRows, roll, departureRecords: derived.records, world });
+    const notes = live.admissionNotes({ marks: markRows, identities: idRows, roll, departureRecords: derived.records, eras: derived.eras, world });
     // THE FOLD FOR `households_known`, and it MAY NOT TAKE THIS ROUTE DOWN.
     // This is a public read that has never touched the registry, so a store
     // where 019 is unapplied must still answer the walk. Unfolded, the count is
@@ -1086,7 +1086,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
                 households_known: housesKnown(idRows, houseRows) },
       count: residents.length,
       residents,
-      disclosed: [live.DISCLOSURES.frames, live.DISCLOSURES.no_staleness, live.DISCLOSURES.roll_source, ...notes],
+      disclosed: [live.DISCLOSURES.frames, live.DISCLOSURES.no_staleness, live.DISCLOSURES.roll_source, ...notes, ...discardedOf(dep)],
     };
     if (near) {
       // The RENDER gets the radius, never the roll (world.mjs § walkersAround).
@@ -1478,16 +1478,47 @@ export async function world2Apex(searchParams, { p: injected = null } = {}) {
 // apex route refuses without a law projection, which is correct and is not what
 // #2900's cross-tier equality is about; a law fixture built only to reach this
 // block would be scaffolding the check could pass against instead of the thing.
+/**
+ * THE DEPARTURE RECORD FOR THE 2.0 ENDPOINTS (POS-302 PR 3): the newest
+ * clearing's snapshot plus every act since, as `{ records, eras, snapshot }` in
+ * `departureRecords`' shape — each handle's governing record, then the delta,
+ * which every reader here reduces with latest-wins exactly as it reduces the
+ * whole record, and the census the whole record would give. When there is no
+ * snapshot, or it is DISCARDED, the whole record as `{ rows, discarded? }` for
+ * the caller's own `departureRecords` (and its own refusal). No instant cut:
+ * these endpoints evaluate every record at the instant asked.
+ * `POSITIONS_SNAPSHOT=off` reads the whole record.
+ */
+export async function departuresForEndpoints(p) {
+  let discarded = null;
+  if (process.env.POSITIONS_SNAPSHOT !== "off") {
+    try {
+      const snap = await snapshotRead(p);
+      if (snap) {
+        const got = composeSnapshot(snap);
+        if (!got.discard) return { records: got.records, eras: got.eras, snapshot: got.snapshot };
+        discarded = got.discard;
+      }
+    } catch (e) { discarded = `the snapshot could not be read (${String(e?.message ?? e).slice(0, 160)})`; }
+  }
+  const { rows } = await p.query(
+    `SELECT id, at, crossing, actor, action, payload FROM acts
+      WHERE action = ANY($1) ${live.DEPARTURE_ORDER_SQL}`, [live.DEPARTURE_ACTIONS]);
+  return discarded ? { rows, discarded } : { rows };
+}
+
+/** The discard, said the way the projection says it. */
+const discardedOf = (dep) => (dep.discarded ? [`positions-snapshot-discarded: ${dep.discarded} — the whole record served`] : []);
+
 export async function apexPresent(p, { world, at, engine: eng, roster = "roll" }) {
   const { bearingDeg, quantizeBearing, distanceBand } = eng.engine;
-  const [{ rows: depRows }, { rows: rollRows }] = await Promise.all([
-    p.query(`SELECT id, at, crossing, actor, action, payload FROM acts
-              WHERE action = ANY($1) ${live.DEPARTURE_ORDER_SQL}`, [live.DEPARTURE_ACTIONS]),
+  const [dep, { rows: rollRows }] = await Promise.all([
+    departuresForEndpoints(p),
     p.query(`SELECT r.handle FROM town_roll r
                JOIN projection_heads h ON h.repo = 'town' AND h.sha = r.town_sha ORDER BY r.handle`),
   ]);
   let derived;
-  try { derived = live.departureRecords(depRows); }
+  try { derived = dep.records ? dep : live.departureRecords(dep.rows); }
   catch (e) { return { unavailable: "a departure act matches no known era", detail: String(e?.message ?? e).slice(0, 200) }; }
   const fc = live.fractionalCrossing(Date.now());
   const roll = roster === "roll" ? rollRows.map((r) => r.handle) : [];
