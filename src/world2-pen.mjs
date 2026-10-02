@@ -52,6 +52,7 @@
 import { world2Enabled } from "./world2-acts.mjs";
 import { currentCrossing } from "./crossings.mjs";
 import { sessionKeysVia, sessionKeyString } from "./household-deriver.mjs";
+import { nonceForActRow } from "./act-nonce.mjs";
 
 // ── A LATE ROW MAY NOT ENTER A CERTIFIED WINDOW (the act-4171 class, 2026-09-04) ─
 //
@@ -327,8 +328,12 @@ export async function insertAct(client, rowIn, seq = null, { lateArrival = null 
  * `nonce` (migration 027, POS-265) is named ONLY for a row that carries one.
  * A row without it is the thirteen-column INSERT it has always been, so an
  * office on this code runs unchanged against a store that has not taken 027;
- * the say is the one writer that sets it, and it asks the store first
+ * the say sets it on its own row, and it asks the store first
  * (world.mjs § actsHaveNonce).
+ *
+ * Every other world act's key arrives through the door's scope, not the row
+ * (POS-246, act-nonce.mjs § nonceForActRow): the first act row a keyed call
+ * writes carries it, and the door asked the store the same question first.
  */
 export function actsInsert(row, household) {
   const cols = ["at", "crossing", "actor", "action", "object",
@@ -337,7 +342,8 @@ export function actsInsert(row, household) {
   const values = [row.written_at, row.crossing, row.actor, row.action, row.object,
     row.at_anchor, row.at_dx, row.at_dy, row.witnesses, row.class,
     row.payload, row.effect, household];
-  if (row.nonce != null) { cols.push("nonce"); values.push(row.nonce); }
+  const nonce = nonceForActRow(row);
+  if (nonce != null) { cols.push("nonce"); values.push(nonce); }
   return {
     text: `INSERT INTO acts (${cols.join(", ")}) VALUES (${values.map((_, i) => `$${i + 1}`).join(",")})`,
     values,

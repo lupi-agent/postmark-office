@@ -1163,16 +1163,14 @@ test("envelope: an unknown field bounces BY NAME against the target's own schema
 });
 
 // POS-70 §5 (ruled 2026-09-24): the send and the five paper acts take a retry
-// key now; a world act's receipt is a row in the store's `acts` table, which has
-// no column for one until 027_act_nonce.sql installs — so the world door still
-// refuses it BY NAME, the MCP half of test/one-contract.test.mjs's plain-API leg.
-// NARROWED by POS-265: the say takes a nonce now, on world_say's own schema,
-// and keeps its spent nonces in the voices module (voices.mjs § THE RETRY KEY).
-// Every other world act still refuses it by name.
-test("envelope: a nonce on a world act bounces by name — the world's store keeps no retry key yet", async () => {
+// key. POS-265: the say takes one on world_say's own schema. POS-246: every
+// other world act takes one too, as a DOOR field (one-contract.mjs §
+// DOOR_FIELDS) the world door reads and act-nonce.mjs keeps on the act's row —
+// so the envelope no longer refuses it by name, and a READ still does.
+test("envelope: a nonce on a world act is the door's own field — not refused by name (POS-246)", async () => {
   on();
   // walk, granted ambiently to the resident class (the fixture's own ground
-  // affords only say, which takes the nonce now)
+  // affords only say)
   const residentLaw = [
     { id: "the-town/resident", by: "the-town", kind: "sited", tier: "constitution", at: { x: 2200, y: 2200 }, extent: { w: 10, h: 10 },
       body: "A household's living voice.",
@@ -1182,9 +1180,13 @@ test("envelope: a nonce on a world act bounces by name — the world's store kee
   buildStore([...MARKS, ...residentLaw], path);
   await withStore(path, async () => {
     const r = await worldApex({ do: "walk", args: { x: 1, y: 1, nonce: "w-k1" } }, KEY_ALPHA);
-    assert.equal(r.error, "bounce");
-    assert.equal(r.code, 422);
-    assert.match(r.defect, /does not take: nonce/);
+    assert.doesNotMatch(String(r.defect ?? ""), /does not take: nonce/, "the walk refused its retry key by name");
+    const long = await worldApex({ do: "walk", args: { x: 1, y: 1, nonce: "x".repeat(201) } }, KEY_ALPHA);
+    assert.equal(long.code, 422);
+    assert.match(long.defect, /nonce must be under 200 bytes/);
+    const read = await worldApex({ read: "walk", args: { nonce: "w-k1" } }, KEY_ALPHA);
+    assert.equal(read.code, 422);
+    assert.match(read.defect, /a read performs nothing, so a nonce has nothing to guard/);
   });
 });
 
