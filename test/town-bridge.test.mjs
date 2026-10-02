@@ -99,6 +99,11 @@ const BOTH_SKINS_LAW =
 // ── fixtures ────────────────────────────────────────────────────────────────
 
 const db = fixtureDb();
+// The checks this file calls in-process read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX_IN = await indexStore(db);
+const IX_IN_RESTORE = await IX_IN.useInProcess();
+test.after(async () => { await IX_IN_RESTORE(); await IX_IN.stop(); });
 
 /**
  * A log in the shape the LIVE office actually has it: openOauthDb's own five

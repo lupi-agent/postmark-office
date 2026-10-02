@@ -87,6 +87,11 @@ function mailClone() {
 }
 
 const db = fixtureDb();
+// The checks this file calls in-process read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX_IN = await indexStore(db);
+const IX_IN_RESTORE = await IX_IN.useInProcess();
+test.after(async () => { await IX_IN_RESTORE(); await IX_IN.stop(); });
 const ok = { from: "wright", to: "limen", title: "a fine hat", thread: "new", body: "Limen —\n\nA test letter." };
 const limenKey = { household: "limen-house", handles: new Set(["limen"]) };
 
@@ -554,6 +559,7 @@ test("the disclosed path survives a hyphenated recipient — it is carried, neve
       handle: "jetto-walk", is_office: false, last_active: null,
       address: { data: { since: "2026-08-01" }, body: "# jetto-walk" },
     }));
+    await IX_IN.reseed(); // the store holds the new resident too
     mkdirSync(join(clone, "WHITE_PAGES", "jetto-walk"), { recursive: true });
 
     const shown = await flagOn(async () => {
