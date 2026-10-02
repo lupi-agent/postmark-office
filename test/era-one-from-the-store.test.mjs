@@ -170,4 +170,16 @@ test("THE COMMAND: --compare-era-one reads EQUAL on this record, and DIFFERENT o
   const bad = await compareEraOne(api, { worldRepo: WORLD_CLONE });
   assert.equal(bad.verdict, "DIFFERENT");
   assert.ok(bad.governing.length > 0, "a handle git never had did not move the governing places");
+
+  // THE WRITER REFUSES over a store whose era one is not the git ledger's: no snapshot, so the office reads the whole record.
+  await owner.query("INSERT INTO windows (id, opens_at, closes_at, status, cleared_at) VALUES (1, $1, $2, 'closed', $2)",
+    ["2026-10-01T00:00:00.000Z", "2026-10-01T12:00:00.000Z"]);
+  const { spawnSync } = await import("node:child_process");
+  const tool = join(WORLD_CLONE, "..", "world2", "tools", "position-snapshot.mjs");
+  const w = spawnSync(process.execPath, [tool, "--apply", "--prod", "--world-repo", WORLD_CLONE, "--pg-url", store.url("office_api")],
+    { encoding: "utf8", env: { ...process.env, WORLD2_PG_URL: "", PGUSER: "", PGDATABASE: "" } });
+  assert.equal(w.status, 1, w.stderr || w.stdout);
+  assert.match(w.stderr, /positions snapshot · REFUSED · the store's era one/);
+  const { rows: [{ n }] } = await owner.query("SELECT count(*)::int AS n FROM position_snapshots");
+  assert.equal(n, 0, "the writer wrote over an era one that is not the git ledger's");
 });

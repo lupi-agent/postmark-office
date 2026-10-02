@@ -1173,7 +1173,7 @@ export function passageRecords(rows, { strict = true } = {}) {
 // true of the store as it is rather than true by law, so each gets a check that
 // fires when it stops being true instead of a comment nobody re-reads.
 
-export function admissionNotes({ marks = [], identities = [], roll = null, departureRecords: recs = [], world = null } = {}) {
+export function admissionNotes({ marks = [], identities = [], roll = null, departureRecords: recs = [], eras: erasIn = null, world = null } = {}) {
   const notes = [];
   const w = world ?? worldFromRows({ marks, identities });
 
@@ -1212,8 +1212,10 @@ export function admissionNotes({ marks = [], identities = [], roll = null, depar
                `and that stand-in wants a real column the day the two can differ.`);
   }
 
-  // 4. THE ERAS. A live walk act is a path nothing has exercised yet.
-  const eras = departureCensus(recs);
+  // 4. THE ERAS. A live walk act is a path nothing has exercised yet. `eras`
+  //    is the census when the caller holds it already (a snapshot's records are
+  //    one per handle, so their own census would undercount, POS-302).
+  const eras = erasIn ?? departureCensus(recs);
   if (eras.live) {
     notes.push(`${eras.live} live 'walk' act(s) are being read through the vendored DEPARTURE_RE. This is the ` +
                `first traffic on that era; the falsifier's line round-trip is what stands behind it.`);

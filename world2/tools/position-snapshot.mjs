@@ -32,19 +32,28 @@
 // clearing it exists, and a tick that finds it present writes nothing.
 //
 // The snapshot is cut at its own high-water, read in ONE statement
-// (position-snapshot.mjs § STORE_ERA_ROWS_SQL), so it may hold acts that landed
+// (position-snapshot.mjs § ALL_ROWS_SQL), so it may hold acts that landed
 // after the window closed. That is exact, not stale: the reader replays only
 // the acts after the high-water, and a past read at the close itself takes the
 // snapshot before it (world2-guards.mjs § storeDepartureSnapshot).
 //
 // ── THE FALSIFIER, ON A LIVE STORE ───────────────────────────────────────────
 //
-// `--verify` reduces the store era with `governingOf` two ways, the whole
-// record and the newest snapshot plus its delta, and compares the two byte for
-// byte, order included. It is read-only.
+// `--verify` reduces every departure act with `governingOf` two ways, the
+// whole record and the newest snapshot plus its delta, and compares the two
+// answers, and their per-era census, byte for byte, order included. It is
+// read-only.
+//
+// ── ERA ONE IS PROVEN BEFORE A SNAPSHOT IS WRITTEN ───────────────────────────
+//
+// A snapshot holds era one as the store's `_ledger` rows, and nothing that reads
+// it reads git. So the writer runs `compareEraOne` first and REFUSES to write
+// over a store whose `_ledger` rows do not answer what the git ledger answers
+// (a store never backfilled, or backfilled from another ledger): the office
+// then reads the whole record, git included, until the store is put right.
 
 import pg from "pg";
-import { buildSnapshot, composeSnapshot, ledgerMsOf, STORE_ERA_ROWS_SQL, RECOUNT_AND_DELTA_SQL, DEPARTURE_ACTIONS } from "../../src/position-snapshot.mjs";
+import { buildSnapshot, composeSnapshot, snapshotRead, ALL_ROWS_SQL, DEPARTURE_ACTIONS } from "../../src/position-snapshot.mjs";
 import { governingOf } from "../../src/position-projection.mjs";
 
 const NL = "\n";
@@ -53,6 +62,9 @@ function arg(name) {
   const i = process.argv.indexOf(`--${name}`);
   return i !== -1 ? process.argv[i + 1] : null;
 }
+
+/** The store era's departure acts alone (no `_ledger`), in DEPARTURE_ORDER. */
+const STORE_ERA_ROWS_SQL = ALL_ROWS_SQL.replace("WHERE action = ANY($1)", "WHERE action = ANY($1) AND payload->>'_ledger' IS NULL");
 
 /** The newest closed window, or null. */
 export async function newestClosedWindow(q) {
@@ -87,15 +99,15 @@ export async function ledgerNewestIso(worldRepo) {
 export async function writeSnapshot(client, windowId, { ledgerNewestIso: ledgerIso = null } = {}) {
   const { rows: [have] } = await client.query("SELECT hw_id, hw_count FROM position_snapshots WHERE window_id = $1", [windowId]);
   if (have) return { wrote: false, window: windowId, header: { hw_id: Number(have.hw_id), hw_count: Number(have.hw_count) }, handles: null };
-  const { rows: acts } = await client.query(STORE_ERA_ROWS_SQL, [DEPARTURE_ACTIONS]);
+  const { rows: acts } = await client.query(ALL_ROWS_SQL, [DEPARTURE_ACTIONS]);
   const snap = buildSnapshot(acts, { ledgerNewestIso: ledgerIso });
   const h = snap.header;
   await client.query("BEGIN");
   try {
     const ins = await client.query(
-      `INSERT INTO position_snapshots (window_id, hw_id, hw_count, last_at, last_id, max_iso, ledger_newest_iso, overlap_count)
+      `INSERT INTO position_snapshots (window_id, hw_id, hw_count, last_key, eras, max_iso, ledger_newest_iso, overlap_count)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (window_id) DO NOTHING`,
-      [windowId, h.hw_id, h.hw_count, h.last_at, h.last_id, h.max_iso, h.ledger_newest_iso, h.overlap_count]);
+      [windowId, h.hw_id, h.hw_count, h.last_key, h.eras, h.max_iso, h.ledger_newest_iso, h.overlap_count]);
     if (ins.rowCount === 1) {
       for (const r of snap.rows) {
         await client.query(
@@ -115,33 +127,20 @@ export async function writeSnapshot(client, windowId, { ledgerNewestIso: ledgerI
 const reduced = (records) => JSON.stringify([...governingOf(records)]);
 
 /**
- * The newest snapshot plus its delta against the whole record, store era only.
+ * The newest snapshot plus its delta against the whole record, both eras, as
+ * the 2.0 endpoints read them (no instant cut).
  * Answers `{ verdict: "EQUAL" | "DIFFERENT" | "DISCARDED" | "NONE", window, reason? }`.
  */
-export async function verifySnapshot(client, { atMs = Date.now() } = {}) {
-  const { rows: [header] } = await client.query(
-    `SELECT window_id, hw_id, hw_count, last_at, last_id, max_iso, ledger_newest_iso, overlap_count FROM position_snapshots
-      WHERE max_iso IS NULL OR max_iso::timestamptz <= $1 ORDER BY window_id DESC LIMIT 1`, [new Date(atMs).toISOString()]);
-  if (!header) return { verdict: "NONE", window: null };
-  const { rows } = await client.query(
-    "SELECT handle, first_ordinal, record FROM position_snapshot_rows WHERE window_id = $1 ORDER BY first_ordinal", [header.window_id]);
-  const { rows: since } = await client.query(RECOUNT_AND_DELTA_SQL, [DEPARTURE_ACTIONS, String(header.hw_id)]);
-  const { rows: all } = await client.query(STORE_ERA_ROWS_SQL, [DEPARTURE_ACTIONS]);
-  const window = Number(header.window_id);
-  const got = composeSnapshot({
-    window,
-    header: { hw_id: Number(header.hw_id), hw_count: Number(header.hw_count), last_at: header.last_at instanceof Date ? header.last_at.toISOString() : header.last_at,
-              last_id: header.last_id == null ? null : Number(header.last_id), max_iso: header.max_iso,
-              ledger_newest_iso: header.ledger_newest_iso, overlap_count: Number(header.overlap_count) },
-    rows, recount: since[0]?.recount ?? null, delta: since.filter((r) => r.id != null).map(({ recount, ...r }) => r),
-  }, { atMs, newestLedgerMs: ledgerMsOf(header.ledger_newest_iso) });
-  if (got.discard) return { verdict: "DISCARDED", window, reason: got.discard };
-  // The whole record, cut at the instant as `storedDepartures` cuts it, and
-  // reduced by the same `governingOf`: the comparison is of the two answers.
-  const wholeRecords = (await recordsOf(all)).filter((r) => Date.parse(r.iso) <= atMs);
-  return reduced(got.records) === reduced(wholeRecords)
-    ? { verdict: "EQUAL", window, delta: got.snapshot.delta }
-    : { verdict: "DIFFERENT", window, delta: got.snapshot.delta };
+export async function verifySnapshot(client) {
+  const snap = await snapshotRead(client);
+  if (!snap) return { verdict: "NONE", window: null };
+  const got = composeSnapshot(snap);
+  if (got.discard) return { verdict: "DISCARDED", window: snap.window, reason: got.discard };
+  const { departureRecords } = await import("./live-reads.mjs");
+  const { rows: all } = await client.query(ALL_ROWS_SQL, [DEPARTURE_ACTIONS]);
+  const whole = departureRecords(all);
+  const same = reduced(got.records) === reduced(whole.records) && JSON.stringify(got.eras) === JSON.stringify(whole.eras);
+  return { verdict: same ? "EQUAL" : "DIFFERENT", window: snap.window, delta: got.snapshot.delta };
 }
 
 /**
@@ -229,13 +228,18 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
       let ledgerIso;
       try { ledgerIso = await ledgerNewestIso(repo); }
       catch (e) { console.error(`the walk ledger at ${repo} cannot be read (${String(e?.message ?? e).slice(0, 160)}): nothing written`); process.exit(2); }
+      const era1 = await compareEraOne(client, { worldRepo: repo });
+      if (era1.verdict !== "EQUAL") {
+        console.error(`positions snapshot · REFUSED · the store's era one (${era1.carried} _ledger row(s)) does not answer what the git ledger (${era1.git} line(s)) answers: ${era1.lines.length} line(s), ${era1.governing.length} governing place(s) differ — nothing written; --compare-era-one prints them`);
+        process.exit(1);
+      }
       if (apply) {
         const w = await writeSnapshot(client, windowId, { ledgerNewestIso: ledgerIso });
         console.log(w.wrote
           ? `positions snapshot · window ${windowId} written: ${w.handles} handle(s) over ${w.header.hw_count} act(s), high-water ${w.header.hw_id}`
           : `positions snapshot · window ${windowId} already kept (high-water ${w.header.hw_id}, ${w.header.hw_count} act(s)); nothing written`);
       } else {
-        const { rows: acts } = await client.query(STORE_ERA_ROWS_SQL, [DEPARTURE_ACTIONS]);
+        const { rows: acts } = await client.query(ALL_ROWS_SQL, [DEPARTURE_ACTIONS]);
         const snap = buildSnapshot(acts, { ledgerNewestIso: ledgerIso });
         console.log(`positions snapshot · dry-run · window ${windowId} would hold ${snap.rows.length} handle(s) over ${snap.header.hw_count} act(s), high-water ${snap.header.hw_id}`);
         if (!quiet) console.log(JSON.stringify(snap.header, null, 2));

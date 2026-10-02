@@ -411,14 +411,26 @@ const walkLedgerAtMain = (repo) => readAtRef(repo, mainRef(repo), "WORLD/walk-le
 // `db` IS GONE (POS-154): era two came from a sqlite handle a caller could pass
 // in, and it comes from the record now, which has no handle to hand over.
 //
-// `fromSnapshot` (POS-302) is for the positions projection alone: era two then
-// comes from the newest clearing's snapshot plus the acts since
-// (`world-movement.mjs § storedGoverningDepartures`), a list `governingOf`
-// reduces exactly as it reduces every record, and NOT every record. A snapshot
-// that is discarded is disclosed (`positions-snapshot-discarded`) and the whole
-// record answers; no snapshot at all answers from the whole record silently.
+// `fromSnapshot` (POS-302) is for the positions projection alone: BOTH eras
+// then come from the newest clearing's snapshot plus the acts since
+// (`world-movement.mjs § storedGoverningDepartures`), era one as the store's
+// `_ledger` rows and no git read at all. It is a list `governingOf` reduces
+// exactly as it reduces every record, and NOT every record. A snapshot that is
+// discarded is disclosed (`positions-snapshot-discarded`) and the whole record
+// answers; no snapshot at all answers from the whole record silently.
 export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Date.now(), fromSnapshot = false } = {}) {
   const disclosed = [];
+  if (fromSnapshot && movementV2Enabled()) {
+    const kept = await storedGoverningDepartures({ atMs });
+    if (kept.records) {
+      const snapshot = { snapshot: kept.snapshot };
+      if (!kept.store_records) return { departures: kept.records, eras: ["ledger", "store"], disclosed, ledgerUnreadable: null, ...snapshot };
+      // The count the writer kept against the frozen ledger: the same number the whole record says.
+      if (kept.overlap) disclosed.push(`era-order-overlap: ${kept.overlap} store record(s) predate the newest ledger line — the freeze assumption that era two is strictly later no longer holds, and append order may not be latest-wins for them`);
+      return { departures: kept.records, eras: ["ledger", "store"], disclosed, ledgerUnreadable: null, store_records: kept.store_records, ...snapshot };
+    }
+    if (kept.fallback) disclosed.push(`positions-snapshot-discarded: ${kept.fallback} — the whole record served`);
+  }
   let ledger = [], ledgerUnreadable = null;
   try {
     const { parseWalkLedger } = await engineImport("walk.mjs");
@@ -430,13 +442,7 @@ export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Da
   if (!movementV2Enabled()) return { departures: ledger, eras: ["ledger"], disclosed, ledgerUnreadable };
 
   const newestLedger = ledger.reduce((m, d) => Math.max(m, Date.parse(d.iso) || 0), 0);
-  let kept = null;
-  if (fromSnapshot) {
-    const got = await storedGoverningDepartures({ atMs, newestLedgerMs: newestLedger });
-    if (got.records) kept = got;
-    else if (got.fallback) disclosed.push(`positions-snapshot-discarded: ${got.fallback} — the whole record served`);
-  }
-  const { records, absent } = kept ?? await storedDepartures({ atMs });
+  const { records, absent } = await storedDepartures({ atMs });
   if (absent) {
     // NAMES THE RECORD, NOT THE TABLE (POS-154). This said
     // `movements-unreadable`, which was true of a sqlite file and is false of
@@ -445,16 +451,14 @@ export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Da
     disclosed.push(`record-unreadable: ${absent} — reading the founding era alone`);
     return { departures: ledger, eras: ["ledger"], disclosed, ledgerUnreadable };
   }
-  const snapshot = kept ? { snapshot: kept.snapshot } : {};
-  if (!records.length) return { departures: ledger, eras: ["ledger", "store"], disclosed, ledgerUnreadable, ...snapshot };
+  if (!records.length) return { departures: ledger, eras: ["ledger", "store"], disclosed, ledgerUnreadable };
 
-  // A snapshot kept the count at write time (POS-302): the same number, not a re-count.
-  const overlapCount = kept ? kept.overlap : records.filter((r) => (Date.parse(r.iso) || 0) < newestLedger).length;
-  if (overlapCount) {
-    disclosed.push(`era-order-overlap: ${overlapCount} store record(s) predate the newest ledger line — the freeze assumption that era two is strictly later no longer holds, and append order may not be latest-wins for them`);
+  const overlap = records.filter((r) => (Date.parse(r.iso) || 0) < newestLedger);
+  if (overlap.length) {
+    disclosed.push(`era-order-overlap: ${overlap.length} store record(s) predate the newest ledger line — the freeze assumption that era two is strictly later no longer holds, and append order may not be latest-wins for them`);
   }
   const merged = [...ledger, ...records];
-  return { departures: merged, eras: ["ledger", "store"], disclosed, ledgerUnreadable, store_records: kept ? kept.store_records : records.length, ...snapshot };
+  return { departures: merged, eras: ["ledger", "store"], disclosed, ledgerUnreadable, store_records: records.length };
 }
 
 /** The array alone, for the many callers that want only that. */
