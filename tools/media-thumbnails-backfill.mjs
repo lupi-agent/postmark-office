@@ -121,9 +121,14 @@ export function originalsFromRecord(record, { base, sizes, thumbUrlFor }) {
   return out;
 }
 
-/** The originals the office's own ledger records, oldest first. */
-export function originalsFromLedger(odb, { mediaUrlFor, thumbUrlFor }) {
-  return odb.prepare("SELECT household, sha, ext FROM media ORDER BY created ASC, sha ASC").all().map((r) => ({
+/**
+ * The originals the office's own ledger records, oldest first. `odb` is a
+ * paper (src/paperwork.mjs) or a node:sqlite handle on oauth.db, which
+ * `asPaper` makes one.
+ */
+export async function originalsFromLedger(odb, { mediaUrlFor, thumbUrlFor }) {
+  const { asPaper } = await import("../src/paperwork.mjs");
+  return (await asPaper(odb).all("SELECT household, sha, ext FROM media ORDER BY created ASC, sha ASC")).map((r) => ({
     household: r.household, sha: r.sha, ext: r.ext,
     url: mediaUrlFor(r.household, r.sha, r.ext),
     urlFor: (size) => thumbUrlFor(r.household, r.sha, r.ext, size),
@@ -155,11 +160,19 @@ async function main() {
     originals = originalsFromRecord(JSON.parse(readFileSync(RECORD, "utf8")), { base: MEDIA_BASE, sizes: THUMB_SIZES, thumbUrlFor });
     source = `the record's marks (${RECORD})`;
   } else {
-    if (!existsSync(LEDGER)) { console.error(`no ledger at ${LEDGER} — pass --ledger <oauth.db>, or --from-record <world-state.json> to walk the marks instead`); process.exit(2); }
-    const { DatabaseSync } = await import("node:sqlite");
-    const odb = new DatabaseSync(LEDGER, { readOnly: true });
-    originals = originalsFromLedger(odb, { mediaUrlFor, thumbUrlFor });
-    source = `the media ledger (${LEDGER})`;
+    // THE OFFICE'S OWN SWITCH (POS-271). With OFFICE_PAPERWORK_STORE=1 the
+    // ledger is the store's office_media and oauth.db is only the rollback's
+    // mirror, so the originals are read from the store; unswitched, from the
+    // file, as before.
+    const { openPaper, paperworkStoreOn, closePaperworkPools } = await import("../src/paperwork.mjs");
+    const switched = paperworkStoreOn();
+    if (!switched && !existsSync(LEDGER)) { console.error(`no ledger at ${LEDGER} — pass --ledger <oauth.db>, or --from-record <world-state.json> to walk the marks instead`); process.exit(2); }
+    let odb;
+    try { odb = await openPaper(LEDGER, { readOnly: true }); }
+    catch (e) { console.error(`could not reach the store's media ledger (OFFICE_PAPERWORK_STORE=1): ${String(e?.message ?? e)}`); process.exit(2); }
+    try { originals = await originalsFromLedger(odb, { mediaUrlFor, thumbUrlFor }); }
+    finally { odb.close(); if (switched) await closePaperworkPools(); }
+    source = switched ? "the media ledger (the store's office_media)" : `the media ledger (${LEDGER})`;
   }
   if (APPLY && !mediaConfigured()) {
     console.error("--apply needs the R2 credentials in the environment (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY) — on the box, /etc/postmark-office.env");
