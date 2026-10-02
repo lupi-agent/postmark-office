@@ -76,6 +76,8 @@ export const LANDED = {
   "038_world_graph_events.sql":    { probe: rel("world_graph_events") },
   // 049 (POS-142 Proposal B): which settlement first carried each mark.
   "049_mark_carried.sql":          { probe: rel("mark_carried") },
+  // 050 (POS-219): each resident's house picture, kept on the household's row.
+  "050_household_home_images.sql": { probe: `${col("households", "home_images")} AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'households_home_images_is_object')` },
   // 051 (POS-300): when a berth acknowledged the town's rules for visitors.
   "051_berth_rules_read.sql":      { probe: col("oauth_berths", "rules_read_at") },
   // 052 (POS-246): a world act's retry key is spent once.

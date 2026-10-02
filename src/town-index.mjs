@@ -28,7 +28,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readTown } from "../vendor/tools/lib/town.mjs";
-import { isResidentHandle } from "./residency.mjs"; // one definition of what a handle is — the door's
+import { isResidentHandle, REGISTRY_PATH } from "./residency.mjs"; // one definition of what a handle is — the door's
+import { homePictureIn } from "./registry-rows.mjs"; // the house's picture, off the household's record (POS-219)
 import { readProfile } from "./profiles.mjs"; // PROFILE.md postdates the vendored reader — see that file
 import { readWindowState } from "./panes.mjs"; // the pane's machine twin — one island parser, two readers
 
@@ -142,8 +143,18 @@ const isOffice = (r) => { const o = r.address?.data?.office; return o === true |
  *
  * `lastActive(handle)` answers the history pass's value for a handle.
  */
+// THE HOUSE'S PICTURE (POS-219) is kept on the household's record, one per
+// resident, and the town's households.json is that record as the drain renders
+// it. The resident card carries it as `homePicture` and the home row as
+// `picture`; a checkout with no registry reads every house as having none,
+// which is true of it.
+function readPictureRegistry(TOWN) {
+  try { return JSON.parse(readFileSync(join(TOWN, REGISTRY_PATH), "utf8")); } catch { return null; }
+}
+
 export function residentRows(TOWN, town, lastActive, { log = console, only = null } = {}) {
   const out = keyed("residents");
+  const pictures = readPictureRegistry(TOWN);
   const notHandles = town.residents.filter((r) => !isResidentHandle(r.handle)).map((r) => r.handle);
   for (const r of town.residents.filter((r) => isResidentHandle(r.handle))) {
     if (only && !only.has(r.handle)) continue;
@@ -151,6 +162,7 @@ export function residentRows(TOWN, town, lastActive, { log = console, only = nul
       // The window-state island lives in src/panes.mjs (its second reader is
       // paper-fresh.mjs); same reader both sides, so there is nothing to drift.
       ...r, is_office: isOffice(r), window_state: readWindowState(TOWN, r.handle),
+      homePicture: homePictureIn(pictures, r.handle),
       last_active: lastActive(r.handle) ?? null,
       // The profile bubble. The re-vendored readTown DOES read profiles now
       // (POS-128), so `r.profile` above is a real value — and this line deliberately
@@ -392,6 +404,9 @@ export function atlasRows(TOWN, town, { log = console } = {}) {
     })]);
   }
 
+  // `picture` is the house's picture off the household's record (POS-219);
+  // `images` stays HOME/'s own files, the house's gallery now.
+  const pictures = readPictureRegistry(TOWN);
   const homes = keyed("homes");
   for (const r of town.residents) {
     if (!r.home) continue; // no HOME/HOME.md — reachable at the post office, not a home row
@@ -399,6 +414,7 @@ export function atlasRows(TOWN, town, { log = console } = {}) {
     homes.put([r.handle, region, JSON.stringify({
       handle: r.handle, title: r.home.data?.title ?? r.handle, region,
       description: r.home.body ?? "", images: homeAssets(r),
+      picture: homePictureIn(pictures, r.handle),
     })]);
   }
   log.log(`  atlas: ${regionFacts.length} regions, ${town.residents.filter((r) => r.home).length} homes`);

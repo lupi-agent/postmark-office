@@ -87,6 +87,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { parseFrontmatter } from "../vendor/tools/lib/town.mjs";
+import { homePictureIn } from "./registry-rows.mjs";
+import { REGISTRY_PATH } from "./residency.mjs";
 import { readProfile } from "./profiles.mjs";
 import { readWindowState } from "./panes.mjs";
 import { pendingPaperRows, PAPER_ACTS, SETTLES_AT } from "./town-updates.mjs";
@@ -128,6 +130,14 @@ export function readHomeFile(clone, handle) {
     const declared = Array.isArray(data?.assets) ? data.assets : [];
     return { data, body, images: declared.map((a) => `WHITE_PAGES/${handle}/HOME/${a}`) };
   } catch { return null; }
+}
+
+/** The house's picture as the clone's households.json keeps it (POS-219), or
+ *  null. The drain renders that file in the same act that keeps a picture, so
+ *  this is the record a moment ago rather than at the last hydrate. */
+export function readHomePicture(clone, handle) {
+  try { return homePictureIn(JSON.parse(readFileSync(join(clone, REGISTRY_PATH), "utf8")), handle); }
+  catch { return null; }
 }
 
 /** The files under HOME/ that ARE images, for the card's `homeImages`. */
@@ -290,7 +300,10 @@ export function composeResidentCard(card, ctx) {
   const imagesFresher = !same(images, (card.homeImages ?? []).slice().sort());
   if (homeFresher) card.home = { data: home.data, body: home.body };
   if (imagesFresher) card.homeImages = images;
-  fields["home"] = stampFor(ctx, "home", homeFresher || imagesFresher);
+  const picture = readHomePicture(ctx.clone, ctx.handle);
+  const pictureFresher = !same(picture, card.homePicture ?? null);
+  if (pictureFresher) card.homePicture = picture;
+  fields["home"] = stampFor(ctx, "home", homeFresher || imagesFresher || pictureFresher);
 
   const profile = readProfile(ctx.clone, ctx.handle);
   const profileFresher = !same(profile, card.profile ?? null);
@@ -319,6 +332,8 @@ export function composeHome(row, ctx) {
       fresher = !same(title, row.title) || !same(description, row.description) || !same(images, row.images);
       if (fresher) { row.title = title; row.description = description; row.images = images; }
     }
+    const picture = readHomePicture(ctx.clone, ctx.handle);
+    if (!same(picture, row.picture ?? null)) { row.picture = picture; fresher = true; }
   }
   row.freshness = freshnessBlock(ctx, { home: stampFor(ctx, "home", fresher) });
   return row;

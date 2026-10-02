@@ -385,6 +385,19 @@ test('F5 · OPERATIONS.md: "REST: stable/simple for frozen consumers" — the RE
   const onlyHandle = (a) => a.fields && Object.keys(a.fields).join() === "handle";
   assert.equal(frozen.acts.filter(onlyHandle).length, 1, "the frozen shape carries exactly one handle-only card");
   assert.equal(full.acts.find(onlyHandle)?.act, "mark-all-read");
+  // ⚑ REGENERATED 2026-10-01 FOR POS-219 (each resident's house picture, kept
+  // on the household's record), named here for the same reason. What grew: the
+  // home act's card gained `image`. The capture diff, key by key: +1
+  // (`acts/4/fields/image`, {type, description}), −0, 0 retyped, none on
+  // another card. PSA for the release notes: "your house's picture is uploaded,
+  // not committed — household do: home takes image (the URL upload_media hands
+  // you), PATCH /home/{handle}/image takes the bytes; it is kept on your
+  // household's record, one per resident, and the site and the map both draw it."
+  //
+  // The witness is the home card (the one field only it carries, `assets`), in
+  // the frozen copy AND the live door.
+  assert.equal(homeFrozen?.fields?.image?.type, "string", "the frozen home card carries image");
+  assert.equal(homeLive?.fields?.image?.type, "string", "the live home card takes image — a picture the card did not advertise would be refused for a field nobody was told about");
 });
 
 test(`F5c · and the answer stays BOUNDED — REST under ${REST_CEILING}B, the connector's bare answer under ${SLIM_CEILING}B`, async () => {
