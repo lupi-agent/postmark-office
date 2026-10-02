@@ -23,7 +23,14 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // The office and mock GitHub belong to this test process. Fixed ports made two
@@ -75,6 +82,7 @@ before(async () => {
   resident(TWIN_B, TWINS_ACCT.login);
   resident(DUAL, DUAL_ACCT.login);
   seed.close();
+  const IX_ENV = await storeFor(dbPath);
 
   const clone = (CLONE.path = join(tmp, "town-clone"));
   mkdirSync(join(clone, "tools"), { recursive: true });
@@ -115,7 +123,7 @@ before(async () => {
   ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", dbPath, "--oauth-db", (OAUTH_DB.path = join(tmp, "oauth.db"))], {
     env: {
-      ...process.env,
+      ...process.env, ...IX_ENV,
       // PINNED (`#<gh_id>`), so the row carries a verified account and mints
       // at the key desk — the founder's ruling of 2026-08-26, and lap 3's
       // correction: a pinned env row CAN mint. That is how this file holds a
