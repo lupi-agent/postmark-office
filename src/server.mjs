@@ -446,7 +446,15 @@ setInterval(() => {
   // the store's roll and the write path's probe, on the same clock the index reload keeps (POS-268)
   if (townIndexReads()) { townIndexStore.refreshStoreRoll().catch(() => {}); townIndexStore.refreshStoreProbe().catch(() => {}); }
 }, RELOAD_POLL_MS).unref();
-if (townIndexReads()) { townIndexStore.refreshStoreRoll().catch(() => {}); townIndexStore.refreshStoreProbe().catch(() => {}); }
+// AT BOOT, BEFORE THE OFFICE LISTENS (POS-268): the roll and the write path's
+// probe are loaded first, so the first ask is never answered by a process that
+// has not read its index yet (a berth or a sign-in a moment after a restart was
+// a 503 or an anonymous key). Bounded: a store that does not answer within 10 s
+// leaves both unloaded, the checks answer the store's 503 and the poll retries.
+if (townIndexReads()) await Promise.race([
+  Promise.all([townIndexStore.refreshStoreRoll().catch(() => {}), townIndexStore.refreshStoreProbe().catch(() => {})]),
+  new Promise((ok) => setTimeout(ok, 10_000).unref()),
+]);
 
 // Keep the deterministic clock seam at the process boundary. Bouncer stays
 // environment-agnostic, while the HTTP integration test can pin only its clock.

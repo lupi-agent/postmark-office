@@ -31,6 +31,13 @@ import {
   heardAnswer, recordHeard, heardReceipt, weeklyHeard, heardDoor,
 } from "../src/arrival-heard.mjs";
 import { DECLARE_SCHEMA, BEGIN_PROPERTIES } from "../src/declare.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
+
+// declare-exec reads its handle check from the town index under the lock, and the
+// office will not run without one (POS-268). The declaration's own law is stubbed
+// here, so the index it reads is an empty store.
+const IX = await indexStore(null);
+test.after(() => IX.stop());
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const NOTE = "a zine left at the Porto café, zz-heard-marker-7f3a";
@@ -162,7 +169,7 @@ function declare(t, args, store = "ok") {
     JSON.stringify({ args: { handle: "newcomer", household: "Newcomers", card: "I am new here.", ...args }, key: { ghId: 7, ghLogin: "newcomer-gh" }, dbPath: t.dbPath })], {
     encoding: "utf8",
     env: { ...process.env, TOWN_CLONE: t.clone, TOWN_PUSH: "1", BOT_NAME: "fixture", BOT_EMAIL: "fixture@test.invalid",
-      HEARD_STUBS: JSON.stringify(t.stubs), HEARD_QUERIES: t.queries, HEARD_STORE: store },
+      HEARD_STUBS: JSON.stringify(t.stubs), HEARD_QUERIES: t.queries, HEARD_STORE: store, ...IX.env },
   });
   assert.equal(r.status, 0, `declare-exec answers rather than trips: ${r.stderr}`);
   return { out: JSON.parse(r.stdout.trim().split("\n").at(-1)), stdout: r.stdout, stderr: r.stderr };
