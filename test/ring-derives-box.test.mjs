@@ -30,7 +30,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -38,6 +38,11 @@ import { pathToFileURL } from "node:url";
 import { KINOFIRE_12129 } from "./helpers/kinofire-12129.mjs";
 
 const SOURCE_WORLD = process.env.WORLD_CLONE;
+// The lint's geometry.mjs is copied from the world clone, so without one every
+// test here skips by name, as ring-box.test.mjs's parity leg does.
+const SOURCE_GEOMETRY = SOURCE_WORLD ? join(SOURCE_WORLD, "tools", "geometry.mjs") : null;
+const haveWorld = !!(SOURCE_GEOMETRY && existsSync(SOURCE_GEOMETRY));
+const skip = !haveWorld && "no WORLD_CLONE (the lint's geometry.mjs is copied from it)";
 const sweep = (d) => { try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch { /* litter */ } };
 
 const repo = mkdtempSync(join(tmpdir(), "postmark-322-repo-"));
@@ -65,7 +70,7 @@ const PUBLISHED = [
 const record = (by, kind, body, x, y, w, h) =>
   `---\nkind: ${kind}\nby: ${by}\ndate: 2026-08-01\nat: { x: ${x}, y: ${y} }\nextent: { w: ${w}, h: ${h} }\n---\n\n${body}\n`;
 
-copyFileSync(join(SOURCE_WORLD, "tools", "geometry.mjs"), (mkdirSync(join(repo, "tools"), { recursive: true }), join(repo, "tools", "geometry.mjs")));
+if (haveWorld) copyFileSync(SOURCE_GEOMETRY, (mkdirSync(join(repo, "tools"), { recursive: true }), join(repo, "tools", "geometry.mjs")));
 put("tools/world-build.mjs", `export function assembleWorld({ worldState, skeleton }) { return { ...worldState, skeleton }; }\n`);
 put("tools/where-is.mjs", `
 export const NOWHERE = Object.freeze({ x: null, y: null, placed: false, source: null, mark_id: null });
@@ -122,7 +127,7 @@ process.env.WORLD2_PG_URL = RECORD_ON.WORLD2_PG_URL;
 const pen = installActsPen();
 after(() => { uninstallActsPen(); delete process.env.WORLD2_PG; delete process.env.WORLD2_PG_URL; });
 
-const geom = await import(pathToFileURL(join(repo, "tools", "geometry.mjs")));
+const geom = haveWorld ? await import(pathToFileURL(join(repo, "tools", "geometry.mjs"))) : null;
 const keyFor = (household, ...handles) => ({ household, handles: new Set(handles) });
 const KINO = keyFor("commander-and-chief", "kinofire");
 const REI = keyFor("reihouse", "rei");
@@ -150,7 +155,7 @@ const kinofireAmend = () => {
 };
 
 // ── LEG 1 · THE INSTANCE ─────────────────────────────────────────────────────
-test("THE INSTANCE: kinofire's 10-02 amend, replayed, is written centred at {-1700,-500}, 1200×1000", async () => {
+test("THE INSTANCE: kinofire's 10-02 amend, replayed, is written centred at {-1700,-500}, 1200×1000", { skip }, async () => {
   const out = await leave(kinofireAmend(), KINO);
   console.log(`    RECEIPT · ${out.ok ? `OK id=${out.id} outline="${out.outline}"` : `${out.code} "${out.defect}"`}`);
   assert.equal(out.ok, true, `the amend goes forward, never refused: ${JSON.stringify(out)}`);
@@ -166,7 +171,7 @@ test("THE INSTANCE: kinofire's 10-02 amend, replayed, is written centred at {-17
 });
 
 // ── LEG 2 · A RING-LESS WRITE ────────────────────────────────────────────────
-test("A RING-LESS write is written exactly as sent, and says nothing about an outline", async () => {
+test("A RING-LESS write is written exactly as sent, and says nothing about an outline", { skip }, async () => {
   const sent = { slug: "a-lantern", kind: "sited", by: "kinofire", at: { x: -2300, y: -1000 }, extent: { w: 3, h: 2 }, body: "a lantern at the forest's corner" };
   const out = await leave(sent, KINO);
   assert.equal(out.ok, true, JSON.stringify(out));
@@ -179,7 +184,7 @@ test("A RING-LESS write is written exactly as sent, and says nothing about an ou
 });
 
 // ── LEG 3 · the outline alone ────────────────────────────────────────────────
-test("A ring with no at/extent at all is a whole sited mark", async () => {
+test("A ring with no at/extent at all is a whole sited mark", { skip }, async () => {
   const out = await leave({ slug: "a-clearing", kind: "sited", by: "kinofire", points: [[0, 0], [40, 0], [40, 30], [0, 30]], body: "a clearing" }, KINO);
   assert.equal(out.ok, true, JSON.stringify(out));
   const w = written("kinofire/a-clearing");
@@ -188,7 +193,7 @@ test("A ring with no at/extent at all is a whole sited mark", async () => {
 });
 
 // ── LEG 4 · A SET-DOWN MOVES THE RING (Wright's ruling (a)) ──────────────────
-test("A SET-DOWN of a ringed region 50 m east files the same ring moved 50 m, centred on the standpoint", async () => {
+test("A SET-DOWN of a ringed region 50 m east files the same ring moved 50 m, centred on the standpoint", { skip }, async () => {
   const { fileAuthorsAmend } = await import("../src/world-hold.mjs");
   const { leaveMarkViaOffice } = await import("../src/world.mjs");
   const stood = { x: 250, y: 180 };
@@ -206,14 +211,14 @@ test("A SET-DOWN of a ringed region 50 m east files the same ring moved 50 m, ce
 });
 
 // ── LEG 5 · what the door still refuses, in the lint's words ─────────────────
-test("A ring that is not a ring is refused with the lint's sentence", async () => {
+test("A ring that is not a ring is refused with the lint's sentence", { skip }, async () => {
   const out = await leave({ slug: "a-line", kind: "sited", by: "kinofire", points: [[0, 0], [10, 0]], body: "a line" }, KINO);
   assert.equal(out.ok, false);
   assert.equal(out.code, 422);
   assert.equal(out.defect, 'points: must be a ring of ≥3 vertices ([[x,y],…] or "x1,y1 x2,y2 …")');
 });
 
-test("A parcel ring that does not fill the town's 25×25 is refused with the lint's ring = bbox sentence", async () => {
+test("A parcel ring that does not fill the town's 25×25 is refused with the lint's ring = bbox sentence", { skip }, async () => {
   const out = await leave({ slug: "a-plot", kind: "parcel", by: "parceller", at: { x: 500, y: 500 }, points: [[480, 480], [520, 480], [520, 520]], body: "a plot" }, PARCELLER);
   assert.equal(out.ok, false, JSON.stringify(out));
   assert.equal(out.code, 422);
