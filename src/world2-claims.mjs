@@ -23,6 +23,7 @@
 // both when present).
 
 import { boxOf } from "../world2/tools/seed-import.mjs";
+import { ringOf, ringBox, ringAgrees } from "./ring-box.mjs"; // POS-322: the bbox of a ringed mark is its ring's
 import { houseOfVia, sessionKeysVia, sessionKeyString } from "./household-deriver.mjs";
 // Phase 5.6's deferred act is released through world2-pen's insertAct, INSIDE
 // the promotion's own transaction (imported lazily there — R1, 2026-08-29).
@@ -379,7 +380,14 @@ export async function claimTxFromJournal(client, row, seq, { household, actId = 
       const kind = payload.kind ?? "sited";
       const placed = payload.at && payload.extent;
       const slug = `${payload.by ?? row.actor}/${payload.slug}`;
-      const { slug: _s, at, extent, points, body, stamps, put_forward, ...rest } = payload;
+      const { slug: _s, at: sentAt, extent: sentExtent, points, body, stamps, put_forward, ...rest } = payload;
+      // POS-322: a sited ring's box IS its at/extent (ring-box.mjs § ringBox), so
+      // the stored geometry and the `bbox` column below cannot disagree with the
+      // ring. The door has already derived it; this holds the store to the same
+      // arithmetic for any row that reaches the pen another way. A claim that
+      // already agrees within the lint's 0.5 m keeps its numbers byte for byte.
+      const derive = placed && points && payload.kind === "sited" && ringOf(points) && !ringAgrees({ at: sentAt, extent: sentExtent }, points);
+      const { at, extent } = derive ? ringBox(points) : { at: sentAt, extent: sentExtent };
       const geometry = placed ? { slug, at, extent, ...(points ? { points } : {}) } : { slug };
       const bbox = placed ? boxOf(at, extent) : null;
       const status = put_forward === true ? "pending" : "draft";

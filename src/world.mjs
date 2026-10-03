@@ -94,6 +94,7 @@ export const WORLD_CLONE = process.env.WORLD_CLONE
 export { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs";
 import { CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
 import { myMarksRefused } from "./claim-effects.mjs"; // POS-241 part 5: my-marks hears what the candle refused
+import { ringOf, ringBox, ringAgrees, ringMovedTo, RING_SHAPE_SENTENCE, RING_CLAIM_SENTENCE } from "./ring-box.mjs"; // POS-322: a mark's box is derived from its ring
 
 // ── engine + world cache ─────────────────────────────────────────────────────
 let _mods = null;         // { verbs, build }
@@ -2947,6 +2948,24 @@ async function foldConstants() {
   try { return await engineImport("marks-fold.mjs"); } catch { return {}; }
 }
 
+// The town's parcel dial as a box, for the door's ring rule (POS-322).
+async function parcelDial() {
+  const side = (await foldConstants()).PARCEL_EXTENT_M ?? 25;
+  return { w: side, h: side };
+}
+
+// THE LINT'S RING RULE, asked of the clone's own geometry (world
+// `tools/geometry.mjs` § ringMatchesClaim — what `mark-lint.mjs` § 4b fires on).
+// `ringAgrees` is the same arithmetic restated, used only when the clone's
+// module cannot be loaded; `test/ring-box.test.mjs` holds the two equal.
+async function ringHonest(mark) {
+  try {
+    const g = await geomMod();
+    if (typeof g.ringMatchesClaim === "function") return g.ringMatchesClaim(mark);
+  } catch { /* no engine geometry: the restated rule below */ }
+  return ringAgrees(mark, mark.points);
+}
+
 /**
  * THE GROUND'S LAWFUL MINIMUM STAKE — the number that decides whether a stake
  * act is a putting-forward (Keemin's ruling, 2026-08-28, Phase 5.6).
@@ -3662,9 +3681,45 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     throw bounce(422, "consent and placed_by are for a placement on another resident's behalf",
       `"${by}" is your own resident — leave the mark without them`);
 
-  const { slug, kind, at, extent, points, body, tier, slot, value, parent_id } = payload;
+  const { slug, kind, body, tier, slot, value, parent_id } = payload;
+  let { at, extent, points } = payload;
   if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) throw bounce(422, "slug must be kebab-case", `lowercase letters, digits, single hyphens — got "${slug}"`);
   if (!["sited", "parcel", "predicated", "naming"].includes(kind)) throw bounce(422, "kind must be sited, parcel, predicated, or naming", `got "${kind}"`);
+
+  // ── THE RING IS THE TRUTH OF THE SHAPE (POS-322, Keemin 2026-10-02) ───────
+  //
+  // "extent should just be derived from the ring." With `points:`, a sited
+  // mark's `at` is the ring's bounding-box centre and its `extent` the box's
+  // w × h (ring-box.mjs § ringBox). A sent at/extent that already IS that box
+  // (within the lint's 0.5 m) is kept byte for byte; one that disagrees, or is
+  // missing, is replaced, and the answer's `outline` line says so. Never a
+  // refusal: kinofire's 10-02 amend sent its ring with `at` at the top-left
+  // corner, and the town's whole 18:00Z crossing refused over it.
+  //
+  // A SET-DOWN MOVES THE RING (Wright's ruling (a), 2026-10-02). The hold door
+  // files `at` = the dropper's standpoint with canon's ring unchanged, so the
+  // ring is moved first, its box centre onto the standpoint, and the box is
+  // derived from the moved ring. The move guard below still runs on it.
+  //
+  // A ring-less write never enters this block, and a parcel's extent stays the
+  // town's dial (the gate after the kind checks holds its ring to it).
+  let outline = null;
+  if (points !== undefined && (kind === "sited" || kind === "parcel")) {
+    if (!ringOf(points)) throw bounce(422, RING_SHAPE_SENTENCE, "send the outline as [[x,y],…] in grid meters; the town derives at/extent from it");
+    if (setDown && at && Number.isFinite(Number(at.x)) && Number.isFinite(Number(at.y))) {
+      const before = ringBox(points).at;
+      points = ringMovedTo(points, at);
+      outline = `your outline moved with it: its centre from {${before.x},${before.y}} to {${at.x},${at.y}}`;
+    }
+    if (kind === "sited" && !ringAgrees({ at, extent }, points)) {
+      const box = ringBox(points);
+      const sent = at !== undefined || extent !== undefined;
+      outline = `at/extent derived from your outline: at {${box.at.x},${box.at.y}}, extent ${box.extent.w}×${box.extent.h}`
+        + (sent ? ` (you sent at ${at ? `{${at.x},${at.y}}` : "none"}, extent ${extent ? `${extent.w}×${extent.h}` : "none"})` : "");
+      at = box.at;
+      extent = box.extent;
+    }
+  }
   if (!body || !String(body).trim()) throw bounce(422, "a mark needs a body", "one present-tense observation, ≤150 characters");
   const bodyLength = [...String(body).trim()].length;
   if (bodyLength > 150) throw bounce(422, `body is ${bodyLength} chars; the cap is 150`, overCapHint(by, slug));
@@ -3680,6 +3735,18 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     // the vermillion 200×200 class dies at the door, not in lint).
     if (kind === "parcel" && extent !== undefined) throw bounce(422, "a parcel carries no extent — every parcel is the town's 25×25, centred on your at", "leave extent off; the door sets the dial");
     if (slot !== undefined || value !== undefined) throw bounce(422, `${kind} marks carry no slot/value`, "those are for predicated/naming marks");
+    // THE LINT'S RING RULE, AT THE DOOR (POS-322, #3374): no write may store a
+    // ring its claim disagrees with, so none can settle red over it. Asked of
+    // the clone's own `ringMatchesClaim`. A sited mark's box was derived above,
+    // so this holds by construction there; a parcel's box is the town's dial.
+    if (points !== undefined) {
+      const claim = kind === "parcel" ? { at, extent: await parcelDial() } : { at, extent };
+      if (!(await ringHonest({ ...claim, points })))
+        throw bounce(422, RING_CLAIM_SENTENCE,
+          kind === "parcel"
+            ? `a parcel's box is the town's ${claim.extent.w}×${claim.extent.h} centred on your at — an outline must fill exactly that box, or leave points off`
+            : "send the outline alone; the town derives at/extent from it");
+    }
   } else {
     if (at !== undefined || extent !== undefined) throw bounce(422, `${kind} marks carry no at/extent`, "they take their locus from the mark they describe");
     if (!parent_id) throw bounce(422, `a ${kind} mark needs parent_id`, "the id of the mark it describes, <by>/<slug>");
@@ -3843,6 +3910,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     }
     if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
   }
+  if (outline) result.outline = outline; // POS-322: one line, only when the door moved or derived the box
   await discloseOverhang(result, by, key);
   await disclosePublishing(result, by);
 
@@ -5222,7 +5290,7 @@ export const WORLD_TOOLS = [
       kind: { type: "string", enum: ["sited", "parcel", "predicated", "naming"], description: "predicated requires slot + value; naming requires value and uses slot \"name\"; sited/parcel carry neither slot nor value" },
       at: { type: "object", description: "grid meters east/south of the Origin (sited/parcel)", properties: { x: { type: "number" }, y: { type: "number" } } },
       extent: { type: "object", description: "footprint in meters (sited only — a parcel carries no extent: every parcel is the town's 25×25, set by the door)", properties: { w: { type: "number" }, h: { type: "number" } } },
-      points: { type: "array", description: "optional polygon ring [[x,y],…] for an irregular shape; its bbox must equal at/extent" },
+      points: { type: "array", description: "optional polygon ring [[x,y],…] for an irregular shape, in grid meters. On a sited mark the town derives at (the ring's bounding-box centre) and extent (its w×h) from it, so you may leave both off; a sent at/extent that disagrees is replaced and the answer's `outline` says so. On a parcel the ring must fill the town's 25×25 box exactly" },
       body: { type: "string", description: "one present-tense observation; maximum 150 characters — the mark's face in every view" },
       // `tier` is DELIBERATELY ABSENT: standing is derived from the ground a
       // mark stands on (B, ruled 2026-08-12; door refuses the field at the
