@@ -31,12 +31,12 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { startStore } from "./helpers/embedded-store.mjs";
 import { WORLD_CLONE } from "../src/world-store.mjs";
+import { mainRef, readAtRef } from "../src/world-branches.mjs";
 import { useGuardReader, storeLedgerDepartures } from "../src/world2-guards.mjs";
 import { storedDepartures } from "../src/world-movement.mjs";
 import { governingOf } from "../src/position-projection.mjs";
@@ -82,7 +82,9 @@ before(async () => {
   await insertActs(deps);
   fill = await backfill(owner, await deriveLedgerActs({ worldRepo: WORLD_CLONE }));
   const { parseWalkLedger } = await import(pathToFileURL(join(WORLD_CLONE, "tools", "walk.mjs")).href);
-  git = parseWalkLedger(execFileSync("git", ["-C", WORLD_CLONE, "show", "main:WORLD/walk-ledger.md"], { encoding: "utf8" })).departures;
+  // The git side at the office's own ref, as --compare-era-one reads it (152309c): a
+  // clone holding only origin/main has no `main` for `git show main:` to name.
+  git = parseWalkLedger(readAtRef(WORLD_CLONE, mainRef(WORLD_CLONE), "WORLD/walk-ledger.md")).departures;
 });
 after(async () => {
   restoreReader?.();
