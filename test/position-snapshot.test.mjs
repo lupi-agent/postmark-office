@@ -280,6 +280,11 @@ test("THE REF: the writer measures the ledger at mainRef, so a clone holding onl
   try {
     const clone = join(dir, "w");
     execFileSync("git", ["clone", "--quiet", "--local", WORLD_CLONE, clone]);
+    // The copy's origin/main is the source's main, wherever the source keeps it: a
+    // pool tree's world-clone may hold only origin/main itself, and a --local clone
+    // maps the source's BRANCHES to origin/*, so it would come out with no main at all.
+    const { mainRef } = await import("../src/world-branches.mjs");
+    execFileSync("git", ["-C", clone, "fetch", "--quiet", "origin", `+${mainRef(WORLD_CLONE)}:refs/remotes/origin/main`]);
     execFileSync("git", ["-C", clone, "checkout", "--quiet", "--detach"]);
     if (execFileSync("git", ["-C", clone, "branch", "--list", "main"], { encoding: "utf8" }).trim())
       execFileSync("git", ["-C", clone, "branch", "--quiet", "-D", "main"]);
