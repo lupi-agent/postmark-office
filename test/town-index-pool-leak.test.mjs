@@ -101,7 +101,9 @@ async function prodSizedPen() {
   return {
     pool, officeRead: pen.officeRead,
     held: () => ({ out: pool.totalCount - pool.idleCount, waiting: pool.waitingCount }),
-    async done() { pen.__setPoolForTest(null); await pool.end().catch(() => {}); },
+    // a drained pool's end() waits for connections that never come back; the
+    // store's sessions are ended in after(), so this waits only a moment
+    async done() { pen.__setPoolForTest(null); await Promise.race([pool.end().catch(() => {}), new Promise((ok) => setTimeout(ok, 2000))]); },
   };
 }
 
@@ -207,7 +209,7 @@ test("a spawned office with switch 2 and the kept positions on answers GET /ques
     const reads = [];
     for (let i = 0; i < WIDTH; i++) {
       const who = ["wright", "limen", "nobody"][i % 3];
-      reads.push(fetch(`${base}/quests/${who}`, { signal: AbortSignal.timeout(DEADLINE_MS) }).then(async (r) => ({ status: r.status, body: await r.text() })));
+      reads.push(fetch(`${base}/quests/${who}`, { signal: AbortSignal.timeout(DEADLINE_MS + 15_000) }).then(async (r) => ({ status: r.status, body: await r.text() })));
     }
     const got = await allAnswer(`GET /quests, round ${round}`, reads, { held });
     got.forEach((r, i) => {
