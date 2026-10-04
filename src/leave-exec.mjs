@@ -25,6 +25,7 @@
 // { error: { code, defect, hint } } (a bounce is an answer); exit 1 only when the
 // machinery itself trips.
 
+import { onePerResidentDefect, onePerResidentHint, capHint, residentParcels, isPriorEstate } from "./parcel-law.mjs";
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve, dirname, relative } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -84,10 +85,10 @@ async function main() {
 
   const tools = join(CLONE, "tools");
   const tEngine = performance.now();
+  const foldMod = await import(pathToFileURL(join(tools, "marks-fold.mjs")));
   const { loadMarks, containmentParents, containmentParentOf, placementParent, worldRootOf,
           PARCEL_CLAIM_CAP, PARCEL_CAP_LAW_DATE, PARCEL_EXTENT_M,
-          worldToFile, ringToFile, COORDS_FIELD, COORDS_RELATIVE } =
-    await import(pathToFileURL(join(tools, "marks-fold.mjs")));
+          worldToFile, ringToFile, COORDS_FIELD, COORDS_RELATIVE } = foldMod;
   phases.push(`engine=${Math.round(performance.now() - tEngine)}ms`);
   let branch;
   try {
@@ -212,7 +213,11 @@ async function main() {
       const held = marks.filter((m) => m.kind === "parcel" && credOf(m.by ?? m.household) === cred).length;
       if (held >= cap)
         return err(403, `your household already holds ${held} parcel${held === 1 ? "" : "s"}`,
-          `parcel claiming is capped at ${cap} per household (ruled ${PARCEL_CAP_LAW_DATE ?? "2026-07-30"}; prior holdings stand) — new ground for this household is the founder's word, not the door's`);
+          capHint(cap, PARCEL_CAP_LAW_DATE ?? "2026-07-30"));
+      // one parcel per resident (the-town/one-per-resident, Darko 2026-10-04; POS-368)
+      const theirs = residentParcels(marks, p.by, id);
+      if (theirs.length && !isPriorEstate(foldMod, id))
+        return err(409, onePerResidentDefect(foldMod), onePerResidentHint(theirs[0].id));
     }
   }
 
