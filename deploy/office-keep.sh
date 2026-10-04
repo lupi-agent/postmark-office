@@ -178,6 +178,31 @@ else
   echo "[office-keep] positions snapshot NOT written (non-fatal) — $snapped — the next tick tries again; world2/tools/position-snapshot.mjs --verify says where it stands" >&2
 fi
 
+# ── one household, one mint key: the alarm's log line (Darko, 2026-10-04) ────
+# The town's own predicate (tools/household-keys.mjs) over the frozen snapshot:
+# every declared household mints under ONE key and no key spans two houses.
+# One JSON line per tick, appended to the log the roll-call reads (the
+# postmark-office-rehydrate.timer row's outcome block: alarm_on_nonempty
+# split_households / shared_keys, alarm_on_false checked). NON-FATAL: a split
+# is the alarm's to raise, never this tick's to stop on. A run that produced no
+# JSON (the tool absent or crashed) still writes a line, `checked: false`, so
+# "did not run" never reads like "found nothing".
+HK_LOG="${HOUSEHOLD_KEYS_LOG:-/srv/postmark-harbor/household-keys.jsonl}"
+hk_out="$(node "$SNAP/town/tools/household-keys.mjs" --json --repo "$SNAP/town" 2>&1)" || true
+if node -e '
+  const text = process.argv[1] ?? "";
+  let j = null;
+  try { j = JSON.parse(text.trim().split("\n").pop()); } catch {}
+  const line = j && Array.isArray(j.split_households)
+    ? { ...j, checked: true }
+    : { at: new Date().toISOString(), checked: false, split_households: [], shared_keys: [], error: text.slice(0, 400) };
+  process.stdout.write(JSON.stringify(line) + "\n");
+' "$hk_out" >> "$HK_LOG"; then
+  echo "[office-keep] household keys: $(printf '%s' "$hk_out" | tail -n 1 | cut -c1-300)"
+else
+  echo "[office-keep] household keys line NOT written to $HK_LOG (non-fatal) — the roll-call will read the log as stale" >&2
+fi
+
 # ── outside the lock: the panes, from the frozen snapshot ────────────────────
 # publish-windows keeps its stage-and-swap: a failed publish leaves the live
 # webroot untouched and fails the tick loudly.

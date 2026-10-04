@@ -100,3 +100,26 @@ test("the fixture engine and the town's own engine answer identically", { skip: 
   const canonicals = ["- one", "- two", "- three"];
   assert.deepEqual(FIXTURE.sealChain(canonicals), REAL.sealChain(canonicals));
 });
+
+// ONE HOUSEHOLD, ONE MINT KEY (2026-10-04): the fixture's current-keys fold and
+// its household-keys predicate, read back against the town's own on the LIVE
+// town clone (every pin, room and registry line the town has), and again with
+// one line folded that moves a real resident off its house key, so the
+// comparison includes a split and not only a clean town.
+const REAL_KEYS = join(TOWN, "tools", "household-keys.mjs");
+test("the fixture's household fold and predicate answer as the town's do, on the live town", { skip: !existsSync(REAL_KEYS) && `no town predicate at ${REAL_KEYS}` }, async () => {
+  const REAL = await import(pathToFileURL(REAL_MINT).href);
+  const REALK = await import(pathToFileURL(REAL_KEYS).href);
+  const FIXK = await import(pathToFileURL(join(process.env.STAMP_ENGINE_DIR, "household-keys.mjs")).href);
+  const real = REAL.currentHouseholds(TOWN), fix = FIXTURE.currentHouseholds(TOWN);
+  assert.deepEqual(Object.fromEntries([...fix].map(([h, v]) => [h, v.key])), Object.fromEntries([...real].map(([h, v]) => [h, v.key])));
+  const houses = REALK.readHouses(TOWN);
+  // a split, by folding a line that moves one resident of a real house off its key
+  const [slug, rec] = Object.entries(houses).find(([, r]) => (r.residents ?? []).length > 1);
+  const extra = [`- 2026-12-31 · registry: ${rec.residents[0]} = gh:0`];
+  for (const lines of [[], extra]) {
+    assert.deepEqual(FIXK.describe(FIXK.householdKeySplits({ roll: FIXK.rollWith(fix, lines), houses })),
+      REALK.describe(REALK.householdKeySplits({ roll: REALK.rollWith(real, lines), houses })));
+  }
+  assert.match(FIXK.describe(FIXK.householdKeySplits({ roll: FIXK.rollWith(fix, extra), houses })).join("\n"), new RegExp(`${slug} mints under 2 keys`));
+});
