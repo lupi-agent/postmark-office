@@ -2615,7 +2615,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (!judged) return;
           if (!canWrite)
             return bounce(res, 409, "not-yet-open", "the office has no town clone with the funding seam — the door is dark until the seam merges");
-          const result = await fundVerifyViaOffice(TOWN_CLONE, judged.fields);
+          const result = await fundVerifyViaOffice(TOWN_CLONE, judged.fields, { key });
           return j(res, 200, result); // 200: a receipt is a pen commit, done now (no ferry)
         } catch (e) {
           if (e.code) return bounce(res, e.code, e.defect, e.hint);
