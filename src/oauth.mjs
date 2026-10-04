@@ -12,9 +12,13 @@
 // handles). Sign-in with the household account IS the key — no secrets are
 // ever handed to a human.
 //
-// State lives in oauth.db — deliberately separate from office.db, which is
-// rebuilt from a clone. Auth sessions are office paperwork, not town truth;
-// wiping oauth.db only forces every connector to sign in again.
+// State lives in the office's paperwork — deliberately separate from office.db,
+// which is rebuilt from a clone. Auth sessions are office paperwork, not town
+// truth. Since POS-271 every read and write here goes through a paper
+// (paperwork.mjs): oauth.db by default, the store's 031 tables once the office
+// is switched (OFFICE_PAPERWORK_STORE=1). So every function below that touches
+// a session is async, and takes the paper (or a node:sqlite handle, which is a
+// paper on its file) as `odb`.
 //
 // Env:
 //   PUBLIC_BASE                          e.g. https://postmark.town/api (the /api
@@ -25,6 +29,8 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
+import { asPaper } from "./paperwork.mjs";
+import { probeOf } from "./index-probe.mjs";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -65,6 +71,13 @@ const sha256 = (s) => createHash("sha256").update(s).digest("base64url");
 export function openOauthDb(path, { readOnly = false } = {}) {
   if (readOnly) return new DatabaseSync(path, { readOnly: true });
   const db = new DatabaseSync(path);
+  oauthSchema(db);
+  return db;
+}
+
+/** The file's own shape, and its additive migrations. The writer runs it; the
+ *  store's shape is 031's. Exported for paperwork.mjs § openPaper. */
+export function oauthSchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS clients (client_id TEXT PRIMARY KEY, json TEXT, created INTEGER);
     CREATE TABLE IF NOT EXISTS pending (id TEXT PRIMARY KEY, json TEXT, expires INTEGER);
@@ -74,7 +87,7 @@ export function openOauthDb(path, { readOnly = false } = {}) {
     CREATE TABLE IF NOT EXISTS berths  (slug TEXT PRIMARY KEY, token_hash TEXT UNIQUE,
       created INTEGER, expires INTEGER, card TEXT,
       cosigned_gh_id INTEGER, cosigned_gh_login TEXT, cosigned_at INTEGER,
-      from_town TEXT);
+      from_town TEXT, rules_read_at INTEGER);
     CREATE TABLE IF NOT EXISTS key_claims (
       ask_hash TEXT PRIMARY KEY,          -- the capability: sha256 of the link's secret
       handle TEXT, token_hash TEXT UNIQUE,
@@ -94,15 +107,18 @@ export function openOauthDb(path, { readOnly = false } = {}) {
   // (2026-08-16): a berth may DECLARE the town it sailed from. A claim, not a
   // paper — attestation is the deferred half of the portal.
   try { db.exec("ALTER TABLE berths ADD COLUMN from_town TEXT"); } catch { /* already there */ }
-  return db;
+  // When the berth acknowledged the town's rules for visitors (POS-300,
+  // visitor-rules.mjs). Null until then; the store's column is 051.
+  try { db.exec("ALTER TABLE berths ADD COLUMN rules_read_at INTEGER"); } catch { /* already there */ }
 }
 
-const sweep = (odb) => {
+const sweep = async (odb) => {
+  const P = asPaper(odb);
   const t = now();
-  odb.prepare("DELETE FROM pending WHERE expires < ?").run(t);
-  odb.prepare("DELETE FROM codes WHERE expires < ?").run(t);
-  odb.prepare("DELETE FROM tokens WHERE expires < ?").run(t);
-  sweepClaims(odb);
+  await P.run("DELETE FROM pending WHERE expires < ?", t);
+  await P.run("DELETE FROM codes WHERE expires < ?", t);
+  await P.run("DELETE FROM tokens WHERE expires < ?", t);
+  await sweepClaims(P);
 };
 
 // Split out and EXPORTED because the claim desk is not an oauth route and never
@@ -111,7 +127,7 @@ const sweep = (odb) => {
 // the primary key while every surface promised the handle was free. Found by
 // the reviewer (repair 1); the desk calls this on its own path now.
 export const sweepClaims = (odb) =>
-  odb.prepare("DELETE FROM key_claims WHERE expires < ?").run(now());
+  asPaper(odb).run("DELETE FROM key_claims WHERE expires < ?", now());
 
 // ── the registry mapping (GitHub ID -> handles) ──────────────────────────────
 // Pinned immutable IDs win (tools/github-ids.json); ADDRESS.md login strings
@@ -122,25 +138,26 @@ export const sweepClaims = (odb) =>
 // every resident's row on every authenticated request, ~10% of the office's
 // thread in the live profile. The login -> handles map is built once per change
 // of the residents table (a cheap count-and-length stamp, no JSON parsed) and of
-// the pins, per db handle. Everything else below, the harbor stamp included,
+// the pins, per index. Everything else below, the harbor stamp included,
 // is still recomputed on every lookup, so it falls off the moment the
 // Registrar lands a handle ashore, exactly as before.
-const loginIndexes = new WeakMap(); // db -> { stamp, map }
+// The index is office.db's or, with TOWN_INDEX_READS=store, the store's probe
+// (index-probe.mjs; its stamp is the store's head).
+const loginIndexes = new WeakMap(); // probe -> { stamp, map }
 function loginIndex(db, pinnedHandles) {
-  const st = db.prepare("SELECT count(*) AS n, total(length(json)) AS l, max(rowid) AS r FROM residents").get();
-  const stamp = `${st.n}:${st.l}:${st.r}:${[...pinnedHandles].sort().join(",")}`;
-  const hit = loginIndexes.get(db);
+  const ix = probeOf(db);
+  const stamp = `${ix.loginStamp()}:${[...pinnedHandles].sort().join(",")}`;
+  const hit = loginIndexes.get(ix);
   if (hit && hit.stamp === stamp) return hit.map;
   const map = new Map();
-  for (const r of db.prepare("SELECT handle, json FROM residents").all()) {
+  for (const r of ix.loginRows()) {
     if (pinnedHandles.has(r.handle)) continue; // pins are authoritative
-    const d = JSON.parse(r.json);
-    const bound = (d.github ?? d.address?.data?.github ?? "").toLowerCase();
+    const bound = r.github.toLowerCase();
     if (!bound) continue;
     if (!map.has(bound)) map.set(bound, []);
     map.get(bound).push(r.handle);
   }
-  loginIndexes.set(db, { stamp, map });
+  loginIndexes.set(ix, { stamp, map });
   return map;
 }
 
@@ -167,8 +184,8 @@ export function householdFor(clone, db, ghId, ghLogin) {
   // Registrar lands a handle ashore.
   let settled = false;
   try {
-    const q = db.prepare("SELECT 1 FROM residents WHERE handle = ?");
-    for (const h of handles) if (q.get(h)) { settled = true; break; }
+    const ix = probeOf(db);
+    for (const h of handles) if (ix.hasResident(h)) { settled = true; break; }
   } catch { settled = true; /* an unreadable index must never widen the gate */ }
   return { household: ghLogin ?? String(ghId), handles, ...(settled ? {} : { harbor: true }) };
 }
@@ -181,8 +198,8 @@ export function householdFor(clone, db, ghId, ghLogin) {
 // their new household with no re-auth. Verified GitHub identity rides along on
 // both shapes so request_residency can pin from it (never from a PR author).
 
-export function oauthLookup(odb, db, clone, token) {
-  const row = odb.prepare("SELECT * FROM tokens WHERE token_hash = ? AND kind = 'access'").get(sha256(token));
+export async function oauthLookup(odb, db, clone, token) {
+  const row = await asPaper(odb).get("SELECT * FROM tokens WHERE token_hash = ? AND kind = 'access'", sha256(token));
   if (!row || row.expires < now()) return null;
   const verified = { ghId: row.gh_id, ghLogin: row.gh_login };
   const hh = householdFor(clone, db, row.gh_id, row.gh_login);
@@ -219,8 +236,12 @@ export function oauthLookup(odb, db, clone, token) {
 
 const KEY_TTL_S = 100 * 365 * 24 * 3600;
 
-export function mintHouseholdKey(odb, ghId, ghLogin, custody = null) {
+export async function mintHouseholdKey(odb, ghId, ghLogin, custody = null) {
   const key = "pmk_" + rand(32);
+  // ONE TRANSACTION (POS-271): on the file each statement below committed on
+  // its own; on the store a rotation that deleted the old key and then failed
+  // to insert the new one would leave the account keyless. So it is one act.
+  return asPaper(odb).tx(async (t) => {
   // ROTATION IS SCOPED BY WHOSE HAND THE KEY IS IN (the reviewer's repair 4).
   // It used to delete every household row for the account, so the resident's
   // own rotation silently killed their HUMAN's key — while the consent screen
@@ -238,12 +259,12 @@ export function mintHouseholdKey(odb, ghId, ghLogin, custody = null) {
   // minted — the grant always names one — so the fallback below is defensive,
   // never a road.)
   if (held === null) {
-    odb.prepare("DELETE FROM tokens WHERE kind = 'household' AND gh_id = ? AND held_by IS NULL").run(ghId);
+    await t.run("DELETE FROM tokens WHERE kind = 'household' AND gh_id = ? AND held_by IS NULL", ghId);
   } else if (custody.claimedHandle) {
-    odb.prepare("DELETE FROM tokens WHERE kind = 'household' AND gh_id = ? AND held_by = 'resident' AND claimed_handle = ?")
-      .run(ghId, custody.claimedHandle);
+    await t.run("DELETE FROM tokens WHERE kind = 'household' AND gh_id = ? AND held_by = 'resident' AND claimed_handle = ?",
+      ghId, custody.claimedHandle);
   } else {
-    odb.prepare("DELETE FROM tokens WHERE kind = 'household' AND gh_id = ? AND held_by = 'resident'").run(ghId);
+    await t.run("DELETE FROM tokens WHERE kind = 'household' AND gh_id = ? AND held_by = 'resident'", ghId);
   }
   // ROTATION MUST REACH EVERY SHAPE THIS ACCOUNT'S KEY CAN WEAR, and until the
   // claim desk existed there was only one. A co-signed claim IS a household key
@@ -261,22 +282,23 @@ export function mintHouseholdKey(odb, ghId, ghLogin, custody = null) {
   // not this resident's to spend).
   if (custody) {
     if (custody.claimedHandle)
-      odb.prepare("DELETE FROM key_claims WHERE cosigned_gh_id = ? AND handle = ?").run(ghId, custody.claimedHandle);
+      await t.run("DELETE FROM key_claims WHERE cosigned_gh_id = ? AND handle = ?", ghId, custody.claimedHandle);
     else
-      odb.prepare("DELETE FROM key_claims WHERE cosigned_gh_id = ?").run(ghId);
+      await t.run("DELETE FROM key_claims WHERE cosigned_gh_id = ?", ghId);
   }
-  odb.prepare(
+  await t.run(
     "INSERT INTO tokens (token_hash, kind, gh_id, gh_login, client_id, expires, created, held_by, claimed_handle, cosigned_gh_id, cosigned_gh_login)"
-    + " VALUES (?, 'household', ?, ?, NULL, ?, ?, ?, ?, ?, ?)"
-  ).run(sha256(key), ghId, ghLogin ?? null, now() + KEY_TTL_S, now(),
+    + " VALUES (?, 'household', ?, ?, NULL, ?, ?, ?, ?, ?, ?)",
+    sha256(key), ghId, ghLogin ?? null, now() + KEY_TTL_S, now(),
     held, custody?.claimedHandle ?? null,
     custody?.cosignedBy?.id ?? null, custody?.cosignedBy?.login ?? null);
   return key;
+  });
 }
 
-export function keyLookup(odb, db, clone, token) {
+export async function keyLookup(odb, db, clone, token) {
   if (!token.startsWith("pmk_")) return null;
-  const row = odb.prepare("SELECT * FROM tokens WHERE token_hash = ? AND kind = 'household'").get(sha256(token));
+  const row = await asPaper(odb).get("SELECT * FROM tokens WHERE token_hash = ? AND kind = 'household'", sha256(token));
   if (!row || row.expires < now()) return null;
   const verified = { ghId: row.gh_id, ghLogin: row.gh_login, keyKind: "household" };
   // The disclosure rides the credential now, not the claim row, so it survives
@@ -303,11 +325,11 @@ export function keyLookup(odb, db, clone, token) {
 const BERTH_TTL_S = 14 * 12 * 3600; // fourteen crossings — seven days
 export const BERTH_SLUG = /^[a-z0-9][a-z0-9-]{1,30}$/;
 
-export function mintBerth(odb, slug, fromTown = null) {
+export async function mintBerth(odb, slug, fromTown = null) {
   const key = "pmb_" + rand(32);
   const t = now();
-  odb.prepare("INSERT INTO berths (slug, token_hash, created, expires, from_town) VALUES (?,?,?,?,?)")
-    .run(slug, sha256(key), t, t + BERTH_TTL_S, fromTown);
+  await asPaper(odb).run("INSERT INTO berths (slug, token_hash, created, expires, from_town) VALUES (?,?,?,?,?)",
+    slug, sha256(key), t, t + BERTH_TTL_S, fromTown);
   return { key, expires_at: new Date((t + BERTH_TTL_S) * 1000).toISOString() };
 }
 
@@ -316,13 +338,13 @@ export function mintBerth(odb, slug, fromTown = null) {
 export const FROM_TOWN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 /** A live berth holds its slug against re-mint; an expired one frees it. */
-export function berthTaken(odb, slug) {
-  return Boolean(odb.prepare("SELECT slug FROM berths WHERE slug = ? AND expires >= ?").get(slug, now()));
+export async function berthTaken(odb, slug) {
+  return Boolean(await asPaper(odb).get("SELECT slug FROM berths WHERE slug = ? AND expires >= ?", slug, now()));
 }
 
-export function berthLookup(odb, db, clone, token) {
+export async function berthLookup(odb, db, clone, token) {
   if (!token.startsWith("pmb_")) return null;
-  const row = odb.prepare("SELECT * FROM berths WHERE token_hash = ?").get(sha256(token));
+  const row = await asPaper(odb).get("SELECT * FROM berths WHERE token_hash = ?", sha256(token));
   if (!row || row.expires < now()) return null;
   // UPGRADE IN PLACE (the arrival ruling, 2026-08-15): the moment a co-signed
   // berth's human is known to the registry, this same key answers as the
@@ -339,13 +361,20 @@ export function berthLookup(odb, db, clone, token) {
       // cosigned rides the upgraded shape too — /api/me was answering false
       // beside /api/household's berth-cosigned tier (#1817, defect 2).
       cosigned: true,
-      ...(hh.harbor ? { berth: row.slug, slug: row.slug } : {}) };
+      ...(hh.harbor ? { berth: row.slug, slug: row.slug, rulesRead: Boolean(row.rules_read_at) } : {}) };
   }
   return {
     berth: true, slug: row.slug,
     household: null, handles: new Set(),
     cosigned: Boolean(row.cosigned_gh_id),
+    rulesRead: Boolean(row.rules_read_at),
   };
+}
+
+/** The berth read the town's rules for visitors (POS-300). Once per berth: a
+ *  second acknowledgement keeps the first one's time. */
+export async function acknowledgeVisitorRules(odb, slug) {
+  await asPaper(odb).run("UPDATE berths SET rules_read_at = ? WHERE slug = ? AND rules_read_at IS NULL", now(), slug);
 }
 
 // ── claims (a rolled resident's own key — the self-serve lane, 2026-09-08) ───
@@ -423,18 +452,18 @@ const CLAIM_LIVE_TTL_S = KEY_TTL_S;  // once co-signed it is a household key, an
 /** A short, human-comparable fingerprint of an ask — safe to print, never the secret. */
 export const claimFingerprint = (ask) => sha256(ask).slice(0, 8);
 
-export function mintClaim(odb, handle) {
+export async function mintClaim(odb, handle) {
   const key = "pmc_" + rand(32);
   const ask = rand(24);
   const t = now();
-  odb.prepare("INSERT INTO key_claims (ask_hash, handle, token_hash, created, expires) VALUES (?,?,?,?,?)")
-    .run(sha256(ask), handle, sha256(key), t, t + CLAIM_TTL_S);
+  await asPaper(odb).run("INSERT INTO key_claims (ask_hash, handle, token_hash, created, expires) VALUES (?,?,?,?,?)",
+    sha256(ask), handle, sha256(key), t, t + CLAIM_TTL_S);
   return { key, ask, fingerprint: claimFingerprint(ask), expires_at: new Date((t + CLAIM_TTL_S) * 1000).toISOString() };
 }
 
 /** The row a co-sign link names, or null. Live rows only. */
-export function claimByAsk(odb, ask) {
-  const row = odb.prepare("SELECT * FROM key_claims WHERE ask_hash = ?").get(sha256(ask ?? ""));
+export async function claimByAsk(odb, ask) {
+  const row = await asPaper(odb).get("SELECT * FROM key_claims WHERE ask_hash = ?", sha256(ask ?? ""));
   return row && row.expires >= now() ? row : null;
 }
 
@@ -457,14 +486,16 @@ export function claimByAsk(odb, ask) {
  * WEAR, applied to the grant; the invariant above mintHouseholdKey — one live
  * key per resident in the resident's hand — is only true with this line.
  */
-export function cosignClaim(odb, askHash, ghId, ghLogin) {
-  const row = odb.prepare("SELECT handle FROM key_claims WHERE ask_hash = ?").get(askHash);
-  if (!row) return false;
-  odb.prepare("UPDATE key_claims SET cosigned_gh_id = ?, cosigned_gh_login = ?, cosigned_at = ?, expires = ? WHERE ask_hash = ?")
-    .run(ghId, ghLogin ?? null, now(), now() + CLAIM_LIVE_TTL_S, askHash);
-  odb.prepare("DELETE FROM key_claims WHERE handle = ? AND ask_hash != ?").run(row.handle, askHash);
-  odb.prepare("DELETE FROM tokens WHERE kind = 'household' AND held_by = 'resident' AND claimed_handle = ?").run(row.handle);
-  return true;
+export async function cosignClaim(odb, askHash, ghId, ghLogin) {
+  return asPaper(odb).tx(async (t) => {
+    const row = await t.get("SELECT handle FROM key_claims WHERE ask_hash = ?", askHash);
+    if (!row) return false;
+    await t.run("UPDATE key_claims SET cosigned_gh_id = ?, cosigned_gh_login = ?, cosigned_at = ?, expires = ? WHERE ask_hash = ?",
+      ghId, ghLogin ?? null, now(), now() + CLAIM_LIVE_TTL_S, askHash);
+    await t.run("DELETE FROM key_claims WHERE handle = ? AND ask_hash != ?", row.handle, askHash);
+    await t.run("DELETE FROM tokens WHERE kind = 'household' AND held_by = 'resident' AND claimed_handle = ?", row.handle);
+    return true;
+  });
 }
 
 // The two URLs the claim receipt hands out, built HERE because this file owns
@@ -484,10 +515,11 @@ export const claimStateUrlFor = (handle) => `${PUBLIC_BASE}/keys/claim?handle=${
  * do. The durable fact lives on the household token now, and that is what this
  * answers from; the ask table is only consulted for asks still standing.
  */
-export function claimState(odb, handle) {
-  const held = odb.prepare(
-    "SELECT * FROM tokens WHERE kind = 'household' AND held_by = 'resident' AND claimed_handle = ? AND expires >= ?"
-  ).get(handle, now());
+export async function claimState(odb, handle) {
+  const P = asPaper(odb);
+  const held = await P.get(
+    "SELECT * FROM tokens WHERE kind = 'household' AND held_by = 'resident' AND claimed_handle = ? AND expires >= ?",
+    handle, now());
   if (held) {
     return {
       handle,
@@ -498,9 +530,9 @@ export function claimState(odb, handle) {
       note: "this resident's key is in their own hand, co-signed by the account the town binds them to — it is not their human's key and their human was never shown it. This stays true across their own rotations: the key changes, the custody does not.",
     };
   }
-  const row = odb.prepare(
-    "SELECT * FROM key_claims WHERE handle = ? AND cosigned_gh_id IS NOT NULL AND expires >= ?"
-  ).get(handle, now());
+  const row = await P.get(
+    "SELECT * FROM key_claims WHERE handle = ? AND cosigned_gh_id IS NOT NULL AND expires >= ?",
+    handle, now());
   if (row) {
     return {
       handle,
@@ -511,9 +543,9 @@ export function claimState(odb, handle) {
       note: "this resident's key is in their own hand, co-signed by the account the town binds them to — it is not their human's key and their human was never shown it",
     };
   }
-  const standing = odb.prepare(
-    "SELECT COUNT(*) AS n FROM key_claims WHERE handle = ? AND cosigned_gh_id IS NULL AND expires >= ?"
-  ).get(handle, now());
+  const standing = await P.get(
+    "SELECT COUNT(*) AS n FROM key_claims WHERE handle = ? AND cosigned_gh_id IS NULL AND expires >= ?",
+    handle, now());
   if (standing && standing.n) {
     return {
       handle,
@@ -534,9 +566,9 @@ export function claimState(odb, handle) {
  * whatever household that account happens to keep, which is a different key
  * than the one that was asked for.
  */
-export function claimLookup(odb, db, clone, token) {
+export async function claimLookup(odb, db, clone, token) {
   if (!token.startsWith("pmc_")) return null;
-  const row = odb.prepare("SELECT * FROM key_claims WHERE token_hash = ?").get(sha256(token));
+  const row = await asPaper(odb).get("SELECT * FROM key_claims WHERE token_hash = ?", sha256(token));
   if (!row || row.expires < now() || !row.cosigned_gh_id) return null;
   const hh = householdFor(clone, db, row.cosigned_gh_id, row.cosigned_gh_login);
   if (!hh || !hh.handles.has(row.handle)) return null;
@@ -635,10 +667,11 @@ const asMetadata = () => ({
 // locations proxy verbatim, so both path-inserted and bare forms are served).
 
 async function handleOauthRoute(req, res, ctx) {
-  const { odb, db, clone } = ctx;
+  const { db, clone } = ctx;
+  const odb = asPaper(ctx.odb);
   const url = new URL(req.url, "http://localhost");
   const path = url.pathname.replace(/\/+$/, "") || "/";
-  sweep(odb);
+  await sweep(odb);
 
   // discovery — liberal: bare and path-inserted well-known forms
   if (req.method === "GET" && /^\/\.well-known\/oauth-protected-resource(\/api\/mcp)?$/.test(path))
@@ -668,7 +701,7 @@ async function handleOauthRoute(req, res, ctx) {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
     };
-    odb.prepare("INSERT INTO clients VALUES (?, ?, ?)").run(client.client_id, JSON.stringify(client), now());
+    await odb.run("INSERT INTO clients VALUES (?, ?, ?)", client.client_id, JSON.stringify(client), now());
     return jres(res, 201, client);
   }
 
@@ -681,7 +714,7 @@ async function handleOauthRoute(req, res, ctx) {
   // No client, no PKCE: this is a human-facing consent, not a token grant.
   if (req.method === "GET" && path === "/oauth/berth-cosign") {
     const slug = (url.searchParams.get("slug") ?? "").trim().toLowerCase();
-    const berth = slug ? odb.prepare("SELECT * FROM berths WHERE slug = ?").get(slug) : null;
+    const berth = slug ? await odb.get("SELECT * FROM berths WHERE slug = ?", slug) : null;
     if (!berth || berth.expires < now())
       return html(res, 404, page("No such berth", "<p>That berth isn't at the harbor — it may have sunset. Your agent can re-board with one POST and begin again.</p>"));
     if (!berth.card)
@@ -692,7 +725,7 @@ async function handleOauthRoute(req, res, ctx) {
       return html(res, 503, page("Door not wired", "<p>GitHub sign-in isn't configured on this office yet.</p>"));
 
     const pendingId = rand(24);
-    odb.prepare("INSERT INTO pending VALUES (?, ?, ?)").run(pendingId, JSON.stringify({
+    await odb.run("INSERT INTO pending VALUES (?, ?, ?)", pendingId, JSON.stringify({
       kind: "berth-cosign", slug, stage: "to-github",
     }), now() + PENDING_TTL_S);
     const gh = new URL(GH_AUTH);
@@ -714,7 +747,7 @@ async function handleOauthRoute(req, res, ctx) {
   // agent to its human. A handle in this query string is now simply not a door.
   if (req.method === "GET" && path === "/oauth/claim-cosign") {
     const ask = (url.searchParams.get("ask") ?? "").trim();
-    const claim = ask ? claimByAsk(odb, ask) : null;
+    const claim = ask ? await claimByAsk(odb, ask) : null;
     if (!claim)
       return html(res, 404, page("No such ask", "<p>This link does not name an ask the office is holding — it may have lapsed, or already been answered. Ask your agent for a fresh one; only they can produce it.</p>"));
     if (claim.cosigned_gh_id)
@@ -723,7 +756,7 @@ async function handleOauthRoute(req, res, ctx) {
       return html(res, 503, page("Door not wired", "<p>GitHub sign-in isn't configured on this office yet.</p>"));
 
     const pendingId = rand(24);
-    odb.prepare("INSERT INTO pending VALUES (?, ?, ?)").run(pendingId, JSON.stringify({
+    await odb.run("INSERT INTO pending VALUES (?, ?, ?)", pendingId, JSON.stringify({
       kind: "claim-cosign", handle: claim.handle, ask_hash: claim.ask_hash,
       fingerprint: claimFingerprint(ask), stage: "to-github",
     }), now() + PENDING_TTL_S);
@@ -738,7 +771,7 @@ async function handleOauthRoute(req, res, ctx) {
   // authorize: validate -> park the request -> send the human to GitHub
   if (req.method === "GET" && path === "/oauth/authorize") {
     const q = url.searchParams;
-    const clientRow = odb.prepare("SELECT json FROM clients WHERE client_id = ?").get(q.get("client_id") ?? "");
+    const clientRow = await odb.get("SELECT json FROM clients WHERE client_id = ?", q.get("client_id") ?? "");
     if (!clientRow) return html(res, 400, page("Unknown client", `<p>This client isn't registered with the office. <span class="muted">(dynamic registration: POST ${PUBLIC_BASE}/oauth/register)</span></p>`));
     const client = JSON.parse(clientRow.json);
     const redirectUri = q.get("redirect_uri") ?? client.redirect_uris[0];
@@ -752,7 +785,7 @@ async function handleOauthRoute(req, res, ctx) {
       return html(res, 503, page("Door not wired", "<p>GitHub sign-in isn't configured on this office yet.</p>"));
 
     const pendingId = rand(24);
-    odb.prepare("INSERT INTO pending VALUES (?, ?, ?)").run(pendingId, JSON.stringify({
+    await odb.run("INSERT INTO pending VALUES (?, ?, ?)", pendingId, JSON.stringify({
       client_id: client.client_id, client_name: client.client_name,
       redirect_uri: redirectUri, state: q.get("state") ?? "",
       code_challenge: q.get("code_challenge"), scope: q.get("scope") ?? "town",
@@ -770,7 +803,7 @@ async function handleOauthRoute(req, res, ctx) {
   // GitHub sends the human back; we learn who they are and ask consent
   if (req.method === "GET" && path === "/oauth/github/callback") {
     const pendingId = url.searchParams.get("state") ?? "";
-    const row = odb.prepare("SELECT json, expires FROM pending WHERE id = ?").get(pendingId);
+    const row = await odb.get("SELECT json, expires FROM pending WHERE id = ?", pendingId);
     if (!row || row.expires < now()) return html(res, 400, page("Expired", "<p>This sign-in took too long or was already used. Close the tab and try connecting again.</p>"));
     const pending = JSON.parse(row.json);
     if (pending.stage !== "to-github") return html(res, 400, page("Out of order", "<p>This sign-in is in the wrong state. Start over.</p>"));
@@ -804,13 +837,13 @@ async function handleOauthRoute(req, res, ctx) {
     // co-signing (the agent's parked declaration, first line of its card)
     // before anything runs. Approval executes the declaration; nothing else.
     if (pending.kind === "berth-cosign") {
-      const berth = odb.prepare("SELECT * FROM berths WHERE slug = ?").get(pending.slug);
+      const berth = await odb.get("SELECT * FROM berths WHERE slug = ?", pending.slug);
       if (!berth || berth.expires < now() || !berth.card)
         return html(res, 409, page("Berth changed", "<p>That berth's declaration is no longer parked. Ask your agent to begin again.</p>"));
       let decl = {};
       try { decl = JSON.parse(berth.card); } catch { decl = {}; }
       const nonce2 = rand(16);
-      odb.prepare("UPDATE pending SET json = ? WHERE id = ?").run(JSON.stringify({
+      await odb.run("UPDATE pending SET json = ? WHERE id = ?", JSON.stringify({
         ...pending, stage: "consent", nonce: nonce2, gh_id: ghUser.id, gh_login: ghUser.login,
       }), pendingId);
       const firstLine = String(decl.card ?? "").split(/\r?\n/).find((l) => l.trim())?.slice(0, 160) ?? "";
@@ -842,7 +875,7 @@ async function handleOauthRoute(req, res, ctx) {
     // credential in this file resolves through, so the answer cannot disagree
     // with what the key would act as.
     if (pending.kind === "claim-cosign") {
-      const claim = odb.prepare("SELECT * FROM key_claims WHERE ask_hash = ?").get(pending.ask_hash);
+      const claim = await odb.get("SELECT * FROM key_claims WHERE ask_hash = ?", pending.ask_hash);
       if (!claim || claim.expires < now())
         return html(res, 409, page("Ask changed", "<p>That ask is no longer standing. Your agent can make a fresh one.</p>"));
       const asked = householdFor(clone, db, ghUser.id, ghUser.login);
@@ -854,7 +887,7 @@ async function handleOauthRoute(req, res, ctx) {
           their own hand. Nothing was changed.</p>
           <p class="muted">${asked ? `That account keeps: ${[...asked.handles].join(", ")}.` : "That account keeps no household in the town."}</p>`));
       const nonceC = rand(16);
-      odb.prepare("UPDATE pending SET json = ? WHERE id = ?").run(JSON.stringify({
+      await odb.run("UPDATE pending SET json = ? WHERE id = ?", JSON.stringify({
         ...pending, stage: "consent", nonce: nonceC, gh_id: ghUser.id, gh_login: ghUser.login,
       }), pendingId);
       return html(res, 200, page("Grant this agent your household's authority?", `
@@ -887,7 +920,7 @@ async function handleOauthRoute(req, res, ctx) {
     const hh = householdFor(clone, db, ghUser.id, ghUser.login);
 
     const nonce = rand(16);
-    odb.prepare("UPDATE pending SET json = ? WHERE id = ?").run(JSON.stringify({
+    await odb.run("UPDATE pending SET json = ? WHERE id = ?", JSON.stringify({
       ...pending, stage: "consent", nonce, gh_id: ghUser.id, gh_login: ghUser.login,
     }), pendingId);
 
@@ -930,18 +963,18 @@ async function handleOauthRoute(req, res, ctx) {
   // consent lands; mint the code and send the client on its way
   if (req.method === "POST" && path === "/oauth/consent") {
     const body = parseForm(await readBody(req), req.headers["content-type"]);
-    const row = odb.prepare("SELECT json, expires FROM pending WHERE id = ?").get(body.pending_id ?? "");
+    const row = await odb.get("SELECT json, expires FROM pending WHERE id = ?", body.pending_id ?? "");
     if (!row || row.expires < now()) return html(res, 400, page("Expired", "<p>This sign-in expired. Start over from your connector.</p>"));
     const pending = JSON.parse(row.json);
     if (pending.stage !== "consent" || pending.nonce !== body.nonce)
       return html(res, 400, page("Out of order", "<p>This consent form is stale. Start over.</p>"));
-    odb.prepare("DELETE FROM pending WHERE id = ?").run(body.pending_id);
+    await odb.run("DELETE FROM pending WHERE id = ?", body.pending_id);
 
     // ── the claim co-sign's approval: the key the agent already holds ────────
     if (pending.kind === "claim-cosign") {
       if (body.decision !== "approve")
         return html(res, 200, page("Not co-signed", "<p>Nothing was changed. The agent's ask lapses on its own, and its key never becomes anything.</p>"));
-      const claim = odb.prepare("SELECT * FROM key_claims WHERE ask_hash = ?").get(pending.ask_hash);
+      const claim = await odb.get("SELECT * FROM key_claims WHERE ask_hash = ?", pending.ask_hash);
       if (!claim || claim.expires < now())
         return html(res, 409, page("Ask changed", "<p>That ask is no longer standing. Your agent can make a fresh one.</p>"));
       // RE-CHECKED AT APPROVAL, not trusted from the parked pending row. The
@@ -959,7 +992,7 @@ async function handleOauthRoute(req, res, ctx) {
       // ledger is the right end state and it is town law, not an office
       // branch's to declare — named as a hand-up in the lane's report rather
       // than smuggled in under a fourth class.
-      cosignClaim(odb, claim.ask_hash, pending.gh_id, pending.gh_login);
+      await cosignClaim(odb, claim.ask_hash, pending.gh_id, pending.gh_login);
       return html(res, 200, page("Granted — the key is theirs", `
         <p><strong>${claim.handle}</strong>'s key is now in their own hand. You were never shown it
         and there is nothing for you to pass on.</p>
@@ -974,7 +1007,7 @@ async function handleOauthRoute(req, res, ctx) {
     if (pending.kind === "berth-cosign") {
       if (body.decision !== "approve")
         return html(res, 200, page("Not co-signed", "<p>Nothing was run. The declaration stays parked; your agent's berth stands as it was.</p>"));
-      const berth = odb.prepare("SELECT * FROM berths WHERE slug = ?").get(pending.slug);
+      const berth = await odb.get("SELECT * FROM berths WHERE slug = ?", pending.slug);
       if (!berth || berth.expires < now() || !berth.card)
         return html(res, 409, page("Berth changed", "<p>That berth's declaration is no longer parked. Ask your agent to begin again.</p>"));
       let decl = {};
@@ -986,8 +1019,8 @@ async function handleOauthRoute(req, res, ctx) {
         const admitted = await declareViaOffice(ctx.clone, { ...decl, handle: pending.slug },
           { ghId: pending.gh_id, ghLogin: pending.gh_login },
           { db: ctx.db, odb, dbPath: ctx.dbPath, mint: false });
-        odb.prepare("UPDATE berths SET cosigned_gh_id = ?, cosigned_gh_login = ?, cosigned_at = ? WHERE slug = ?")
-          .run(pending.gh_id, pending.gh_login, now(), pending.slug);
+        await odb.run("UPDATE berths SET cosigned_gh_id = ?, cosigned_gh_login = ?, cosigned_at = ? WHERE slug = ?",
+          pending.gh_id, pending.gh_login, now(), pending.slug);
         return html(res, 200, page("Co-signed — the house stands", `
           <p><strong>${esc(String(admitted.declared ?? decl.household ?? "").slice(0, 100))}</strong> is founded, with
           <strong>${pending.slug}</strong> as its first resident, admitted to the harbor there and then.</p>
@@ -1018,7 +1051,7 @@ async function handleOauthRoute(req, res, ctx) {
       return res.end();
     }
     const code = rand(24);
-    odb.prepare("INSERT INTO codes VALUES (?, ?, ?)").run(code, JSON.stringify({
+    await odb.run("INSERT INTO codes VALUES (?, ?, ?)", code, JSON.stringify({
       client_id: pending.client_id, redirect_uri: pending.redirect_uri,
       code_challenge: pending.code_challenge, gh_id: pending.gh_id, gh_login: pending.gh_login,
     }), now() + CODE_TTL_S);
@@ -1044,23 +1077,23 @@ async function handleOauthRoute(req, res, ctx) {
     const body = parseForm(await readBody(req), req.headers["content-type"]);
 
     if (body.grant_type === "authorization_code") {
-      const row = odb.prepare("SELECT json, expires FROM codes WHERE code = ?").get(body.code ?? "");
-      odb.prepare("DELETE FROM codes WHERE code = ?").run(body.code ?? ""); // single use, even on failure
+      const row = await odb.get("SELECT json, expires FROM codes WHERE code = ?", body.code ?? "");
+      await odb.run("DELETE FROM codes WHERE code = ?", body.code ?? ""); // single use, even on failure
       if (!row || row.expires < now()) return oerr(res, 400, "invalid_grant", "code unknown or expired");
       const grant = JSON.parse(row.json);
       if (body.client_id && body.client_id !== grant.client_id) return oerr(res, 400, "invalid_grant", "client_id mismatch");
       if (body.redirect_uri && body.redirect_uri !== grant.redirect_uri) return oerr(res, 400, "invalid_grant", "redirect_uri mismatch");
       if (!body.code_verifier || sha256(body.code_verifier) !== grant.code_challenge)
         return oerr(res, 400, "invalid_grant", "PKCE verification failed");
-      return issueTokens(odb, res, grant);
+      return await issueTokens(odb, res, grant);
     }
 
     if (body.grant_type === "refresh_token") {
       const hash = sha256(body.refresh_token ?? "");
-      const row = odb.prepare("SELECT * FROM tokens WHERE token_hash = ? AND kind = 'refresh'").get(hash);
+      const row = await odb.get("SELECT * FROM tokens WHERE token_hash = ? AND kind = 'refresh'", hash);
       if (!row || row.expires < now()) return oerr(res, 400, "invalid_grant", "refresh token unknown or expired");
-      odb.prepare("DELETE FROM tokens WHERE token_hash = ?").run(hash); // rotate
-      return issueTokens(odb, res, { client_id: row.client_id, gh_id: row.gh_id, gh_login: row.gh_login });
+      await odb.run("DELETE FROM tokens WHERE token_hash = ?", hash); // rotate
+      return await issueTokens(odb, res, { client_id: row.client_id, gh_id: row.gh_id, gh_login: row.gh_login });
     }
 
     return oerr(res, 400, "unsupported_grant_type", "authorization_code or refresh_token");
@@ -1098,7 +1131,7 @@ export async function handleOauth(req, res, ctx) {
   }
 }
 
-function issueTokens(odb, res, grant) {
+async function issueTokens(odb, res, grant) {
   const access = rand(32);
   const refresh = rand(32);
   const t = now();
@@ -1108,10 +1141,12 @@ function issueTokens(odb, res, grant) {
   // sign-in would have died on an arity error. A bare VALUES list is a
   // schema assumption written where nobody reads it.
   const cols = "INSERT INTO tokens (token_hash, kind, gh_id, gh_login, client_id, expires, created)";
-  odb.prepare(`${cols} VALUES (?, 'access', ?, ?, ?, ?, ?)`)
-    .run(sha256(access), grant.gh_id, grant.gh_login, grant.client_id ?? "", t + ACCESS_TTL_S, t);
-  odb.prepare(`${cols} VALUES (?, 'refresh', ?, ?, ?, ?, ?)`)
-    .run(sha256(refresh), grant.gh_id, grant.gh_login, grant.client_id ?? "", t + REFRESH_TTL_S, t);
+  await odb.tx(async (tx) => {
+    await tx.run(`${cols} VALUES (?, 'access', ?, ?, ?, ?, ?)`,
+      sha256(access), grant.gh_id, grant.gh_login, grant.client_id ?? "", t + ACCESS_TTL_S, t);
+    await tx.run(`${cols} VALUES (?, 'refresh', ?, ?, ?, ?, ?)`,
+      sha256(refresh), grant.gh_id, grant.gh_login, grant.client_id ?? "", t + REFRESH_TTL_S, t);
+  });
   return jres(res, 200, {
     access_token: access, token_type: "Bearer", expires_in: ACCESS_TTL_S,
     refresh_token: refresh, scope: "town",

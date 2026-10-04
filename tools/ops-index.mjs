@@ -19,7 +19,7 @@
 // Output: $OPS_ROOT/index.html (+ data.json — the freshness roll-up, so a
 // monitor can poll one file instead of four).
 //
-// Ordering note for the box: this must run AFTER its five siblings, so install
+// Ordering note for the box: this must run AFTER its six siblings, so install
 // it as /etc/cron.hourly/zz-postmark-ops-index (run-parts runs alphabetically).
 // Reading a sibling's twin one cycle late is not fatal — the chip reports the
 // twin's own generated_at, not this run's — but out of order it is always stale
@@ -172,6 +172,26 @@ const SHELF = [
     },
   },
   {
+    // AWARENESS (POS-282, Keemin 2026-09-27: "the tally is an /ops/ page — a
+    // sibling of traffic/git/economy/world/activity"). One reading a week: the
+    // headline is followers across the channels this ISO week, against last
+    // week's; the households that joined and the Discord's newcomers ride the
+    // sub-line. Numbers entered by hand are labelled on the page itself.
+    slug: "awareness", href: "awareness/", emblem: "◎", kind: "Dashboard", title: "Awareness",
+    line: "Who has heard of us: followers and views per channel, week by week, the households that joined and the new members of the Discord.",
+    read: (d) => {
+      const r = d.recent ?? {};
+      const w = r.followers ?? { cur: 0, prev: null };
+      const ch = r.followers_change; // like for like: channels counted in both weeks
+      return {
+        stamp: d.generated_at,
+        value: comma(w.cur), unit: `followers across channels, ${d.week ?? "this week"}`,
+        sub: `${!ch ? "first week recorded" : deltaWord(ch)} · ${r.new_households == null ? "—" : comma(r.new_households)} new households · ${r.discord_new == null ? "—" : comma(r.discord_new)} new in the Discord`,
+        spark: (r.spark ?? []).map((x) => Number(x) || 0),
+      };
+    },
+  },
+  {
     // ONE card for the graph, its lenses as deep links INSIDE it. This was
     // three peer cards (console + two Lens cards), which read as three
     // different pages of the same rank — Keemin, 2026-08-17: "I'm not sure why
@@ -290,7 +310,7 @@ const html = V.page({
   here: "/ops/",
   stamp: `hub regenerated ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC · each card reads its own dashboard's data.json twin · <a href="data.json">roll-up</a>`,
   body: `${banner}<nav class="shelf" aria-label="Operator dashboards">${cards.join("")}</nav>`,
-  footer: `Every card's number and trend come from the dashboard's own published JSON twin, and the chip beside it is that twin's <code>generated_at</code>, not this page's — so an instrument that stops is visible from the hub instead of only from its own frozen page. Generator: <code>postmark-office/tools/ops-index.mjs</code>, hourly cron, after its five siblings. Unlinked + noindex.`,
+  footer: `Every card's number and trend come from the dashboard's own published JSON twin, and the chip beside it is that twin's <code>generated_at</code>, not this page's — so an instrument that stops is visible from the hub instead of only from its own frozen page. Generator: <code>postmark-office/tools/ops-index.mjs</code>, hourly cron, after its six siblings. Unlinked + noindex.`,
   extraCss: EXTRA,
 });
 

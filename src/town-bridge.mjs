@@ -136,14 +136,17 @@ import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
-import { enqueueLetter, penCommit } from "./write.mjs";
+import { enqueueLetter, penCommit, NOT_LANDED } from "./write.mjs";
 import {
   updateAddressBody, updateAddressFields, updateHome, updateProfile, updateWindow,
 } from "./edit.mjs";
 import {
   pendingRows, townDrainCursor, townJournalHead, townLogEnabled, TOWN_CLASSES,
 } from "./town-journal.mjs";
-import { advanceTownCursor, drainPenReady, planTownDrain, writeTownDrain } from "./town-drain.mjs";
+import {
+  advanceTownCursor, drainPenReady, planTownDrain, writeTownDrain,
+  currentKeysOf, plannedRegistryLines, householdKeySplits,
+} from "./town-drain.mjs";
 import { planFirstIdeaSweep, writeFirstIdeaSweep } from "./first-idea-sweep.mjs";
 import { replayPaperAct } from "./town-updates.mjs";
 import { replayLetter } from "./town-mail.mjs";
@@ -236,6 +239,7 @@ export const drainLine = (r) =>
     + ` head=${r.head} cursor=${r.cursor} commit=${r.commit ?? "none"}`
     + (r.gangway_held ? ` GANGWAY=${r.gangway}(${r.gangway_held} held, cursor still)` : "")
     + (r.bounced ? ` BOUNCED=${r.bounced}` : "")
+    + (r.held ? ` HELD=${r.held}(not landed, cursor still)` : "")
     + (r.refused ? ` REFUSED=${r.refused}` : "")
     : `skipped — ${r.skipped}`} took=${r.took_ms}ms`;
 
@@ -259,6 +263,7 @@ export async function runTownDrain(odb, {
   // test that could only observe the linux answer would be asserting the
   // platform rather than the guard.
   requireLock = true, lockHeld = townLockHeld, dryRun = false, log = console.error,
+  planLines = plannedRegistryLines,
 } = {}) {
   const t0 = Date.now();
   const done = (r) => { const out = { ...r, took_ms: Date.now() - t0 }; log?.(drainLine(out)); return out; };
@@ -281,7 +286,7 @@ export async function runTownDrain(odb, {
       skipped: `nothing holds ${townLockPath()} — the drain writes the town clone and must run under the ferry's flock, as every unit in deploy/ does` });
 
   const stamp = date ?? townDayOf(now);
-  const rows = pendingRows(odb);
+  const rows = await pendingRows(odb);
 
   // ── THE TRIPWIRE, EXTENDED TO THE INVOKER ────────────────────────────────
   //
@@ -304,10 +309,10 @@ export async function runTownDrain(odb, {
 
   const counts = { join: 0, update: 0, letter: 0 };
   for (const r of rows) counts[r.cls] += 1;
-  const head = rows.length ? rows[rows.length - 1].seq : townDrainCursor(odb);
+  const head = rows.length ? rows[rows.length - 1].seq : (await townDrainCursor(odb));
 
   if (!rows.length)
-    return done({ ran: true, date: stamp, drained: 0, counts, head, cursor: townDrainCursor(odb),
+    return done({ ran: true, date: stamp, drained: 0, counts, head, cursor: (await townDrainCursor(odb)),
       commit: null, settled: [], waiting: [], skipped_rows: [], updates: [], letters: [],
       remaining: 0, note: "nothing pending" });
 
@@ -402,7 +407,7 @@ export async function runTownDrain(odb, {
   if (stranded.length)
     return done({ ran: false, refused: "deferred-rows", drained: 0, counts, head,
       ...(dryRun ? { dry_run: true } : {}),
-      cursor: townDrainCursor(odb), commit: null,
+      cursor: (await townDrainCursor(odb)), commit: null,
       // THE MESSAGE CARRIES THE REASONS, NOT JUST THE SEQS. This refusal stops
       // the crossing and therefore the mail, so it is the one line an operator
       // reads at whatever hour it fires — and a row named only by number tells
@@ -425,7 +430,7 @@ export async function runTownDrain(odb, {
 
   if (dryRun)
     return done({ ran: true, dry_run: true, date: stamp, drained: 0, counts, head,
-      cursor: townDrainCursor(odb), commit: null, ...gangwayFields,
+      cursor: (await townDrainCursor(odb)), commit: null, ...gangwayFields,
       settled: plan.settle.map((r) => r.handle), waiting: plan.waiting.map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })),
       skipped_rows: plan.skipped.filter(({ row }) => row.cls === "join").map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })),
       updates: [], letters: [], remaining: rows.length });
@@ -439,11 +444,31 @@ export async function runTownDrain(odb, {
     const pen = drainPenReady(clone);
     if (!pen.ready)
       return done({ ran: false, refused: "ledger-pen-not-ready", drained: 0, counts, head,
-        cursor: townDrainCursor(odb), ...gangwayFields,
+        cursor: (await townDrainCursor(odb)), ...gangwayFields,
         skipped: `the drain would append ${plan.plans.length} registry line(s) and cannot sign them — ${pen.why}. `
           + `Nothing was written and the cursor did not move: every row is still here. (#2040)`,
         settled: [], waiting: plan.settle.map((r) => ({ handle: r.handle, why: "pen not ready" })),
         updates: [], letters: [], remaining: rows.length });
+  }
+
+  // ONE HOUSEHOLD, ONE MINT KEY (Darko, 2026-10-04): the refusal at write time.
+  // The lines this crossing would sign are planned once, here, and judged by
+  // the town's own predicate (tools/household-keys.mjs, through the clone)
+  // before a byte lands. A crossing that would leave a house it touches minting
+  // under two keys REFUSES, it does not fix silently: nothing is written, the
+  // cursor does not move, every row is still here, and this sentence names the
+  // house. Refusing holds the ferry's chain the way the pen gate above does.
+  // `planLines` is injectable so the refusal is a branch a falsifier can reach.
+  if (plan.plans.length && existsSync(join(clone, "WHITE_PAGES", "stamp-ledger.md"))) {
+    plan.ledger = planLines(plan.plans, { date: stamp, keys: currentKeysOf(clone) });
+    const splits = householdKeySplits(clone, plan.ledger.lines, plan.registry);
+    if (splits.length)
+      return done({ ran: false, refused: "household-split", drained: 0, counts, head,
+        cursor: (await townDrainCursor(odb)), ...gangwayFields,
+        skipped: `the crossing would leave a household minting under more than one key — ${splits.join(" · ")}. `
+          + `Nothing was written and the cursor did not move: every row is still here. (one household, one key: Darko, 2026-10-04)`,
+        settled: [], waiting: plan.settle.map((r) => ({ handle: r.handle, why: "household split" })),
+        splits, updates: [], letters: [], remaining: rows.length });
   }
 
   const touched = await writeTownDrain(clone, plan, { date: stamp });
@@ -511,9 +536,23 @@ export async function runTownDrain(odb, {
   // row is still sitting in `town_journal` afterwards, with its seq, its
   // arguments and its defect written into this report. Nothing is lost; an
   // operator is told, and the boat sails.
+  //
+  // A PUSH THAT CANNOT LAND IS HELD, NEVER BOUNCED (POS-296, Wright's ruling
+  // 2026-09-28). The pen is whole or nothing now: a push that loses its race
+  // three times leaves no file and no commit behind. Recording that as a bounce
+  // and moving the cursor past it would drop a letter the door told its sender
+  // was accepted — before POS-296 the stranded local commit sailed on the
+  // ferry's own push, and now there is nothing left to sail. So the row is
+  // HELD: the cursor stays below it, exactly as it does for a stalled join, and
+  // the next crossing re-drives it (every row before it answers `already` by
+  // the resume checks). An accepted letter is never lost; it may be a crossing late.
   const updates = [], letters = [];
-  let bounced = 0;
+  let bounced = 0, held = 0;
   const bounce = (e) => {
+    if (e?.pen === NOT_LANDED) {
+      held += 1;
+      return { held: e.defect, code: e.code };
+    }
     bounced += 1;
     return { bounced: e?.defect ?? String(e?.message ?? e), code: e?.code ?? null };
   };
@@ -582,11 +621,13 @@ export async function runTownDrain(odb, {
   }
 
   // ── the cursor, LAST — and not at all while the gangway holds a row ──────
-  if (!gangwayHold && !stalledRows.length) advanceTownCursor(odb, head);
+  if (held)
+    log(`drain: ${held} row(s) could not land on the town's remote and are held — the cursor stays for the next crossing`);
+  if (!gangwayHold && !stalledRows.length && !held) await advanceTownCursor(odb, head);
 
   return done({
     ran: true, date: stamp, drained: rows.length, counts, head,
-    cursor: townDrainCursor(odb), commit, first_idea: firstIdea, ...gangwayFields,
+    cursor: (await townDrainCursor(odb)), commit, first_idea: firstIdea, ...gangwayFields,
     ...(registryRefused ? { registry_refused: registryRefused } : {}),
     ...(stalledRows.length ? { store: stalledRows.map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })) } : {}),
     settled: plan.plans.map(({ row }) => row.handle),
@@ -600,12 +641,12 @@ export async function runTownDrain(odb, {
     skipped_rows: plan.skipped
       .filter(({ row }) => row.cls === "join")
       .map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })),
-    updates, letters, bounced,
+    updates, letters, bounced, ...(held ? { held } : {}),
     // FROM THE CURSOR, NOT FROM `head`. The two are the same integer on every
     // crossing that advances, and they part company on one that does not: a
     // held crossing leaves rows at or below `head` still pending, and counting
     // from `head` would report `remaining: 0` over three joins that are still
     // sitting there.
-    remaining: Math.max(0, townJournalHead(odb) - townDrainCursor(odb)),
+    remaining: Math.max(0, (await townJournalHead(odb)) - (await townDrainCursor(odb))),
   });
 }

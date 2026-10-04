@@ -1,0 +1,18 @@
+[Unit]
+Description=paypal-watch every 15 minutes — PayPal payments resolve on a clock, not on an operator's evening
+# NOT ADOPTED. Enabling this timer IS the adoption, and it waits on the app's
+# "Transaction search" feature (see postmark-paypal-watch.service).
+
+[Timer]
+# Offset from stripe-watch (:07/15), usdc-watch (*:0/10) and the :12/:27/:42
+# timer, so the funding watchers never contend for town.lock on the same second.
+# The cadence is not the grace window: a payment is held one full crossing
+# regardless, after PayPal's own indexing lag of up to three hours.
+OnCalendar=*:14/15
+RandomizedDelaySec=45
+# a box that was down catches up on the next boot; the ledger's ref uniqueness
+# makes a catch-up run safe to repeat
+Persistent=true
+
+[Install]
+WantedBy=timers.target

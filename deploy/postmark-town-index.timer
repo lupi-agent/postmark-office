@@ -1,0 +1,16 @@
+[Unit]
+Description=The town index, every 15 minutes (POS-268)
+
+[Timer]
+# :05/:20/:35/:50, one minute after the law pen (:04) and two before the
+# office's keep tick (:07), which does not read these tables. A crossing's seal
+# lands at 00:0x and 12:0x UTC; the next fire snapshots it.
+OnCalendar=*-*-* *:05,20,35,50:00 UTC
+RandomizedDelaySec=30
+# A missed fire is repaired by the next one: the delta is head..origin/main,
+# however far that is.
+Persistent=false
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

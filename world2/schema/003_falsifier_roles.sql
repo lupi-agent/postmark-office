@@ -36,6 +36,15 @@ lawful AS (
     -- under the office's own connection, after the keeper's tag lands there;
     -- the pen is named in 018's header and is one word to move if ruled otherwise.
     ('office_api',   'settlements',      'INSERT'),
+    -- 049_mark_carried.sql (POS-142 Proposal B). Which settlement first carried
+    -- each mark, written once from the same clone and connection as the
+    -- settlement row above; INSERT only, because that fact never moves.
+    ('office_api',   'mark_carried',     'INSERT'),
+    -- 053_position_snapshots.sql (POS-302). Each resident's governing departure,
+    -- kept once per clearing from the keep tick's own connection; INSERT only,
+    -- because a snapshot is written once and never moves.
+    ('office_api',   'position_snapshots',     'INSERT'),
+    ('office_api',   'position_snapshot_rows', 'INSERT'),
     -- 019_households.sql. The household registry as store-of-record: the two
     -- town JSON files become a rendering of these tables. `office_api` because
     -- it is the role the door that DECLARES a household already connects as
@@ -61,6 +70,14 @@ lawful AS (
     ('office_api',   'events',           'UPDATE'),
     ('office_api',   'event_rsvps',      'INSERT'),
     ('office_api',   'event_rsvps',      'UPDATE'),
+    -- 028_posts.sql (POS-288). The rename carried the two grants above to
+    -- `posts` and `responses`, which are the same tables under their general
+    -- names; 028 revokes writes on the compat VIEWS that now hold the old names.
+    -- The old rows stay because 026's own text still grants them.
+    ('office_api',   'posts',            'INSERT'),
+    ('office_api',   'posts',            'UPDATE'),
+    ('office_api',   'responses',        'INSERT'),
+    ('office_api',   'responses',        'UPDATE'),
     -- 026_events.sql, the resident's private harness row (POS-208, ruled
     -- 2026-09-25). Narrowed by its row policy to the acting household's own
     -- rows; no DELETE, because a registration is replaced, never removed.
@@ -70,6 +87,44 @@ lawful AS (
     -- wake, narrowed by its row policy to the resident's own household; INSERT
     -- only, because a log line is never edited or removed.
     ('office_api',   'earpiece_wakes',   'INSERT'),
+    -- 029_letter_opens.sql, which delivered letters a household has opened
+    -- (POS-286). Narrowed by its row policy to the recipient's own household;
+    -- INSERT only, because a letter is opened once and nothing un-reads it.
+    ('office_api',   'letter_opens',     'INSERT'),
+    -- 030_arrival_heard.sql, where a joining human heard about Postmark
+    -- (POS-292). INSERT only and no SELECT policy for any role: the answer is
+    -- given once, and read only as counts through arrival_heard_weekly().
+    ('office_api',   'arrival_heard',    'INSERT'),
+    -- 031_office_paperwork.sql, oauth.db and roles.db moved into the store
+    -- (POS-271). Each grant is a statement oauth.mjs or roles.mjs runs today.
+    -- The DELETEs are lawful because none of this is the record: an expired or
+    -- rotated credential has to stop resolving, and deletion is how it stops.
+    -- The audit table is INSERT only. Row level security keeps every other
+    -- role out.
+    ('office_api',   'oauth_clients',    'INSERT'),
+    ('office_api',   'oauth_pending',    'INSERT'),
+    ('office_api',   'oauth_pending',    'UPDATE'),
+    ('office_api',   'oauth_pending',    'DELETE'),
+    ('office_api',   'oauth_codes',      'INSERT'),
+    ('office_api',   'oauth_codes',      'DELETE'),
+    ('office_api',   'oauth_tokens',     'INSERT'),
+    ('office_api',   'oauth_tokens',     'DELETE'),
+    ('office_api',   'oauth_berths',     'INSERT'),
+    ('office_api',   'oauth_berths',     'UPDATE'),
+    ('office_api',   'oauth_key_claims', 'INSERT'),
+    ('office_api',   'oauth_key_claims', 'UPDATE'),
+    ('office_api',   'oauth_key_claims', 'DELETE'),
+    ('office_api',   'office_roles',     'INSERT'),
+    ('office_api',   'office_roles',     'UPDATE'),
+    ('office_api',   'office_roles',     'DELETE'),
+    ('office_api',   'office_role_audit', 'INSERT'),
+    -- 032_office_ledgers.sql, the rest of oauth.db (POS-271): the media quota
+    -- ledger and the town log are append-only, and the drain cursor is the one
+    -- row that is upserted.
+    ('office_api',   'office_media',     'INSERT'),
+    ('office_api',   'office_town_journal', 'INSERT'),
+    ('office_api',   'office_meta',      'INSERT'),
+    ('office_api',   'office_meta',      'UPDATE'),
     ('clearing_job', 'claims',           'UPDATE'),
     ('clearing_job', 'windows',          'INSERT'),
     ('clearing_job', 'windows',          'UPDATE'),
@@ -85,12 +140,76 @@ lawful AS (
     -- UPDATE, like every projection here: replaced, never edited.
     ('law_ingester', 'town_roll',        'INSERT'),
     ('law_ingester', 'town_roll',        'DELETE'),
+    -- 033_town_index.sql (POS-268). office.db's tables as the town index, the
+    -- same pen's third town projection. INSERT + DELETE and no UPDATE, like every
+    -- projection here: a changed row is replaced. The snapshot ledger is INSERT
+    -- only, because a recorded snapshot is never rewritten.
+    ('law_ingester', 'town_meta',                  'INSERT'),
+    ('law_ingester', 'town_meta',                  'DELETE'),
+    ('law_ingester', 'town_residents',             'INSERT'),
+    ('law_ingester', 'town_residents',             'DELETE'),
+    ('law_ingester', 'town_letters',               'INSERT'),
+    ('law_ingester', 'town_letters',               'DELETE'),
+    ('law_ingester', 'town_threads',               'INSERT'),
+    ('law_ingester', 'town_threads',               'DELETE'),
+    ('law_ingester', 'town_bulletin',              'INSERT'),
+    ('law_ingester', 'town_bulletin',              'DELETE'),
+    ('law_ingester', 'town_ledger',                'INSERT'),
+    ('law_ingester', 'town_ledger',                'DELETE'),
+    ('law_ingester', 'town_stamps',                'INSERT'),
+    ('law_ingester', 'town_stamps',                'DELETE'),
+    ('law_ingester', 'town_mail_state',            'INSERT'),
+    ('law_ingester', 'town_mail_state',            'DELETE'),
+    ('law_ingester', 'town_quest_progress',        'INSERT'),
+    ('law_ingester', 'town_quest_progress',        'DELETE'),
+    ('law_ingester', 'town_quest_standing',        'INSERT'),
+    ('law_ingester', 'town_quest_standing',        'DELETE'),
+    ('law_ingester', 'town_repo_log',              'INSERT'),
+    ('law_ingester', 'town_repo_log',              'DELETE'),
+    ('law_ingester', 'town_regions',               'INSERT'),
+    ('law_ingester', 'town_regions',               'DELETE'),
+    ('law_ingester', 'town_homes',                 'INSERT'),
+    ('law_ingester', 'town_homes',                 'DELETE'),
+    ('law_ingester', 'town_pots',                  'INSERT'),
+    ('law_ingester', 'town_pots',                  'DELETE'),
+    ('law_ingester', 'town_funding_roll',          'INSERT'),
+    ('law_ingester', 'town_funding_roll',          'DELETE'),
+    ('law_ingester', 'town_funding_holo',          'INSERT'),
+    ('law_ingester', 'town_funding_holo',          'DELETE'),
+    ('law_ingester', 'town_funding_keeping_mint',  'INSERT'),
+    ('law_ingester', 'town_funding_keeping_mint',  'DELETE'),
+    ('law_ingester', 'town_pot_receipts',          'INSERT'),
+    ('law_ingester', 'town_pot_receipts',          'DELETE'),
+    ('law_ingester', 'town_pot_escrow',            'INSERT'),
+    ('law_ingester', 'town_pot_escrow',            'DELETE'),
+    ('law_ingester', 'town_pot_stakers',           'INSERT'),
+    ('law_ingester', 'town_pot_stakers',           'DELETE'),
+    ('law_ingester', 'town_funding_invalid',       'INSERT'),
+    ('law_ingester', 'town_funding_invalid',       'DELETE'),
+    ('law_ingester', 'town_index_snapshots',       'INSERT'),
     ('law_ingester', 'projection_heads', 'INSERT'),
     ('law_ingester', 'projection_heads', 'UPDATE'),
     ('law_ingester', 'projection_heads', 'DELETE'),
     ('law_ingester', 'identities',       'INSERT'),
     ('law_ingester', 'identities',       'UPDATE'),
-    ('law_ingester', 'identities',       'DELETE')
+    ('law_ingester', 'identities',       'DELETE'),
+    -- 037_world_graph.sql + 038_world_graph_events.sql (POS-270): the world
+    -- graph's snapshot per settlement. The law pen copies it from the blessed
+    -- hydration; INSERT + DELETE and no UPDATE, replaced, never edited.
+    ('law_ingester', 'world_graphs', 'INSERT'),
+    ('law_ingester', 'world_graphs', 'DELETE'),
+    ('law_ingester', 'world_graph_meta', 'INSERT'),
+    ('law_ingester', 'world_graph_meta', 'DELETE'),
+    ('law_ingester', 'world_graph_nodes', 'INSERT'),
+    ('law_ingester', 'world_graph_nodes', 'DELETE'),
+    ('law_ingester', 'world_graph_edges', 'INSERT'),
+    ('law_ingester', 'world_graph_edges', 'DELETE'),
+    ('law_ingester', 'world_graph_geometry', 'INSERT'),
+    ('law_ingester', 'world_graph_geometry', 'DELETE'),
+    ('law_ingester', 'world_graph_lints', 'INSERT'),
+    ('law_ingester', 'world_graph_lints', 'DELETE'),
+    ('law_ingester', 'world_graph_events', 'INSERT'),
+    ('law_ingester', 'world_graph_events', 'DELETE')
   ) AS t(grantee, table_name, privilege_type)
 )
 SELECT w.* FROM writers w

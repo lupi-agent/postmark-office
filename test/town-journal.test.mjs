@@ -28,6 +28,7 @@ import { appendJournal, CLASS_MARK } from "../src/world-journal.mjs";
 // by this file, in the office's own row shape. See test/journal-seed.mjs.
 import { seedJournalRow } from "./journal-seed.mjs";
 import { DYNAMIC_SCHEMA } from "../src/dynamic-store.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 // The world journal's own DDL, lifted from the store's schema rather than
 // retyped — a hand-copied table in a test is a second definition of the shape
@@ -84,19 +85,25 @@ function townClone() {
 // with head = MAX(seq) over the WHOLE table — it reads its own class and
 // deletes everything. Two tables is what makes the collision structurally
 // impossible rather than a filter discipline every future class re-litigates.
-test("TWO LOGS: the town's rows live in their own table, untouched by the world's head", () => {
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(null);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
+
+test("TWO LOGS: the town's rows live in their own table, untouched by the world's head", async () => {
   const db = odb();
-  const seq = appendTownJournal(db, row());
+  const seq = await appendTownJournal(db, row());
   seedJournalRow(db, { actor: "wright", action: "leave-mark", cls: CLASS_MARK, household: "wright" });
 
   // the world's head knows nothing of the town's rows, and vice versa
   const worldHead = Number(db.prepare("SELECT MAX(seq) s FROM journal").get()?.s ?? 0);
   assert.equal(worldHead, 1, "the world log numbers its own rows");
-  assert.equal(townJournalHead(db), seq, "…and the town log numbers its own");
+  assert.equal((await townJournalHead(db)), seq, "…and the town log numbers its own");
 
   // the world drain's own move, run verbatim against a table that is not its own
   db.prepare("DELETE FROM journal WHERE seq <= ?").run(worldHead);
-  assert.equal(pendingRows(db).length, 1,
+  assert.equal((await pendingRows(db)).length, 1,
     "a world truncate must not reach the town's rows — this is the entire reason for two tables");
 });
 
@@ -111,17 +118,17 @@ test("THE TRIPWIRE: a join row aimed at the world log bounces at write time", as
   // and the reverse fence
   // the list grows with TOWN_CLASSES — "letter" joined in wave 3, and this
   // ledger line is paid in the same commit that added it.
-  assert.throws(() => appendTownJournal(db, { cls: CLASS_MARK, act: "leave-mark", household: "h" }),
+  await assert.rejects(async () => await appendTownJournal(db, { cls: CLASS_MARK, act: "leave-mark", household: "h" }),
     /the town log holds join, update, letter rows/);
 });
 
 // ── DESIGN-IN 1: pending-name uniqueness ────────────────────────────────────
 // Verbatim: "Pending-name uniqueness: the handle-free check reads un-drained
 // journal rows too (two joins in one epoch must not collide at the drain)".
-test("PENDING NAMES: a handle claimed by an un-drained row is not free", () => {
+test("PENDING NAMES: a handle claimed by an un-drained row is not free", async () => {
   const db = odb();
-  appendTownJournal(db, row({ handle: "wanted" }));
-  const held = pendingHandles(db);
+  await appendTownJournal(db, row({ handle: "wanted" }));
+  const held = await pendingHandles(db);
   assert.ok(held.has("wanted"), "the name is spoken for from the moment it is claimed");
   assert.equal(held.get("wanted").household, "testers");
 
@@ -129,20 +136,28 @@ test("PENDING NAMES: a handle claimed by an un-drained row is not free", () => {
   // the manifest and the declared registry
   process.env.TOWN_SINGLE_LOG = "1";
   try {
-    const taken = handleTaken("wanted", { db: null, registry: { households: {} }, clone: null, odb: db });
+    // The door reads the pending names first (declare.mjs § declareHousehold:
+    // the log is a paper since POS-271) and hands them to the synchronous check.
+    const pending = await pendingHandles(db);
+    const taken = handleTaken("wanted", { db: null, registry: { households: {} }, clone: null, pending });
     assert.match(String(taken), /a join already in this epoch/,
       "the three older registers are projections of the RECORD, and the record has not been written yet");
-    assert.equal(handleTaken("unclaimed", { db: null, registry: { households: {} }, clone: null, odb: db }), null);
+    assert.equal(handleTaken("unclaimed", { db: null, registry: { households: {} }, clone: null, pending }), null);
   } finally { delete process.env.TOWN_SINGLE_LOG; }
 });
 
-test("…and flag-off the fourth register is not consulted at all", () => {
+test("…and flag-off the fourth register is not consulted at all", async () => {
   const db = odb();
-  appendTownJournal(db, row({ handle: "wanted" }));
+  await appendTownJournal(db, row({ handle: "wanted" }));
   delete process.env.TOWN_SINGLE_LOG;
   assert.equal(townLogEnabled(), false);
-  assert.equal(handleTaken("wanted", { db: null, registry: { households: {} }, clone: null, odb: db }), null,
+  // THE FLAG IS READ WHERE THE LOG IS READ (POS-271): declareHousehold consults
+  // the log only with TOWN_SINGLE_LOG on, and hands the check nothing otherwise.
+  assert.equal(handleTaken("wanted", { db: null, registry: { households: {} }, clone: null, pending: null }), null,
     "flag-off, every door behaves exactly as it did — the row exists and changes nothing");
+  const declareSrc = readFileSync(new URL("../src/declare.mjs", import.meta.url), "utf8");
+  assert.match(declareSrc, /const pending = odb && townLogEnabled\(\) \? await pendingHandles\(odb\) : null;/,
+    "the door reads the pending names only flag-on");
 });
 
 // ── DESIGN-IN 3: registry writes are APPENDS ────────────────────────────────
@@ -152,7 +167,7 @@ test("…and flag-off the fourth register is not consulted at all", () => {
 // restating one rewrites history the signatures were taken over.
 test("APPENDS ONLY: the drain adds a dated registry line and never rewrites one", async () => {
   const db = odb(); const clone = townClone();
-  appendTownJournal(db, row({ handle: "newcomer" }));
+  await appendTownJournal(db, row({ handle: "newcomer" }));
   const before = readFileSync(join(clone, "WHITE_PAGES/stamp-ledger.md"), "utf8");
 
   const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
@@ -169,7 +184,7 @@ test("APPENDS ONLY: the drain adds a dated registry line and never rewrites one"
 // ── the drain writes what the PEN would have written ────────────────────────
 test("EQUIVALENCE: the drain's files are the pen lane's own function, not a second copy", async () => {
   const db = odb(); const clone = townClone();
-  appendTownJournal(db, row({ handle: "twin", payload: { household: "Testers", card: "the very same card" } }));
+  await appendTownJournal(db, row({ handle: "twin", payload: { household: "Testers", card: "the very same card" } }));
   const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
   await writeTownDrain(clone, plan, { date: "2026-08-24" });
 
@@ -190,9 +205,9 @@ test("EQUIVALENCE: the drain's files are the pen lane's own function, not a seco
 // side, their side still needs a GitHub auth or co-sign)."
 test("THE TIER LINE: only a verified id or a co-sign settles; the rest WAIT, and are told", async () => {
   const db = odb(); const clone = townClone();
-  appendTownJournal(db, row({ handle: "verified", ghId: "999" }));
-  appendTownJournal(db, row({ handle: "cosigned", ghId: null, cosignedGhId: "777" }));
-  appendTownJournal(db, row({ handle: "unanchored", ghId: null, ghLogin: null }));
+  await appendTownJournal(db, row({ handle: "verified", ghId: "999" }));
+  await appendTownJournal(db, row({ handle: "cosigned", ghId: null, cosignedGhId: "777" }));
+  await appendTownJournal(db, row({ handle: "unanchored", ghId: null, ghLogin: null }));
 
   const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
   assert.deepEqual(plan.settle.map((r) => r.handle).sort(), ["cosigned", "verified"],
@@ -205,13 +220,13 @@ test("THE TIER LINE: only a verified id or a co-sign settles; the rest WAIT, and
   await writeTownDrain(clone, plan, { date: "2026-08-24" });
   assert.equal(existsSync(join(clone, "WHITE_PAGES/unanchored/ADDRESS.md")), false,
     "the unanchored row is not settled — and it is not dropped either; it stays in the log");
-  assert.equal(pendingRows(db).some((r) => r.handle === "unanchored"), true);
+  assert.equal((await pendingRows(db)).some((r) => r.handle === "unanchored"), true);
 });
 
 // ── DESIGN-IN 5 (the standing constraint) ───────────────────────────────────
 test("GROUND IS NOT TOUCHED: settling mints an address and a registry row, never a parcel", async () => {
   const db = odb(); const clone = townClone();
-  appendTownJournal(db, row({ handle: "grounded" }));
+  await appendTownJournal(db, row({ handle: "grounded" }));
   const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
   const touched = await writeTownDrain(clone, plan, { date: "2026-08-24" });
   for (const path of touched) {
@@ -226,10 +241,10 @@ test("GROUND IS NOT TOUCHED: settling mints an address and a registry row, never
 // ── the cursor ──────────────────────────────────────────────────────────────
 test("THE CURSOR IS THE TOWN'S OWN, and moves only after the record is durable", async () => {
   const db = odb(); const clone = townClone();
-  appendTownJournal(db, row({ handle: "first" }));
+  await appendTownJournal(db, row({ handle: "first" }));
   const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
   await writeTownDrain(clone, plan, { date: "2026-08-24" });
-  assert.equal(townDrainCursor(db), 0,
+  assert.equal((await townDrainCursor(db)), 0,
     "writeTownDrain must NOT advance it — a cursor moved before the commit is the one ordering that can lose a household");
   // AND IT CANNOT, which is stronger than must-not: writeTownDrain is handed a
   // clone and a plan and never the database, so there is no handle for it to
@@ -242,16 +257,16 @@ test("THE CURSOR IS THE TOWN'S OWN, and moves only after the record is durable",
   // exact class where a test's scaffolding reads as coverage.
   assert.equal(REAL_writeTownDrain.length, 3, "writeTownDrain(clone, plan, { date }) — no db parameter");
   assert.equal(/odb/.test(REAL_writeTownDrain.toString()), false, "…and no db reached from its body");
-  advanceTownCursor(db, plan.head);
-  assert.equal(townDrainCursor(db), plan.head);
-  assert.deepEqual(pendingRows(db), [], "and the drained row is no longer pending");
+  await advanceTownCursor(db, plan.head);
+  assert.equal((await townDrainCursor(db)), plan.head);
+  assert.deepEqual((await pendingRows(db)), [], "and the drained row is no longer pending");
   assert.notEqual(TOWN_DRAIN_CURSOR, "journal_drained_through", "never the world's key");
 });
 
 test("ONE NAME, ONE CROSSING: a second row for a settled name does not write twice", async () => {
   const db = odb(); const clone = townClone();
-  appendTownJournal(db, row({ handle: "dupe" }));
-  appendTownJournal(db, row({ handle: "dupe", household: "others" }));
+  await appendTownJournal(db, row({ handle: "dupe" }));
+  await appendTownJournal(db, row({ handle: "dupe", household: "others" }));
   const plan = await planTownDrain(db, clone, { date: "2026-08-24" });
   assert.equal(plan.settle.length, 1, "the door holds the name; the drain checks anyway, because 'unreachable' is what a drain must not assume about its input");
   assert.match(plan.skipped[0].why, /claimed earlier in this same crossing/);

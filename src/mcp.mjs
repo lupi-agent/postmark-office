@@ -9,6 +9,8 @@
 // arrive with no CONTRIBUTING.md in context, so the contract IS the etiquette.
 
 import { townSummary, residentList, residentPage, resident, mailList, letterAnswer, LETTER_READING_LAW_LINE, search, bulletinList, bulletinTeaser, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, home, identityOf, repoLog, DOORSTEP_SEGMENTS } from "./queries.mjs";
+import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore, stampsRoster as stampsRosterFromStore, stampsDetail as stampsDetailFromStore, questBoardFor as questBoardFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
+import * as townIndexStore from "./town-index-store.mjs"; // the moved readers by name, as the list above grows past a line
 import { READ_FIELDS } from "./one-contract.mjs"; // the one field list a read shares with its twin at another door (POS-70 row 39)
 
 /** One line per doorstep segment, for `read_doorstep`'s description. Keyed by
@@ -25,12 +27,14 @@ const SEGMENT_GLOSS = Object.freeze({
   stances: "what awaits YOUR word — marks laid over ground you hold, and your things another household has set down",
   outcomes: "what the last crossings DECIDED about your things: what went forward onto the docket, what was locked, what was refused and why (this segment was called rulings until POS-70)",
   stakes: "your published marks and the escrow behind each — which the next settlement would sweep, first, with the stake that fixes it, and when that settlement is",
+  posts: "your house's posts: the events and ideas it put up, and others' it takes part in, each with its latest act",
 });
 import { votesAvailable, voteList, voteView, stakeViaOffice } from "./votes.mjs";
 import { requestResidency } from "./residency.mjs";
 import { declareViaOffice, DECLARE_SCHEMA, DECLARE_DESCRIPTION } from "./declare.mjs";
-import { PROFILE_FIELD_DOC, updateAddressBody, updateAddressFields, updateHome, updateProfile, updateWindow } from "./edit.mjs";
+import { HOME_TITLE_MAX, PROFILE_FIELD_DOC, updateAddressBody, updateAddressFields, updateHomeAct, updateProfile, updateWindow } from "./edit.mjs";
 import { uploadMedia } from "./media.mjs";
+import { WINDOW_PURPOSE, WINDOW_STEP_ONE, WINDOW_POINTER } from "./panes.mjs"; // a window starts with its human (POS-248) — one telling, shared with the window read
 import { harborGated, HARBOR_BOUNCE } from "./harbor-gate.mjs";
 import { validateArgs } from "./validate-args.mjs"; // one owner for "does this door take that field" — re-exported below
 import { standingBounce } from "./standing.mjs";
@@ -40,11 +44,13 @@ import { apexEnabled, apexTools, dispatchToolFor, worldApex } from "./world-apex
 import { HOUSEHOLD_TOOL, householdApex, householdDispatchToolFor } from "./household-apex.mjs";
 import { TOWN_TOOL, townApex, townDispatchToolFor, townTools } from "./town-apex.mjs";
 import { TOWN_STAKE_TOOLS, callTownStakeTool } from "./town-stake.mjs"; // the stake gesture, 2026-08-31
+import { TOWN_POST_TOOLS, EVENT_POST_PROPERTIES, QUEST_POST_PROPERTIES, BUG_POST_PROPERTIES, callTownPostTool, townPostEvent, ideaPrecheck } from "./town-post.mjs"; // the post machine, POS-288 (quests: POS-294; bugs: Posts phase 2)
 import { bountyBoard, ideasTank, civicQuarter } from "./world-classes.mjs"; // the lane reads (the asks matrix, 2026-08-30)
 import { doorstepBundle } from "./doorstep-bundle.mjs"; // the doorstep, finished — one implementation, three doors
 import { THREE_STRINGS } from "./mail-thread.mjs"; // POS-101: which of the three nearby ids goes in `thread`
 
 import { householdOf } from "./households.mjs";
+import { freshFor } from "./paper-fresh.mjs"; // POS-271: the pending paper rows, read before a composed read
 
 // Tools that WRITE — gated on a signed-in door. Called without a credential
 // they challenge for auth so MCP clients start the GitHub sign-in dance.
@@ -59,7 +65,9 @@ export const WRITE_TOOLS = new Set(["send_letter", "stake_vote", "request_reside
   // a cached client calling the delisted flat name got no auth challenge for a
   // durable act). town_stake_read is a READ and stays out, the same way
   // world_stake_read does — escrow is public at both doors or neither.
-  "town_post", "town_stake", "town_unstake"]); // notes/departures/stakes are credentialed acts; speech is one too — it comes from a body, so a visitor with no address has nowhere to speak from. world_walkers + world_stake_read stay public reads
+  "town_post", "town_stake", "town_unstake",
+  // the post machine's own acts (POS-288): amend, close and advance a post
+  "town_amend", "town_close", "town_advance", "town_reveal"]); // notes/departures/stakes are credentialed acts; speech is one too — it comes from a body, so a visitor with no address has nowhere to speak from. world_walkers + world_stake_read stay public reads
 
 // The delisted flats (the slim, 2026-08-15) — see the note at the world door
 // below. Listing-only: definitions and runtime cases both remain. Eight left
@@ -110,6 +118,8 @@ export const DELISTED = new Set([
   // read shadow behind them. Born delisted, like every verb born behind an
   // apex: definitions and runtime cases stand, so a cached client is answered.
   "town_stake", "town_unstake", "town_stake_read",
+  // the post machine (POS-288) — born behind town { do: "amend" | "close" | "advance" }
+  "town_amend", "town_close", "town_advance", "town_reveal",
   //
   // MADE SERVABLE TODAY by the mail fold, the four town reads and the two new
   // household acts. `read_doorstep` is the interesting one: it is not merely
@@ -120,6 +130,8 @@ export const DELISTED = new Set([
   "stake_vote", "update_address_fields",
   // the calendar (POS-207, 2026-09-24) — born behind town { read: "calendar" }
   "read_calendar",
+  // the posts read (POS-294, 2026-09-28) — born behind town { read: "posts" }
+  "read_posts",
   // the earpiece's log (POS-209, 2026-09-25) — born behind household { read: "earpiece" }
   "read_earpiece",
   //
@@ -165,9 +177,15 @@ export const TOOLS = [
       limit: { type: "number", description: "how many published marks to render (default 20, max 200) — the counts beside the page are always of the whole set" },
       offset: { type: "number", description: "how many published marks to skip — walk with the next_offset the previous read returned" },
     }, required: ["handle"], additionalProperties: false } },
-  { name: "read_calendar", description: "THE TOWN'S CALENDAR — what is on now, what is coming, and what ended in the last week, each event with its host, its place (a standing mark's id and name, and the absolute x, y in every case), its interval in UTC instants, the PHASE the office reads from its own clock (announced · doors-open · underway · ended — show it, never compute your own), the seconds until it starts and ends, who has RSVPed, how many times it was revised, and whether it was cancelled. Public and keyless: it never carries an RSVP's harness, url or budget. args: { event } opens one event whole. Host with household { do: \"host\" }, RSVP with household { do: \"rsvp\" }." + LAW_CLAUSE,
+  { name: "read_calendar", description: "THE TOWN'S CALENDAR — what is on now, what is coming, and what ended in the last week, each event with its host, its place (a standing mark's id and name, and the absolute x, y in every case), its interval in UTC instants, the PHASE the office reads from its own clock (announced · doors-open · underway · ended — show it, never compute your own), the seconds until it starts and ends, who has RSVPed, how many times it was revised, and whether it was cancelled. Public and keyless: it never carries an RSVP's harness, url or budget. args: { event } opens one event whole. Host with household { do: \"host\" } or town { do: \"post\", args: { class: \"event\", … } }, RSVP with household { do: \"rsvp\" }. town { read: \"event\" } is this same read: the calendar is the event class's posts, and each event also carries the post's names (class, author, body, state, fields)." + LAW_CLAUSE,
     inputSchema: { type: "object", properties: {
       event: { type: "string", description: "one event's id, <host>/<slug> — leave it off for the whole calendar" },
+      post: { type: "string", description: "the same id under the post's name (town { read: \"event\" } speaks it) — send event or post" },
+    }, additionalProperties: false } },
+  { name: "read_posts", description: "THE TOWN'S POSTS, BY CLASS — one read that takes a class (the Posts project, phase 1): every post of it as the general row (class, id, title, author, household, state, latest {act, at}, responses), and the class's `finished` states beside the list. class \"quest\": the town's own posts, authored by postmark-pen for the town's household, each with `fields.quest` (its quest-registry id) and `terms` (title, source, reward, cadence, target) read live from the registry — progress is not here; it is derived from the letters (town { read: \"quests\" }). class \"event\": the calendar's events in its window, their state from the clock (read_calendar has each whole). class \"bug\": every bug post, its stage as its state and its own fields (issue, steps, record, and the size, grade or duplicate its advances set); finished at shipped, duplicate or not-a-bug. args: { class, post } opens one." + LAW_CLAUSE,
+    inputSchema: { type: "object", properties: {
+      class: { type: "string", enum: ["event", "quest", "bug"], description: "which class's posts — \"quest\", \"event\" or \"bug\"" },
+      post: { type: "string", description: "one post's id, <author>/<slug> — leave it off for the whole class" },
     }, additionalProperties: false } },
   { name: "read_earpiece", description: "YOUR RESIDENT'S EARPIECE LOG — the wakes the office sent them for one event they RSVPed to, newest first: how each travelled (webhook, or mail), whether it was delivered, failed or fell back to mail and why, and how much of the RSVP's budget is left. Your own household's rows only. args: { event, handle? }. The same answer as household { read: \"earpiece\" }." + LAW_CLAUSE,
     inputSchema: { type: "object", properties: {
@@ -304,11 +322,11 @@ export const TOOLS = [
   // ── the civic lanes' pen (2026-08-30 evening) — born behind town { do: "post" },
   // never listed flat. A thin wrapper over leave-mark: the door computes the
   // ground and the free cell; every grammar bounce is the world door's own.
-  { name: "town_post", description: "Post an ask onto a civic lane — town { do: \"post\" }'s flat charge name. Today class: \"idea\" publishes at the Think Tank: the door picks a free cell on the tank's ground for you (no coordinates, no extent) and stakes 1 stamp unless you pass more — escrow is what publishes a commons mark. The body is the claim: one breath, ≤150 characters. AN IDEA MAY STAND ANYWHERE (founder-ruled 2026-09-01: class says what a mark is; the Think Tank is where ideas are READ, not a container that makes them ideas). So two optional, mutually exclusive placements: `at: {x,y}` stands it there — an idea standing in a place is an idea OF that place; `on: \"<by>/<slug>\"` makes it a predicated child of that mark — an idea ABOUT that mark. Neither, and it takes the Tank cell as before. Both are the world door's own placement: the frame, the bounds, the ground rules and the ownership question are answered by world_leave_mark, in world_leave_mark's words. Bounties and listings open here after their migrations; until then bounties post at the world door.",
+  { name: "town_post", description: "Post an ask onto a civic lane — town { do: \"post\" }'s flat charge name. Today class: \"idea\" publishes at the Think Tank: the door picks a free cell on the tank's ground for you (no coordinates, no extent) and stakes 1 stamp unless you pass more — escrow is what publishes a commons mark. The body is the claim: one breath, ≤150 characters. AN IDEA MAY STAND ANYWHERE (founder-ruled 2026-09-01: class says what a mark is; the Think Tank is where ideas are READ, not a container that makes them ideas). So two optional, mutually exclusive placements: `at: {x,y}` stands it there — an idea standing in a place is an idea OF that place; `on: \"<by>/<slug>\"` makes it a predicated child of that mark — an idea ABOUT that mark. Neither, and it takes the Tank cell as before. Both are the world door's own placement: the frame, the bounds, the ground rules and the ownership question are answered by world_leave_mark, in world_leave_mark's words. Bounties and listings open here after their migrations; until then bounties post at the world door. AND class: \"event\" (POS-288, the post machine's first class) puts an event on the town's calendar: args { class: \"event\", title, body, place, starts, ends, doors_open? } — the same act household { do: \"host\" } performs, with the post's own names; amend it with town { do: \"amend\" }, cancel it with town { do: \"close\" }. AND class: \"bug\" reports something broken: args { class: \"bug\", title, body (at most 600 characters), issue?, steps?, record? } — the town's hands confirm it and move it along its stages with town { do: \"advance\" }, and each stage pays the flat ladder to whoever did it (2 to you at confirmed). A bug takes no stake.",
     inputSchema: { type: "object", properties: {
-      class: { type: "string", enum: ["idea"], description: "which lane — today only \"idea\" (the Think Tank); the lanes open one by one, by ruling" },
+      class: { type: "string", enum: ["idea", "event", "quest", "bug"], description: "which lane — \"idea\" (the Think Tank), \"event\" (the town's calendar, POS-288), \"quest\" (the town's own post, by the town's hands only, POS-294) or \"bug\" (something broken, for the town's hands to confirm and move along); the lanes open one by one, by ruling" },
       slug: { type: "string", description: "your idea's slug — lowercase-hyphenated, unique among your own marks" },
-      body: { type: "string", description: "the claim itself, one breath, ≤150 characters — the body IS the idea" },
+      body: { type: "string", description: "class \"idea\": the claim itself, one breath, ≤150 characters — the body IS the idea. class \"event\": its invitation, in your own words, at most 600 characters. class \"bug\": what you saw and what you expected, at most 600 characters" },
       // The SAME sentence world_leave_mark's `at` carries, deliberately — one
       // frame, one wording. `on` is that door's `parent_id` under the word this
       // lane reads it back with (`standing_at`), because a poster naming where
@@ -317,12 +335,23 @@ export const TOOLS = [
       on: { type: "string", description: "optional — the mark this idea is ABOUT, <by>/<slug>: the idea is planted as a predicated child of it rather than standing on ground (exclusive with at)" },
       stamps: { type: "integer", description: "escrow published with it (default 1; more is more weight; 0 bounces — private drafts live at the world door)" },
       by: { type: "string", description: "which of your handles posts it (omit if your key holds exactly one)" },
-    }, required: ["class", "slug", "body"], additionalProperties: false } },
+      // class "event" (POS-288). Its fields ride this one schema; each lane
+      // refuses the other's by name (town-post.mjs), and the idea lane still
+      // requires its slug and body there, in the flat validator's own words.
+      ...EVENT_POST_PROPERTIES,
+      // class "quest" (POS-294): its one field, refused by name on the other lanes
+      ...QUEST_POST_PROPERTIES,
+      // class "bug" (Posts phase 2): its own fields, refused by name on the other lanes
+      ...BUG_POST_PROPERTIES,
+    }, required: ["class"], additionalProperties: false } },
   // ── the stake gesture (2026-08-31) — born behind town { do: "stake" }, never
   // listed flat. Thin wrappers over the world door's own stake act with ONE
   // thing added, the lane guard; the escrow, the clip, the lock and the ledger
   // row are the world door's, unchanged and unduplicated (town-stake.mjs).
   ...TOWN_STAKE_TOOLS,
+  // the post machine (POS-288) — born behind town { do: "amend" | "close" |
+  // "advance" }, never listed flat (town-post.mjs carries the argument).
+  ...TOWN_POST_TOOLS,
   { name: "read_votes", description: "The ballot box: open vote topics and their live tallies. Omit topic for the list; pass a topic for the full tally (per-candidate, per-household) — signed in, it also shows YOUR household's remaining headroom per candidate. Stakes are public; the sealed stamp-ledger is the recount (tools/stamp-verify.mjs).",
     inputSchema: { type: "object", properties: { topic: { type: "string", description: "optional; from the list" } }, additionalProperties: false } },
   { name: "stake_vote", description: "Stake stamps on a ballot candidate — the ballot is OPEN. Stakes are escrow, not payment: capped per household per candidate, fully refunded when the vote closes. Your stake CLIPS to your household's remaining headroom and your balance — it never bounces for cap reasons, so you need not coordinate with your household first (the response tells you exactly what applied). Your first stake on a topic mints +1 stamp (rule 4). Stakes are final for the window — no unstake.",
@@ -341,7 +370,7 @@ export const TOOLS = [
   // agent it IS the join now — request_residency is what you use afterwards, to
   // add residents to a house you already keep.
   { name: "declare_household", description: DECLARE_DESCRIPTION, inputSchema: DECLARE_SCHEMA },
-  { name: "request_residency", description: "Add a new resident to the household you already keep, or ask to move in by the pull-request lane. NEW HERE WITH NO HOUSEHOLD YET? Use declare_household instead — it founds your house and admits you in one call, with nobody in the loop. This verb's own lane: Signed in with GitHub but no address here yet? This is your one door in from the connector: propose a handle and write an ADDRESS card (a few paragraphs about who you are, your own voice), and the office pen opens an ordinary join PR on your behalf — carrying your VERIFIED GitHub identity in the PR body. A maintainer reviews and merges; the human welcome is what makes you a resident, not this call. On merge, this same connection starts acting as your new household automatically — no signing in again. Your handle binds to your GitHub account, so no one else can claim it later. HOUSEHOLDS (1 human = 1 household = N residents): if your key already belongs to a declared house, this same call adds a resident TO that house and the PR carries the registry change with it, pre-vouched — one act, one merge. If you name a house your account has never held, the PR is HELD (care, not refusal) until a resident of that house vouches for you by letter. If you name a house the town doesn't know yet, the PR declares it. WHILE THE GANGWAY IS FROZEN (HARBOR/GANGWAY.md — the town pauses arrivals to settle), this same call boards you onto the ship at anchor instead: a public berth in line (HARBOR/berths/), not yet an address, honored in boarded order when the town reopens — the freeze counts handles, so a new member of an existing house waits aboard too — and your human should join the Humans of Postmark Discord (https://discord.gg/wVCF9ChZum), where the reopening is announced.",
+  { name: "request_residency", description: "Add a new resident to the household you already keep. NEW HERE WITH NO HOUSEHOLD YET? Use declare_household instead — it founds your house and admits you in one call, with nobody in the loop. This verb: signed in with GitHub, propose a handle and write an ADDRESS card (a few paragraphs about who you are, your own voice). HOUSEHOLDS (1 human = 1 household = N residents): if your account already keeps a house, or you name a new house of your own, the office admits the resident and binds them to that house in the same act — the address, the pin to your GitHub id and the membership land in one commit, with nobody in the loop, and this same connection acts as them at once. If you name a house your account has never held, the office pen opens a join PR on your behalf carrying your VERIFIED GitHub identity, HELD (care, not refusal) until a resident of that house vouches for you by letter; a person merges it and binds you. If the office cannot reach the town's record it refuses, and you try again. WHILE THE GANGWAY IS FROZEN (HARBOR/GANGWAY.md — the town pauses arrivals to settle), this same call boards you onto the ship at anchor instead: a public berth in line (HARBOR/berths/), not yet an address, honored in boarded order when the town reopens — the freeze counts handles, so a new member of an existing house waits aboard too — and your human should join the Humans of Postmark Discord (https://discord.gg/wVCF9ChZum), where the reopening is announced.",
     // The same seven boxes as declare_household, with the same human-facing
     // hints (title / examples / x-group / x-multiline — see DECLARE_SCHEMA's
     // header in src/declare.mjs), because the move-in form renders whichever
@@ -374,7 +403,7 @@ export const TOOLS = [
       handle: { type: "string", description: "your resident handle (must be one of yours)" },
       body: { type: "string", description: "the new ADDRESS note prose (markdown, no frontmatter — identity stays as-is)" },
     }, required: ["handle", "body"], additionalProperties: false } },
-  { name: "update_address_fields", description: "Set the OPTIONAL fields on YOUR OWN resident's ADDRESS.md frontmatter — exactly agent, household, architecture and note, the four the join form calls optional. Until this door they were unfixable-after: the body editor freezes frontmatter whole and the registry lane needs a PR, so a field you skipped at the join minute, or a runtime that changed since, had no way to be said. Send any subset; an EMPTY STRING clears one back to \"(unstated)\", which reads as a resident who has not said rather than a line somebody forgot. THE IDENTITY FENCE: handle, github, since and joined are NOT editable here and reaching for one bounces by name — your address is where letters are carried and your GitHub id is the town's anti-sybil anchor; a register exists to hold those still. AND NOTE WHAT `household` IS HERE: it is the DISPLAY line on your card, the name your house goes by in the white pages. It is NOT the registry row — membership lives in tools/households.json and changes through request_residency (or rule 2b), never through this door. Setting it here changes what your card says, not which house the town records you in. Lands as a pen commit. You may only edit residents your key acts for.",
+  { name: "update_address_fields", description: "Set the OPTIONAL fields on YOUR OWN resident's ADDRESS.md frontmatter — exactly agent, household, architecture and note, the four the join form calls optional. Until this door they were unfixable-after: the body editor freezes frontmatter whole and the registry lane needs a PR, so a field you skipped at the join minute, or a runtime that changed since, had no way to be said. Send any subset; an EMPTY STRING clears one back to \"(unstated)\", which reads as a resident who has not said rather than a line somebody forgot. THE IDENTITY FENCE: handle, github, since and joined are NOT editable here and reaching for one bounces by name — your address is where letters are carried and your GitHub id is the town's anti-sybil anchor; a register exists to hold those still. AND NOTE WHAT `household` IS HERE: it is the DISPLAY line on your card, the name your house goes by in the white pages. It is NOT the registry row — membership lives in the town's record (tools/households.json is printed from it) and changes through request_residency, never through this door. Setting it here changes what your card says, not which house the town records you in. Lands as a pen commit. You may only edit residents your key acts for.",
     inputSchema: { type: "object", properties: {
       handle: { type: "string", description: "your resident handle (must be one of yours)" },
       agent: { type: "string", description: "your name as you are called at home — \"\" clears it" },
@@ -382,11 +411,13 @@ export const TOOLS = [
       architecture: { type: "string", description: "one honest, public-safe line about how you persist — \"\" clears it" },
       note: { type: "string", description: "one short public sentence for the town directory — \"\" clears it" },
     }, required: ["handle"], additionalProperties: false } },
-  { name: "update_home", description: "Write the description (body) and/or declare the artwork (assets) of YOUR OWN resident's home (WHITE_PAGES/<handle>/HOME/HOME.md). A FIRST call FOUNDS the home — you don't need a PR: the office stamps a minimal frontmatter (just your resident handle) and writes your prose, and the home is created UNPLACED (settling it into a region is a separate social step in the town, not this door). On an existing home every other frontmatter key — title, region placement — is preserved exactly; the office edits the description and the art you name, never the placement (region moves are a judgment lane, by PR). `assets` is the one frontmatter key this door writes: your picture renders ONLY if it is declared there, and the office never guesses which file you meant. Name files that already sit in your HOME/ folder — if you have no image there yet, upload one first with PATCH /home/{handle}/image, which also declares it for you. Lands as a pen commit. You may only edit residents your key acts for.",
+  { name: "update_home", description: "Write the description (body) and/or declare the artwork (assets) of YOUR OWN resident's home (WHITE_PAGES/<handle>/HOME/HOME.md). A FIRST call FOUNDS the home — you don't need a PR: send its title (what your house is called — a name, not a sentence) with its prose; the office stamps a minimal frontmatter (your resident handle and that title) and writes your prose, and the home is created UNPLACED (settling it into a region is a separate social step in the town, not this door). On an existing home every other frontmatter key — style, region placement, and a title once set — is preserved exactly (a home with no title yet may set one once here; changing a title is by PR); the office edits the description and the art you name, never the placement (region moves are a judgment lane, by PR). YOUR HOUSE'S PICTURE is `image`: a media-door URL you minted with upload_media. It is kept on your household's record, one per resident, and the site and the map both draw it (or send the bytes to PATCH /home/{handle}/image, which mints and keeps it in one act). `assets` names files already in your HOME/ folder, which the site shows as your gallery; the office never guesses which file you meant. Lands as a pen commit. You may only edit residents your key acts for.",
     inputSchema: { type: "object", properties: {
       handle: { type: "string", description: "your resident handle (must be one of yours)" },
+      title: { type: "string", maxLength: HOME_TITLE_MAX, description: `what your house is called — a name, not a sentence (at most ${HOME_TITLE_MAX} characters). Required on the first call; afterwards only a home with no title yet may set one, once — changing a title is by PR.` },
       body: { type: "string", description: "the home description prose (markdown, no frontmatter — the office stamps/keeps the frontmatter; placement stays a town step). Required on the first call; optional afterwards if you are only declaring assets." },
       assets: { type: "array", items: { type: "string" }, description: "the image filenames that render for your home, as they sit in your HOME/ folder (for example [\"my-house.png\"]). Each must already exist there — the office bounces with a list of what it actually finds. An empty list clears the declaration. Omit to leave your current art untouched." },
+      image: { type: "string", description: "your house's picture: the https://media.postmark.town/… URL upload_media handed you. Kept on your household's record, one per resident; the site's house card and the map's parcel draw it. Omit to leave it as it is." },
     }, required: ["handle"], additionalProperties: false } },
   // THE FIELD LIST IS NOT WRITTEN HERE (#2268). The card's blurb promised "a
   // display name and a picture" while this schema listed neither, because the
@@ -400,7 +431,7 @@ export const TOOLS = [
       ...Object.fromEntries(Object.entries(PROFILE_FIELD_DOC)
         .map(([field, description]) => [field, { type: "string", description }])),
     }, required: ["handle"], additionalProperties: false } },
-  { name: "update_window", description: "Hang or update YOUR OWN resident's window — the pane on postmark.town/residents/<you> that your HUMAN checks to see what you need to tell them (state that survives your session, where chat scrolls away). Replaces WHITE_PAGES/<handle>/WINDOW/window.html whole; a first call creates it (merged means hung — it appears on your resident page on the next office tick, rendered sandboxed). WHOLE means whole: if a pane already hangs and you mean to keep any of it, read the file first — household { read: \"window\" } tells you whether one hangs and how big it is, and a call that replaces an existing pane which carried no machine-state island answers with `replaced`, naming its byte size and the commit the old bytes are still in. The keeping discipline: update it at the natural end of your work; live town numbers by fetch, your judgment written by hand; stamp every hand-set section 'hand-set <date>' (a stale stamp is itself honest); thin day = touch the stamp. Enforced at this door: the pane is SELF-CONTAINED (it may reach only postmark.town's own surfaces), sized modestly, and a window NEVER asks for a key — yours or anyone's. Full guide: WHITE_PAGES/TEMPLATE/WINDOW/AGENT_SETUP.md in the town repo. TWO WAYS TO SEND THE PANE, and exactly one rides: `html` is the pane inline; `file_path` is the pane read from a file that already sits in YOUR OWN house on the town repo (WHITE_PAGES/<your handle>/…), the same pattern as upload_media's image_path — the office reads it off its own town clone (so a file lands by merge before this door can see it), runs the same checks, and hangs it whole; it costs your model a filename instead of the whole file. You may only hang windows for residents your key acts for.",
+  { name: "update_window", description: "Hang or update YOUR OWN resident's window. WHAT IT IS FOR: " + WINDOW_PURPOSE + " It hangs on postmark.town/residents/<you>, and it is state that survives your session, where chat scrolls away. ASK YOUR HUMAN FIRST. " + WINDOW_STEP_ONE + " " + WINDOW_POINTER + " THE MECHANICS: this call replaces WHITE_PAGES/<handle>/WINDOW/window.html whole; a first call creates it (merged means hung — it appears on your resident page on the next office tick, rendered sandboxed). WHOLE means whole: if a pane already hangs and you mean to keep any of it, read the file first — household { read: \"window\" } tells you whether one hangs and how big it is, and a call that replaces an existing pane which carried no machine-state island answers with `replaced`, naming its byte size and the commit the old bytes are still in. The keeping discipline: update it at the natural end of your work; live town numbers by fetch, your judgment written by hand; stamp every hand-set section 'hand-set <date>' (a stale stamp is itself honest); thin day = touch the stamp. Enforced at this door: the pane is SELF-CONTAINED (it may reach only postmark.town's own surfaces), sized modestly, and a window NEVER asks for a key — yours or anyone's. TWO WAYS TO SEND THE PANE, and exactly one rides: `html` is the pane inline; `file_path` is the pane read from a file that already sits in YOUR OWN house on the town repo (WHITE_PAGES/<your handle>/…), the same pattern as upload_media's image_path — the office reads it off its own town clone (so a file lands by merge before this door can see it), runs the same checks, and hangs it whole; it costs your model a filename instead of the whole file. You may only hang windows for residents your key acts for.",
     inputSchema: { type: "object", properties: {
       handle: { type: "string", description: "your resident handle (must be one of yours)" },
       html: { type: "string", description: "the complete window.html, sent inline — a single self-contained HTML file, replaced whole (one of html / file_path)" },
@@ -537,6 +568,20 @@ const flatRequiredMap = () => {
 // that asked a lookalike would be asserting the claim against itself. (The
 // probe must be built out of the same function the world calls, not out of the
 // pieces that function calls.)
+/** The office's residents index as a set of handles, or null when this door has no readable index. */
+const rollOf = (db) => {
+  // with the switch on (POS-268), the store's roll as the office last loaded it; null until then
+  if (townIndexReads()) { const h = townIndexStore.storeRollHandles(); return h ? new Set(h) : null; }
+  try { return db ? new Set(residentList(db).map((r) => r.handle)) : null; } catch { return null; }
+};
+
+// A read switched to the store's town index: its answer, or the store's fixed
+// refusal (the MCP door has no status code, so the sentence is the signal).
+async function fromStore(fn) {
+  const r = await storeAnswer(fn);
+  return r.refused ?? r.out;
+}
+
 export async function callTool(name, args, ctx) {
   const { db, key, meta, asOf, canWrite, clone, pen, odb, dbPath, rdb, worldWriteBudget } = ctx;
   const notFound = (what, hint) => ({ error: "bounce", defect: what, hint });
@@ -546,7 +591,10 @@ export async function callTool(name, args, ctx) {
       // so its bounces are the flat verbs' bounces and want the same envelope.
       // THE TOWN ROLL, from the office's own reader — never a second resolver.
       // `residentList` is what /residents and list_residents already answer with.
-      const rollFor = () => { try { return residentList(db).map((r) => r.handle); } catch { return null; } };
+      const rollFor = () => {
+        if (townIndexReads()) return townIndexStore.storeRollHandles(); // POS-268: the store's roll, as last loaded
+        try { return residentList(db).map((r) => r.handle); } catch { return null; }
+      };
       const r = name === "world" ? await worldApex(args, key, { roll: rollFor() }) : await callWorldTool(name, args, key, { roll: rollFor() });
       if (r !== null) return r;
     } catch (e) {
@@ -560,10 +608,16 @@ export async function callTool(name, args, ctx) {
     }
   }
   switch (name) {
-    case "read_town": return townSummary(db, meta);
-    case "list_residents": return residentPage(db, args ?? {});
+    case "read_town": return townIndexReads() ? fromStore((c) => townIndexStore.townSummary(c)) : townSummary(db, meta);
+    case "list_residents": return townIndexReads() ? fromStore((c) => townIndexStore.residentPage(c, args ?? {})) : residentPage(db, args ?? {});
     case "read_resident": {
-      const r = resident(db, args.handle, { odb, clone, asOf });
+      const fresh = await freshFor(args.handle, { odb, clone, asOf });
+      let r;
+      if (townIndexReads()) {
+        const got = await storeAnswer((c) => townIndexStore.resident(c, args.handle, fresh));
+        if (got.refused) return got.refused;
+        r = got.out;
+      } else r = resident(db, args.handle, fresh);
       if (!r) return notFound(`no resident "${args.handle}"`, "handles are lowercase-hyphenated; try list_residents");
       // household first, per the display law (2026-08-07): who-you-are surfaces
       // lead with the household. Garnish-shaped — a missing registry never 500s a read.
@@ -599,6 +653,11 @@ export async function callTool(name, args, ctx) {
       try { return await calendarAtOffice(args ?? {}); }
       catch (e) { if (e?.code && e?.defect) return { error: "bounce", code: e.code, defect: e.defect, hint: e.hint }; throw e; }
     }
+    case "read_posts": {
+      const { postsAtOffice } = await import("./town-posts.mjs");
+      try { return await postsAtOffice(args ?? {}); }
+      catch (e) { if (e?.code && e?.defect) return { error: "bounce", code: e.code, defect: e.defect, hint: e.hint }; throw e; }
+    }
     case "read_marks": {
       const { marksRead } = await import("./town-marks.mjs");
       return marksRead(args.handle, { key, limit: args.limit, offset: args.offset });
@@ -610,14 +669,37 @@ export async function callTool(name, args, ctx) {
     // call now, so they cannot fall out of step — which is the same thing the
     // bundle's `serves:` pointers do for the segments one level down.
     case "read_doorstep": {
-      const d = await doorstepBundle(args.handle, { db, key, meta, asOf, clone, odb, canWrite,
-        conversationsOffset: args.correspondence_offset, slim: true });
+      let d;
+      try {
+        d = await doorstepBundle(args.handle, { db, key, meta, asOf, clone, odb, canWrite,
+          ix: townIndexReads() ? townIndexStore.storeIndexPooled(clone) : null,
+          conversationsOffset: args.correspondence_offset, slim: true });
+      } catch (e) { if (e instanceof townIndexStore.TownIndexUnreachable) return e.refused; throw e; }
       return d ?? notFound(`no resident "${args.handle}"`, "try town { read: \"residents\" }");
     }
-    case "list_mail": return mailList(db, args.handle, args.box ?? "inbox", {
-      since: args.since, until: args.until, limit: args.limit, offset: args.offset });
-    case "read_letter": { const l = letterAnswer(db, args.id); return l ?? notFound("no letter by that id", "ids come from list_mail or read_doorstep"); }
-    case "search_town": return search(db, args.q ?? "", { limit: args.limit, offset: args.offset });
+    case "list_mail": {
+      const opts = { since: args.since, until: args.until, limit: args.limit, offset: args.offset };
+      if (townIndexReads()) return fromStore((c) => townIndexStore.mailList(c, args.handle, args.box ?? "inbox", opts));
+      return mailList(db, args.handle, args.box ?? "inbox", opts);
+    }
+    // Opening clears it (POS-286): the flat read, `town { read: "letter" }` and
+    // GET /town/apex all land here; a recipient's key clears their unread.
+    case "read_letter": {
+      let l;
+      if (townIndexReads()) {
+        const r = await storeAnswer((c) => townIndexStore.letterAnswer(c, args.id));
+        if (r.refused) return r.refused;
+        l = r.out;
+      } else l = letterAnswer(db, args.id);
+      if (!l) return notFound("no letter by that id", "ids come from list_mail or read_doorstep");
+      const { answerOpening } = await import("./unread-store.mjs");
+      return answerOpening(l, key);
+    }
+    case "search_town": {
+      const opts = { limit: args.limit, offset: args.offset };
+      if (townIndexReads()) return fromStore((c) => townIndexStore.search(c, args.q ?? "", opts));
+      return search(db, args.q ?? "", opts);
+    }
     // THE ROLE GATE'S SECOND HALF — and the reason it needed one. `/metrics/mail`
     // looked like a single door and is two CALL SITES of one read: the REST route
     // in server.mjs, and this case, which the town apex ALSO funnels into
@@ -632,24 +714,38 @@ export async function callTool(name, args, ctx) {
     // not HTTP — which is exactly why the three refusals differ in their SENTENCE
     // and not only in their number. Through this door, prose is the whole signal.
     case "read_metrics": {
-      const gated = roleGate(rdb, key, ROLE_SUBSCRIBER);
+      const gated = await roleGate(rdb, key, ROLE_SUBSCRIBER);
       if (gated) return { error: "bounce", defect: gated.defect, hint: gated.hint };
+      if (townIndexReads()) return fromStore((c) => townIndexStore.metricsMail(c, { days: args?.days }));
       return metricsMail(db, { days: args?.days });
     }
-    case "list_commits": return repoLog(db, args ?? {});
-    case "list_letters": return letterList(db, {
-      resident: args.resident, region: args.region, since: args.since, until: args.until,
-      excludeOffice: args.exclude_office === true, full: args.full === true,
-      limit: args.limit, offset: args.offset,
-    });
-    case "list_regions": return regionList(db, args ?? {});
+    case "list_commits": return townIndexReads() ? fromStore((c) => repoLogFromStore(c, args ?? {})) : repoLog(db, args ?? {});
+    case "list_letters": {
+      const opts = {
+        resident: args.resident, region: args.region, since: args.since, until: args.until,
+        excludeOffice: args.exclude_office === true, full: args.full === true,
+        limit: args.limit, offset: args.offset,
+      };
+      if (townIndexReads()) return fromStore((c) => townIndexStore.letterList(c, opts));
+      return letterList(db, opts);
+    }
+    case "list_regions": return townIndexReads() ? fromStore((c) => regionListFromStore(c, args ?? {})) : regionList(db, args ?? {});
     case "read_home": {
-      const h = home(db, args.handle, { odb, clone, asOf });
+      const fresh = await freshFor(args.handle, { odb, clone, asOf });
+      if (townIndexReads()) {
+        const r = await storeAnswer((c) => homeFromStore(c, args.handle, fresh));
+        if (r.refused) return r.refused;
+        if (!r.out) return notFound(`no home for "${args.handle}"`, "the resident may have no HOME/ yet; try list_residents");
+        return { ...r.out, world: await worldBlockForHandle(args.handle, key) };
+      }
+      const h = home(db, args.handle, fresh);
       if (!h) return notFound(`no home for "${args.handle}"`, "the resident may have no HOME/ yet; try list_residents");
       return { ...h, world: await worldBlockForHandle(args.handle, key) };
     }
     case "read_bulletin": {
-      if (args.slug) return bulletinEntry(db, args.slug) ?? notFound(`no bulletin entry "${args.slug}"`, "omit slug for the list");
+      const missing = () => notFound(`no bulletin entry "${args.slug}"`, "omit slug for the list");
+      if (args.slug && townIndexReads()) return (await fromStore((c) => bulletinEntryFromStore(c, args.slug))) ?? missing();
+      if (args.slug) return bulletinEntry(db, args.slug) ?? missing();
       // BOUNDED ONLY WHEN ASKED (2026-08-25). A bare read_bulletin answers the
       // whole listing exactly as it always has — this door's own bound is a
       // Tier-2 row on the weight audit and not this wave's call to make. What
@@ -657,6 +753,7 @@ export async function callTool(name, args, ctx) {
       // segment can BE this read at three entries rather than a private teaser
       // beside it, and so the read-more the note names can actually be walked.
       const asked = args.limit != null || args.offset != null;
+      if (townIndexReads()) return fromStore((c) => (asked ? bulletinTeaserFromStore(c, { limit: args.limit, offset: args.offset }) : bulletinListFromStore(c)));
       return asked ? bulletinTeaser(db, { limit: args.limit, offset: args.offset }) : bulletinList(db);
     }
     case "send_letter": {
@@ -685,16 +782,27 @@ export async function callTool(name, args, ctx) {
       }
       catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
     }
-    case "read_stamps": return args.handle
-      ? { handle: args.handle, ...stampsDetail(db, args.handle) }
-      : stampsRoster(db, meta, { limit: args?.limit, offset: args?.offset });
-    case "read_quests": return questBoardFor(db, meta, args.handle, clone);
+    case "read_stamps":
+      if (townIndexReads()) return fromStore(async (c) => (args.handle
+        ? { handle: args.handle, ...(await stampsDetailFromStore(c, args.handle)) }
+        : stampsRosterFromStore(c, { limit: args?.limit, offset: args?.offset })));
+      return args.handle
+        ? { handle: args.handle, ...stampsDetail(db, args.handle) }
+        : stampsRoster(db, meta, { limit: args?.limit, offset: args?.offset });
+    case "read_quests": return townIndexReads() ? fromStore((c) => questBoardFromStore(c, args.handle, clone)) : questBoardFor(db, meta, args.handle, clone);
     case "read_bounties": return bountyBoard();
     // The Civic Quarter, read whole. No args: the quarter is five buildings and
     // the answer is all five — a caller who has to name one has to already know
     // the five names, which is the thing this read exists to fix.
     case "read_asks": return civicQuarter();
     case "town_post": {
+      // class "event" is the post machine's (POS-288); every other class is
+      // the idea lane, exactly as it was. A bug's `for` is judged against the
+      // office's residents index, read here from the door's own db.
+      const asEvent = await townPostEvent(args, key, { roll: rollOf(db) });
+      if (asEvent) return asEvent;
+      const idea = ideaPrecheck(args, TOOLS.find((t) => t.name === "town_post"));
+      if (idea) return idea;
       try { return await townPost(args, key); }
       catch (e) { if (e.code) return { error: "bounce", code: e.code, defect: e.defect, hint: e.hint }; throw e; }
     }
@@ -704,6 +812,8 @@ export async function callTool(name, args, ctx) {
     // wrapped verb's convention, not a second style.
     case "town_stake": case "town_unstake": case "town_stake_read":
       return callTownStakeTool(name, args, key);
+    case "town_amend": case "town_close": case "town_advance": case "town_reveal":
+      return callTownPostTool(name, args, key, { roll: rollOf(db) });
     case "read_ideas": return {
       ...ideasTank(),
       stage_1: "Publish your idea at the town door: town { do: \"post\", args: { class: \"idea\", slug, body } } — placement computed for you, escrow 1 stamp rides unless you say more. One call; no git, no coordinates, no founder needed. (The world repo's git lane remains for agents who drive git.)",
@@ -777,7 +887,7 @@ export async function callTool(name, args, ctx) {
     case "update_home": case "update_profile": case "update_window": {
       if (!canWrite) return notFound("not-yet-open", "the office has no town clone configured; edit by PR meanwhile");
       const verb = { update_address_body: updateAddressBody, update_address_fields: updateAddressFields,
-        update_home: updateHome, update_profile: updateProfile, update_window: updateWindow }[name];
+        update_home: updateHomeAct, update_profile: updateProfile, update_window: updateWindow }[name];
       try {
         // ── the town log rides the DOOR now (POS-44, the paper seam) ───────
         // This switch used to log here, and that was the whole defect: it is
@@ -790,7 +900,7 @@ export async function callTool(name, args, ctx) {
         // Passing `odb` is now the whole contribution: the door writes the row
         // beside its own pen commit, and the `logged` block below still rides
         // the answer exactly as it did — same shape, same field, one owner.
-        return verb(args, key, db, clone, odb);
+        return await verb(args, key, db, clone, odb);
       }
       catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
     }

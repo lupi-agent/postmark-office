@@ -20,29 +20,41 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import { openRolesDb, grantRole, revokeRole } from "../src/roles.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const KEY = "roles-door-test-key";
 const HOUSEHOLD = "keemin";
 const GH_ID = 583231;            // the pinned account id the static key carries
 
-/** One office, one registry, one flag state. Returns a stop() and a call(). */
-async function office({ port, gates }) {
+/** One office, one registry, one flag state. Returns a stop() and a call().
+ *  Its port is asked of the OS (spawn-office.mjs § the port, asked for): these
+ *  were 43871, 43872 and 43874, and 43871 is also loop-lag.test.mjs's, so the
+ *  two files collided inside one tree's parallel suite. */
+async function office({ gates }) {
   const tmp = mkdtempSync(join(tmpdir(), "postmark-office-roles-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  const IX_ENV = await storeFor(dbPath);
   const rolesPath = join(tmp, "roles.db");
   openRolesDb(rolesPath).close(); // exists and empty — nobody holds anything yet
 
-  const child = spawn(process.execPath, [
+  const { child, port } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"),
     "--port", String(port),
     "--db", dbPath,
     "--roles-db", rolesPath,
   ], {
     env: {
-      ...process.env,
+      ...process.env, ...IX_ENV,
       // #<gh_id> pins the static key to an immutable account id — required to
       // hold a role, ignored by everything else.
       OFFICE_KEYS: `${KEY}=${HOUSEHOLD}#${GH_ID}:wright`,
@@ -51,12 +63,7 @@ async function office({ port, gates }) {
       WORLD_CLONE: join(tmp, "no-world-clone"),
     },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  await new Promise((ok, no) => {
-    const t = setTimeout(() => no(new Error("server never listened")), 15_000);
-    child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-    child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-  });
+  }));
 
   const base = `http://127.0.0.1:${port}`;
   return {
@@ -74,8 +81,8 @@ async function office({ port, gates }) {
       const text = env?.result?.content?.[0]?.text;
       try { return JSON.parse(text); } catch { return env; }
     },
-    grant: () => { const r = openRolesDb(rolesPath); grantRole(r, { subject: GH_ID, actor: "door-test", login: HOUSEHOLD }); r.close(); },
-    revoke: () => { const r = openRolesDb(rolesPath); revokeRole(r, { subject: GH_ID, actor: "door-test" }); r.close(); },
+    grant: async () => { const r = openRolesDb(rolesPath); await grantRole(r, { subject: GH_ID, actor: "door-test", login: HOUSEHOLD }); r.close(); },
+    revoke: async () => { const r = openRolesDb(rolesPath); await revokeRole(r, { subject: GH_ID, actor: "door-test" }); r.close(); },
     async stop() {
       if (child.exitCode === null) { const gone = new Promise((ok) => child.on("exit", ok)); child.kill(); await gone; }
       rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -86,7 +93,7 @@ async function office({ port, gates }) {
 // ── FLAG OFF: the default, and every office today ───────────────────────────
 
 let open_;
-before(async () => { open_ = await office({ port: 43871, gates: false }); });
+before(async () => { open_ = await office({ gates: false }); });
 after(async () => { await open_?.stop(); });
 
 test('FLAG OFF — "absolutely nothing changes for any caller until the founder designates real gated surfaces"', async () => {
@@ -106,7 +113,7 @@ test('FLAG OFF — "absolutely nothing changes for any caller until the founder 
 // ── FLAG ON: the mechanism, demonstrated ───────────────────────────────────
 
 test("FLAG ON — the door actually consults the registry (grant passes, revoke refuses, anonymous is told to sign in)", async () => {
-  const gated = await office({ port: 43872, gates: true });
+  const gated = await office({ gates: true });
   try {
     // 1. ungranted, signed in -> 403 naming the role
     const refused = await gated.signedIn();
@@ -124,13 +131,13 @@ test("FLAG ON — the door actually consults the registry (grant passes, revoke 
 
     // 3. grant -> served. No restart: the CLI writes the same file the live
     //    handle reads, which is what makes hand-keeping workable at all.
-    gated.grant();
+    await gated.grant();
     const passed = await gated.signedIn();
     assert.equal(passed.status, 200, "a granted household passes the gate — with no office restart");
     assert.ok(!(await passed.json()).error);
 
     // 4. revoke -> refused again, live
-    gated.revoke();
+    await gated.revoke();
     const after = await gated.signedIn();
     assert.equal(after.status, 403, "a revoke takes effect at the door, live");
   } finally {
@@ -139,7 +146,7 @@ test("FLAG ON — the door actually consults the registry (grant passes, revoke 
 });
 
 test("A GATED SURFACE IS GATED AT EVERY CALL SITE — the MCP door serves the same read and must refuse alike", async () => {
-  const gated = await office({ port: 43874, gates: true });
+  const gated = await office({ gates: true });
   try {
     // Ungated at REST but open at MCP would be a decorative gate: the office
     // would report itself closed while the same numbers walked out the other
@@ -154,7 +161,7 @@ test("A GATED SURFACE IS GATED AT EVERY CALL SITE — the MCP door serves the sa
     assert.ok(!("days" in refusedMcp) && !("totals" in refusedMcp),
       "the refusal must not carry the payload it was refusing");
 
-    gated.grant();
+    await gated.grant();
     const passedMcp = await gated.viaMcp();
     assert.ok(!passedMcp.error, "a granted household passes at the MCP door too");
     assert.ok("totals" in passedMcp || "days" in passedMcp,
@@ -172,18 +179,19 @@ test('AMBIGUITY #4, RULED: "a household that exists only as an env string cannot
   const tmp = mkdtempSync(join(tmpdir(), "postmark-office-unpinned-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  const IX_ENV = await storeFor(dbPath);
   const rolesPath = join(tmp, "roles.db");
   // Grant to the household NAME, the way a pre-rekey operator might have.
   // Nothing about that row can ever be reached, because names are not subjects.
   const seed = openRolesDb(rolesPath);
-  try { grantRole(seed, { subject: GH_ID, actor: "seed", login: HOUSEHOLD }); } finally { seed.close(); }
+  try { await grantRole(seed, { subject: GH_ID, actor: "seed", login: HOUSEHOLD }); } finally { seed.close(); }
 
   const child = spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"),
     "--port", "43875", "--db", dbPath, "--roles-db", rolesPath,
   ], {
     env: {
-      ...process.env,
+      ...process.env, ...IX_ENV,
       // NO #<gh_id> — a static key with no verified identity behind it.
       OFFICE_KEYS: `${KEY}=${HOUSEHOLD}:wright`,
       OFFICE_ROLE_GATES: "1",
@@ -216,6 +224,7 @@ test("FLAG ON but registry missing — the door says so, and does not pretend it
   const tmp = mkdtempSync(join(tmpdir(), "postmark-office-noroles-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  const IX_ENV = await storeFor(dbPath);
   // Point --roles-db at a path inside a directory that does not exist, so the
   // open throws and the office boots with rdb = null.
   const child = spawn(process.execPath, [
@@ -224,7 +233,7 @@ test("FLAG ON but registry missing — the door says so, and does not pretend it
     "--roles-db", join(tmp, "nope", "roles.db"),
   ], {
     env: {
-      ...process.env,
+      ...process.env, ...IX_ENV,
       // Pinned, so the caller HAS a subject — otherwise the no-subject 401
       // would fire first and this test would never reach the 503 it exists for.
       OFFICE_KEYS: `${KEY}=${HOUSEHOLD}#${GH_ID}:wright`,

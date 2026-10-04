@@ -22,6 +22,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFi
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { indexStore } from "./helpers/office-under-test.mjs";
+
+// The doors below run in this process. They never had a town index, and the
+// office will not run without one (POS-268): this file's is an empty store.
+const IX = await indexStore(null);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 process.env.R2_ACCOUNT_ID = "test-account";
 process.env.R2_ACCESS_KEY_ID = "test-key";
@@ -219,7 +226,7 @@ test("every row's url is the upload's url, and passes mediaUrlOk", async () => {
   const png = await upload(PNG, key(), db);
   const one = await upload(svg("one"), key(), db);
 
-  const rows = mediaLedgerRows(db, "testers");
+  const rows = (await mediaLedgerRows(db, "testers"));
   const byUrl = new Map(rows.map((r) => [r.url, r]));
   for (const answered of [png, one]) {
     assert.ok(byUrl.has(answered.url), `the read answers the same URL the upload did: ${answered.url}`);
@@ -234,7 +241,7 @@ test("every row's url is the upload's url, and passes mediaUrlOk", async () => {
 test("media_type is the type the upload answered with, and the concrete one", async () => {
   const db = odb();
   const png = await upload(PNG, key(), db);
-  const row = mediaLedgerRows(db, "testers").find((r) => r.url === png.url);
+  const row = (await mediaLedgerRows(db, "testers")).find((r) => r.url === png.url);
   assert.equal(row.ext, "png");
   assert.equal(row.media_type, png.type, "the read and the write name the same type");
   assert.equal(row.media_type, "image/png", "and that type is image/png — pinned, so a shared table cannot drift both sides at once");
@@ -250,7 +257,7 @@ test("newest first", async () => {
   const b = await upload(svg("b"), key(), db);
   await new Promise((r) => setTimeout(r, 3));
   const c = await upload(svg("c"), key(), db);
-  assert.deepEqual(mediaLedgerRows(db, "testers").map((r) => r.url), [c.url, b.url, a.url]);
+  assert.deepEqual((await mediaLedgerRows(db, "testers")).map((r) => r.url), [c.url, b.url, a.url]);
 });
 
 // ── the embedded hint ────────────────────────────────────────────────────────
@@ -413,7 +420,7 @@ test("no law sentence is hand-typed in the office — the door quotes, it does n
     }
   });
 
-test("media.mjs's header is TRUED to the marks where it paraphrases them", () => {
+test("media.mjs's header is TRUED to the marks where it paraphrases them", async () => {
   // Point 3 of the rename ruling: a comment may quote law, but a sentence that
   // now DIFFERS from the planted mark is drift wearing a comment's clothes. The
   // header read "byte-accounting is machinery, not record" before the marks

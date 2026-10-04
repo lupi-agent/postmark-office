@@ -17,7 +17,7 @@
 // stamp disappears on its own the moment settlement lands a handle ashore.
 //
 // The allowed set is the arrival lane plus the ephemeral voice:
-//   world_say          — the quay voice (emissions; five minutes, sixty metres)
+//   world_say          — the quay voice (emissions; hearable to the next settlement, sixty metres)
 //   request_residency  — adding to the house is arrival machinery
 //   declare_household  — so is declaring
 //   household_begin    — the berth's bridge (its own door answers harbor

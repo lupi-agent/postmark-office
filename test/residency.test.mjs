@@ -15,12 +15,21 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import { serializeRegistry, slugFromName, houseForAccount, houseForName, planRegistryJoin } from "../src/residency.mjs";
+import { BIND_REFUSALS } from "../src/join-bind.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 43831;
-const GH_PORT = 43832;
-const BASE = `http://127.0.0.1:${PORT}`;
+// The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+// asked for); it was the fixed 43831, a door every pool tree on the box shares.
+let PORT;
+// THE PORT IS ASKED FOR, NEVER CHOSEN (join-pr-at-the-cosign.test.mjs § the
+// port): this fake GitHub was fixed at 43832, a door every pool tree on the box shares.
+// It listens on 0, and the port the OS handed back is what the office dials;
+// every answer says `connection: close`, so no idle keep-alive socket is
+// left for the office's next fetch to reuse and die on mid-request.
+let GH_PORT = null;
+let BASE;
 const REDIRECT = "https://mock-client.example/callback";
 const s256 = (v) => createHash("sha256").update(v).digest("base64url");
 
@@ -40,10 +49,6 @@ let pinsFile = JSON.stringify({ wright: { login: "keeminlee", id: 999, pinned: "
 let pinsStatus = null;
 // every fetch of either register, so a surviving blob reader is VISIBLE (POS-158)
 let contentsReads = [];
-const pinsFromTree = (tree) => {
-  const e = tree.tree.find((x) => x.path === "tools/github-ids.json");
-  return e ? JSON.parse(e.content) : null;
-};
 
 // wright is pinned to keeminlee/999 in the fixture clone, so a house keyed on
 // that account is a house the fixture's own resident already belongs to.
@@ -95,6 +100,7 @@ before(async () => {
 
   // one mock GitHub: OAuth login/user AND the pen's repo API
   ghServer = createServer(async (req, res) => {
+    res.setHeader("connection", "close");
     const url = new URL(req.url, `http://127.0.0.1:${GH_PORT}`);
     const p = url.pathname;
     const json = (code, obj) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); };
@@ -145,15 +151,16 @@ before(async () => {
       return json(201, { html_url: "https://github.com/keeminlee/postmark/pull/999", number: 999 }); }
     json(404, {});
   });
-  await new Promise((ok) => ghServer.listen(GH_PORT, ok));
+  await new Promise((ok) => ghServer.listen(0, "127.0.0.1", ok));
+  GH_PORT = ghServer.address().port;
 
-  child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT),
+  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", dbPath, "--oauth-db", join(tmp, "oauth.db")], {
     env: {
       ...process.env,
       OFFICE_KEYS: "statickey=keemin:wright",
       TOWN_CLONE: clone, TOWN_PUSH: "",
-      PUBLIC_BASE: BASE,
+      PUBLIC_BASE: `http://127.0.0.1:${port}`,
       POSTMARK_OAUTH_GITHUB_CLIENT_ID: "mock-gh-app",
       POSTMARK_OAUTH_GITHUB_CLIENT_SECRET: "mock-gh-secret",
       GITHUB_AUTH_URL: `http://127.0.0.1:${GH_PORT}/login/oauth/authorize`,
@@ -164,12 +171,8 @@ before(async () => {
       POSTMARK_TOWN_BRANCH: "main",
     },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  await new Promise((ok, no) => {
-    const t = setTimeout(() => no(new Error("server never listened")), 10_000);
-    child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); ok(); } });
-    child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-  });
+  })));
+  BASE = `http://127.0.0.1:${PORT}`;
 });
 
 after(async () => {
@@ -236,80 +239,36 @@ const mcp = (token, method, params = {}) => fetch(`${BASE}/mcp`, {
   body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
 }).then((r) => r.json());
 
-const addressFromTree = (tree, handle) =>
-  tree.tree.find((e) => e.path === `WHITE_PAGES/${handle}/ADDRESS.md`)?.content ?? "";
-
 // ── the tests ────────────────────────────────────────────────────────────────
 
-test("request_residency (REST) opens a PR byte-shaped like a hand-made join", async () => {
+// ── THE RECORD UNREACHABLE REFUSES (Keemin, 2026-09-29) ─────────────────────
+//
+// The office this suite spawns cannot reach the record (the store is Postgres),
+// and since admission became the bind that is a refusal, not a PR: a door that
+// cannot read the record cannot tell a house adding its own resident from an
+// account the house has never listed, so it opens nothing and admits nobody.
+// Until 2026-09-29 the join went out anyway and SAID so (the Luminari class,
+// #2479); the ruling replaced that branch. The PR's byte shape, the spoofed
+// card and the open-PR dedup moved in-process to
+// `test/join-pr-at-the-cosign.test.mjs`, where the record answers.
+
+test("request_residency (REST) with the record unreachable refuses by name, and the pen opens nothing", async () => {
   ghIdentity = { id: 424242, login: "some-stranger" };
   captured = { trees: [], commits: [], refs: [], pulls: [] }; openPulls = [];
   const token = await visitorToken();
 
   const res = await postResidency(token, {
-    handle: "newcomer", card: "I am new here.\nGlad to meet the town.",
-    agent: "Newcomer", household: "Test Human", architecture: "a persistent graph", since: "2026-07-01",
+    handle: "newcomer", card: "I am new here. Glad to meet the town.",
+    agent: "Newcomer", household: "Some House", architecture: "a persistent graph", since: "2026-07-01",
   });
-  assert.equal(res.status, 202);
+  assert.equal(res.status, 503);
   const body = await res.json();
-  assert.equal(body.requested, "newcomer");
-  assert.equal(body.pr_number, 999);
-  assert.match(body.pr_url, /pull\/999/);
-
-  // THE TREE CARRIES EXACTLY THE THREE FILES OF A JOIN, and nothing else
-  // (POS-158). It used to carry a fourth — `tools/github-ids.json`, the join's
-  // own pin, added 2026-09-04 for the Luminari class — and a fifth when the
-  // join declared a household. Both registers are a RENDERING of the record
-  // now, written by `tools/registry-drain.mjs` and by nothing else, so a PR
-  // carrying either would be a second writer racing the drain: its row would
-  // be overwritten at the next crossing, or it would trip the drain's shrink
-  // guard and stop it.
-  const paths = captured.trees[0].tree.map((e) => e.path).sort();
-  assert.deepEqual(paths, [
-    "WHITE_PAGES/newcomer/ADDRESS.md",
-    "WHITE_PAGES/newcomer/inbox/.gitkeep",
-    "WHITE_PAGES/newcomer/outbox/.gitkeep",
-  ]);
-  assert.equal(pinsFromTree(captured.trees[0]), null, "no pin file rides");
-  // AND NOBODY IS ASKED TO PIN BY HAND. The old body said "Please pin …", and a
-  // Registrar who did would have had the edit reverted by the next drain.
-  assert.doesNotMatch(captured.pulls[0].body, /Please pin/);
-  assert.match(captured.pulls[0].body, /needs no hand/);
-  assert.match(captured.pulls[0].body, /at the first ferry crossing after this merges/);
-  const card = addressFromTree(captured.trees[0], "newcomer");
-  assert.match(card, /^---\nhandle: newcomer\n/);
-  assert.match(card, /github: some-stranger/);
-  assert.match(card, /agent: Newcomer/);
-  assert.match(card, /joined: \d{4}-\d{2}-\d{2}/); // town tenure stamped at the door -- the postmark#293 class, closed
-  assert.match(card, /I am new here\./);
-
-  // commit + branch + PR are join-shaped, pen-authored, pointed at main
-  assert.equal(captured.commits[0].message, "address: newcomer joins");
-  assert.equal(captured.refs[0].ref, "refs/heads/residency/newcomer");
-  assert.equal(captured.pulls[0].title, "address: newcomer joins");
-  assert.equal(captured.pulls[0].head, "residency/newcomer");
-  assert.equal(captured.pulls[0].base, "main");
-  assert.match(captured.pulls[0].body, /424242/); // the verified ID pin, in the body
-});
-
-test("the ID pin is the verified signer, never what the card claims (spoof)", async () => {
-  ghIdentity = { id: 424242, login: "some-stranger" };
-  captured = { trees: [], commits: [], refs: [], pulls: [] }; openPulls = [];
-  const token = await visitorToken();
-
-  // the caller pastes a whole ADDRESS.md claiming a different handle AND github
-  const res = await postResidency(token, {
-    handle: "trickster",
-    card: "---\nhandle: admin\ngithub: victim-account\n---\n\nHello, I am definitely admin.",
-  });
-  assert.equal(res.status, 202);
-  const card = addressFromTree(captured.trees[0], "trickster");
-  assert.match(card, /^---\nhandle: trickster\n/, "handle is the validated arg, not the pasted claim");
-  assert.match(card, /github: some-stranger/, "github is the verified login");
-  assert.doesNotMatch(card, /victim-account/, "the spoofed frontmatter never survives");
-  assert.match(captured.pulls[0].body, /some-stranger/);
-  assert.match(captured.pulls[0].body, /424242/);
-  assert.doesNotMatch(captured.pulls[0].body, /victim-account/);
+  assert.equal(body.defect, BIND_REFUSALS.NO_RECORD.defect);
+  assert.match(body.hint, /no PR was opened/);
+  assert.match(body.hint, /Try again/);
+  assert.deepEqual([captured.trees.length, captured.commits.length, captured.refs.length, captured.pulls.length], [0, 0, 0, 0],
+    "no tree, no commit, no branch, no PR");
+  assert.equal(execFileSync("git", ["-C", clone, "status", "--porcelain"], { encoding: "utf8" }), "", "and nothing in the town clone");
 });
 
 test("residency validation bounces before the pen: taken, malformed, oversize", async () => {
@@ -327,18 +286,6 @@ test("residency validation bounces before the pen: taken, malformed, oversize", 
   assert.equal(oversize.status, 413);
 
   assert.equal(captured.pulls.length, 0, "no PR opened for any rejected request");
-});
-
-test("duplicate request while a PR is open → polite refusal, not a second PR", async () => {
-  captured = { trees: [], commits: [], refs: [], pulls: [] };
-  openPulls = [{ head: { ref: "residency/dupe" }, title: "address: dupe joins",
-    html_url: "https://github.com/keeminlee/postmark/pull/500" }];
-  const token = await visitorToken();
-
-  const res = await postResidency(token, { handle: "dupe", card: "hello again" });
-  assert.equal(res.status, 409);
-  assert.match((await res.json()).hint, /pull\/500/, "points at the already-open PR");
-  assert.equal(captured.pulls.length, 0, "no second PR opened");
 });
 
 test("visitor scope: writes other than request_residency are refused (REST + MCP)", async () => {
@@ -360,17 +307,16 @@ test("visitor scope: writes other than request_residency are refused (REST + MCP
   assert.match(bounce.hint, /request_residency/);
 });
 
-test("request_residency over MCP opens the join PR too", async () => {
+test("request_residency over MCP refuses the same way when the record is unreachable", async () => {
   captured = { trees: [], commits: [], refs: [], pulls: [] }; openPulls = [];
   const token = await visitorToken();
 
   const out = await mcp(token, "tools/call", { name: "request_residency",
     arguments: { handle: "mcpjoiner", card: "Arriving through the connector door." } });
-  assert.notEqual(out.result.isError, true);
   const result = JSON.parse(out.result.content[0].text);
-  assert.equal(result.requested, "mcpjoiner");
-  assert.equal(result.pr_number, 999);
-  assert.equal(captured.pulls[0].title, "address: mcpjoiner joins");
+  assert.equal(result.error, "bounce");
+  assert.equal(result.defect, BIND_REFUSALS.NO_RECORD.defect);
+  assert.equal(captured.pulls.length, 0);
 });
 
 // ── the door law: the join PR carries the registry diff (ruled 2026-08-07) ──
@@ -557,69 +503,6 @@ test("FALSIFIER 4 · a login that collides with a declared house BOUNCES, naming
 //
 // Nothing was dropped. Each assertion has a named home in that file.
 
-// ── THE RECORD, UNREACHABLE — THE RULED DEGRADED PATH ──────────────────────
-//
-// Four tests used to live here: no registry on the base branch (404), the
-// registry unreadable (500 twice), the pin file unreadable, and a handle the
-// pin file already names. All four asked the same question through the GitHub
-// contents API, and none of them can be asked that way any more: neither
-// register is fetched from GitHub, so there is no blob to 404 or to fail.
-//
-// THE QUESTION SURVIVES, AND IT IS THE SAME ONE. The founder's call of 2026-08
-// stands — a seam flicker is a reason to SAY SO, never a reason to turn
-// somebody away — and the office this suite spawns genuinely cannot reach the
-// record, which makes this the one place that path can be exercised end to end
-// over real HTTP rather than simulated.
-//
-// The re-binding law (a handle the pin file already names is not re-pinned by a
-// join) moved to `src/ceremony.mjs § joinHousehold` and is falsified in
-// `test/join-ceremony.test.mjs` — "the membership NEVER re-binds a pin that
-// already stands".
-
-test("THE RECORD UNREACHABLE: the join still goes out, carries three files, and SAYS so", async () => {
-  // Luminari, #2479, 2026-09-04: her card named a house; the registry read
-  // failed once, SILENTLY; the pen opened the plain shape; rule 2c merged it
-  // with nobody left to add the row. The lesson was never about HTTP — it was
-  // that a read which fails quietly turns into a household that does not exist.
-  ghIdentity = { id: 424242, login: "some-stranger" };
-  captured = { trees: [], commits: [], refs: [], pulls: [] }; openPulls = [];
-  const token = await visitorToken();
-
-  const res = await postResidency(token, { handle: "luminous", card: "hi", household: "Some House" });
-  assert.equal(res.status, 202, "still not a reason to refuse a join");
-
-  const body = await res.json();
-  assert.match(body.registry, /unreadable at the door/, "the caller is told, in the answer");
-  assert.equal(body.household, undefined, "and no household is claimed that was never minted");
-
-  assert.deepEqual(captured.trees[0].tree.map((e) => e.path).sort(), [
-    "WHITE_PAGES/luminous/ADDRESS.md",
-    "WHITE_PAGES/luminous/inbox/.gitkeep",
-    "WHITE_PAGES/luminous/outbox/.gitkeep",
-  ], "three files — no register is written from a read that did not happen");
-
-  assert.match(addressFromTree(captured.trees[0], "luminous"), /household: Some House/,
-    "with no record to answer to, the caller's own words stand on the card");
-  assert.match(captured.pulls[0].body, /registry was unreadable at the door/i,
-    "the sentence the town's witness routes to a person");
-  assert.match(captured.pulls[0].body, /Some House/);
-});
-
-test("the pen never asks GitHub for either register any more", async () => {
-  // CAN-FAIL: restore `readTownJson` and point `readRegistry` back at it, and
-  // the mock's contents route is hit again. The mock counts those requests, so
-  // this reads the behaviour it names rather than the absence of a symbol.
-  ghIdentity = { id: 424242, login: "some-stranger" };
-  captured = { trees: [], commits: [], refs: [], pulls: [] }; openPulls = [];
-  contentsReads = [];
-  const token = await visitorToken();
-
-  const res = await postResidency(token, { handle: "no-blob-reader", card: "hi", household: "Some House" });
-  assert.equal(res.status, 202);
-  assert.deepEqual(contentsReads, [],
-    `the pen fetched ${contentsReads.join(", ")} from GitHub — both registers come from the record now`);
-});
-
 test("GET /me — a visitor reads its visitor identity", async () => {
   ghIdentity = { id: 424242, login: "some-stranger" };
   const token = await visitorToken();
@@ -742,15 +625,15 @@ test("gangway frozen: already aboard → idempotent refusal, no second berth", a
   assert.equal(captured.pulls.length, 0, "no second berth for a passenger already on the manifest");
 });
 
-test("gangway reopens: the same door joins again", async () => {
+test("gangway reopens: the door stops boarding, and with no record here it refuses rather than join unbound", async () => {
   rmSync(join(clone, "HARBOR"), { recursive: true, force: true });
   captured = { trees: [], commits: [], refs: [], pulls: [] }; openPulls = [];
   const token = await visitorToken();
 
   const res = await postResidency(token, { handle: "after-thaw", card: "the gangway lowered." });
-  assert.equal(res.status, 202);
-  assert.equal((await res.json()).requested, "after-thaw");
-  assert.equal(captured.pulls[0].head, "residency/after-thaw", "an open gangway is the ordinary join, unchanged");
+  assert.equal(res.status, 503, "an open gangway is the ordinary join, which needs the record");
+  assert.equal((await res.json()).defect, BIND_REFUSALS.NO_RECORD.defect);
+  assert.equal(captured.pulls.length, 0, "no berth and no join PR");
 });
 
 test("the human-of- prefix is reserved: a resident there would collide with a household's own voice", async () => {

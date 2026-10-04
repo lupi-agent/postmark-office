@@ -22,8 +22,8 @@
 //   EVERY ROW IS RE-DERIVABLE OR CROSSING-SAVE-RECOVERABLE. Entities re-derive
 //   from the walk ledger (via world.db's events). Attachments recover from the
 //   last STATE save plus the logs after it. Emissions do neither by design:
-//   presence is allowed to be lost, and `tools/dynamic-rebuild.mjs` says so
-//   rather than pretending to restore it.
+//   presence is allowed to be lost. (Retired on the record's flags, POS-269:
+//   the file is the git-road drain's alone, and no door, save or panel opens it.)
 //
 // One consequence that shapes the code below: an emission row is NOT deleted
 // when its TTL expires. Presence is a QUERY (`presentEmissions`), never a
@@ -46,6 +46,7 @@ import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { OFFICE_ROOT, WORLD_CLONE } from "./world-store.mjs";
+import { metaIn, openWorldStore, registerTwin } from "./world-graph-db.mjs";
 import { servedCanonSha } from "./world-serve.mjs";
 // THE CODE FALLBACK IS AN EDGE, NOT A COPY. The no-literals law says a class
 // constant has exactly one home; until every reader edges to the class mark,
@@ -79,6 +80,45 @@ export const singleLogEnabled = () => process.env.WORLD_SINGLE_LOG === "1";
 
 export const DEFAULT_DYNAMIC_DB = join(OFFICE_ROOT, "dynamic.db");
 export const dynamicDbPath = () => process.env.WORLD_DYNAMIC_DB ?? DEFAULT_DYNAMIC_DB;
+
+// ── RETIRED WHERE THE RECORD HOLDS EVERYTHING (POS-269, Wright 2026-09-30) ──
+//
+// On prod's flags nothing this file held is the record any more: positions and
+// the vessel's line are the position projection (WORLD_POSITIONS=1), speech is
+// the say lane's acts, holdings are the hold lane's acts under the guards. So
+// under exactly those flags the store is RETIRED and `openDynamic` refuses by
+// name. A path that still reaches for the file on those flags is a path this
+// lane missed, and it fails loudly rather than quietly reading a frozen copy.
+//
+// The predicate is world2-pen.mjs § laneFlipped's and hold-edge.mjs §
+// holdEdgeOnActs' rule, restated from the environment because this module sits
+// under both of them in the import graph; test/dynamic-retired.test.mjs holds
+// the restatement equal to the two functions over every combination.
+//
+// THE LEGACY OPEN, NAMED. One reader is let through on those flags, naming
+// itself: the git-road drain (the settlement's rollback, which must be able to
+// count the stale journal and, on its operator's word, drain it — our own guards
+// never block a fix). tools/arena-archive.mjs reads the arena's rows with its
+// own read-only node:sqlite handle, deliberately outside this opener: it runs
+// once, by hand, before the file leaves the box.
+const lanesOf = (env) => new Set(String(env.W2_PEN ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+export function dynamicRetired(env = process.env) {
+  if (env.WORLD_POSITIONS !== "1") return false;
+  if (!(env.WORLD2_PG === "1" && !!env.WORLD2_PG_URL)) return false;
+  const lanes = lanesOf(env);
+  const flipped = (lane) => lanes.has("all") || lanes.has(lane);
+  return flipped("say") && flipped("hold") && String(env.W2_GUARDS ?? "").trim() === "1";
+}
+
+export const RETIRED_LEGACY_READERS = Object.freeze(["the git-road drain"]);
+
+export class DynamicRetiredError extends Error {
+  constructor(path) {
+    super(`dynamic.db is retired on this office's flags (WORLD_POSITIONS=1, say and hold flipped, W2_GUARDS=1): the record holds positions, speech and holdings, and nothing may open ${path}`);
+    this.name = "DynamicRetiredError";
+    this.code = 503;
+  }
+}
 
 // ── the DDL ──────────────────────────────────────────────────────────────────
 //
@@ -254,11 +294,15 @@ export const DYNAMIC_SCHEMA = `
  * write-mode default produced, minus the write.
  */
 export function openDynamicReadOnly(path = dynamicDbPath()) {
+  // Retired, the answer is the refusal, not "empty": an absent file must not let
+  // a path that should not be here pass for one that found nothing.
+  if (dynamicRetired()) throw new DynamicRetiredError(path);
   if (!existsSync(path)) return null;
   return openDynamic(path, { readOnly: true });
 }
 
-export function openDynamic(path = dynamicDbPath(), { readOnly = false } = {}) {
+export function openDynamic(path = dynamicDbPath(), { readOnly = false, legacy = null } = {}) {
+  if (dynamicRetired() && !RETIRED_LEGACY_READERS.includes(legacy)) throw new DynamicRetiredError(path);
   if (readOnly && !existsSync(path)) throw new Error(`no dynamic store at ${path} — run: npm run dynamic:rebuild`);
   if (!readOnly) mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path, readOnly ? { readOnly: true } : {});
@@ -346,7 +390,38 @@ const DIAL_NAMES = Object.keys(CODE_SOUND_DIALS);
 // nobody can invalidate is worse than no cache.
 let _classSnap = null;
 
+// Its two statements, named so the store's graph snapshot can answer them too
+// (POS-270 lane W 2c; each twin held equal to its SQL by world-graph-db.test).
+const SOUND_META_SQL = "SELECT key, value FROM meta WHERE key IN ('as_of_world','hydrated_at','hydration_status')";
+const NODE_PROPS_SQL = "SELECT props FROM nodes WHERE id = ?";
+registerTwin(SOUND_META_SQL, (g) => metaIn(g, ["as_of_world", "hydrated_at", "hydration_status"]));
+registerTwin(NODE_PROPS_SQL, (g, id) => { const n = g.byId.get(String(id)); return n ? [{ props: n.props }] : []; });
+
+/** The sound class mark, read through a handle (the file's or the snapshot's). */
+function classMarkRead(db) {
+  const meta = Object.fromEntries(db.prepare(SOUND_META_SQL).all().map((r) => [r.key, r.value]));
+  const row = db.prepare(NODE_PROPS_SQL).get(SOUND_CLASS_MARK);
+  if (String(meta.hydration_status ?? "").startsWith("FAILED"))
+    return { error: "store-failed", detail: meta.hydration_status };
+  let props = null;
+  try { props = row?.props ? JSON.parse(row.props) : null; } catch { props = null; }
+  return { asOfWorld: meta.as_of_world ?? null, hydratedAt: meta.hydrated_at ?? null, present: Boolean(row), props };
+}
+
 function classMarkSnapshot(worldDbPath) {
+  // THE STORE FIRST: with no file named, once the world graph snapshot has
+  // loaded, read through its handle and cache on the published snapshot.
+  if (worldDbPath == null) {
+    const w = openWorldStore();
+    if (w) {
+      if (_classSnap?.from === w.snap) return _classSnap;
+      const read = classMarkRead(w.db);
+      if (read.error) return read;
+      _classSnap = { from: w.snap, ...read };
+      return _classSnap;
+    }
+    worldDbPath = process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db");
+  }
   let st;
   try { st = statSync(worldDbPath); }
   catch { return { error: "store-absent", detail: `no world store at ${worldDbPath}` }; }
@@ -354,20 +429,10 @@ function classMarkSnapshot(worldDbPath) {
     return _classSnap;
   try {
     const db = new DatabaseSync(worldDbPath, { readOnly: true });
-    const meta = Object.fromEntries(
-      db.prepare("SELECT key, value FROM meta WHERE key IN ('as_of_world','hydrated_at','hydration_status')").all()
-        .map((r) => [r.key, r.value]));
-    const row = db.prepare("SELECT props FROM nodes WHERE id = ?").get(SOUND_CLASS_MARK);
-    db.close();
-    if (String(meta.hydration_status ?? "").startsWith("FAILED"))
-      return { error: "store-failed", detail: meta.hydration_status };
-    let props = null;
-    try { props = row?.props ? JSON.parse(row.props) : null; } catch { props = null; }
-    _classSnap = {
-      path: worldDbPath, mtimeMs: st.mtimeMs, size: st.size,
-      asOfWorld: meta.as_of_world ?? null, hydratedAt: meta.hydrated_at ?? null,
-      present: Boolean(row), props,
-    };
+    let read;
+    try { read = classMarkRead(db); } finally { db.close(); }
+    if (read.error) return read;
+    _classSnap = { path: worldDbPath, mtimeMs: st.mtimeMs, size: st.size, ...read };
     return _classSnap;
   } catch (e) {
     return { error: "store-unreadable", detail: String(e?.message ?? e).slice(0, 200) };
@@ -385,8 +450,8 @@ export function resetClassCache() { _classSnap = null; }
  * fragile than the code it replaced.
  */
 export function soundClass({ worldDb = null, repo = WORLD_CLONE } = {}) {
-  const worldDbPath = worldDb ?? process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db");
-  const snap = classMarkSnapshot(worldDbPath);
+  // No file named: the store's snapshot first, the file as the floor (classMarkSnapshot).
+  const snap = classMarkSnapshot(worldDb ?? null);
 
   const dials = { ...CODE_SOUND_DIALS };
   const sources = Object.fromEntries(DIAL_NAMES.map((d) => [d, "code-fallback"]));
@@ -431,7 +496,8 @@ export function soundClass({ worldDb = null, repo = WORLD_CLONE } = {}) {
     dials, sources, disclosed, drift,
     version, gate,
     mark: SOUND_CLASS_MARK,
-    store: { path: worldDbPath, as_of_world: asOfWorld, hydrated_at: snap.hydratedAt ?? null, fresh },
+    // `path` names what answered: the file, or the store's graph snapshot.
+    store: { path: snap.from ? "the store's graph snapshot" : (worldDb ?? process.env.WORLD_STORE_DB ?? join(OFFICE_ROOT, "world.db")), as_of_world: asOfWorld, hydrated_at: snap.hydratedAt ?? null, fresh },
   };
 }
 
@@ -467,6 +533,9 @@ export function dynamicHealth({ repo = WORLD_CLONE } = {}) {
       world_store: cls.store,
     },
   };
+  // RETIRED: the panel says so and opens nothing. Its counts described the file,
+  // and on these flags the file describes nothing the town holds.
+  if (dynamicRetired()) return { ...base, db: { ...base.db, retired: "dynamic.db is retired on this office's flags — positions are the position projection, speech the say acts, holdings the hold acts (POS-269). The counts below this line described the file; there is nothing left for them to describe." } };
   if (!base.db.present) return base;
   try {
     const db = openDynamic(path, { readOnly: true });
@@ -497,13 +566,10 @@ export function dynamicHealth({ repo = WORLD_CLONE } = {}) {
       // ── WHAT THESE NUMBERS MEAN AFTER G1 (POS-156, 2026-09-22) ───────────
       //
       // They used to answer "is the one pen receiving". G1 deleted the general
-      // INSERT, so what is left in this table is the ARENA's rows and nothing
-      // else — the named exemption (DEC-1/P-143, `world-journal.mjs §
-      // appendArenaRow`) — plus whatever history predates the deletion and has
-      // not been drained. So this is now the surface on which that exception is
-      // VISIBLE, which is the thing a named exception with a death condition
-      // most needs and the reason these three were kept rather than deleted
-      // with the other journal readers.
+      // INSERT, and the arena's (DEC-1/P-143) closed with the arena on
+      // 2026-09-30, so nothing writes this table now: what it holds is the
+      // arena's old rows and whatever history predates the deletion and has not
+      // been drained. The counts stay because they show exactly that.
       //
       // ⚑ AND `tools/g1-dev-proof.mjs` READS THEM. `db.journal` and
       // `db.journal_head` from this answer are the proof's DEFAULT source for

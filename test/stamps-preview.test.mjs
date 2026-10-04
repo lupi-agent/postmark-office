@@ -52,6 +52,13 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { indexStore } from "./helpers/office-under-test.mjs";
+
+// The doors below run in this process. They never had a town index, and the
+// office will not run without one (POS-268): this file's is an empty store.
+const IX = await indexStore(null);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 

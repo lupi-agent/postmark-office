@@ -287,6 +287,15 @@ test('F5 · OPERATIONS.md: "REST: stable/simple for frozen consumers" — the RE
   // stamps preview is live — pass preview: true to any stake and read what it
   // would do before it does it."
   //
+  // ⚑ REGENERATED 2026-10-04 FOR POS-317's follow-up (office #333, Darko's go):
+  // the fund-verify card gained `household` (the account the w41 fund page
+  // sends; without it both doors 422'd the page). ADDITIVE and proven so: the
+  // capture diff added exactly `/acts/11/fields/household/{type,description}`
+  // and removed or retyped none. The connector's answer stays under its
+  // ceiling because fund-verify's own teaching line was tightened in the same
+  // act. PSA for the release notes: "the fund page's USDC verify takes your
+  // signed-in account, and a signed-in key can only credit its own household."
+  //
   // This is the WITNESS the regeneration would otherwise have no room for, and
   // it is positional-independent on purpose: the stake act is found by the one
   // field only it carries, so a reordering of the acts list cannot make it pass
@@ -354,6 +363,50 @@ test('F5 · OPERATIONS.md: "REST: stable/simple for frozen consumers" — the RE
   const announceLive = full.acts.find((a) => a.fields && "text" in a.fields && "event" in a.fields);
   assert.equal(announceLive?.act, "announce");
   assert.equal(announceLive?.fields?.text?.required, true, "the live announce card marks text required");
+  // ⚑ REGENERATED 2026-09-28 FOR POS-224 (a home founded through the door has
+  // a name), named here for the same reason. What grew: the home act's card
+  // gained `title`. The capture diff, key by key: +3
+  // (`fields/title/{type,description,maxLength}`), −0, 0 retyped, none on
+  // another card. PSA for the release notes: "a home is founded with its name —
+  // household do: home takes title (a name, not a sentence, up to 80
+  // characters) with the body on the first call; a home with no name yet may
+  // set one once, and changing a name is by PR."
+  //
+  // The witness is the one field only the home card carries (`assets`), in the
+  // frozen copy AND the live door.
+  const homeFrozen = frozen.acts.find((a) => a.fields && "assets" in a.fields);
+  assert.equal(homeFrozen?.fields?.title?.type, "string", "the frozen home card carries title");
+  const homeLive = full.acts.find((a) => a.fields && "assets" in a.fields);
+  assert.equal(homeLive?.act, "home");
+  assert.equal(homeLive?.fields?.title?.type, "string", "the live home card takes title — a founding the card did not advertise would be refused for a field nobody was told about");
+  // ⚑ REGENERATED 2026-09-28 FOR POS-286 (unread mail), named here for the
+  // same reason. What grew: one act card, `mark-all-read`, appended to `acts`.
+  // The capture diff, key by key: +6, −0, 0 retyped — act, blurb,
+  // dispatches_to, teaches and fields handle {type, description}, none on an
+  // existing card. PSA for the release notes: "mail has UNREAD, the way email
+  // does — your doorstep's `unread` counts the letters delivered to you that
+  // your house has not opened; household { read: "letter" } opens one, and
+  // household do: mark-all-read clears the rest. `new_inbound` never meant new
+  // mail and says so; it keeps answering for one more release."
+  //
+  // The witness is the act's own name, in the frozen copy's position and the
+  // live door: it is the only card whose one field is `handle`.
+  const onlyHandle = (a) => a.fields && Object.keys(a.fields).join() === "handle";
+  assert.equal(frozen.acts.filter(onlyHandle).length, 1, "the frozen shape carries exactly one handle-only card");
+  assert.equal(full.acts.find(onlyHandle)?.act, "mark-all-read");
+  // ⚑ REGENERATED 2026-10-01 FOR POS-219 (each resident's house picture, kept
+  // on the household's record), named here for the same reason. What grew: the
+  // home act's card gained `image`. The capture diff, key by key: +1
+  // (`acts/4/fields/image`, {type, description}), −0, 0 retyped, none on
+  // another card. PSA for the release notes: "your house's picture is uploaded,
+  // not committed — household do: home takes image (the URL upload_media hands
+  // you), PATCH /home/{handle}/image takes the bytes; it is kept on your
+  // household's record, one per resident, and the site and the map both draw it."
+  //
+  // The witness is the home card (the one field only it carries, `assets`), in
+  // the frozen copy AND the live door.
+  assert.equal(homeFrozen?.fields?.image?.type, "string", "the frozen home card carries image");
+  assert.equal(homeLive?.fields?.image?.type, "string", "the live home card takes image — a picture the card did not advertise would be refused for a field nobody was told about");
 });
 
 test(`F5c · and the answer stays BOUNDED — REST under ${REST_CEILING}B, the connector's bare answer under ${SLIM_CEILING}B`, async () => {
@@ -367,6 +420,22 @@ test(`F5c · and the answer stays BOUNDED — REST under ${REST_CEILING}B, the c
   // exists to catch would pass straight through it.
   assert.ok(slim < rest, "the abridgement is what makes these two numbers different");
   assert.ok(SLIM_CEILING < rest, "the slim ceiling must sit below the unabridged answer or it cannot catch the shrink being lost");
+});
+
+// POS-292 (Wright's ruling, 2026-09-28): declare's two optional "where did you
+// hear" fields took this bare answer to 8,207 B, 15 over SLIM_CEILING. They
+// stay off the ABRIDGED index; the ceiling stays (raising it is Keemin's call).
+// Measured on the POS-292 head with them off: connector bare 8,180 B, so the
+// headroom under SLIM_CEILING is 12 B; REST bare 21,668 B under 24,576.
+test("F5d · POS-292: the abridged index leaves declare's heard fields off, and the card still carries them", async () => {
+  const slim = await householdApex({}, KEY, ctx({ slim: true, schemas: SCHEMAS, schemaRequired: REQUIRED }));
+  const declare = slim.acts.find((a) => a.act === "declare");
+  assert.ok(declare, "declare is on the index");
+  for (const f of ["heard", "heard_note"]) assert.equal(f in declare.fields, false, `${f} rides the foyer`);
+  assert.ok("household" in declare.fields, "the rest of declare's fields are still listed");
+  const card = await householdApex({ read: "declare" }, KEY, ctx({ slim: true, schemas: SCHEMAS, schemaRequired: REQUIRED }));
+  const fields = card.card?.fields ?? card.fields ?? {};
+  for (const f of ["heard", "heard_note"]) assert.ok(f in fields, `${f} is on declare's card: ${JSON.stringify(Object.keys(fields))}`);
 });
 
 test("F5b · and the slim-only keys never leak onto it", async () => {
@@ -432,7 +501,7 @@ test("F7 · an unknown read bounces naming BOTH namespaces — the reads and the
   assert.match(r.hint, /reads back its own full card/);
 });
 
-test("F7b · the FOURTEEN acts that own their name answer their card; the THREE that are also reads keep their read", async () => {
+test("F7b · the FIFTEEN acts that own their name answer their card; the THREE that are also reads keep their read", async () => {
   // ⚠ THE ROUND ASKED FOR A DISJOINTNESS GUARD. It fired on the live door:
   // `address`, `home` and `window` have been both an act and a read since long
   // before this branch, because a read here IS that act's shadow. At the world
@@ -459,7 +528,11 @@ test("F7b · the FOURTEEN acts that own their name answer their card; the THREE 
   // ⚑ THIRTEEN → FOURTEEN, 2026-09-26 (POS-227): `announce` joined as a BARE
   // act; what it says is read on the calendar at the TOWN door, so it shadows
   // no household read.
-  assert.equal(bare.length, 14);
+  //
+  // ⚑ FOURTEEN → FIFTEEN, 2026-09-28 (POS-286): `mark-all-read` joined as a
+  // BARE act; what it clears is counted on the doorstep's `unread` block, not
+  // at a household read of its name.
+  assert.equal(bare.length, 15);
   for (const act of bare) {
     const r = await householdApex({ read: act }, KEY, ctx({ slim: true, schemas: SCHEMAS, schemaRequired: REQUIRED }));
     assert.equal(r.error, undefined, `read: "${act}" bounced — an act nobody can read is an act nobody can learn`);
@@ -726,6 +799,35 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //   full  19051 -> 19179 (+128, +0.67%) = set_downs_awaiting +24, set_downs_unavailable +104
   //   slim  16683 -> 16811 (+128, +0.77%) = set_downs_awaiting +24, set_downs_unavailable +104
   //
+  // ⚠ AND REGENERATED A SEVENTH TIME, 2026-09-28 (POS-286), for the compat
+  // pointer Keemin ruled onto `new_inbound` ("keeps answering for one release,
+  // saying where the count moved"). The diff was run leaf by leaf BEFORE the
+  // capture: 928 paths before, 930 after, NONE removed and NONE changed; the two
+  // added are `full.awaiting.new_inbound_moved` and its slim twin. The `unread`
+  // block itself is owner-only, and this page is read keyless, so it does not
+  // ride here. The pointer leaves in the release after next, and these bytes
+  // with it.
+  //
+  //   full  19249 -> 19397 (+148, +0.77%) = new_inbound_moved +148
+  //   slim  16876 -> 17024 (+148, +0.88%) = new_inbound_moved +148
+  //
+  // ⚠ AND REGENERATED AN EIGHTH TIME, 2026-09-28 (POS-293), for the tenth
+  // segment, `posts`: the house's posts, put up and taken part in (Keemin's
+  // household page in three, Posts → Marks → Mail). The diff was run leaf by
+  // leaf BEFORE the capture: 930 paths before, 958 after, NONE removed; the 28
+  // added are `posts.*` and `segments[9]` on each skin, and the two changed are
+  // `the_bundle` on each skin, whose sentence lists the segments by name. The
+  // fixture office is pointed at none of the segment's three sources (the
+  // registry, the event record, the world store), so it names all three in
+  // `unavailable` rather than showing empty lists as an answer; an office
+  // pointed at them carries rows in their place.
+  //
+  //   full  19397 -> 19824 (+427, +2.20%) = posts +412, segments[] +8, law +7
+  //   slim  17024 -> 17451 (+427, +2.51%) = posts +412, segments[] +8, law +7
+  //
+  // Both skins move identically: `posts` has no teaching block to cut, so it
+  // rides the connector whole, the way `stakes`' rows do.
+  //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:
   assert.equal(JSON.stringify(now).includes('"card"'), false,
@@ -820,7 +922,12 @@ test("F7c5d · EVERY CLOCK READ ON THE PAGE IS THREADED — the bare forms are a
     [/nextCrossingForDoorstep\(\s*nowMs\s*\)/, /nextCrossingForDoorstep\(\s*\)/, "the header's boat"],
     [/doorstepRulings\([^)]*\bnowMs\b/, /doorstepRulings\(\s*handle\s*,\s*\{\s*key\s*\}\s*\)/, "the rulings segment's crossing cursor"],
     [/doorstepStakes\([^)]*\bnow:\s*new Date\(\s*nowMs\s*\)/, /doorstepStakes\(\s*handle\s*,\s*\{\s*key\s*\}\s*\)/, "the stakes segment's settlement"],
-    [/doorstep\(\s*db\s*,\s*handle\s*,\s*asOf\s*,[^;]*\bnowMs\b/, null, "the index's PSA window"],
+    // POS-268: the doorstep's options are built once and handed to whichever
+    // index answers (office.db's doorstep, or the store's through `ix`), so the
+    // instant is pinned where the options are built, and both calls must take them.
+    [/const opts = \{.*\bnowMs\b.*\};/, null, "the index's PSA window"],
+    [/ix\.doorstep\(\s*handle\s*,\s*asOf\s*,\s*opts\s*\)/, null, "the store's doorstep taking the page's options"],
+    [/doorstep\(\s*db\s*,\s*handle\s*,\s*asOf\s*,\s*opts\s*\)/, null, "office.db's doorstep taking the page's options"],
   ]) {
     assert.match(code, present, `${what} is no longer threaded from the page's one instant`);
     if (absent) assert.ok(!absent.test(code), `${what} is called with no instant somewhere in this file — the default puts the wall clock back`);
@@ -864,7 +971,7 @@ test("F9 · the pending view is NOT a second tense computer — its ladder is th
       inOutbox: outboxSettled(db, "wright"), standing: 1,
       settledAsOf: db.prepare("SELECT value FROM meta WHERE key = 'as_of'").get().value,
     }), "one owner: if the mail law's tense vocabulary changes, both surfaces move together");
-    assert.deepEqual(r.standing, hotMailBlock(odb, KEY, { handle: "wright" }).standing,
+    assert.deepEqual(r.standing, (await hotMailBlock(odb, KEY, { handle: "wright" })).standing,
       "and the rows are the doorstep's rows, not a second shaping of them");
     odb.close();
   });
@@ -876,7 +983,7 @@ test('F10 · `the-town/the-disclosure`: "An answer given without its inputs must
     const clone = mailClone();
     // limen has a letter standing. wright asks about it.
     await sendLetterAsRow({ from: "limen", to: "wright", title: "a reply", body: "hello" }, LIMEN, db, clone, odb);
-    assert.equal(pendingRows(odb).length, 1, "there IS something standing — a zero here would be a lie, not an emptiness");
+    assert.equal((await pendingRows(odb)).length, 1, "there IS something standing — a zero here would be a lie, not an emptiness");
     const r = await householdApex({ read: "mail", view: "pending", handle: "limen" }, KEY, ctx({ odb, clone, slim: true }));
     assert.equal(r.error, "bounce");
     assert.equal(r.code, 403);
@@ -955,7 +1062,7 @@ test('F12 · Hal: "duplicate refusal returning the original receipt" — the sam
     const args = letter({ nonce: "retry-abc" });
     const first = await householdApex({ do: "send", args }, KEY, ctx({ odb, clone, canWrite: true, slim: true }));
     const second = await householdApex({ do: "send", args }, KEY, ctx({ odb, clone, canWrite: true, slim: true }));
-    assert.equal(pendingRows(odb).length, 1, "NOTHING WAS WRITTEN TWICE — this is the whole seam");
+    assert.equal((await pendingRows(odb)).length, 1, "NOTHING WAS WRITTEN TWICE — this is the whole seam");
     assert.equal(second.result.duplicate, true);
     assert.equal(second.result.letter_id, first.result.letter_id, "the ORIGINAL receipt, not a new one");
     assert.equal(second.result.logged.seq, first.result.logged.seq);
@@ -970,7 +1077,7 @@ test("F12b · a DIFFERENT nonce from the same sender is a different letter — t
     const clone = mailClone();
     await householdApex({ do: "send", args: letter({ nonce: "one" }) }, KEY, ctx({ odb, clone, canWrite: true, slim: true }));
     await householdApex({ do: "send", args: letter({ title: "a second hat", nonce: "two" }) }, KEY, ctx({ odb, clone, canWrite: true, slim: true }));
-    assert.equal(pendingRows(odb).length, 2);
+    assert.equal((await pendingRows(odb)).length, 2);
     odb.close();
   });
 });
@@ -982,7 +1089,7 @@ test("F12c · a nonce cannot be probed across households — limen spending wrig
     await sendLetterAsRow(letter({ nonce: "shared-word" }), KEY, db, clone, odb);
     const r = await sendLetterAsRow({ from: "limen", to: "wright", title: "hers", body: "hi", nonce: "shared-word" }, LIMEN, db, clone, odb);
     assert.equal(r.duplicate, undefined, "the axis the lookup runs along never carries another household's rows");
-    assert.equal(pendingRows(odb).length, 2);
+    assert.equal((await pendingRows(odb)).length, 2);
     odb.close();
   });
 });
@@ -992,7 +1099,7 @@ test("F12d · THE DRAIN CANNOT TRIP ON THE NONCE — the replay lane's door is e
     const odb = logDb();
     const clone = mailClone();
     const sent = await sendLetterAsRow(letter({ nonce: "drain-me" }), KEY, db, clone, odb);
-    const row = pendingRows(odb)[0];
+    const row = (await pendingRows(odb))[0];
     assert.equal(row.payload.args.nonce, "drain-me", "the row stores the caller's arguments verbatim, nonce included");
     const out = replayLetter(row, { doors: { [MAIL_DOOR]: enqueueLetter }, db, clone });
     assert.equal(out.skipped, undefined);
@@ -1084,7 +1191,7 @@ test("F15 · TWO CALLS AT ONCE, one nonce: exactly ONE letter is written, and th
       sendLetterAsRow(args, KEY, db, clone, odb),
       sendLetterAsRow(args, KEY, db, clone, odb),
     ]);
-    assert.equal(pendingRows(odb).length, 1,
+    assert.equal((await pendingRows(odb)).length, 1,
       "two overlapping calls wrote two letters — the seam is a sequence, not a seam");
     assert.equal(a.letter_id, b.letter_id, "one letter, so one id");
     assert.equal(a.logged.seq, b.logged.seq, "and one row, so one seq");
@@ -1099,7 +1206,7 @@ test("F15b · and it holds at five — the map is a gate, not a two-caller speci
     const clone = mailClone();
     const args = letter({ nonce: "race-5" });
     const out = await Promise.all([1, 2, 3, 4, 5].map(() => sendLetterAsRow(args, KEY, db, clone, odb)));
-    assert.equal(pendingRows(odb).length, 1);
+    assert.equal((await pendingRows(odb)).length, 1);
     assert.equal(out.filter((r) => r.duplicate).length, 4);
     assert.equal(new Set(out.map((r) => r.letter_id)).size, 1, "all five hold the same letter");
   });
@@ -1119,11 +1226,11 @@ test("F15c · a first call that BOUNCES spends no nonce — the waiter tries hon
     ]);
     assert.equal(results.filter((r) => r.status === "rejected").length, 2,
       "both are refused, and neither is handed a duplicate receipt for a letter that does not exist");
-    assert.equal(pendingRows(odb).length, 0, "and nothing was written");
+    assert.equal((await pendingRows(odb)).length, 0, "and nothing was written");
     // the nonce is not burned: a good letter carrying it still goes
     const ok = await sendLetterAsRow(letter({ nonce: "bounce-1" }), KEY, db, clone, odb);
     assert.equal(ok.duplicate, undefined);
-    assert.equal(pendingRows(odb).length, 1);
+    assert.equal((await pendingRows(odb)).length, 1);
   });
 });
 
@@ -1135,11 +1242,11 @@ test("F16 · an over-long nonce is REFUSED, never trimmed — two nonces cut to 
       () => sendLetterAsRow(letter({ nonce: "x".repeat(NONCE_MAX + 1) }), KEY, db, clone, odb),
       (e) => e.code === 422 && /nonce must be under/.test(e.defect),
       "a nonce past the cap bounces by name");
-    assert.equal(pendingRows(odb).length, 0, "and writes nothing on the way out");
+    assert.equal((await pendingRows(odb)).length, 0, "and writes nothing on the way out");
     // exactly at the cap still goes
     const ok = await sendLetterAsRow(letter({ nonce: "y".repeat(NONCE_MAX) }), KEY, db, clone, odb);
     assert.equal(ok.letter_id, "wright-" + ok.letter_id.split("-").slice(1).join("-"));
-    assert.equal(pendingRows(odb).length, 1, "the cap is a bound, not an off-by-one");
+    assert.equal((await pendingRows(odb)).length, 1, "the cap is a bound, not an off-by-one");
   });
 });
 
@@ -1192,10 +1299,13 @@ test("F17b · --allow-floor renders, but the page itself carries the disclosure 
   assert.match(page, /standing on its floor/);
 });
 
-test("F17c · a GOOD store renders with NO warning — the stamp is a disclosure, not decoration", () => {
+test("F17c · a GOOD store renders with NO warning — the stamp is a disclosure, not decoration", async () => {
   const outFile = join(mkdtempSync(join(tmpdir(), "pm-foyer-roster-")), "OUT.md");
   trash.push(join(outFile, ".."));
-  const r = runRoster({ WORLD_STORE_DB: goodWorldStore() }, ["--out", outFile]);
+  // The roster tool reads the world graph as rows (POS-270 lane W 3a), never the file.
+  const { rowsEnv } = await import("./helpers/world-rows.mjs");
+  const world = goodWorldStore();
+  const r = runRoster(rowsEnv(world, join(world, "..")), ["--out", outFile]);
   assert.equal(r.status, 0, "a readable store renders without the flag");
   const page = readFileSync(outFile, "utf8");
   assert.equal(/is NOT the live roster/.test(page), false, "a page that always warned would be a page nobody reads the warning on");

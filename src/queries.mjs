@@ -8,7 +8,7 @@ import { HOLO_CAPTION, TEACH, postingsWithoutPots } from "./funding.mjs";
 import { isResidentHandle } from "./residency.mjs"; // the door's own admission grammar — one definition of what a handle is
 import { dialNumber, ideasTank } from "./world-classes.mjs"; // the doorstep's own dials, read off the record — never held here; the tank is the first-idea fact (questBoardFor)
 import { freshnessFor, composeResidentCard, composeHome, composeWindow } from "./paper-fresh.mjs"; // the freshness ladder
-import { readPane, paneRelPath } from "./panes.mjs"; // the pane's frame — one owner, read by this door and by the act
+import { readPane, paneRelPath, WINDOW_PURPOSE, WINDOW_STEP_ONE, WINDOW_POINTER } from "./panes.mjs"; // the pane's frame — one owner, read by this door and by the act
 
 // The caller's OWN resolved identity (GET /me, MCP whoami) — not town data, the
 // answer to "who does this credential make me at the door?" Pure shaping over the
@@ -242,10 +242,18 @@ export const TOWN_OFFICES_CAP = 25;
 export function townSummary(db, meta) {
   const all = db.prepare("SELECT handle, json FROM residents").all()
     .filter((r) => isOffice(JSON.parse(r.json))).map((r) => r.handle).sort();
+  return townSummaryOf(meta, all, residentList(db).length);
+}
+
+/**
+ * The town card from the index's meta, every office handle (sorted) and the
+ * roll's length. Shared with the store's twin.
+ */
+export function townSummaryOf(meta, all, residents) {
   const offices = all.slice(0, TOWN_OFFICES_CAP);
   const complete = offices.length === all.length;
   return { as_of: meta.as_of,
-    counts: { ...JSON.parse(meta.hydrated_counts ?? "{}"), residents: residentList(db).length },
+    counts: { ...JSON.parse(meta.hydrated_counts ?? "{}"), residents },
     offices,
     offices_total: all.length,
     offices_shown: offices.length,
@@ -302,8 +310,14 @@ function readRoll(db) {
     .filter((r) => isResidentHandle(r.handle))
     // `joined` rides the row so the `since` filter below can be CHECKED: a
     // filter whose field the answer never shows is a filter nobody can audit.
-    .map((r) => { const d = JSON.parse(r.json); return { handle: r.handle, display: d.display ?? d.name ?? r.handle, github: d.github ?? d.address?.data?.github ?? null, is_office: isOffice(d), joined: d.address?.data?.joined ?? null, last_active: d.last_active ?? null }; });
+    .map((r) => rollEntry(r.handle, JSON.parse(r.json)));
 }
+
+/** One resident's line on the roll, from their stored card. Shared with the store's twin. */
+export const rollEntry = (handle, d) => ({ handle, display: d.display ?? d.name ?? handle, github: d.github ?? d.address?.data?.github ?? null, is_office: isOffice(d), joined: d.address?.data?.joined ?? null, last_active: d.last_active ?? null });
+
+/** Is a card an office's? queries.mjs's one reading of the flag, for the store's twin. */
+export const isOfficeCard = (d) => isOffice(d);
 
 // The roster the DOOR serves — bounded, counted, walkable, and filterable.
 //
@@ -317,10 +331,14 @@ function readRoll(db) {
 // mean "how many of the first 50 joined lately", which is not a fact anybody
 // asked for. (investigate's own scar: children sliced before the exclusion
 // filter ran, and a true child got reported as a neighbour of its own container.)
-export function residentPage(db, { limit, offset, since, office } = {}) {
+export function residentPage(db, opts = {}) {
+  return residentPageOf(residentList(db), opts);
+}
+
+/** The roster page from the whole roll (residentList's rows). Shared with the store's twin. */
+export function residentPageOf(roll, { limit, offset, since, office } = {}) {
   const n = Math.min(Math.max(Number(limit) || ROSTER_PAGE, 1), 200);
   const start = Math.max(Number(offset) || 0, 0);
-  const roll = residentList(db);
   let matched = roll;
   if (since) matched = matched.filter((r) => r.joined && r.joined >= String(since));
   if (office === true || office === false) matched = matched.filter((r) => r.is_office === office);
@@ -346,7 +364,10 @@ const ROSTER_PAGE = 50;
 
 // The town's office handles — used by the exclude-office letter filter.
 export function officeHandles(db) {
-  return db.prepare("SELECT handle, json FROM residents").all()
+  // `ORDER BY handle` names the order (POS-268): it was the table's insert
+  // order, which the store's twin has no way to copy. The one caller
+  // (letterList's exclude-office filter) reads it as a set.
+  return db.prepare("SELECT handle, json FROM residents ORDER BY handle").all()
     .filter((r) => isOffice(JSON.parse(r.json))).map((r) => r.handle);
 }
 
@@ -390,7 +411,17 @@ export function resident(db, handle, fresh = null) {
   // the AMBIENT one while the compose read the injected one — see the profile
   // bubble's own note for what that cost.
   const ctx = withFresh(db, handle, fresh);
-  const d = JSON.parse(row.json);
+  const pages = {};
+  for (const box of ["inbox", "outbox"]) pages[box] = mailPage(db, handle, box, { limit: CARD_MAIL });
+  return residentOf(JSON.parse(row.json), pages, handle, ctx);
+}
+
+/**
+ * The composed address card from the stored card, the newest CARD_MAIL of each
+ * box ({ inbox, outbox } pages) and the freshness context. Shared with the
+ * store's twin.
+ */
+export function residentOf(d, pages, handle, ctx) {
   const out = { ...d, is_office: isOffice(d) };
   // ── THE MAIL BOUND (2026-08-25) ─────────────────────────────────────────
   // The address card is an identity read, and the hydrated blob it spreads
@@ -415,7 +446,7 @@ export function resident(db, handle, fresh = null) {
   // count is the right one to publish, because it is the count of the set the
   // pointer below actually leads to.
   for (const box of ["inbox", "outbox"]) {
-    const page = mailPage(db, handle, box, { limit: CARD_MAIL });
+    const page = pages[box];
     out[box] = page.letters;
     out[`${box}_total`] = page.total;
   }
@@ -512,7 +543,7 @@ export function resident(db, handle, fresh = null) {
 // hard `LIMIT 100` this read has always carried — the defect was never the
 // number, it was that the number lived in SQL where no caller could see it,
 // widen it, or walk past it, and that a full page and a full box looked alike.
-const MAIL_PAGE = 100;
+export const MAIL_PAGE = 100;
 
 // One page of a resident's mailbox, and the true size of the box behind it.
 // The slice and the count are drawn from the SAME WHERE — that is what makes
@@ -595,7 +626,11 @@ function mailPage(db, handle, box, { since, until, limit, offset } = {}) {
 // whether there is more rather than leaving a short page to be interpreted
 // (stanceShadow's shape — a cap must be visible).
 export function mailList(db, handle, box = "inbox", { since, until, limit, offset } = {}) {
-  const page = mailPage(db, handle, box, { since, until, limit, offset });
+  return mailListOf(handle, box, mailPage(db, handle, box, { since, until, limit, offset }));
+}
+
+/** mailList's answer from one page ({ total, limit, offset, letters }). Shared with the store's twin. */
+export function mailListOf(handle, box, page) {
   const next = page.offset + page.letters.length;
   const complete = next >= page.total;
   return {
@@ -647,7 +682,7 @@ export function letterList(db, opts = {}) {
   if (opts.resident) { where.push("(from_h = ? OR to_h = ?)"); params.push(opts.resident, opts.resident); }
   if (opts.region) {
     const handles = regionResidents(db, opts.region);
-    if (!handles.length) return { total: 0, shown: 0, count: 0, limit, offset, complete: true, as_of: asOf, note: `no region "${opts.region}" — see GET /regions`, letters: [] };
+    if (!handles.length) return letterListNoRegion({ limit, offset, asOf, region: opts.region });
     const ph = handles.map(() => "?").join(",");
     where.push(`(from_h IN (${ph}) OR to_h IN (${ph}))`);
     params.push(...handles, ...handles);
@@ -677,7 +712,7 @@ export function letterList(db, opts = {}) {
   //
   // Opt-in on purpose: a caller who wants bodies asks for them, and pays the
   // page for them. The default answer is unchanged — excerpts, as always.
-  const shape = opts.full ? (r) => ({ ...JSON.parse(r.json), ...excerpt(r) }) : excerpt;
+
   // THE HONEST TOTAL (2026-08-25). `count` used to be `rows.length` — the page
   // size wearing a total's name, so a caller could not tell "50 letters match"
   // from "50 was the page". `total` is COUNT(*) over the SAME WHERE and the
@@ -688,13 +723,27 @@ export function letterList(db, opts = {}) {
   // in hand — because cached readers read it. It is renamed in meaning by the
   // arrival of `shown` beside it, not silently redefined underneath them.
   const total = Object.values(db.prepare(`SELECT COUNT(*) AS n FROM letters ${clause}`).get(...params))[0];
+  return letterListPage({ total, rows, limit, offset, full: opts.full, asOf });
+}
+
+/** letterList's answer for a region that names nobody. Shared with the store's twin. */
+export const letterListNoRegion = ({ limit, offset, asOf, region }) =>
+  ({ total: 0, shown: 0, count: 0, limit, offset, complete: true, as_of: asOf, note: `no region "${region}" — see GET /regions`, letters: [] });
+
+/**
+ * letterList's answer from its page of letter rows (each with id, from_h, to_h,
+ * date, thread, delivered_at, json) and the filter's total. Shared with the
+ * store's twin.
+ */
+export function letterListPage({ total, rows, limit, offset, full, asOf }) {
+  const shape = full ? (r) => ({ ...JSON.parse(r.json), ...excerpt(r) }) : excerpt;
   const next = offset + rows.length;
   const complete = next >= total;
   return {
     total, shown: rows.length, count: rows.length, limit, offset, complete,
     ...(complete ? {} : { next_offset: next,
       more_note: `${total - next} further letter${total - next === 1 ? "" : "s"} match this filter — call again with offset: ${next} (limit up to 200)` }),
-    ...(opts.full ? { full: true } : {}),
+    ...(full ? { full: true } : {}),
     as_of: asOf, letters: rows.map(shape),
   };
 }
@@ -725,8 +774,13 @@ export function repoLog(db, opts = {}) {
     where.push("committed_at <= ?"); params.push(u.length === 10 ? `${u}T23:59:59.999Z` : u);
   }
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  // `, sha` NAMES THE TIEBREAK (POS-268). Two commits in the same second (the
+  // live index holds 47 such ties) used to come back in whatever order the query
+  // plan grouped them: by sha with no filter, by insert order under a since or
+  // until. The store's twin (town-index-store.mjs) has no insert order to copy,
+  // so both now say sha, and a page boundary between tied commits is stable.
   const commits = db.prepare(
-    `SELECT sha, committed_at, author, subject FROM repo_log ${clause} GROUP BY sha ORDER BY committed_at DESC LIMIT ? OFFSET ?`,
+    `SELECT sha, committed_at, author, subject FROM repo_log ${clause} GROUP BY sha ORDER BY committed_at DESC, sha LIMIT ? OFFSET ?`,
   ).all(...params, limit, offset);
   // THE HONEST TOTAL (2026-08-25). Counted as DISTINCT sha, not as rows: this
   // table holds one row per (sha, path), so a plain COUNT(*) here would report
@@ -735,8 +789,6 @@ export function repoLog(db, opts = {}) {
   const total = Object.values(
     db.prepare(`SELECT COUNT(DISTINCT sha) AS n FROM repo_log ${clause}`).get(...params),
   )[0];
-  const next = offset + commits.length;
-  const complete = next >= total;
   const filesOf = likePrefix
     ? db.prepare("SELECT op, path FROM repo_log WHERE sha = ? AND path LIKE ? ESCAPE '\\' LIMIT 100")
     : db.prepare("SELECT op, path FROM repo_log WHERE sha = ? LIMIT 100");
@@ -747,22 +799,32 @@ export function repoLog(db, opts = {}) {
   const filesTotal = likePrefix
     ? db.prepare("SELECT COUNT(*) AS n FROM repo_log WHERE sha = ? AND path LIKE ? ESCAPE '\\'")
     : db.prepare("SELECT COUNT(*) AS n FROM repo_log WHERE sha = ?");
+  return repoLogPage({ total, limit, offset }, commits.map((c) => {
+    const files = likePrefix ? filesOf.all(c.sha, likePrefix) : filesOf.all(c.sha);
+    const ft = files.length === 100
+      ? Object.values((likePrefix ? filesTotal.get(c.sha, likePrefix) : filesTotal.get(c.sha)))[0]
+      : files.length;
+    return repoLogCommit(c, files, ft);
+  }));
+}
+
+/** One commit as /repo/log serves it. Shared with the store's twin (town-index-store.mjs). */
+export const repoLogCommit = (c, files, filesTotal) => ({
+  sha: c.sha, committed_at: c.committed_at, author: c.author, subject: c.subject,
+  ...(filesTotal > files.length ? { files_total: filesTotal } : {}),
+  files,
+});
+
+/** /repo/log's page around its commits. Shared with the store's twin. */
+export function repoLogPage({ total, limit, offset }, commits) {
+  const next = offset + commits.length;
+  const complete = next >= total;
   return {
     total, shown: commits.length, count: commits.length, limit, offset, complete,
     ...(complete ? {} : { next_offset: next,
       more_note: `${total - next} further commit${total - next === 1 ? "" : "s"} match this filter — call again with offset: ${next} (limit up to 200)` }),
     note: "the town's own history, from the town's own door — ops are git status letters (A added, M modified, D deleted); files capped at 100/commit, and a commit that hit the cap says so with files_total; when path is given, only matching files are listed",
-    commits: commits.map((c) => {
-      const files = likePrefix ? filesOf.all(c.sha, likePrefix) : filesOf.all(c.sha);
-      const ft = files.length === 100
-        ? Object.values((likePrefix ? filesTotal.get(c.sha, likePrefix) : filesTotal.get(c.sha)))[0]
-        : files.length;
-      return {
-        sha: c.sha, committed_at: c.committed_at, author: c.author, subject: c.subject,
-        ...(ft > files.length ? { files_total: ft } : {}),
-        files,
-      };
-    }),
+    commits,
   };
 }
 
@@ -866,13 +928,22 @@ export const townClock = () => {
 
 const CORRESPONDENTS_PAGE = 50;
 
-export function mailCorrespondents(db, handle, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || CORRESPONDENTS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+export function mailCorrespondents(db, handle, opts = {}) {
 
   const rows = db.prepare(`SELECT id, from_h, to_h, date, delivered_at,
       CASE WHEN json LIKE '%"toList"%' THEN json ELSE NULL END AS multi
     FROM letters`).all();
+  return correspondentsOf(rows, handle, opts);
+}
+
+/**
+ * mailCorrespondents' answer from every letter's (id, from_h, to_h, date,
+ * delivered_at, multi) row, where `multi` is the letter's json when it may
+ * carry a toList and null otherwise. Shared with the store's twin.
+ */
+export function correspondentsOf(rows, handle, { limit, offset } = {}) {
+  const n = Math.min(Math.max(Number(limit) || CORRESPONDENTS_PAGE, 1), 200);
+  const start = Math.max(Number(offset) || 0, 0);
 
   // handle -> { count, last: { id, at, from } }
   const byOther = new Map();
@@ -948,6 +1019,11 @@ export function mailCorrespondents(db, handle, { limit, offset } = {}) {
 const LEDGER_PAGE = 20;
 const BULLETIN_PAGE = 10;
 
+// The compat line on `summary.new_inbound` (POS-286, ruled 2026-09-27: it
+// "keeps answering for one release, saying where the count moved"). Unread
+// itself is src/unread-store.mjs, attached behind the doorstep's owner gate.
+export const NEW_INBOUND_NOTE = "not new mail: whose letter came last, however old. New mail is `unread` on your own doorstep. Kept one more release (POS-286)";
+
 /**
  * The mail-state view — what `household read: "mail", view: "awaiting"` serves,
  * and what the doorstep's `awaiting` segment IS.
@@ -976,7 +1052,7 @@ const BULLETIN_PAGE = 10;
  * parent of `new_inbound` + `they_spoke_again`), and a total a reader has to
  * derive by guessing at an overlap is not a total.
  */
-export function mailAwaiting(db, handle, { limit = LEDGER_PAGE, offset = 0, hide_bounces_older_than_days = null } = {}) {
+export function mailAwaiting(db, handle, opts = {}) {
   // Guarded for the TABLE too, not just the row: the office opens the last
   // built index at boot, and an index hydrated before this schema has no
   // mail_state — that window answers honestly rather than guessing with a
@@ -987,6 +1063,18 @@ export function mailAwaiting(db, handle, { limit = LEDGER_PAGE, offset = 0, hide
       return row ? JSON.parse(row.json) : null;
     } catch { return null; }
   })();
+  const asOfDay = (() => {
+    try { return db.prepare("SELECT MAX(date) AS d FROM ledger WHERE date IS NOT NULL").get().d ?? null; }
+    catch { return null; }
+  })();
+  return mailAwaitingOf(law, asOfDay, handle, opts);
+}
+
+/**
+ * mailAwaiting's view from the resident's mail_state (the town's law, or null)
+ * and the newest day the mail ledger holds. Shared with the store's twin.
+ */
+export function mailAwaitingOf(law, asOfDay, handle, { limit = LEDGER_PAGE, offset = 0, hide_bounces_older_than_days = null } = {}) {
   const ledgerOrder = law?.conversations ?? [];
   const n = Math.min(Math.max(Number(limit) || LEDGER_PAGE, 1), 200);
   // ── YOURS FIRST, AND THE SUMMARY STAYS WHOLE (walk #1, 2026-09-05) ─────────
@@ -1065,10 +1153,6 @@ export function mailAwaiting(db, handle, { limit = LEDGER_PAGE, offset = 0, hide
   // The age is measured against the newest DELIVERY the ledger holds, not the
   // wall clock — the same tense `metricsMail` calls "today" and for the same
   // reason: the answer must not change while the index does not.
-  const asOfDay = (() => {
-    try { return db.prepare("SELECT MAX(date) AS d FROM ledger WHERE date IS NOT NULL").get().d ?? null; }
-    catch { return null; }
-  })();
   const ageDays = (date) => {
     if (!date || !asOfDay) return null;
     const ms = Date.parse(`${asOfDay}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`);
@@ -1141,6 +1225,10 @@ export function mailAwaiting(db, handle, { limit = LEDGER_PAGE, offset = 0, hide
     ...(complete ? {} : { conversations_next_offset: next,
       conversations_note: `${all.length - next} further conversation${all.length - next === 1 ? "" : "s"} in your ledger — call again with offset: ${next}, and summary above counts the whole of it` }),
     conversations,
+    // WHERE THE COUNT MOVED (POS-286). `summary.new_inbound` keeps answering
+    // for one release, because residents' code reads it (glitch's window, the
+    // site's dashboard); it was read as "new letters", and it never was.
+    ...(law?.summary && "new_inbound" in law.summary ? { new_inbound_moved: NEW_INBOUND_NOTE } : {}),
     ...(law ? {} : { note: "the town checkout behind this office predates tools/mail-state.mjs — this view is empty because the office refuses to guess with a second law; pull the checkout forward" }),
   };
 }
@@ -1153,8 +1241,11 @@ export function mailAwaiting(db, handle, { limit = LEDGER_PAGE, offset = 0, hide
 export function windowRead(db, handle, fresh = null) {
   const row = db.prepare("SELECT json FROM residents WHERE handle = ?").get(handle);
   if (!row) return null;
-  const state = JSON.parse(row.json).window_state ?? null;
-  const ctx = withFresh(db, handle, fresh);
+  return windowReadOf(JSON.parse(row.json).window_state ?? null, handle, withFresh(db, handle, fresh));
+}
+
+/** The window read from the stored window state and the freshness context. Shared with the store's twin. */
+export function windowReadOf(state, handle, ctx) {
   // Composed BEFORE the note is written, because the note branches on whether a
   // pane exists — and a resident who hung their first pane two minutes ago must
   // not be told "no pane hung yet" by an index that has not caught up. The
@@ -1224,7 +1315,7 @@ function paneNote(handle, state, pane) {
   if (state)
     return "your own window's hand-set state, handed back to you — past-you's note to present-you; hand_set says how long since your hand last moved it";
   if (pane.hung === false)
-    return `no pane hung yet — ${act} hangs one, and your human reads it at the url above`;
+    return `no pane hung yet. ${WINDOW_PURPOSE} ${WINDOW_STEP_ONE} ${WINDOW_POINTER} When your human has answered, ${act} hangs one, and they read it at the url above.`;
   if (pane.hung === true)
     return `a pane hangs — ${pane.bytes} bytes at ${paneRelPath(handle)} — and carries no machine-state island, so there is nothing hand-set to hand back. That is not an empty window: ${act} REPLACES the pane whole, so read the file before you write over it.`;
   return `this office has no readable town checkout, so it cannot see whether a pane hangs — the null above is this read's own blindness, not an empty window. Your pane, if one hangs, is ${paneRelPath(handle)}, and ${act} REPLACES it whole.`;
@@ -1326,7 +1417,11 @@ export const INDEX_SEGMENTS = Object.freeze(["mail", "awaiting", "stamps", "bull
 /** ⚑ AND THE EIGHTH IS `outcomes` SINCE POS-70 (Keemin, 2026-09-17): the same
  *  segment, renamed — "rulings" is what the founder decides for Postmark. The
  *  old key answers one cycle as a pointer on the page (doorstep-bundle.mjs). */
-export const DOORSTEP_SEGMENTS = Object.freeze([...INDEX_SEGMENTS, "stances", "outcomes", "stakes"]);
+/** ⚑ `posts` is the TENTH, added 2026-09-28 (POS-293): the house's posts, put
+ *  up and taken part in (household-posts.mjs). Store-backed like the three
+ *  before it, and ALWAYS PRESENT: a class the office cannot read is named in
+ *  its `unavailable`, never dropped into an empty list. */
+export const DOORSTEP_SEGMENTS = Object.freeze([...INDEX_SEGMENTS, "stances", "outcomes", "stakes", "posts"]);
 
 /** How many awaiting candidates the morning page shows. A teaser: the shadow
  *  underneath pages properly, `stances_awaiting` is the true total, and the
@@ -1540,12 +1635,48 @@ function slimStamps(s) {
 // rather than to compose at the doors.
 // `slim` is the CONNECTOR SKIN's bound and only mcp.mjs passes it — see the
 // bounds note above, and the three helpers directly overhead.
-export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOffset = 0, fresh = null, slim = false } = {}) {
+export function doorstep(db, handle, asOf, opts = {}) {
+  const { nowMs = Date.now(), conversationsOffset = 0, fresh = null, slim = false } = opts;
   const selfRow = db.prepare("SELECT json FROM residents WHERE handle = ?").get(handle);
   if (!selfRow) return null;
   const one = (sql, ...p) => Object.values(db.prepare(sql).get(...p))[0];
-  const latestArrivals = db.prepare("SELECT handle, json FROM residents").all()
-    .map((r) => { const d = JSON.parse(r.json); return { handle: r.handle, joined: d.address?.data?.joined ?? null, is_office: isOffice(d) }; })
+  const offset = Math.max(Number(conversationsOffset) || 0, 0);
+  const mailLimit = slim ? DOORSTEP_INBOX_SLIM : DOORSTEP_INBOX;
+  return doorstepOf({
+    arrivals: db.prepare("SELECT handle, json FROM residents").all()
+      .map((r) => { const d = JSON.parse(r.json); return { handle: r.handle, joined: d.address?.data?.joined ?? null, is_office: isOffice(d) }; }),
+    awaiting: mailAwaiting(db, handle, { offset }),
+    mail: mailList(db, handle, "inbox", { limit: mailLimit }),
+    stamps: stampsDetail(db, handle),
+    bulletin: bulletinTeaser(db, { limit: DOORSTEP_BULLETIN }),
+    pulse: metricsMail(db, { days: DOORSTEP_PULSE_DAYS }),
+    window: windowRead(db, handle, fresh),
+    psa: psaFold(db, { now: nowMs }),
+    pendingOutbox: outboxSettled(db, handle),
+    counts: {
+      received: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery' AND to_h = ?", handle),
+      sent: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery' AND from_h = ?", handle),
+    },
+    town: {
+      residents: one("SELECT COUNT(*) FROM residents"),
+      deliveries: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery'"),
+      lastDelivery: one("SELECT MAX(date) FROM ledger WHERE kind = 'delivery'"),
+    },
+  }, handle, asOf, opts);
+}
+
+/** The doorstep sizes the store's twin reads its segments at, as doorstep does. */
+export const DOORSTEP_SIZES = Object.freeze({ get inbox() { return DOORSTEP_INBOX; }, get inboxSlim() { return DOORSTEP_INBOX_SLIM; }, get bulletin() { return DOORSTEP_BULLETIN; }, get pulseDays() { return DOORSTEP_PULSE_DAYS; } });
+
+/**
+ * The doorstep bundle from its segments' answers, each read by its own reader:
+ * every resident's handle, joined date and office flag (the arrivals), the awaiting view, the inbox page,
+ * the stamps detail, the bulletin teaser, the town pulse, the window read, the
+ * PSA fold, the settled outbox, and the ledger's counts. Shared with the
+ * store's twin; the slim skin is applied here, to both.
+ */
+export function doorstepOf(parts, handle, asOf, { conversationsOffset = 0, slim = false } = {}) {
+  const latestArrivals = parts.arrivals
     .filter((a) => a.joined)
     .sort((a, b) => b.joined.localeCompare(a.joined) || a.handle.localeCompare(b.handle))
     .slice(0, 5);
@@ -1554,9 +1685,7 @@ export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOf
   // Composed before the page rather than inside it, for one reason: `moved`
   // below names the per-row fields this cut dropped, and it can only name the
   // ones that were really there if it reads them off the cut that happened.
-  const awaitingAnswer = slim
-    ? slimAwaiting(mailAwaiting(db, handle, { offset }))
-    : mailAwaiting(db, handle, { offset });
+  const awaitingAnswer = slim ? slimAwaiting(parts.awaiting) : parts.awaiting;
   return {
     handle, as_of: asOf,
     the_bundle: BUNDLE_LAW,
@@ -1570,7 +1699,7 @@ export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOf
     // the limit it says it was asked at. `total` and `next_offset` already
     // carried the rest, on both skins, before this existed.
     mail: segment("household.mail", { handle, view: "inbox", limit: mailLimit },
-      mailList(db, handle, "inbox", { limit: mailLimit })),
+      parts.mail),
     // The mail-state law: the threads awaiting your reply, your merged-but-
     // unsailed replies, and the conversation ledger itself, bounded. This one
     // segment is what `correspondence` and `awaiting_reply` both used to be.
@@ -1587,15 +1716,15 @@ export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOf
     // shown a single number of. `household read: "stamps"` stays exactly what
     // it is and is one call away for a caller who wants their whole house.
     stamps: segment("town.stamps", { handle },
-      slim ? { handle, ...slimStamps(stampsDetail(db, handle)) } : { handle, ...stampsDetail(db, handle) }),
+      slim ? { handle, ...slimStamps(parts.stamps) } : { handle, ...parts.stamps }),
     // Teaser + pointer, per the refactor: the entries are already the authors'
     // own listing lines, so the cut costs a reader nothing but the tail, and
     // the total says how long the tail is.
     bulletin: segment("town.bulletin", { limit: DOORSTEP_BULLETIN },
-      bulletinTeaser(db, { limit: DOORSTEP_BULLETIN })),
+      parts.bulletin),
     town_pulse: segment("town.metrics", { days: DOORSTEP_PULSE_DAYS },
-      metricsMail(db, { days: DOORSTEP_PULSE_DAYS })),
-    window: segment("household.window", { handle }, windowRead(db, handle, fresh)),
+      parts.pulse),
+    window: segment("household.window", { handle }, parts.window),
 
     // ── the bundle's own, which no other read serves ─────────────────────────
     // The two-clocks question (Liv's find, Keemin-ruled 2026-08-10: disclose,
@@ -1607,23 +1736,15 @@ export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOf
     // The registrar's week, as text (Keemin 2026-08-22) — the half of the
     // bulletin a resident can act on without leaving the page. Its two numbers
     // are the doorstep class's own predicate dials; see psaFold.
-    psa: slim ? slimPsa(psaFold(db, { now: nowMs })) : psaFold(db, { now: nowMs }),
+    psa: slim ? slimPsa(parts.psa) : parts.psa,
     // HALF THE ANSWER, and deliberately so: this is the INDEX's count, and a
     // letter sent under the town log is a row for up to twelve hours before it
     // becomes a file this COUNT(*) can reach. `doorstepBundle` finishes the
     // number for its own sender and attaches `pending_outbox_freshness` beside
     // it — the ownership gate and the town log both live there, not here.
-    pending_outbox: outboxSettled(db, handle),
-    counts: {
-      received: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery' AND to_h = ?", handle),
-      sent: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery' AND from_h = ?", handle),
-    },
-    town: {
-      residents: one("SELECT COUNT(*) FROM residents"),
-      deliveries: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery'"),
-      lastDelivery: one("SELECT MAX(date) FROM ledger WHERE kind = 'delivery'"),
-      latestArrivals,
-    },
+    pending_outbox: parts.pendingOutbox,
+    counts: parts.counts,
+    town: { ...parts.town, latestArrivals },
     // WHERE THE RETIRED KEYS WENT. The bundle refactor moved six top-level
     // fields into segments, and a cached reader finding them absent deserves
     // the door that serves them rather than silence — psaFold's `more_note`
@@ -1692,7 +1813,7 @@ export function doorstep(db, handle, asOf, { nowMs = Date.now(), conversationsOf
  * Degrades rather than throws: a checkout too old to carry the onboarding fold
  * yields a null, and the doorstep simply carries no next-steps block.
  */
-export async function nextStepsFor(db, meta, handle, clone, { own = false, worldBlock: injected, key = null } = {}) {
+export async function nextStepsFor(db, meta, handle, clone, { own = false, worldBlock: injected, key = null, ix = null } = {}) {
   try {
     const tools = await questTools(clone);
     if (typeof tools.composeNextSteps !== "function") return null; // older checkout
@@ -1736,7 +1857,7 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // Absent means ASK, exactly as before, at exactly the old cost, for exactly
     // that case. (Measured on a fresh index of the live town: 182 of 182 rows
     // carry all six, so this is the deploy window and not the common path.)
-    const facts = onboardingFactsFromStanding(standingFor(db, handle))
+    const facts = onboardingFactsFromStanding(ix ? await ix.standing(handle) : standingFor(db, handle))
       ?? tools.onboardingFactsFor(clone, handle);
     // THE 08-15 GATE. Keemin's ruling, verbatim: "the gaps are yours to see, not
     // theirs to be seen by." A stranger's read of your doorstep gets exactly
@@ -1751,7 +1872,7 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // and the saved world read is the expensive half of this call besides.
     const worldSited = own ? await worldSitedFor(handle, { worldBlock }) : null;
     const onboarding = tools.onboardingBoard(registry, facts, handle, { worldSited });
-    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key }) : null;
+    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key, ix }) : null;
     // THE VERDICT RIDES DOWN, NOT THE READER (#2773, and the 08-15 gate is why).
     // `worldSited` above is already this doorstep's decision: the world read for
     // an own door, and a deliberate NON-read — null, nobody looked — for a
@@ -1759,7 +1880,7 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // the very question the gate skipped, one layer down where the skip is
     // invisible; handing it the verdict keeps the gate whole and keeps the whole
     // doorstep to one world open.
-    const questBoard = await questBoardFor(db, meta, handle, clone, { worldSited });
+    const questBoard = ix ? await ix.questBoard(handle, { worldSited }) : await questBoardFor(db, meta, handle, clone, { worldSited });
     // ── WHAT THE COMPOSER IS HANDED, AND WHY IT IS NOT THE BOARD VERBATIM ────
     //
     // `composeNextSteps` writes a step's tail as `(${q.progress}/${q.target}
@@ -1818,10 +1939,15 @@ export function stampsRoster(db, meta, { limit, offset } = {}) {
   // the list stopped short of.
   const accounts = Object.values(db.prepare("SELECT COUNT(*) AS n FROM stamps").get())[0];
   const balances = db.prepare("SELECT handle, balance FROM stamps ORDER BY balance DESC, handle LIMIT ? OFFSET ?").all(n, start);
+  return stampsRosterPage({ minted: meta.stamps_minted, accounts, n, start }, balances);
+}
+
+/** /stamps's page around its balances. Shared with the store's twin (town-index-store.mjs). */
+export function stampsRosterPage({ minted, accounts, n, start }, balances) {
   const next = start + balances.length;
   const complete = next >= accounts;
   return {
-    minted_cumulative: Number(meta.stamps_minted ?? 0),
+    minted_cumulative: Number(minted ?? 0),
     accounts,
     shown: balances.length,
     limit: n, offset: start, complete,
@@ -1876,24 +2002,45 @@ export function stampsFor(db, handle) {
 // than one opaque number, because a read nobody can check is not a read.
 export function stampsDetail(db, handle) {
   const row = db.prepare("SELECT balance, mint_count, staked FROM stamps WHERE handle = ?").get(handle);
-  const liquid = row?.balance ?? 0;
-  const staked = row?.staked ?? 0;
-  const mint_count = row?.mint_count ?? 0;
-  const base = { stamps: liquid, mint_count, staked, liquid, assets: liquid + staked };
+  let funding = null;
   try {
-    let parties = [handle];
-    try { const hh = householdOf(handle); if (hh?.slug && hh.slug !== handle) parties.push(hh.slug); } catch { /* garnish only */ }
+    const parties = stampParties(handle);
     const ph = parties.map(() => "?").join(",");
     // THE JOIN, IN THE OPEN. `pot-receipt` is the only money row (the founder's
     // 2026-08-26 ruling), so the dollars behind a holo row are read off the
     // receipt its `ref:` names rather than restated on a second row. LEFT, so a
     // holo row whose receipt this index does not hold still appears, with
     // `dollars` null — absent, never guessed.
+    // `, r.seq` names the order sqlite already gave two receipts sharing one
+    // ref (it scans pot_receipts in rowid order); the store's twin says it too.
     const holoRows = db.prepare(`
       SELECT h.party, h.pot, h.holo, h.epoch, h.date, h.receipt, r.usd AS usd
       FROM funding_holo h LEFT JOIN pot_receipts r ON r.receipt = h.receipt
-      WHERE h.party IN (${ph}) ORDER BY h.date, h.seq`).all(...parties);
+      WHERE h.party IN (${ph}) ORDER BY h.date, h.seq, r.seq`).all(...parties);
     const keepingRows = db.prepare(`SELECT pot, n, epoch, date FROM funding_keeping_mint WHERE party IN (${ph}) ORDER BY date, seq`).all(...parties);
+    funding = { holoRows, keepingRows };
+  } catch { /* an index older than the funding seam: stampsDetailOf says so */ }
+  return stampsDetailOf(row, funding);
+}
+
+/** Whose funding rows a handle's stamps read: the handle, and its household's slug when that differs. */
+export function stampParties(handle) {
+  const parties = [handle];
+  try { const hh = householdOf(handle); if (hh?.slug && hh.slug !== handle) parties.push(hh.slug); } catch { /* garnish only */ }
+  return parties;
+}
+
+/**
+ * /stamps/{h}'s answer from its stamps row and its funding rows (null when the
+ * index has no funding tables). Shared with the store's twin.
+ */
+export function stampsDetailOf(row, funding) {
+  const liquid = row?.balance ?? 0;
+  const staked = row?.staked ?? 0;
+  const mint_count = row?.mint_count ?? 0;
+  const base = { stamps: liquid, mint_count, staked, liquid, assets: liquid + staked };
+  if (funding) {
+    const { holoRows, keepingRows } = funding;
     const holo = holoRows.reduce((n, r) => n + r.holo, 0);
     const keeping_total = keepingRows.reduce((n, r) => n + r.n, 0);
     return {
@@ -1947,7 +2094,7 @@ export function stampsDetail(db, handle) {
       // is here rather than a silent shape change.
       moved: "what this household funded — which pot, when, how many dollars, and the receipt that witnessed them — rides on each row of `holo.mints`, beside the holo minted for it. The dollars themselves are the ledger's `pot-receipt` rows, which the pot board serves whole.",
     };
-  } catch {
+  } else {
     // an index hydrated before the funding seam has no funding tables — serve
     // the honest note rather than a guessed-empty section (the mail_state
     // precedent: this window closes at the next rehydrate)
@@ -1977,11 +2124,33 @@ export function stampsDetail(db, handle) {
 const POT_ROWS = 20;
 
 export function potBoard(db, extraInvalid = []) {
-  const pots = db.prepare("SELECT id, json FROM pots ORDER BY id").all().map((r) => {
+  return potBoardOf(potBoardRows(db), extraInvalid);
+}
+
+/**
+ * Every row potBoard reads, and nothing it does not: each pot's own row with its
+ * roll, receipts, escrow and stakers, and the invalid funding rows. The store's
+ * twin (town-index-store.mjs § potBoardRows) answers the same shape; potBoardOf
+ * turns either into the board.
+ */
+export function potBoardRows(db) {
+  return {
+    pots: db.prepare("SELECT id, json FROM pots ORDER BY id").all().map((r) => ({
+      id: r.id, json: r.json,
+      roll: db.prepare("SELECT patron, usd, date, receipt, holo FROM funding_roll WHERE pot = ? ORDER BY date, seq").all(r.id),
+      receipts: db.prepare("SELECT rail, usd, date, receipt, payer FROM pot_receipts WHERE pot = ? ORDER BY date, seq").all(r.id),
+      staked: db.prepare("SELECT staked FROM pot_escrow WHERE pot = ?").get(r.id)?.staked ?? 0,
+      stakers: db.prepare("SELECT handle, staked FROM pot_stakers WHERE pot = ? ORDER BY staked DESC, handle").all(r.id),
+    })),
+    invalid: db.prepare("SELECT row_kind, line, reason FROM funding_invalid ORDER BY seq").all(),
+  };
+}
+
+/** The pot board from its rows (potBoardRows, or the store's). Shared with the store's twin. */
+export function potBoardOf(rows, extraInvalid = []) {
+  const pots = rows.pots.map((r) => {
     const d = JSON.parse(r.json);
-    const roll = db.prepare("SELECT patron, usd, date, receipt, holo FROM funding_roll WHERE pot = ? ORDER BY date, seq").all(r.id);
-    const receipts = db.prepare("SELECT rail, usd, date, receipt, payer FROM pot_receipts WHERE pot = ? ORDER BY date, seq").all(r.id);
-    const staked = db.prepare("SELECT staked FROM pot_escrow WHERE pot = ?").get(r.id)?.staked ?? 0;
+    const { roll, receipts, staked } = r;
     // WHO holds that escrow. Sorted by size and then by handle, so the order is
     // total (two stakers at the same size would otherwise ride on SQLite's
     // rowid order, which is a hydrate detail no reader should be able to see).
@@ -1993,8 +2162,7 @@ export function potBoard(db, extraInvalid = []) {
     // and compares differently, so a caller's deepStrictEqual against a plain
     // literal fails on two lists that are identical in every value. A door's
     // answer should not carry that surprise across the wire.
-    const stakers = db.prepare("SELECT handle, staked FROM pot_stakers WHERE pot = ? ORDER BY staked DESC, handle")
-      .all(r.id).map((s) => ({ handle: s.handle, staked: s.staked }));
+    const stakers = r.stakers.map((s) => ({ handle: s.handle, staked: s.staked }));
     return {
       id: r.id,
       title: d.title ?? r.id,
@@ -2077,7 +2245,7 @@ export function potBoard(db, extraInvalid = []) {
       escrow: { staked, stakers, teach: TEACH.escrow },
     };
   });
-  const invalid = db.prepare("SELECT row_kind, line, reason FROM funding_invalid ORDER BY seq").all()
+  const invalid = rows.invalid.map((x) => ({ row_kind: x.row_kind, line: x.line, reason: x.reason }))
     .concat(extraInvalid.map((x) => ({ row_kind: x.row_kind, line: x.line, reason: x.reason })));
   return { teach: TEACH.pots_section, list: pots, ...(invalid.length ? { invalid_rows: { teach: TEACH.invalid, list: invalid } } : {}) };
 }
@@ -2434,6 +2602,15 @@ export function standingFor(db, handle) {
 const RESIDENT_ROW_FIELDS = ["progress", "complete", "counted", "household"];
 
 export function townQuestBoard({ db, registry, boardForHandle, today }) {
+  return townQuestBoardOf({ registry, boardForHandle, today }, (extra) => potBoard(db, extra), () => db.prepare("SELECT id FROM pots").all().map((r) => r.id));
+}
+
+/**
+ * The town's board, its pots read through `pots(extraInvalid)` and `potIds()`
+ * (either may throw: an index older than the funding seam). Shared with the
+ * store's twin, which hands in the rows it already read.
+ */
+export function townQuestBoardOf({ registry, boardForHandle, today }, pots, potIds) {
   const bountyIds = (registry.quests ?? []).filter((q) => q.subtype === "bounty").map((q) => q.id);
   // Same lift as the resident board below: a pot's registry row is a BOARD
   // POSTING, not a quest card, and it belongs in `pots`.
@@ -2446,7 +2623,7 @@ export function townQuestBoard({ db, registry, boardForHandle, today }) {
       + "without anyone's progress on them. For a resident's progress name one: args: { handle }. "
       + "Your own household's board, with your progress, is household { read: \"quests\" }.",
   };
-  try { board.pots = potBoard(db, postingsWithoutPots(bountyIds, db.prepare("SELECT id FROM pots").all().map((r) => r.id))); }
+  try { board.pots = pots(postingsWithoutPots(bountyIds, potIds())); }
   catch { board.pots_note = "this index predates the funding seam — pots are not indexed here yet; they appear at the next rehydrate"; }
   return board;
 }
@@ -2469,14 +2646,66 @@ export function townQuestBoard({ db, registry, boardForHandle, today }) {
 //
 // Neither given (the bare `/quests/{handle}` door, which is public and which the
 // resident page reads), the board reads the world itself.
-export async function questBoardFor(db, meta, handle, clone, { worldSited: decided = undefined, worldBlock = null } = {}) {  const registry = JSON.parse(meta.quest_registry ?? '{"quests":[]}');
+export async function questBoardFor(db, meta, handle, clone, opts = {}) {
+  return questBoardWith(officeQuestSource(db), meta, handle, clone, opts);
+}
+
+/**
+ * The reads household-stamps makes, from office.db — the same methods the
+ * store's `storeIndex` answers, so a door picks its index once and the
+ * readers never branch.
+ */
+export const officeIndex = (db, meta, clone) => ({
+  stampsDetail: async (handle) => stampsDetail(db, handle),
+  questBoard: async (handle, opts) => questBoardFor(db, meta, handle, clone, opts),
+  potBoard: async (extraInvalid) => potBoard(db, extraInvalid),
+  // the doorstep's and the house's reads (group 3)
+  asOf: async () => indexAsOf(db),
+  doorstep: async (handle, asOf, opts) => doorstep(db, handle, asOf, opts),
+  residentSegments: async (handle, fresh) => (await import("./house-bundle.mjs")).residentSegments(db, handle, fresh),
+  hasResident: async (handle) => { try { return Boolean(db.prepare("SELECT 1 FROM residents WHERE handle = ?").get(handle)); } catch { return false; } },
+  lastActive: async (handle) => {
+    try { const row = db.prepare("SELECT json FROM residents WHERE handle = ?").get(handle); return row ? (JSON.parse(row.json).last_active ?? null) : null; }
+    catch { return null; }
+  },
+  mailAwaiting: async (handle, opts) => mailAwaiting(db, handle, opts),
+  standing: async (handle) => standingFor(db, handle),
+  home: async (handle, fresh) => home(db, handle, fresh),
+  deliveredTo: async (handle) => (await import("./unread-store.mjs")).deliveredTo(db, handle),
+});
+
+/** questBoardWith's reads, from office.db. */
+export const officeQuestSource = (db) => ({
+  progressRow: (handle) => db.prepare("SELECT * FROM quest_progress WHERE handle = ?").get(handle),
+  standing: (handle) => standingFor(db, handle),
+  pots: (extraInvalid) => potBoard(db, extraInvalid),
+  potIds: () => db.prepare("SELECT id FROM pots").all().map((r) => r.id),
+});
+
+/**
+ * A resident's quest board (or the town's, with no handle) from its index
+ * reads: `src` answers progressRow, standing, pots and potIds, sync or async.
+ * Shared with the store's twin (town-index-store.mjs § questBoardFor).
+ */
+export async function questBoardWith(src, meta, handle, clone, { worldSited: decided = undefined, worldBlock = null } = {}) {
+  const registry = JSON.parse(meta.quest_registry ?? '{"quests":[]}');
   const { boardForHandle, townDay } = await questTools(clone);
   const today = townDay();
   // Before any query that keys on the handle — the trip in #2760 was one line
   // below this, and a blank string is the same absence as a missing argument.
-  if (handle == null || String(handle).trim() === "") return townQuestBoard({ db, registry, boardForHandle, today });
+  if (handle == null || String(handle).trim() === "") {
+    // townQuestBoardOf reads the pots through two thunks, synchronously, and the
+    // source may answer asynchronously: so both are read first and handed in, a
+    // failure kept and re-thrown where townQuestBoardOf's own catch expects it.
+    const settle = async (fn) => { try { return { v: await fn() }; } catch (e) { return { e }; } };
+    const take = (r) => { if (r.e) throw r.e; return r.v; };
+    const bountyIds = (registry.quests ?? []).filter((q) => q.subtype === "bounty").map((q) => q.id);
+    const ids = await settle(() => src.potIds());
+    const pots = ids.e ? ids : await settle(() => src.pots(postingsWithoutPots(bountyIds, ids.v)));
+    return townQuestBoardOf({ registry, boardForHandle, today }, () => take(pots), () => take(ids));
+  }
   const fresh = meta.quest_day === today; // stale hydrate across a midnight → zero
-  const row = fresh ? db.prepare("SELECT * FROM quest_progress WHERE handle = ?").get(handle) : null;
+  const row = fresh ? await src.progressRow(handle) : null;
   // a column written before sent_to/heard_from existed, or a malformed value,
   // must degrade to [] — the card then simply shows no names rather than 500ing
   // on a display affordance.
@@ -2505,7 +2734,7 @@ export async function questBoardFor(db, meta, handle, clone, { worldSited: decid
   // the 08-15 gate reaches down here intact — see the note on the signature.
   const worldSited = decided !== undefined ? decided
     : await (await import("./household-apex.mjs")).worldSitedFor(handle, worldBlock ? { worldBlock } : {});
-  const standing = standingFor(db, handle);
+  const standing = await src.standing(handle);
   const board = boardForHandle(registry, prog, handle, today, { complete: idea ? { "first-idea": idea.complete } : null });
   // The funding pots ride the same board (funding seam, 2026-08-21) — pots are
   // bounty files ON the quest board, so the board read carries them rather than
@@ -2595,7 +2824,7 @@ export async function questBoardFor(db, meta, handle, clone, { worldSited: decid
       const row = patch ? { ...q, ...patch } : q;
       return { ...row, measured: typeof row.progress === "number" };
     });
-  try { board.pots = potBoard(db, postingsWithoutPots(bountyIds, db.prepare("SELECT id FROM pots").all().map((r) => r.id))); }
+  try { board.pots = await src.pots(postingsWithoutPots(bountyIds, await src.potIds())); }
   catch { board.pots_note = "this index predates the funding seam — pots are not indexed here yet; they appear at the next rehydrate"; }
   // WHICH MIDNIGHT THE DAILY BARS RESET ON. `today` is already the variable this
   // whole board was computed against, two screens up; it was simply never said
@@ -2648,9 +2877,11 @@ export function bulletinList(db) {
   // Absent when the frontmatter carries none, exactly like `teaser` — the board
   // holds pages with no frontmatter at all (README.md), and an invented date is
   // worse than a missing one for the very reader asking for this field.
-  return db.prepare("SELECT slug, json FROM bulletin ORDER BY slug").all()
-    .map((r) => { const d = JSON.parse(r.json); return { slug: r.slug, title: d.data?.title ?? r.slug, posted: d.data?.posted || undefined, kind: d.data?.kind || undefined, human_gated: isHumanGated(d) || undefined, teaser: d.data?.teaser || undefined, first_line: letterExcerpt(d.body, 160) }; });
+  return db.prepare("SELECT slug, json FROM bulletin ORDER BY slug").all().map(bulletinListing);
 }
+
+/** One bulletin posting as the listing carries it (a row: slug, json). Shared with the store's twin. */
+export const bulletinListing = (r) => { const d = JSON.parse(r.json); return { slug: r.slug, title: d.data?.title ?? r.slug, posted: d.data?.posted || undefined, kind: d.data?.kind || undefined, human_gated: isHumanGated(d) || undefined, teaser: d.data?.teaser || undefined, first_line: letterExcerpt(d.body, 160) }; };
 
 /**
  * The bulletin as the doorstep carries it — the newest few, and how many more.
@@ -2666,8 +2897,12 @@ export function bulletinList(db) {
  * `bulletinList` itself sorts ascending by slug, so the reverse is taken here
  * rather than at the door that serves the whole list unchanged.
  */
-export function bulletinTeaser(db, { limit = BULLETIN_PAGE, offset = 0 } = {}) {
-  const all = bulletinList(db);
+export function bulletinTeaser(db, opts = {}) {
+  return bulletinTeaserOf(bulletinList(db), opts);
+}
+
+/** bulletinTeaser's bound and count, over a whole listing. Shared with the store's twin. */
+export function bulletinTeaserOf(all, { limit = BULLETIN_PAGE, offset = 0 } = {}) {
   const n = Math.min(Math.max(Number(limit) || BULLETIN_PAGE, 1), 200);
   // `offset` (2026-08-25) so the read-more the note names can actually be
   // walked. The note said "the whole listing is one read away" and meant the
@@ -2768,18 +3003,23 @@ export function parsePsaEntries(body) {
  * Returns `{ entries, window_days, max, dials, note }`, or `null` when the wall
  * is not in this index at all — an honest absence, never an invented quiet week.
  */
-export function psaFold(db, { now = Date.now(), worldDb = null } = {}) {
-  const windowDial = dialNumber("doorstep", "psa_window_days", 7, { worldDb, min: 0 });
-  const maxDial = dialNumber("doorstep", "psa_max", 5, { worldDb, min: 0 });
+export function psaFold(db, opts = {}) {
   let row;
   try { row = db.prepare("SELECT json FROM bulletin WHERE slug = ?").get(PSA_SLUG); }
   catch { row = null; }
-  if (!row) {
+  return psaFoldOf(row?.json ?? null, opts);
+}
+
+/** The PSA fold from the PSA posting's stored json (null: the checkout carries none). Shared with the store's twin. */
+export function psaFoldOf(json, { now = Date.now(), worldDb = null } = {}) {
+  const windowDial = dialNumber("doorstep", "psa_window_days", 7, { worldDb, min: 0 });
+  const maxDial = dialNumber("doorstep", "psa_max", 5, { worldDb, min: 0 });
+  if (json == null) {
     return { entries: [], window_days: windowDial.value, max: maxDial.value,
       dials: { psa_window_days: windowDial.source, psa_max: maxDial.source },
       note: `the town checkout behind this office carries no ${PSA_SLUG} — the week's news is absent, not empty` };
   }
-  const parsed = parsePsaEntries(JSON.parse(row.json).body);
+  const parsed = parsePsaEntries(JSON.parse(json).body);
   const fresh = parsed.filter((e) => {
     const age = ageInDays(e.date, now);
     return age !== null && age >= 0 && age <= windowDial.value;
@@ -2805,16 +3045,20 @@ export function psaFold(db, { now = Date.now(), worldDb = null } = {}) {
 
 export function bulletinEntry(db, slug) {
   const row = db.prepare("SELECT json FROM bulletin WHERE slug = ?").get(slug);
-  if (!row) return null;
-  const entry = JSON.parse(row.json);
+  return row ? bulletinEntryOf(row.json) : null;
+}
+
+/** One posting whole, from its stored json. Shared with the store's twin. */
+export function bulletinEntryOf(json) {
+  const entry = JSON.parse(json);
   if (isHumanGated(entry)) { entry.human_gated = true; entry.surfacing_note = HUMAN_GATED_NOTE; }
   return entry;
 }
 
 // A search that silently truncates at 25 and says nothing is the `capped`
 // lesson unlearned. ✎ Proposals, unchanged from the numbers already in the SQL.
-const SEARCH_LETTERS = 25;
-const SEARCH_RESIDENTS = 10;
+export const SEARCH_LETTERS = 25;
+export const SEARCH_RESIDENTS = 10;
 
 export function search(db, q, { limit, offset } = {}) {
   const like = `%${q}%`;
@@ -2851,6 +3095,11 @@ export function search(db, q, { limit, offset } = {}) {
     .all(like, like, q, `${q}%`, like, SEARCH_RESIDENTS).map((r) => r.handle);
   const letters = db.prepare(`SELECT * FROM letters WHERE id LIKE ? OR json LIKE ? ORDER BY ${NEWEST} LIMIT ? OFFSET ?`)
     .all(like, like, n, start).map(excerpt);
+  return searchPage({ q, n, start, lettersTotal, residentsTotal, residents, letters });
+}
+
+/** search's answer from its counts and its two lists. Shared with the store's twin. */
+export function searchPage({ q, n, start, lettersTotal, residentsTotal, residents, letters }) {
   const next = start + letters.length;
   const complete = next >= lettersTotal;
   return {
@@ -2873,7 +3122,28 @@ export function search(db, q, { limit, offset } = {}) {
 
 // The town's mail pulse. Deterministic per checkout: "today" is the newest
 // ledger date, never the wall clock, so the same index always answers the same.
-export function metricsMail(db, { days: windowDays } = {}) {
+export function metricsMail(db, opts = {}) {
+  const one = (sql) => Object.values(db.prepare(sql).get())[0];
+  return metricsMailOf({
+    newest: db.prepare("SELECT MAX(date) AS d FROM ledger WHERE date IS NOT NULL").get().d ?? null,
+    dayCounts: db.prepare("SELECT date, kind, COUNT(*) AS n FROM ledger WHERE date IS NOT NULL GROUP BY date, kind").all(),
+    totals: {
+      deliveries: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery'"),
+      bounces: one("SELECT COUNT(*) FROM ledger WHERE kind = 'bounce'"),
+      letters: one("SELECT COUNT(*) FROM letters"),
+      threads: one("SELECT COUNT(*) FROM threads"),
+      residents: one("SELECT COUNT(*) FROM residents"),
+    },
+    threadJsons: () => db.prepare("SELECT json FROM threads").all().map((t) => t.json),
+  }, opts);
+}
+
+/**
+ * metricsMail's answer from the ledger's newest day, its (date, kind, n) counts,
+ * the five totals and the threads' json (a thunk: only read when there is a
+ * newest day). Shared with the store's twin.
+ */
+export function metricsMailOf({ newest, dayCounts, totals: counted, threadJsons }, { days: windowDays } = {}) {
   // The window is an ARGUMENT now (2026-08-25), defaulting to the 60 this read
   // has always answered — so `read_metrics` with no args is byte-identical to
   // what it served yesterday, and the doorstep's `town_pulse` segment can ask
@@ -2881,10 +3151,9 @@ export function metricsMail(db, { days: windowDays } = {}) {
   // and `active_threads` are whole-ledger either way: the window decides how
   // much of the series gets said, never what is true of the town.
   const span = Math.min(Math.max(Number(windowDays) || 60, 1), 365);
-  const newest = db.prepare("SELECT MAX(date) AS d FROM ledger WHERE date IS NOT NULL").get().d ?? null;
 
   const byDate = new Map();
-  for (const r of db.prepare("SELECT date, kind, COUNT(*) AS n FROM ledger WHERE date IS NOT NULL GROUP BY date, kind").all()) {
+  for (const r of dayCounts) {
     const e = byDate.get(r.date) ?? { deliveries: 0, bounces: 0 };
     if (r.kind === "delivery") e.deliveries += r.n;
     else if (r.kind === "bounce") e.bounces += r.n;
@@ -2903,21 +3172,14 @@ export function metricsMail(db, { days: windowDays } = {}) {
     }
   }
 
-  const one = (sql) => Object.values(db.prepare(sql).get())[0];
-  const totals = {
-    deliveries: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery'"),
-    bounces: one("SELECT COUNT(*) FROM ledger WHERE kind = 'bounce'"),
-    letters: one("SELECT COUNT(*) FROM letters"),
-    threads: one("SELECT COUNT(*) FROM threads"),
-    residents: one("SELECT COUNT(*) FROM residents"),
-  };
+  const totals = { ...counted };
 
   // A thread is active if its last letter landed within 14 days of "today".
   let active_threads = 0;
   if (newest) {
     const newestMs = Date.parse(newest);
-    for (const t of db.prepare("SELECT json FROM threads").all()) {
-      const j = JSON.parse(t.json);
+    for (const json of threadJsons()) {
+      const j = JSON.parse(json);
       const dates = (j.letters ?? []).map((l) => l.date).filter(Boolean).sort();
       const last = j.lastDate ?? (dates.length ? dates[dates.length - 1] : null);
       if (!last) continue;
@@ -2942,22 +3204,30 @@ export function regionList(db, { limit, offset } = {}) {
   const n = Math.min(Math.max(Number(limit) || REGIONS_PAGE, 1), 200);
   const start = Math.max(Number(offset) || 0, 0);
   const total = Object.values(db.prepare("SELECT COUNT(*) AS n FROM regions").get())[0];
-  const regions = db.prepare("SELECT id, name, json FROM regions ORDER BY id LIMIT ? OFFSET ?").all(n, start).map((r) => {
-    const d = JSON.parse(r.json);
-    const description = (d.body ?? "").split(/\r?\n/)
-      .find((l) => { const t = l.trim(); return t && !t.startsWith("#") && !t.startsWith("!["); })?.slice(0, 200) ?? "";
-    const all = d.residents ?? [];
-    const shown = all.slice(0, REGION_RESIDENTS);
-    return { slug: r.id, name: r.name, description,
-      // Count first, slice after: `residents_total` is the region's whole roll,
-      // which is the number a reader asking "how big is this region" wants —
-      // never the number that survived this read's own budget.
-      residents_total: all.length,
-      ...(all.length > shown.length
-        ? { residents_note: `${all.length - shown.length} more live here — read_home or list_residents names them all` }
-        : {}),
-      residents: shown };
-  });
+  const regions = db.prepare("SELECT id, name, json FROM regions ORDER BY id LIMIT ? OFFSET ?").all(n, start).map(regionListing);
+  return regionPage({ total, n, start }, regions);
+}
+
+/** One region as the /regions LIST serves it (a row: id, name, json). Shared with the store's twin. */
+export function regionListing(r) {
+  const d = JSON.parse(r.json);
+  const description = (d.body ?? "").split(/\r?\n/)
+    .find((l) => { const t = l.trim(); return t && !t.startsWith("#") && !t.startsWith("!["); })?.slice(0, 200) ?? "";
+  const all = d.residents ?? [];
+  const shown = all.slice(0, REGION_RESIDENTS);
+  return { slug: r.id, name: r.name, description,
+    // Count first, slice after: `residents_total` is the region's whole roll,
+    // which is the number a reader asking "how big is this region" wants —
+    // never the number that survived this read's own budget.
+    residents_total: all.length,
+    ...(all.length > shown.length
+      ? { residents_note: `${all.length - shown.length} more live here — read_home or list_residents names them all` }
+      : {}),
+    residents: shown };
+}
+
+/** The /regions page around its listings. Shared with the store's twin. */
+export function regionPage({ total, n, start }, regions) {
   const next = start + regions.length;
   const complete = next >= total;
   return {
@@ -2993,7 +3263,11 @@ export function regionList(db, { limit, offset } = {}) {
 // homes card calls `images` — see the report for that grammar divergence.
 export function regionOne(db, slug) {
   const row = db.prepare("SELECT id, name, json FROM regions WHERE id = ? OR name = ?").get(slug, slug);
-  if (!row) return null;
+  return row ? regionWhole(row) : null;
+}
+
+/** One region whole, from its row (id, name, json). Shared with the store's twin. */
+export function regionWhole(row) {
   const d = JSON.parse(row.json);
   const residents = d.residents ?? [];
   return {

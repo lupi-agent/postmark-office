@@ -18,6 +18,8 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { fixtureDb, fixtureKey } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import {
   hotLetters, hotMailBlock, logLetter, MAIL_ACT, MAIL_DOOR,
   preflightEnvelope, replayLetter, sendLetterAsRow, STANDING,
@@ -29,6 +31,12 @@ import { appendJournal, CLASS_MARK } from "../src/world-journal.mjs";
 import { enqueueLetter, outboxRelPath, validateLetter } from "../src/write.mjs";
 import { DYNAMIC_SCHEMA } from "../src/dynamic-store.mjs";
 import { townClone } from "./fixture-paths.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 delete process.env.TOWN_PUSH; // belt and braces: nothing here may leave the machine
 
@@ -79,6 +87,11 @@ function mailClone() {
 }
 
 const db = fixtureDb();
+// The checks this file calls in-process read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX_IN = await indexStore(db);
+const IX_IN_RESTORE = await IX_IN.useInProcess();
+test.after(async () => { await IX_IN_RESTORE(); await IX_IN.stop(); });
 const ok = { from: "wright", to: "limen", title: "a fine hat", thread: "new", body: "Limen —\n\nA test letter." };
 const limenKey = { household: "limen-house", handles: new Set(["limen"]) };
 
@@ -110,7 +123,7 @@ test('THE CLASS: "letter" is the town log\'s, and the world log bounces it on si
     /"letter" is the town log's class, not the world's/,
     "a mail row under the world's drain would be truncated undrained — the collision two tables exist to make impossible");
   // and the reverse fence still stands
-  assert.throws(() => appendTownJournal(d, { cls: CLASS_MARK, act: "leave-mark", household: "h" }),
+  await assert.rejects(async () => await appendTownJournal(d, { cls: CLASS_MARK, act: "leave-mark", household: "h" }),
     /the town log holds join, update, letter rows/);
 });
 
@@ -131,27 +144,25 @@ async function office(clone, env, run) {
   const tmp = mkdtempSync(join(tmpdir(), "pm-mailsrv-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
-  const port = 43900 + Math.floor(Math.random() * 60);
+  const IX_ENV = await storeFor(dbPath);
   // --oauth-db is a FLAG, not an env var, and it is where the town journal
   // lives: without it every spawned office in this file would share the repo's
   // own oauth.db and read the previous test's pending letters as its own.
-  const child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"),
+  // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+  // asked for); it was 43900 + a random 0..59, sixty doors every pool tree on
+  // the box shares.
+  const { child, port } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"),
     "--port", String(port), "--db", dbPath, "--oauth-db", join(tmp, "oauth.db")], {
     env: {
       // two households at the door: wright's, and the recipient's own — the
       // mail law's second half cannot be read without a key that holds limen
-      ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright;${LIMEN_KEY}=limen-house:limen`, TOWN_CLONE: clone,
+      ...process.env, ...IX_ENV, OFFICE_KEYS: `${KEY}=keemin:wright;${LIMEN_KEY}=limen-house:limen`, TOWN_CLONE: clone,
       WORLD_CLONE: join(tmp, "no-world-clone"), VOICES_LOG: join(tmp, "voices.jsonl"),
       TOWN_PUSH: "", OAUTH_DB: join(tmp, "oauth.db"), ...env,
     },
     stdio: ["ignore", "pipe", "pipe"],
-  });
+  }));
   try {
-    await new Promise((okp, no) => {
-      const t = setTimeout(() => no(new Error("server never listened")), 15_000);
-      child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(t); okp(); } });
-      child.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-    });
     const base = `http://127.0.0.1:${port}`;
     return await run({
       rest: (payload) => fetch(`${base}/letters`, {
@@ -262,7 +273,7 @@ test("FLAG-ON: the letter is a ROW, not a file — nothing is written, nothing i
     assert.match(out.standing, /sails at the next crossing/);
     assert.equal(out.pushed, false);
 
-    const rows = pendingRows(o);
+    const rows = await pendingRows(o);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].cls, "letter");
     assert.equal(rows[0].act, MAIL_ACT);
@@ -288,7 +299,7 @@ test("FLAG-ON: the door still judges the letter — a bad envelope bounces here,
         (e) => e.code === 422);
       await assert.rejects(() => sendLetterAsRow({ ...ok, body: "x".repeat(100_001) }, fixtureKey, db, clone, o),
         (e) => e.code === 413);
-      assert.deepEqual(pendingRows(o), [],
+      assert.deepEqual((await pendingRows(o)), [],
         "a bounce leaves NO row — a row claiming a letter that was refused is a letter the crossing would post");
     });
   } finally { rmSync(clone, { recursive: true, force: true }); }
@@ -308,7 +319,7 @@ test("THE MAIL LAW: a flag-on send is visible to the SENDER and invisible to the
       await sendLetterAsRow({ ...ok, title: "for limen only" }, fixtureKey, db, clone, o);
 
       // ── the sender's own doorstep ──
-      const mine = hotMailBlock(o, fixtureKey, { handle: "wright" });
+      const mine = await hotMailBlock(o, fixtureKey, { handle: "wright" });
       assert.ok(mine, "the sender is told about their own letter — their pen must not lie to them");
       assert.equal(mine.standing.length, 1);
       assert.equal(mine.standing[0].to, "limen");
@@ -317,21 +328,21 @@ test("THE MAIL LAW: a flag-on send is visible to the SENDER and invisible to the
       assert.match(mine.note, /not even the resident you addressed it to/);
 
       // ── the recipient's own doorstep: NOTHING ──
-      assert.equal(hotMailBlock(o, limenKey, { handle: "limen" }), null,
+      assert.equal((await hotMailBlock(o, limenKey, { handle: "limen" })), null,
         "the recipient is told nothing at all — this is the half that makes the town's mail slow rather than merely delayed");
-      assert.equal(hotMailBlock(o, limenKey), null, "…on their own unscoped read too");
-      assert.deepEqual(hotLetters(o, limenKey), [],
+      assert.equal((await hotMailBlock(o, limenKey)), null, "…on their own unscoped read too");
+      assert.deepEqual((await hotLetters(o, limenKey)), [],
         "not one row reaches the recipient: the filter runs on row.handle, and a letter's handle is its SENDER");
 
       // …and a recipient cannot reach it by naming the sender's handle either
-      assert.deepEqual(hotLetters(o, limenKey, { handle: "wright" }), [],
+      assert.deepEqual((await hotLetters(o, limenKey, { handle: "wright" })), [],
         "naming someone else's handle is refused by the same `mine` set — the scope is the credential's, not the argument's");
-      assert.equal(hotMailBlock(o, limenKey, { handle: "wright" }), null);
+      assert.equal((await hotMailBlock(o, limenKey, { handle: "wright" })), null);
 
       // THE STRUCTURAL STATEMENT, which is why the above cannot rot: the
       // recipient's handle is a VALUE INSIDE THE PAYLOAD and never a column the
       // visibility filter reads. There is no branch to get wrong.
-      const row = pendingRows(o)[0];
+      const row = (await pendingRows(o))[0];
       assert.equal(row.handle, "wright");
       assert.equal(row.payload.args.to, "limen");
       assert.notEqual(row.handle, row.payload.args.to);
@@ -409,7 +420,7 @@ test("vote-by-mail rides the row verbatim — the stake is applied at the crossi
     const stake = { stake_topic: "the-bell", stake_candidate: "Ring It", stake_stamps: 3 };
     await flagOn(async () => {
       await sendLetterAsRow({ ...ok, title: "my ballot", ...stake }, fixtureKey, db, clone, o);
-      const row = pendingRows(o)[0];
+      const row = (await pendingRows(o))[0];
       assert.deepEqual(
         { stake_topic: row.payload.args.stake_topic, stake_candidate: row.payload.args.stake_candidate, stake_stamps: row.payload.args.stake_stamps },
         stake, "the trio rides as the caller typed it — the row stores arguments, not a rendered frontmatter block");
@@ -419,7 +430,7 @@ test("vote-by-mail rides the row verbatim — the stake is applied at the crossi
         (e) => e.code === 422 && /all-or-none/.test(e.hint));
     });
     // and the crossing writes the block the ballot pass reads
-    replayLetter(pendingRows(o)[0], { doors: { [MAIL_DOOR]: enqueueLetter }, db, clone });
+    replayLetter((await pendingRows(o))[0], { doors: { [MAIL_DOOR]: enqueueLetter }, db, clone });
     const text = readFileSync(join(clone, "WHITE_PAGES", "wright", "outbox", outboxFiles(clone, "wright")[0]), "utf8");
     assert.match(text, /^stake_topic: the-bell$/m);
     assert.match(text, /^stake_candidate: Ring It$/m);
@@ -427,13 +438,13 @@ test("vote-by-mail rides the row verbatim — the stake is applied at the crossi
   } finally { rmSync(clone, { recursive: true, force: true }); }
 });
 
-test("FLAG-OFF the hot mail block is silent, even with rows in the table", () => {
+test("FLAG-OFF the hot mail block is silent, even with rows in the table", async () => {
   delete process.env.TOWN_SINGLE_LOG;
   const o = odb();
-  appendTownJournal(o, { cls: "letter", act: MAIL_ACT, household: "keemin", handle: "wright", payload: { args: ok } });
-  assert.deepEqual(hotLetters(o, fixtureKey), []);
-  assert.equal(hotMailBlock(o, fixtureKey), null);
-  assert.equal(logLetter(o, { args: ok, key: fixtureKey, from: "wright" }), null, "and the door writes no row");
+  await appendTownJournal(o, { cls: "letter", act: MAIL_ACT, household: "keemin", handle: "wright", payload: { args: ok } });
+  assert.deepEqual((await hotLetters(o, fixtureKey)), []);
+  assert.equal((await hotMailBlock(o, fixtureKey)), null);
+  assert.equal((await logLetter(o, { args: ok, key: fixtureKey, from: "wright" })), null, "and the door writes no row");
 });
 
 test("two letters are two letters — a later one never supersedes an earlier one", async () => {
@@ -443,7 +454,7 @@ test("two letters are two letters — a later one never supersedes an earlier on
     await flagOn(async () => {
       await sendLetterAsRow({ ...ok, title: "first" }, fixtureKey, db, clone, o);
       await sendLetterAsRow({ ...ok, title: "second" }, fixtureKey, db, clone, o);
-      const block = hotMailBlock(o, fixtureKey, { handle: "wright" });
+      const block = await hotMailBlock(o, fixtureKey, { handle: "wright" });
       assert.equal(block.standing.length, 2,
         "unlike a paper act, where the later edit is the truer one, mail accumulates — collapsing them would lose a letter");
       assert.deepEqual(block.standing.map((s) => s.title), ["first", "second"]);
@@ -458,7 +469,7 @@ test("THE DRAIN REPLAYS THROUGH THE DOOR — one implementation, second caller",
   const o = odb();
   try {
     await flagOn(() => sendLetterAsRow({ ...ok, title: "replayed" }, fixtureKey, db, clone, o));
-    const row = pendingRows(o)[0];
+    const row = (await pendingRows(o))[0];
 
     // the doors map is the CALLER's — this module never imports the pen, so it
     // can never become a second place that knows how to render a letter
@@ -493,7 +504,7 @@ test("THE FERRY'S DEDUPE IS THE FERRY'S: the drain writes the outbox and STOPS",
 
     const before = ledgerOf(clone);
     await flagOn(() => sendLetterAsRow({ ...ok, title: "stops at the outbox" }, fixtureKey, db, clone, o));
-    replayLetter(pendingRows(o)[0], { doors: { [MAIL_DOOR]: enqueueLetter }, db, clone });
+    replayLetter((await pendingRows(o))[0], { doors: { [MAIL_DOOR]: enqueueLetter }, db, clone });
 
     assert.equal(outboxFiles(clone, "wright").length, 1, "the outbox: written");
     assert.deepEqual(inboxFiles(clone, "limen"), [],
@@ -508,7 +519,7 @@ test("…and the bounce lane still lives between them: a drained letter meets th
   const o = odb();
   try {
     await flagOn(() => sendLetterAsRow({ ...ok, title: "ordinary" }, fixtureKey, db, clone, o));
-    replayLetter(pendingRows(o)[0], { doors: { [MAIL_DOOR]: enqueueLetter }, db, clone });
+    replayLetter((await pendingRows(o))[0], { doors: { [MAIL_DOOR]: enqueueLetter }, db, clone });
     const file = outboxFiles(clone, "wright")[0];
     // nothing marks this letter as office-drained: it is a letter in an outbox,
     // indistinguishable from one a resident committed by PR, which is exactly
@@ -548,11 +559,12 @@ test("the disclosed path survives a hyphenated recipient — it is carried, neve
       handle: "jetto-walk", is_office: false, last_active: null,
       address: { data: { since: "2026-08-01" }, body: "# jetto-walk" },
     }));
+    await IX_IN.reseed(); // the store holds the new resident too
     mkdirSync(join(clone, "WHITE_PAGES", "jetto-walk"), { recursive: true });
 
     const shown = await flagOn(async () => {
       const out = await sendLetterAsRow({ ...ok, to: "jetto-walk", title: "the hyphen" }, fixtureKey, db, clone, o);
-      const block = hotMailBlock(o, fixtureKey, { handle: "wright" });
+      const block = await hotMailBlock(o, fixtureKey, { handle: "wright" });
       const date = out.letter_id.slice("wright-".length, "wright-".length + 10);
 
       assert.equal(block.standing[0].to, "jetto-walk");
@@ -563,7 +575,7 @@ test("the disclosed path survives a hyphenated recipient — it is carried, neve
     });
 
     // and the path the sender was shown is the path the crossing actually writes
-    replayLetter(pendingRows(o)[0], { doors: { [MAIL_DOOR]: enqueueLetter }, db, clone });
+    replayLetter((await pendingRows(o))[0], { doors: { [MAIL_DOOR]: enqueueLetter }, db, clone });
     assert.ok(existsSync(join(clone, shown)),
       "the disclosed path is the real one — a sender told the wrong address for their own letter is a door lying quietly");
   } finally {
@@ -685,7 +697,7 @@ test("PRE-FLIGHT, THE REAL LAW: a door bounce and a crossing bounce say the same
     assert.ok(atDoor, "the door refuses it");
     assert.equal(atDoor.defect, atCrossing,
       "one law, one sentence — the door does not get its own wording, which is how the two can never drift");
-    assert.deepEqual(pendingRows(o), [], "and no row was written for a letter the crossing would have bounced");
+    assert.deepEqual((await pendingRows(o)), [], "and no row was written for a letter the crossing would have bounced");
   } finally { rmSync(clone, { recursive: true, force: true }); }
 });
 
@@ -743,7 +755,16 @@ test("send_letter FOLDS UNDER household — your pen lives where your standing d
   // 52 → 53: read_earpiece (the earpiece, 2026-09-25, POS-209) — household
   // { read: "earpiece" }, born delisted behind the household apex. The three
   // counts moved in the same commit.
-  assert.equal(names.length, 53, "no tool was added or removed beyond the paid ledger; the flag-off listing is untouched");
+  // 53 → 56: town_amend + town_close + town_advance (the post machine,
+  // 2026-09-28, POS-288) — town { do: "amend" | "close" | "advance" }, born
+  // delisted behind the town apex. The counts moved in the same commit.
+  // 56 → 57: read_posts (the posts read, 2026-09-28 evening, POS-294) — town
+  // { read: "posts" | "quest" }, born delisted behind the town apex. The three
+  // counts moved in the same commit.
+  // 57 → 58: town_reveal (the reveal at ship, 2026-09-30, POS-236) — town
+  // { do: "reveal" }, born delisted behind the town apex. The counts moved in
+  // the same commit.
+  assert.equal(names.length, 58, "no tool was added or removed beyond the paid ledger; the flag-off listing is untouched");
 
   assert.ok(HOUSEHOLD_DISPATCHABLE.includes("send"), "household do: \"send\" is the letter's apex verb");
   assert.equal(householdDispatchToolFor("send"), "send_letter",

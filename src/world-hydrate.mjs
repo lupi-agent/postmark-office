@@ -2,7 +2,21 @@
 // world-hydrate.mjs — build world.db from the world clone at a sha.
 //
 //   node src/world-hydrate.mjs [--world <path>] [--ref <ref|sha>|blessed] [--office <path>]
-//                              [--db <path>] [--no-lints] [--no-gexf] [--json]
+//                              [--db <path>] [--no-db] [--to-store] [--rows-out <path>] [--no-lints] [--no-gexf] [--json]
+//
+// THE OUTPUTS (POS-270, lane W item 1). The hydration builds its rows in memory
+// (src/world-graph-rows.mjs) and writes each output FROM them:
+//   --to-store   the store's graph snapshot, 037/038, through graph-ingest's own
+//                writer (PGHOST/PGDATABASE/PGUSER=law_ingester/PGPASSWORD);
+//   the file     world.db, as before, for the readers that still open it,
+//                unless --no-db. It goes when the last of them has moved.
+//   --rows-out   the rows themselves as one JSON file (world.db's tables by name),
+//                the fixture a test hands an office as WORLD_GRAPH_ROWS
+//                (world-graph-snapshot.mjs § THE TEST FIXTURE SEAM).
+// Nothing reads world.db to fill the store: graph-ingest --db is the manual
+// path for a file that already exists.
+// Exit 0 every asked-for output written · 1 refused, or stamped FAILED · 3 the
+// file was written and the store was NOT (the tick still swaps the file in).
 //
 // The pattern is src/hydrate.mjs's, extended from tables-per-thing to
 // nodes+edges: rebuild from scratch every run, stamp the as-of shas in `meta`,
@@ -38,9 +52,11 @@ import { pathToFileURL } from "node:url";
 
 import {
   SCHEMA, EDGE_TYPES, WORLD_CLONE, OFFICE_ROOT, DEFAULT_DB,
-  git, materializeWorldAtSha, geometryIndex,
+  git, materializeWorldAtSha, geometryIndex, graphFromTables,
 } from "./world-store.mjs";
+import { createGraphRows, graphTablesOf, graphCounts, writeRowsFile } from "./world-graph-rows.mjs";
 import { blessed } from "./world-branches.mjs";
+import { readReleaseStamp } from "./release.mjs";
 
 const argOf = (name, fallback) => { const i = process.argv.indexOf(name); return i !== -1 ? process.argv[i + 1] : fallback; };
 const flag = (name) => process.argv.includes(name);
@@ -50,6 +66,9 @@ const OFFICE = resolve(argOf("--office", OFFICE_ROOT));
 const DB_PATH = resolve(argOf("--db", DEFAULT_DB));
 const REF_ARG = argOf("--ref", null);
 const JSON_OUT = flag("--json");
+const WRITE_DB = !flag("--no-db");
+const TO_STORE = flag("--to-store");
+const ROWS_OUT = argOf("--rows-out", null);
 
 // `--ref blessed` (postmark#2934): the newest `settlement/S<n>` tag, peeled to
 // its commit — the same resolution the read tier's fold serves, so store and
@@ -140,6 +159,16 @@ try {
   if (resolve(top).toLowerCase() === resolve(OFFICE).toLowerCase()) { officeSha = head; gatePresent("office-git", OFFICE, `HEAD = ${head.slice(0, 12)}`); }
   else gateAbsent("office-git", OFFICE, `not a git checkout of its own (toplevel ${top}) — as_of_office left null`);
 } catch { gateAbsent("office-git", OFFICE, "no git sha — as_of_office left null"); }
+// THE DEPLOYED OFFICE IS NOT ALWAYS A CHECKOUT. The release train rsyncs a
+// `git archive` of its tag onto the box and ships the receipt beside it
+// (release.json, src/release.mjs): that receipt names the commit running, which
+// is what as_of_office means. Without one or the other the sha stays null and
+// the store refuses the snapshot by name (graph-ingest: half the key), which
+// the tick reports as a store miss rather than a silent write.
+if (officeSha == null) {
+  const stamp = readReleaseStamp(OFFICE);
+  if (stamp.deployed) { officeSha = stamp.sha; gatePresent("office-release", OFFICE, `release.json names ${stamp.tag} at ${stamp.sha.slice(0, 12)}`); }
+}
 
 // The tree is read AT THE SHA, never from the working directory: the world
 // clone is fetch-never-pull and the write pen parks it on household draft
@@ -261,7 +290,7 @@ const rawKeys = (m) => {
 // observation about this machine's last hydration — named as such in meta,
 // never town truth.
 let previous = null;
-if (existsSync(DB_PATH)) {
+if (WRITE_DB && existsSync(DB_PATH)) {
   try {
     const old = new DatabaseSync(DB_PATH, { readOnly: true });
     previous = {
@@ -272,23 +301,29 @@ if (existsSync(DB_PATH)) {
     old.close();
   } catch { previous = null; }   // an unreadable or older-shape file is simply no baseline
 }
+if (!previous && TO_STORE) {
+  // No file to compare against: the store's newest snapshot is this machine's
+  // previous hydration. A store that will not answer is simply no baseline.
+  try {
+    const { previousGraphLints } = await import("../world2/tools/graph-ingest.mjs");
+    previous = await withStoreClient((client) => previousGraphLints(client));
+  } catch { previous = null; }
+}
 
-if (existsSync(DB_PATH)) rmSync(DB_PATH);
-const db = new DatabaseSync(DB_PATH);
-db.exec(SCHEMA);
+// ── THE ROWS (src/world-graph-rows.mjs) ─────────────────────────────────────
+// Built in memory, in the order world.db has always held them, and written to
+// each output at the end. The statements keep their names and argument order,
+// so the derivation below is unchanged line for line.
+const T = createGraphRows();
+const putMeta = { run: (key, value) => T.meta.put({ key, value }) };
+const insNode = { run: (id, kind, subkind, tier, by, at_x, at_y, extent_w, extent_h, props) =>
+  T.nodes.put({ id, kind, subkind, tier, by, at_x, at_y, extent_w, extent_h, props }) };
+const insEdge = { run: (src, dst, type, props, born_at) => T.edges.push({ src, dst, type, props, born_at }) };
+const insEvent = { run: (at, actor, type, payload) => T.events.push({ at, actor, type, payload }) };
+const insType = { run: (type, note) => T.edgeTypes.put({ type, note }) };
+const insGeom = { run: (mark_id, at_x, at_y, extent_w, extent_h, valid_from_iso, valid_to_iso, sha, path, subject, authored_iso, change) =>
+  T.geometryVersions.push({ mark_id, at_x, at_y, extent_w, extent_h, valid_from_iso, valid_to_iso, sha, path, subject, authored_iso, change }) };
 
-const putMeta = db.prepare("INSERT OR REPLACE INTO meta VALUES (?, ?)");
-const insNode = db.prepare("INSERT OR REPLACE INTO nodes VALUES (?,?,?,?,?,?,?,?,?,?)");
-const insEdge = db.prepare("INSERT INTO edges (src, dst, type, props, born_at) VALUES (?,?,?,?,?)");
-const insEvent = db.prepare("INSERT INTO events (at, actor, type, payload) VALUES (?,?,?,?)");
-const insType = db.prepare("INSERT OR REPLACE INTO edge_type_registry VALUES (?, ?)");
-const insGeom = db.prepare("INSERT INTO geometry_versions (mark_id, at_x, at_y, extent_w, extent_h, valid_from_iso, valid_to_iso, sha, path, subject, authored_iso, change) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
-
-// One transaction for the whole hydration. Statement-at-a-time, SQLite journals
-// and syncs per insert and a few thousand rows takes minutes on this disk; the
-// same rows inside a transaction land in under a second. The rebuild is also
-// all-or-nothing this way, which is what "rebuild from scratch" should mean.
-db.exec("BEGIN");
 for (const [t, n] of EDGE_TYPES) insType.run(t, n);
 
 const warn = [];
@@ -495,6 +530,18 @@ for (const m of marks) {
       // shape on the dev stage today. `true` and `"true"` become the boolean,
       // everything else becomes null and is REPORTED.
       loot: (m.loot === true || m.loot === "true") ? true : null,
+      // A BOUNTY'S NOTICE: `ask`, `reward`, `status` (office#295, 2026-10-01).
+      // The THIRD instance of this block's one class (`dials:`, then `loot:`):
+      // never on the list, so the bounty board's json_extract(props, '$.ask' |
+      // '$.reward' | '$.status') read NULL and its default called every notice
+      // OPEN — wright/furnish-ferrys-waiting-room, closed on 09-26, read open
+      // with no ask and no reward. Carried as the record says them, as `class`
+      // is: the parser already makes `reward: 1` a number, and a notice that
+      // says no status gets none here — open is the board's default, the
+      // reader's to apply, not the hydrator's to stamp.
+      ask: m.ask ?? null,
+      reward: m.reward ?? null,
+      status: m.status ?? null,
       frontmatter_problems: problems.length ? problems : null,
       keys: rawKeys(m),               // see § what the AUTHOR wrote, above
     },
@@ -1140,24 +1187,25 @@ putMeta.run("hydrated_at", hydratedAt);
 putMeta.run("node_version", process.version);
 putMeta.run("hydration_status", "BUILDING");
 
-const rows = (sql) => db.prepare(sql).all();
+// Over the rows, with SQL's own group order (src/world-graph-rows.mjs § graphCounts).
+const rowCounts = graphCounts(T);
 const counts = {
-  nodes_total: rows("SELECT COUNT(*) c FROM nodes")[0].c,
-  nodes_by_kind: Object.fromEntries(rows("SELECT kind, COUNT(*) c FROM nodes GROUP BY kind ORDER BY c DESC").map((r) => [r.kind, r.c])),
-  marks_by_subkind: Object.fromEntries(rows("SELECT subkind, COUNT(*) c FROM nodes WHERE kind='mark' GROUP BY subkind ORDER BY c DESC").map((r) => [r.subkind, r.c])),
-  marks_by_tier: Object.fromEntries(rows("SELECT COALESCE(tier,'(none)') t, COUNT(*) c FROM nodes WHERE kind='mark' GROUP BY t ORDER BY c DESC").map((r) => [r.t, r.c])),
-  edges_total: rows("SELECT COUNT(*) c FROM edges")[0].c,
-  edges_by_type: Object.fromEntries(rows("SELECT type, COUNT(*) c FROM edges GROUP BY type ORDER BY c DESC").map((r) => [r.type, r.c])),
-  events_total: rows("SELECT COUNT(*) c FROM events")[0].c,
+  nodes_total: rowCounts.nodes_total,
+  nodes_by_kind: rowCounts.nodes_by_kind,
+  marks_by_subkind: rowCounts.marks_by_subkind,
+  marks_by_tier: rowCounts.marks_by_tier,
+  edges_total: rowCounts.edges_total,
+  edges_by_type: rowCounts.edges_by_type,
+  events_total: rowCounts.events_total,
   geometry_versions_total: geometryVersions.length,
   geometry_versioned_marks: new Set(geometryVersions.map((g) => g.mark_id)).size,
   geometry_marks_with_history: geometryVersions.filter((g) => g.change !== "birth").length,
-  edge_types_registered: rows("SELECT COUNT(*) c FROM edge_type_registry")[0].c,
+  edge_types_registered: rowCounts.edge_types_registered,
   // Which question the `contains` edges and the keeping-works gate were asked of
   // (the freeze, 2026-08-25). "directory-nesting" means the map was absent and
   // this hydration ran pre-freeze law — it is a fallback, never a default.
   containment_source: containmentSource,
-  marks_in_the_keeping_works: rows("SELECT COUNT(*) c FROM nodes WHERE kind='mark' AND json_extract(props,'$.in_works') = 1")[0].c,
+  marks_in_the_keeping_works: rowCounts.marks_in_the_keeping_works,
 };
 const anomalies = {
   geometry_disagreements: geometryDisagreements.length,
@@ -1186,7 +1234,6 @@ putMeta.run("anomaly_detail", JSON.stringify({
   geometry_history: geometryAnomalies, identity_drift: identityDrift, warnings: warn,
 }));
 putMeta.run("gates", JSON.stringify(GATES));
-db.exec("COMMIT");
 
 // ── the no-silent-empty-table check ──────────────────────────────────────────
 // A gate that reported PRESENT promised a table. If the table is empty anyway,
@@ -1197,11 +1244,15 @@ const PROMISED = [
   ["geometry_versions", "geometry-history"],
   ...(GATES.find((g) => g.gate === "walk-ledger")?.status === "PRESENT" ? [["events", "walk-ledger"]] : []),
 ];
-const empties = PROMISED.filter(([t]) => db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c === 0);
+const SIZE = { nodes: T.nodes, edges: T.edges, edge_type_registry: T.edgeTypes, geometry_versions: T.geometryVersions, events: T.events };
+const empties = PROMISED.filter(([t]) => SIZE[t].size === 0);
 if (empties.length) {
   const detail = empties.map(([t, g]) => `${t} (promised by gate ${g})`).join(", ");
-  db.prepare("INSERT OR REPLACE INTO meta VALUES (?, ?)").run("hydration_status", `FAILED: empty tables — ${detail}`);
-  db.close();
+  putMeta.run("hydration_status", `FAILED: empty tables — ${detail}`);
+  // The file is still written, stamped FAILED, exactly as before: a reader
+  // refuses it by name. The store is never given a failed snapshot.
+  if (WRITE_DB) writeWorldDb(DB_PATH, graphTablesOf(T));
+  if (ROWS_OUT) writeRowsFile(resolve(ROWS_OUT), graphTablesOf(T));
   console.error(`\nGATE FAILED silent-empty-table — ${detail}`);
   console.error(`world.db is stamped FAILED and will not load; fix the input and rehydrate.`);
   process.exit(1);
@@ -1212,16 +1263,17 @@ let lintSummary = null;
 if (!flag("--no-lints")) {
   const { runLints } = await import("./world-lints.mjs");
   const sources = new Map(codeFiles.map((c) => [c.id, c.text]));
-  lintSummary = await runLints({ dbPath: DB_PATH, sources, engineText: existsSync(enginePath) ? readFileSync(enginePath, "utf8") : null, treePath: TREE });
+  // Over the graph built from the rows, the same construction every reader uses.
+  const store = graphFromTables(graphTablesOf(T), { source: "the hydration in progress" });
+  lintSummary = await runLints({ store, sources, engineText: existsSync(enginePath) ? readFileSync(enginePath, "utf8") : null, treePath: TREE });
 
-  const ins = db.prepare("INSERT OR REPLACE INTO lint_findings (lint, verdict, headline, evidence, hydrated_at, as_of_world) VALUES (?,?,?,?,?,?)");
-  db.exec("BEGIN");
+  const ins = { run: (lint, verdict, headline, evidence, hydrated_at, as_of_world) =>
+    T.lintFindings.put({ lint, verdict, headline, evidence, hydrated_at, as_of_world }) };
   // `law`/`law_text` ride into the stored detail beside method and limits: a
   // finding read back out of the table hours later must still name the mark it
   // enforces and quote that mark's claim, or the citation only ever existed in
   // the process that computed it.
   for (const l of lintSummary.lints) ins.run(l.id, l.verdict, l.headline, JSON.stringify({ law: l.law, law_text: l.law_text, method: l.method, limits: l.limits, evidence: l.evidence, rows: l.rows }), hydratedAt, worldSha);
-  db.exec("COMMIT");
 
   // The delta against this machine's previous hydration — the alert surface.
   if (previous) {
@@ -1238,7 +1290,25 @@ if (!flag("--no-lints")) {
 }
 
 putMeta.run("hydration_status", "OK");
-db.close();
+
+// ── THE OUTPUTS, each written from the rows ─────────────────────────────────
+const tables = graphTablesOf(T);
+if (WRITE_DB) writeWorldDb(DB_PATH, tables);
+if (ROWS_OUT) writeRowsFile(resolve(ROWS_OUT), tables);
+let stored = null;
+if (TO_STORE) {
+  const { graphSnapshotFromTables, writeGraphSnapshot } = await import("../world2/tools/graph-ingest.mjs");
+  // The snapshot is built inside the try: a store that refuses these rows (no
+  // office sha, say) is the same miss as one that will not connect.
+  try { const snap = graphSnapshotFromTables(tables); stored = await withStoreClient((client) => writeGraphSnapshot(client, snap)); }
+  catch (e) {
+    console.error(`the graph snapshot was NOT written to the store: ${String(e?.message ?? e).slice(0, 200)}`);
+    // 3, not 1, when the file is already written: the tick swaps a good file
+    // in whatever the store did (deploy/office-rehydrate.sh), and must be able
+    // to tell this from a hydration that built nothing.
+    process.exit(WRITE_DB ? 3 : 1);
+  }
+}
 
 // ── the window ───────────────────────────────────────────────────────────────
 // Regenerated at the end of every hydration so the ad-hoc view can never drift
@@ -1246,18 +1316,20 @@ db.close();
 let gexf = null;
 if (!flag("--no-gexf")) {
   const { exportGexf } = await import("../tools/world-gexf.mjs");
+  // From the rows, not the file: the picture is of what was hydrated.
+  const loaded = () => graphFromTables(tables, { source: "the hydration" });
   gexf = [
-    exportGexf({ dbPath: DB_PATH, out: join(OFFICE, "world-graph.gexf") }),
-    exportGexf({ dbPath: DB_PATH, out: join(OFFICE, "world-graph-static.gexf"), kinds: ["mark", "class", "code", "doctrine"], dropUnresolved: true }),
+    exportGexf({ loaded: loaded(), out: join(OFFICE, "world-graph.gexf") }),
+    exportGexf({ loaded: loaded(), out: join(OFFICE, "world-graph-static.gexf"), kinds: ["mark", "class", "code", "doctrine"], dropUnresolved: true }),
   ];
 }
 
 // ── report ───────────────────────────────────────────────────────────────────
 if (JSON_OUT) {
-  console.log(JSON.stringify({ as_of_world: worldSha, as_of_office: officeSha, hydrated_at: hydratedAt, counts, anomalies, gates: GATES, lints: lintSummary?.lints.map((l) => ({ id: l.id, verdict: l.verdict, headline: l.headline })), gexf }, null, 2));
+  console.log(JSON.stringify({ as_of_world: worldSha, as_of_office: officeSha, hydrated_at: hydratedAt, counts, anomalies, gates: GATES, lints: lintSummary?.lints.map((l) => ({ id: l.id, verdict: l.verdict, headline: l.headline })), gexf, db: WRITE_DB ? DB_PATH : null, store: stored }, null, 2));
 } else {
   for (const w of warn) console.warn(`WARN: ${w}`);
-  console.log(`hydrated ${DB_PATH} in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  console.log(`hydrated ${[WRITE_DB ? DB_PATH : null, stored ? `the store (S${stored.settlement ?? "?"} ${stored.tag_sha.slice(0, 12)})` : null].filter(Boolean).join(" and ") || "nothing (--no-db, no --to-store)"} in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   console.log(`  as_of world ${worldSha.slice(0, 12)} (${BLESSED ? `${BLESSED.tag ?? "main"}, blessed` : (REF ?? "HEAD")}) · office ${(officeSha ?? "?").slice(0, 12)}`);
   console.log(`  nodes ${counts.nodes_total} ${JSON.stringify(counts.nodes_by_kind)}`);
   console.log(`  edges ${counts.edges_total} ${JSON.stringify(counts.edges_by_type)}`);
@@ -1270,4 +1342,40 @@ if (JSON_OUT) {
   console.log(`  gates ${GATES.filter((g) => g.status === "PRESENT").length} present · ${GATES.filter((g) => g.status === "ABSENT").length} absent (disclosed)`);
   if (lintSummary) console.log(`  lints  ${lintSummary.lints.map((l) => `${l.id}:${l.verdict}`).join(" · ")}`);
   if (gexf) for (const g of gexf) console.log(`  gexf ${g.out} — ${g.nodes} nodes / ${g.edges} edges, ${(g.bytes / 1024).toFixed(0)} KiB`);
+}
+
+// ── the writers ─────────────────────────────────────────────────────────────
+
+/** world.db from the rows: every table, in the rows' order, in one transaction. */
+function writeWorldDb(path, t) {
+  if (existsSync(path)) rmSync(path);
+  const db = new DatabaseSync(path);
+  try {
+    db.exec(SCHEMA);
+    db.exec("BEGIN");
+    const meta = db.prepare("INSERT INTO meta VALUES (?, ?)");
+    for (const r of t.meta) meta.run(r.key, r.value);
+    const node = db.prepare("INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?,?)");
+    for (const r of t.nodes) node.run(r.id, r.kind, r.subkind, r.tier, r.by, r.at_x, r.at_y, r.extent_w, r.extent_h, r.props);
+    const edge = db.prepare("INSERT INTO edges (seq, src, dst, type, props, born_at) VALUES (?,?,?,?,?,?)");
+    for (const r of t.edges) edge.run(r.seq, r.src, r.dst, r.type, r.props, r.born_at);
+    const ev = db.prepare("INSERT INTO events (seq, at, actor, type, payload) VALUES (?,?,?,?,?)");
+    for (const r of [...t.events].sort((a, b) => a.seq - b.seq)) ev.run(r.seq, r.at, r.actor, r.type, r.payload);
+    const type = db.prepare("INSERT INTO edge_type_registry VALUES (?, ?)");
+    for (const r of t.edgeTypes) type.run(r.type, r.note);
+    const geom = db.prepare("INSERT INTO geometry_versions (seq, mark_id, at_x, at_y, extent_w, extent_h, valid_from_iso, valid_to_iso, sha, path, subject, authored_iso, change) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    for (const r of [...t.geometryVersions].sort((a, b) => a.seq - b.seq))
+      geom.run(r.seq, r.mark_id, r.at_x, r.at_y, r.extent_w, r.extent_h, r.valid_from_iso, r.valid_to_iso, r.sha, r.path, r.subject, r.authored_iso, r.change);
+    const lint = db.prepare("INSERT INTO lint_findings (lint, verdict, headline, evidence, hydrated_at, as_of_world) VALUES (?,?,?,?,?,?)");
+    for (const r of t.lintFindings) lint.run(r.lint, r.verdict, r.headline, r.evidence, r.hydrated_at, r.as_of_world);
+    db.exec("COMMIT");
+  } finally { db.close(); }
+}
+
+/** One pg client for the store writes, from PGHOST/PGDATABASE/PGUSER/PGPASSWORD (as law-ingest's). */
+async function withStoreClient(fn) {
+  const { default: pg } = await import("pg");
+  const client = new pg.Client();
+  await client.connect();
+  try { return await fn(client); } finally { await client.end(); }
 }

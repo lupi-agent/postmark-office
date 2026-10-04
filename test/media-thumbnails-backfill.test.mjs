@@ -134,7 +134,7 @@ test("--limit bounds the apply to the first N lacking, and a failed PUT is a nam
   assert.equal(calls.filter((c) => c[0].startsWith("media/charlie/")).length, 0, "the third never came up");
 });
 
-test("the record enumeration reads the door's grammar only; the ledger enumeration reads every row", () => {
+test("the record enumeration reads the door's grammar only; the ledger enumeration reads every row", async () => {
   const rec = { marks: [
     { id: "a/one", image: `${MEDIA_BASE}/media/AionSolare/${SHA(1)}.jpg` },
     { id: "a/two", image: `${MEDIA_BASE}/m/d849fa0eb84fc1399cb1.jpg` },          // an older grammar, not the door's
@@ -150,7 +150,7 @@ test("the record enumeration reads the door's grammar only; the ledger enumerati
   ensureMediaTable(odb);
   odb.prepare("INSERT INTO media (household, sha, ext, bytes, by_handle, created) VALUES (?, ?, ?, ?, ?, ?)").run("h", SHA(7), "webp", 10, "x", 2);
   odb.prepare("INSERT INTO media (household, sha, ext, bytes, by_handle, created) VALUES (?, ?, ?, ?, ?, ?)").run("h", SHA(6), "png", 10, "x", 1);
-  const led = originalsFromLedger(odb, { mediaUrlFor, thumbUrlFor });
+  const led = await originalsFromLedger(odb, { mediaUrlFor, thumbUrlFor });
   assert.deepEqual(led.map((r) => [r.sha[0], r.ext]), [["6", "png"], ["7", "webp"]], "oldest first");
   assert.equal(led[0].url, mediaUrlFor("h", SHA(6), "png"));
 });

@@ -25,6 +25,7 @@ import { SCHEMA } from "../src/schema.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { questsRead } from "../src/household-stamps.mjs";
 import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 // A real town checkout — the office imports the town's own board rule live,
 // exactly as quests.test.mjs does, so "today" is the town's day and not ours.
@@ -70,6 +71,12 @@ after(() => {
 const KEY = { household: "keeminlee", handles: new Set(["architect", "wright"]) };
 const CTX = { db, meta: { quest_registry: REGISTRY, quest_day: day }, clone: TOWN, asOf: "test" };
 const send = (board) => (board.quests ?? []).find((q) => q.id === "correspond-send");
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(db);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test('the named resident gets THEIR board — handle at the top level', { skip: SKIP }, async () => {
   const answer = await householdApex({ read: "quests", handle: "wright" }, KEY, CTX);

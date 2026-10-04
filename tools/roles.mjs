@@ -58,6 +58,15 @@
 // pass and does not any more. A revoked household vanishes from the first list
 // entirely; if `list` only printed standing, the most interesting fact the
 // registry holds would be invisible from the operator's only view of it.
+//
+// ── WHICH BOOK (POS-271) ───────────────────────────────────────────────────
+//
+// With OFFICE_PAPERWORK_STORE=1 and the store's WORLD2_PG / WORLD2_PG_URL in
+// this shell, the tool writes the store's office_roles (and --db's file after
+// it, as the office's own mirror does). Without them it writes the file only.
+// An office switched to the store reads only the store, so a grant written to
+// the file alone would grant nobody: every run prints which book it wrote, on
+// its first line, so the operator sees that before anything else.
 
 import { resolve, join, dirname } from "node:path";
 import { userInfo } from "node:os";
@@ -65,9 +74,10 @@ import { readFileSync, existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 import {
-  openRolesDb, DEFAULT_ROLES_DB, ROLE_SUBSCRIBER,
+  rolesSchema, DEFAULT_ROLES_DB, ROLE_SUBSCRIBER,
   grantRole, revokeRole, listRoles, auditTrail, normalizeSubject, staleRows,
 } from "../src/roles.mjs";
+import { openPaper, paperworkStoreOn } from "../src/paperwork.mjs";
 
 const argOf = (name, fallback = null) => {
   const i = process.argv.indexOf(name);
@@ -130,14 +140,31 @@ function pinsIndex(clonePath) {
   } catch { return { byLogin, source: null }; }
 }
 
-/** Logins the office has actually seen sign in. */
-function tokenIds(oauthDbPath, login) {
+/**
+ * Logins the office has actually seen sign in.
+ *
+ * THE SAME SWITCH AS THE REGISTRY (POS-271). With OFFICE_PAPERWORK_STORE=1 the
+ * sign-ins are the store's `oauth_tokens`, and oauth.db is only the rollback's
+ * mirror, so the lookup asks the store. A store that cannot answer is said, not
+ * read as "nobody signed in": that would turn an outage into "this login cannot
+ * be resolved", which sends the operator looking for a typo. Unswitched, the
+ * file is read as it always was, and an absent or unreadable file is an empty
+ * answer, as before.
+ */
+async function tokenIds(oauthDbPath, login) {
+  const SQL = "SELECT DISTINCT gh_id FROM tokens WHERE lower(gh_login) = ? AND gh_id IS NOT NULL";
+  if (paperworkStoreOn()) {
+    const paper = await openPaper(oauthDbPath, { readOnly: true }).catch((e) =>
+      die(`could not reach the store's sign-ins (OFFICE_PAPERWORK_STORE=1):\n  ${String(e?.message ?? e)}`));
+    const rows = await paper.all(SQL, login).catch((e) =>
+      die(`could not read the store's sign-ins (OFFICE_PAPERWORK_STORE=1):\n  ${String(e?.message ?? e)}`));
+    return new Set(rows.map((r) => String(r.gh_id)));
+  }
   if (!existsSync(oauthDbPath)) return new Set();
   let db;
   try {
     db = new DatabaseSync(oauthDbPath, { readOnly: true });
-    const rows = db.prepare("SELECT DISTINCT gh_id FROM tokens WHERE lower(gh_login) = ? AND gh_id IS NOT NULL").all(login);
-    return new Set(rows.map((r) => String(r.gh_id)));
+    return new Set(db.prepare(SQL).all(login).map((r) => String(r.gh_id)));
   } catch { return new Set(); }
   finally { try { db?.close(); } catch { /* nothing to close */ } }
 }
@@ -146,7 +173,7 @@ function tokenIds(oauthDbPath, login) {
  * Turn what the operator typed into a gh_id, or die explaining why not.
  * Returns { subject, login }.
  */
-function resolveSubject({ subject, ghId, login, clone, oauthDb }) {
+async function resolveSubject({ subject, ghId, login, clone, oauthDb }) {
   const given = [ghId && "--gh-id", login && "--login", subject && "--subject"].filter(Boolean);
   if (given.length === 0) die(`this command needs a subject: --subject <login|id>, or --gh-id <n>, or --login <name>\n\n${USAGE}`);
   if ((ghId && login) || (ghId && subject) || (login && subject))
@@ -162,7 +189,7 @@ function resolveSubject({ subject, ghId, login, clone, oauthDb }) {
   const asName = raw.toLowerCase();
   const { byLogin, source } = pinsIndex(clone);
   const fromPins = byLogin.get(asName) ?? new Set();
-  const fromTokens = tokenIds(oauthDb, asName);
+  const fromTokens = await tokenIds(oauthDb, asName);
   const found = new Set([...fromPins, ...fromTokens]);
 
   // A GitHub login MAY be all digits, so a bare --subject that looks like an id
@@ -203,7 +230,7 @@ function resolveActor() {
   return null;
 }
 
-function main() {
+async function main() {
   if (!CMD || flag("--help") || flag("-h") || CMD === "help") { console.log(USAGE); return; }
   if (!["list", "grant", "revoke"].includes(CMD)) die(`unknown command "${CMD}"\n\n${USAGE}`);
 
@@ -213,8 +240,9 @@ function main() {
   // path failed and what the two likely causes are.
   let rdb;
   try {
-    rdb = openRolesDb(DB_PATH);
+    rdb = await openPaper(DB_PATH, { schema: rolesSchema });
   } catch (e) {
+    if (paperworkStoreOn()) die(`could not reach the store's registry (OFFICE_PAPERWORK_STORE=1):\n  ${String(e?.message ?? e)}`);
     die(`could not open the registry at:\n  ${DB_PATH}\n\n` +
       `${String(e?.message ?? e)}\n\n` +
       `Usually one of two things: the parent directory does not exist (SQLite creates the\n` +
@@ -227,24 +255,24 @@ function main() {
     // rather than killing the command — `list` is how an operator finds out
     // what is true, and it should still answer.
     const filter = (SUBJECT || GH_ID || LOGIN)
-      ? resolveSubject({ subject: SUBJECT, ghId: GH_ID, login: LOGIN, clone: CLONE, oauthDb: OAUTH_DB }).subject
+      ? (await resolveSubject({ subject: SUBJECT, ghId: GH_ID, login: LOGIN, clone: CLONE, oauthDb: OAUTH_DB })).subject
       : null;
-    const standing = listRoles(rdb, { role: argOf("--role", null) });
-    const trail = auditTrail(rdb, {
+    const standing = await listRoles(rdb, { role: argOf("--role", null) });
+    const trail = await auditTrail(rdb, {
       subject: filter,
       limit: Math.max(1, Number(argOf("--limit", 50)) || 50),
     });
-    const stale = staleRows(rdb);
+    const stale = await staleRows(rdb);
     const staleKeys = new Set(stale.map((r) => `${r.subject} ${r.role}`));
     // STANDING says "who may pass right now", so a row that CANNOT pass must not
     // appear under it. Stale rows get their own section that says what they are.
     const rows = (filter ? standing.filter((r) => r.subject === filter) : standing)
       .filter((r) => !staleKeys.has(`${r.subject} ${r.role}`));
 
-    if (JSON_OUT) { console.log(JSON.stringify({ db: DB_PATH, standing: rows, audit: trail, stale }, null, 1)); return; }
+    if (JSON_OUT) { console.log(JSON.stringify({ db: BOOK(rdb), standing: rows, audit: trail, stale }, null, 1)); return; }
 
     const who = (r) => `${r.subject}${r.login ? ` (${r.login})` : ""}`;
-    console.log(`registry: ${DB_PATH}\n`);
+    console.log(`registry: ${BOOK(rdb)}\n`);
     console.log(`STANDING — who may pass right now (${rows.length})`);
     if (!rows.length) console.log("  (nobody holds a role)");
     for (const r of rows)
@@ -268,7 +296,7 @@ function main() {
   }
 
   // grant / revoke
-  const { subject, login } = resolveSubject({
+  const { subject, login } = await resolveSubject({
     subject: SUBJECT, ghId: GH_ID, login: LOGIN, clone: CLONE, oauthDb: OAUTH_DB,
   });
   const actor = resolveActor();
@@ -279,10 +307,11 @@ function main() {
   );
 
   const fn = CMD === "grant" ? grantRole : revokeRole;
-  const out = fn(rdb, { subject, role: ROLE, actor, note: NOTE, ...(CMD === "grant" ? { login } : {}) });
+  const out = await fn(rdb, { subject, role: ROLE, actor, note: NOTE, ...(CMD === "grant" ? { login } : {}) });
   const label = out.login ? `${out.subject} (${out.login})` : out.subject;
 
-  if (JSON_OUT) { console.log(JSON.stringify({ db: DB_PATH, action: CMD, ...out }, null, 1)); return; }
+  if (JSON_OUT) { console.log(JSON.stringify({ db: BOOK(rdb), action: CMD, ...out }, null, 1)); return; }
+  console.log(`registry: ${BOOK(rdb)}`);
   if (CMD === "grant") {
     console.log(`granted "${out.role}" to ${label} — by ${actor} at ${out.at}`);
     console.log("keyed on the GitHub account id, so it survives a login change.");
@@ -295,4 +324,10 @@ function main() {
   }
 }
 
-main();
+// The book this run wrote, said in full: the store, with the file it mirrors
+// to, or the file alone.
+const BOOK = (paper) => paper.onStore
+  ? `the store (office_roles)${paper.file ? `, mirrored to ${DB_PATH}` : ""}`
+  : DB_PATH;
+
+main().then(() => process.exit(0), (e) => die(String(e?.message ?? e)));

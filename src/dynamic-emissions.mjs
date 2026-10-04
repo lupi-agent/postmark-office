@@ -32,7 +32,7 @@
 // conversations page and a different set of threads.
 
 import { clusterVoices } from "./voices.mjs";
-import { emissionsEnabled, openDynamic, getMeta, putMeta, soundClass, soundMs } from "./dynamic-store.mjs";
+import { getMeta, putMeta, soundMs } from "./dynamic-store.mjs";
 
 export const SOUND = "sound";
 
@@ -108,42 +108,10 @@ export function recordEmission(db, voice, cls) {
   return row;
 }
 
-/**
- * The say path's dual-write, as `voices.mjs`'s `onSpoke` hook wants it.
- *
- * THE FLAG-OFF PATH IS THE FIRST LINE, exactly as `servedRead`'s is: with
- * WORLD_EMISSIONS unset nothing is opened, nothing is stat'd, nothing is
- * derived. The voices log — the ruled durable operator record — is written by
- * `voices.mjs` before this is ever called and is not touched here.
- *
- * It never throws. The log is the record and the conversation is the town's;
- * a box that cannot write the emission still lets the town talk, loudly on the
- * operator's console.
- */
-export function emissionFromVoice(voice, { standAs = null, repo = undefined } = {}) {
-  if (!emissionsEnabled()) return null;
-  let db = null;
-  try {
-    const cls = soundClass(repo ? { repo } : {});
-    db = openDynamic();
-    return recordEmission(db, {
-      class: SOUND,
-      source: standAs ?? voice.handle,
-      spoken_by: voice.handle,
-      text: voice.text,
-      at: voice.at,
-      x: voice.x,
-      y: voice.y,
-      place: voice.place ?? null,
-      aboard: Boolean(voice.aboard),
-    }, cls);
-  } catch (e) {
-    console.error(`[emissions] the dynamic store refused a voice (${String(e?.message ?? e).slice(0, 160)}) — the voices log is unaffected`);
-    return null;
-  } finally {
-    try { db?.close(); } catch { /* already gone */ }
-  }
-}
+// The say path's dual-write (emissionFromVoice) is gone with the store
+// (POS-269): the say's act is the emission, and the crossing-save renders its
+// lines from the acts (src/save-emissions.mjs). What remains here are readers
+// over a store a caller already holds — the shadow-era falsifiers' oracles.
 
 // ── reads ────────────────────────────────────────────────────────────────────
 

@@ -52,6 +52,7 @@
 
 import { markClass } from "./world-classes.mjs";
 import { worldStakeViaOffice, worldUnstakeViaOffice, worldStakeRead } from "./world-stake.mjs";
+import { BUG_NO_STAKE } from "./bugs.mjs";
 
 const bounce = (code, defect, hint, extra = {}) => ({ error: "bounce", code, defect, hint, ...extra });
 
@@ -148,10 +149,25 @@ export function laneBounce(mark, { worldDb = null } = {}) {
   return null;
 }
 
+// A BUG TAKES NO STAKE (Keemin, 2026-09-29; bugs.mjs § NO STAKE). A bug is a
+// post, not a mark, so the lane guard above answers "no mark" (or, with no
+// world store, "could not check") for one — true, and no help to a caller
+// holding a bug's id. When the guard finds no mark and the id is a bug post,
+// the refusal is the bug's, by name. Asked only on that branch, so a stake on a
+// real mark, or a mark of the wrong class, never reads the posts table.
+async function guarded(mark, opts) {
+  const refused = laneBounce(mark, opts);
+  if (!refused || refused.code === 422) return refused;
+  const isBug = opts.isBugPost ?? (await import("./events-store.mjs")).isBugPost;
+  if (!(await isBug(mark))) return refused;
+  const e = BUG_NO_STAKE(mark);
+  return bounce(e.code, e.defect, e.hint, { class: "bug" });
+}
+
 /** `town { do: "stake" }` — the lane guard, then the world door's own act. */
 export async function townStake(args = {}, key = null, opts = {}) {
   if (!args.mark) return bounce(422, "which mark?", `pass mark: '<by>/<slug>' — a ${STAKE_LANES.join(" or ")} mark, as the board and the tank show them`);
-  const refused = laneBounce(args.mark, opts);
+  const refused = await guarded(args.mark, opts);
   if (refused) return refused;
   // EVERY OTHER RULE IS THE WORLD DOOR'S. The stamps check, the balance clip,
   // the mark-existence look into your own sketchbook, the ferry's lock, the
@@ -165,7 +181,7 @@ export async function townStake(args = {}, key = null, opts = {}) {
 /** `town { do: "unstake" }` — the same guard, the same one owner. */
 export async function townUnstake(args = {}, key = null, opts = {}) {
   if (!args.mark) return bounce(422, "which mark?", `pass mark: '<by>/<slug>' — the ${STAKE_LANES.join(" or ")} mark you are taking your stamps back out of`);
-  const refused = laneBounce(args.mark, opts);
+  const refused = await guarded(args.mark, opts);
   if (refused) return refused;
   return worldUnstakeViaOffice(args, key);
 }
@@ -189,7 +205,7 @@ export async function townStakeRead(args = {}, opts = {}) {
   if (!args.mark)
     return bounce(422, "which mark?",
       `name a mark — town { read: "stake", args: { mark: "<by>/<slug>" } } — and the escrow behind it answers`);
-  const refused = laneBounce(args.mark, opts);
+  const refused = await guarded(args.mark, opts);
   if (refused) return refused;
   return worldStakeRead(args);
 }

@@ -379,11 +379,9 @@ export async function guardedDraftsForKey(repo, key) {
  * refusal text says a skipped holding act "would answer with the WRONG RESIDENT
  * holding a thing, which is the one answer this door exists to get right."
  */
-export async function guardedAttachments(db, { until = null } = {}) {
-  if (!guardsFlipped()) {
-    const { readAttachments } = await import("./dynamic-entities.mjs");
-    return readAttachments(db, { until });
-  }
+export async function guardedAttachments({ until = null } = {}) {
+  // No sqlite arm (POS-269): the hold door refuses off the hold lane before it
+  // asks, and dynamic.db's attachments table is retired with the file.
   return refusing("holder", async () =>
     reading(async (client) => {
       const { rows } = await port.pgAttachmentsFor(client, { until });
@@ -560,6 +558,50 @@ export async function storeDepartureRows() {
     // still has something to say with era one filtered out: ids must ascend.
     return live.departureRecords(rows);
   });
+}
+
+/**
+ * ERA ONE FROM THE STORE (POS-302 PR 3): the frozen walk ledger's lines as the
+ * backfill carried them into `acts` (`payload._ledger`), in the ledger's own
+ * order, each in `parseWalkLedger`'s shape (`live-reads.mjs § ledgerRecordOf`).
+ *
+ * It is NOT the whole ledger: `ledger-backfill.mjs § partitionWalks` carried
+ * only the lines older than the journal's first row, because the rest were
+ * already in the store as journal rows. So it equals the git ledger only
+ * together with the store's other eras, which is how the falsifier holds it.
+ */
+export async function storeLedgerDepartures() {
+  const off = unconfigured("departures");
+  if (off) throw off;
+  return reading(async (client) => {
+    const live = await import("../world2/tools/live-reads.mjs");
+    const { rows } = await client.query(
+      `SELECT id, at, crossing, actor, action, payload FROM acts
+        WHERE action = ANY($1) AND payload->>'_ledger' IS NOT NULL ${live.DEPARTURE_ORDER_SQL}`,
+      [live.DEPARTURE_ACTIONS]);
+    return live.departureRecords(rows).records.map(live.ledgerRecordOf);
+  });
+}
+
+/**
+ * THE POSITIONS SNAPSHOT AND THE ACTS SINCE IT (POS-302), in ONE read-only
+ * transaction, so the snapshot, the recount and the delta are one view of the
+ * record.
+ *
+ * `position-snapshot.mjs § snapshotRead` is the read. With `atMs`, the newest
+ * snapshot whose every store-era record is at or before it (a snapshot taken on
+ * the keep tick can hold acts that landed after its window closed, so a past
+ * read at the close takes the snapshot before it); with none, the newest.
+ *
+ * Null when there is nothing to read from: the office is not pointed at the
+ * record, 053 is not applied, or no snapshot qualifies. The caller then reads
+ * the whole record, as it did before 053, and says nothing: no snapshot yet is
+ * the ordinary state of a fresh store, not a disagreement.
+ */
+export async function storeDepartureSnapshot({ atMs = null } = {}) {
+  if (!world2Enabled()) return null;
+  const { snapshotRead } = await import("./position-snapshot.mjs");
+  return reading(async (client) => snapshotRead(client, { atMs }));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

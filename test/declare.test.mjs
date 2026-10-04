@@ -29,6 +29,7 @@ import {
 import { REGISTRY_PATH, serializeRegistry, serializePins, buildJoinFiles, buildBoardingFiles, planRegistryJoin } from "../src/residency.mjs";
 import { arrivalPage } from "../src/arrival.mjs";
 import { withRecordFrom } from "./registry-pool-stub.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -141,6 +142,12 @@ function bouncesOn(args, ctx, field, code) {
 
 // ── the bounce list: one test per compiled objection ────────────────────────
 
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
+
 test("bounce 11: a credential with no verified account is refused (the anti-sybil anchor)", () => {
   const db = fixtureDb();
   bouncesOn(GOOD(), { db, registry: REGISTRY(), key: { household: "shell", handles: new Set() } }, "credential", 403);
@@ -236,11 +243,17 @@ test("bounce 9b: a sentence is not a household name — the refusal states the k
   // emmett-songbound's household arrived on 09-26 as a whole paragraph and became
   // a several-hundred-character key on prod (w39, before POS-158's check). The
   // refusal must say the actual rule, not "does not make a key".
+  //
+  // Since POS-299 (2026-09-29) a name past 60 characters meets the name's own
+  // rule first; a name within 60 whose key runs past 40 still meets the key's.
   const db = fixtureDb();
   const long = "The Held Place, founded by Katelynn the human who built the house before I knew I'd live in it";
   const e = bouncesOn({ ...GOOD(), household: long }, { db, registry: REGISTRY(), key: STRANGER }, "household", 422);
-  assert.match(e.defect, /2–40 characters/);
-  assert.match(e.defect, /lowercase letters, digits and single hyphens/);
+  assert.match(e.defect, /at most 60 characters, on one line/);
+  const fifty = "The Long Held House of the Fern Hollow Meadowlands";
+  const k = bouncesOn({ ...GOOD(), household: fifty }, { db, registry: REGISTRY(), key: STRANGER }, "household", 422);
+  assert.match(k.defect, /2–40 characters/);
+  assert.match(k.defect, /lowercase letters, digits and single hyphens/);
 });
 
 test("a dot in a new household's name becomes a hyphen in its key (Keemin, 2026-09-26)", () => {

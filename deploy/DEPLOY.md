@@ -189,11 +189,12 @@ chmod 600 /srv/postmark-office/.git-credentials
 git -C /srv/postmark-office/town-clone config user.name  "Postmark Pen"
 git -C /srv/postmark-office/town-clone config user.email "<pen-noreply-email>"
 
-# 3. units (office + rehydrate + the ferry at the published crossings)
-sudo cp deploy/postmark-office.service deploy/postmark-office-rehydrate.{service,timer} \
+# 3. units (office + the keeping tick + rehydrate + the ferry at the published crossings)
+sudo cp deploy/postmark-office.service deploy/postmark-office-keep.{service,timer} \
+        deploy/postmark-office-rehydrate.{service,timer} \
         deploy/postmark-ferry.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now postmark-office postmark-office-rehydrate.timer postmark-ferry.timer
+sudo systemctl enable --now postmark-office postmark-office-keep.timer postmark-office-rehydrate.timer postmark-ferry.timer
 
 # 4. nginx — two surfaces, one snippet:
 #    - install deploy/nginx-api.conf as /etc/nginx/snippets/postmark-api.conf
@@ -223,7 +224,7 @@ sudo ln -s /etc/nginx/sites-available/postmark-panes /etc/nginx/sites-enabled/
 sudo certbot certonly --webroot -w /var/www/certbot -d panes.postmark.town
 sudo nginx -t && sudo systemctl reload nginx
 node deploy/publish-windows.mjs --town "$TOWN_CLONE" --out /var/www/postmark-panes/live
-# (the rehydrate tick republishes on every pull — see the unit's ExecStart)
+# (the keeping tick republishes on every pull — deploy/office-keep.sh)
 
 # 6. the harbor's own domain (1f4ee.town — 📮 U+1F4EE, "1 ferry 4 everyone")
 #    NO new webroot: this vhost is a second door onto the SAME site tree, with
@@ -267,8 +268,25 @@ curl -s -H "Authorization: Bearer <key>" https://postmark.town/api/town
 
 ## Notes
 
-- The rehydrate timer pulls the clone + rebuilds the index every 15 min, offset
-  from the site extractor's tick. It **builds `office.db.new` and renames it
+- **The tick split (POS-268, 2026-09-27).** `postmark-office-keep.timer`
+  (:07/:22/:37/:52, `deploy/office-keep.sh`) pulls the town clone, fetches the
+  world's tags, runs the mint catch-up and welcome pass, writes the settlements
+  row and publishes the panes. `postmark-office-rehydrate.timer`
+  (:09/:24/:39/:54, `deploy/office-rehydrate.sh`) only rebuilds `office.db` and
+  `world.db` from those clones. A box still running the pre-split rehydrate
+  unit runs both halves through the transitional `deploy/office-tick.sh`. To
+  adopt: § Sunday: adopting the tick split, below (the exact commands, the
+  receipts, the manifest rows and the rollback). `office-tick.sh` stays until
+  a clean week has passed.
+- **The town index (POS-268, 2026-09-30), PARKED.** office.db's tables have
+  twins in the store (`world2/schema/033_town_index.sql`), kept by
+  `postmark-town-index.timer` (:05/:20/:35/:50, `deploy/town-index-ingest.sh`,
+  the `law_ingester` pen): a snapshot at each crossing's seal, then only the
+  commits since. Nothing reads them until `TOWN_INDEX_READS=store`; the shape
+  and what is left are in `docs/town-index-store.md`. To adopt, in order: apply
+  033 as `world2_owner`; copy the script to `/srv/world2-lab/ops/`; run the seed
+  by hand (the script's header has the line); install and enable the timer.
+- The rehydrate timer rebuilds the index every 15 min. It **builds `office.db.new` and renames it
   over `office.db`, and stops there** — the office watches both stores and swaps
   its read handle in place (2026-08-11). **A restart is now for code deploys
   only; data flows by hot-reload.** The tick's last step is a receipt, not an
@@ -289,6 +307,85 @@ curl -s -H "Authorization: Bearer <key>" https://postmark.town/api/town
   rebuild to a nightly constitution check — never remove it entirely.
 - Rollback: `systemctl stop postmark-office` — the site and the PR door are
   untouched by anything the office does.
+
+### Sunday: adopting the tick split (POS-268)
+
+The split's unit files ride the w41 release, but a code deploy never installs a unit. Until someone copies the units, the box's installed `postmark-office-rehydrate` unit still runs `deploy/office-tick.sh`. After the split, that file is a wrapper that runs `office-keep.sh` and then `office-rehydrate.sh`, so the box does exactly what it did before. Adoption moves the keeping work onto its own timer and gives the rehydrate its new clock. Run it once, by hand, after the w41 release is live. Every step is on the box, as root unless it says meepo.
+
+**0. Preconditions** (all must hold, or stop):
+
+```sh
+curl -s https://postmark.town/api/release                      # names release/2026-w41 (or later)
+ls /srv/postmark-office/deploy/office-keep.sh /srv/postmark-office/deploy/office-rehydrate.sh \
+   /srv/postmark-office/deploy/office-tick.sh                   # all three exist (the tree is the release)
+systemctl show postmark-office-rehydrate.service -p ExecStart   # still names office-tick.sh (pre-split)
+systemctl is-active postmark-office-rehydrate.service           # "inactive": no tick in flight
+```
+
+Pick a quiet minute between :10 and :20 (or :25–:35, :40–:50, :55–:05). The :07 tick and its two-minute tail have finished by then, and the next one is five or more minutes away.
+
+**1. Keep the units you are replacing** (the rollback reads these):
+
+```sh
+sudo mkdir -p /var/backups/postmark-tick-split
+sudo cp -p /etc/systemd/system/postmark-office-rehydrate.service /etc/systemd/system/postmark-office-rehydrate.timer \
+        /var/backups/postmark-tick-split/
+```
+
+**2. Install all four and switch in one step.** The keep timer takes over :07/:22/:37/:52 and the rehydrate moves to :09/:24/:39/:54. Both switch at the same daemon-reload, so no tick runs the keeping work twice or not at all:
+
+```sh
+cd /srv/postmark-office
+sudo cp deploy/postmark-office-keep.service deploy/postmark-office-keep.timer \
+        deploy/postmark-office-rehydrate.service deploy/postmark-office-rehydrate.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now postmark-office-keep.timer
+sudo systemctl restart postmark-office-rehydrate.timer
+```
+
+**3. Receipts, before walking away:**
+
+```sh
+systemctl list-timers postmark-office-keep.timer postmark-office-rehydrate.timer   # next fires at :x7 and :x9
+systemctl show postmark-office-keep.service -p ExecStart        # office-keep.sh
+systemctl show postmark-office-rehydrate.service -p ExecStart   # office-rehydrate.sh
+# after the next :x7 and :x9 have fired:
+journalctl -u postmark-office-keep -n 30 --no-pager             # "[office-keep] settlements: …", no FAILED
+journalctl -u postmark-office-rehydrate -n 30 --no-pager        # "door is serving <sha> — hot reload confirmed", no STALE DOOR
+curl -sI https://postmark.town/api/town | grep -i x-postmark-as-of   # the town's newest sha
+```
+
+**4. The roll-call manifest, in the repo right after** (one commit on the train, Wright's). The `postmark-office-keep.timer` row changes from parked to live:
+
+```json
+{
+ "unit": "postmark-office-keep.timer",
+ "label": "the office's keeping tick (clones, mint, settlements row, panes)",
+ "stage": "live",
+ "activation_owner": "<who> — adopted <date> by DEPLOY.md § Sunday: adopting the tick split (POS-268)",
+ "cadence": "every 15 minutes at :07, :22, :37, :52",
+ "cadence_source": "systemctl show postmark-office-keep.timer -p TimersCalendar",
+ "heartbeat": { "kind": "unit_trigger", "stale_after_minutes": 45 },
+ "stale_means": "the town clone stops pulling (the write pen and declare read a stale town), the mint catch-up and welcome pass stop, the settlements row stops following the keeper's tag, and the panes freeze. Three missed ticks is a stuck keeper, one is noise."
+}
+```
+
+In the `postmark-office-rehydrate.timer` row, `cadence` becomes `"every 15 minutes at :09, :24, :39, :54, two minutes after postmark-office-keep.timer"`. Its label, heartbeat and `stale_means` are unchanged. The tree rows (`office-keep`, `office-rehydrate`) already exist.
+
+**5. office-tick.sh stays** until a clean week has passed. The rollback below depends on it. Delete it in a later train, with the keep row's adopt note.
+
+**Rollback** (anything in step 3 wrong, or a stuck keep row):
+
+```sh
+sudo systemctl disable --now postmark-office-keep.timer
+sudo cp -p /var/backups/postmark-tick-split/postmark-office-rehydrate.service \
+           /var/backups/postmark-tick-split/postmark-office-rehydrate.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart postmark-office-rehydrate.timer
+systemctl show postmark-office-rehydrate.service -p ExecStart   # office-tick.sh again: both halves, the old clock
+```
+
+After that the box runs exactly what it ran before step 2, and the manifest rows go back to what they said (keep parked).
 
 ### The world write pool (tier 1, 2026-08-05)
 
@@ -398,7 +495,7 @@ cat /srv/postmark-sentinel/status.json | head -40
 
 ## The operator dashboards (`/ops/`, hub generated since 2026-08-11)
 
-Six static surfaces under `/ops/`, all written to `/var/www/postmark-ops/`
+Seven static surfaces under `/ops/`, all written to `/var/www/postmark-ops/`
 (outside the site webroot, so a site rsync never clobbers them) and served by
 the aliases in `nginx-postmark-town.conf`:
 
@@ -410,6 +507,7 @@ the aliases in `nginx-postmark-town.conf`:
 | `/ops/economy/` | `tools/economy-report.mjs` | `/etc/cron.hourly/postmark-economy-report` |
 | `/ops/world/` | `tools/world-report.mjs` | `/etc/cron.hourly/postmark-world-report` |
 | `/ops/activity/` | `tools/ops-activity.mjs` | `/etc/cron.hourly/postmark-activity-report` |
+| `/ops/awareness/` | `tools/ops-awareness.mjs` | `/etc/cron.hourly/postmark-awareness-report` |
 
 `/ops/desk/` is the exception: it is site-built (astro) and keeps its own more
 specific nginx location.
@@ -441,13 +539,32 @@ cloned data before anything ships: `TRAFFIC_ARCHIVE`, `TRAFFIC_GITHUB`,
 `GIT_REPORT_OUT`, `GIT_REPORT_NO_FETCH=1` (render from the PR cache, no GitHub
 token); `WORLD_CLONE`, `WORLD_REF`, `ECONOMY_REPORT_OUT`, `OUT_DIR`; `OPS_ROOT`;
 `ACTIVITY_OUT`, `ACTIVITY_ACTS_FILE`, `ACTIVITY_NOW` (or `--town`, `--telemetry`,
-`--acts`, `--out`, `--now`).
+`--acts`, `--out`, `--now`); `AWARENESS_OUT`, `AWARENESS_BY_HAND`,
+`AWARENESS_ACTIVITY`, `AWARENESS_NOW`, `AWARENESS_OFFLINE=1` (or `--out`,
+`--by-hand`, `--activity`, `--now`, `--offline`).
 
 **Installing `/ops/activity/`** (POS-216): `install -m 755
 deploy/cron-postmark-activity-report.sh /etc/cron.hourly/postmark-activity-report`,
 then run it once by hand. It reads the store's `acts` with the office's own two
 keys from `/etc/postmark-office.env`; without them the page says the world acts
 were not read and counts the ledgers alone.
+
+**Installing `/ops/awareness/`** (POS-282), all three together:
+
+1. `install -m 755 deploy/cron-postmark-awareness-report.sh /etc/cron.hourly/postmark-awareness-report`
+   (it sorts after `postmark-activity-report`, whose twin it reads for new
+   households, and before `zz-postmark-ops-index`).
+2. Add the `location /ops/awareness/` block from `nginx-postmark-town.conf` to
+   the live config (read the live copy first, as above), then
+   `nginx -t && systemctl reload nginx`.
+3. Run it once by hand so the page is not a 404 until the top of the hour.
+
+It reads no key. Bluesky's followers, YouTube's subscribers and channel views,
+and the Discord invite's member count come from public pages; Reddit and X come
+from `deploy/awareness-by-hand.json`, one entry per ISO week, which the page
+labels "entered by hand, <date>". Its history is `history.jsonl` in the page's
+own directory, one line per week: the current week's line is rewritten each
+hour, so a week keeps its last reading. Deleting that file loses the history.
 
 ## Branch previews (`/preview/<slug>/`, 2026-07-20)
 
@@ -593,9 +710,23 @@ holds.
 matching done for you.
 
 **The one thing to know.** Stage A has no timer, so it has no grace window. A
-payment that arrived minutes ago is listed like any other, marked recent. **You
-are the window**: check the typed handle on a recent row before pasting, because
-the ref is spent once and the ledger has no row kind that reassigns a payer.
+payment that arrived minutes ago is listed like any other, marked recent. Check
+the typed handle on a recent row before pasting.
+
+**A wrong or unattributed payer can be corrected until the pot closes.** A
+receipt recorded as `outside:stripe`, or to the wrong hand, is re-attributed by
+a founder-signed `pot-correction` line, written by the town's own verb (and by
+nothing else: no door, no watcher):
+
+```sh
+node <town-clone>/tools/epoch-close.mjs --correct-hand --ref <ref>   --from <old-payer> --to <new-payer> --reason <token> --by <who>   --date YYYY-MM-DD --key FILE
+```
+
+The pot's epoch close pays holo to whoever each receipt names at that moment,
+and writes one holo line per receipt, which spends that ref's one mint chance.
+**After the close, attribution is final.** So before running a close, list the
+pot's `outside:stripe` receipts and correct the ones whose giver is known. Five
+were corrected this way between 2026-08-27 and 2026-09-19.
 
 ---
 
@@ -627,6 +758,14 @@ because it reads Stripe live.
 it needs the pen from `/etc/postmark-office.env` and takes `town.lock`. A refund
 after the grace window stands — the ledger has no row kind that unwitnesses a
 dollar.
+
+**The grace window is the cheap fix, not the only one.** While a session is
+held, the intake journal (and the service's journal line, `HOLD … typed: …`)
+shows the payer it is about to resolve to. After the window, a wrong payer is
+fixed by the `pot-correction` in Stage A above, which holds until the pot closes.
+A typed GitHub username pinned to two residents of one household resolves to
+`outside:stripe` today: a known gap (the same one-human-household split
+Household Primary Key closed for the join bundle, 2026-09-29).
 
 ### `usdc-watch` auto-witness + the wallet registry
 

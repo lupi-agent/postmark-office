@@ -15,85 +15,21 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const GRANTS = "src/world-grants.mjs";
-const ENC = "src/encounter.mjs";
 const EMB = "src/embodiment.mjs";
 const APEX = "src/world-apex.mjs";
-// The arena door joined 2026-08-29 with the queue: the naming that used to live
-// in the fold's refusal now lives in the door's queued answer.
-const ARENA_SRC = "src/arena.mjs";
+// The encounter fold and the arena door closed on 2026-09-30 (Keemin: the arena
+// is not live and will be rebuilt, not ported), and their flips went with them.
 const SUITES = {
   [GRANTS]: "test/world-grants.test.mjs",
-  [ENC]: "test/encounter.test.mjs",
   [EMB]: "test/embodiment.test.mjs",
   // The apex's own suite is in this runner for ONE reason: it is what caught
   // the ground channel minting poorer entries than the ambient one, and a
   // regression guard nobody has watched fail is a regression guard on trust.
   [APEX]: "test/world-apex.test.mjs",
-  [ARENA_SRC]: "test/arena.test.mjs",
 };
 
 const FLIPS = [
   // ── the calculus ────────────────────────────────────────────────────────
-  // ── the act queue (founder-asked 2026-08-29) ────────────────────────────
-  // Single-line targets only, per the note below.
-
-  { name: "out-of-turn acts go back to bouncing instead of queueing",
-    file: ENC, catches: "an act out of turn is QUEUED, not refused",
-    edit: (t) => t.replace("        pending.set(actor, r);", "        ignored.push({ seq: r.seq, actor, why: `it is ${w.turn}'s turn` });") },
-
-  { name: "a queued act resolves immediately — queueing becomes acting out of turn",
-    file: ENC, catches: "an act out of turn is QUEUED, not refused",
-    edit: (t) => t.replace("      if (w.turn && w.turn !== actor) {", "      if (false) {") },
-
-  { name: "the queue never flushes — a held act waits forever (the bounce with extra steps)",
-    file: ENC, catches: "resolves EXACTLY when the wheel reaches its actor",
-    edit: (t) => t.replace("    work.unshift(q);", "    void q;") },
-
-  { name: "the slot becomes a bank — a requeue appends instead of replacing",
-    file: ENC, catches: "a requeue REPLACES",
-    edit: (t) => t.replace("        pending.set(actor, r);", "        if (!pending.has(actor)) pending.set(actor, r);") },
-
-  { name: "a leaver keeps their queued act, and it fires when the wheel wraps",
-    file: ENC, catches: "a leaver's queued act never fires",
-    edit: (t) => t.replace("      pending.delete(actor);", "") },
-
-  { name: "a queued act survives going down, and fires from a stale intent after the lift",
-    file: ENC, catches: "going DOWN drops the queue",
-    edit: (t) => t.replace("          pending.delete(target);", "") },
-
-  // ── the turn pointer (founder-reported 2026-08-29, live) ────────────────
-  //
-  // ⚑ EVERY TARGET HERE IS A SINGLE LINE, deliberately. A multi-line flip
-  // string is the CRLF trap this runner learned about earlier tonight, and it
-  // is also the escaping trap that ate a backslash while these were being
-  // written. One line, one anchor, no newlines to lose.
-
-  // THE BUG ITSELF, RESTORED: derive the turn by replaying the count over the
-  // current list, which is what handed the founder repeat turns.
-  { name: "the turn goes back to replaying the count — a join hands the last actor another turn",
-    file: ENC, catches: "a join mid-round does not hand them the turn again",
-    edit: (t) => t.replace("turn: seat?.who ?? null, index: at < 0 ? 0 : at", "turn: active[i]?.who ?? null, index: i") },
-
-  { name: "the walk starts AT the last actor instead of after them — everyone repeats forever",
-    file: ENC, catches: "a join mid-round does not hand them the turn again",
-    edit: (t) => t.replace("    for (let n = 1; n <= seats.length; n += 1) {", "    for (let n = 0; n <= seats.length; n += 1) {") },
-
-  { name: "the seating chart drops the departed — a last actor who left rewinds the turn to the top",
-    file: ENC, catches: "the turn is the next able hand after their empty chair",
-    edit: (t) => t.replace("  const seats = [...order, ...late];", "  const seats = [...order, ...late].filter((j) => !left.has(j.who));") },
-
-  { name: "the fold stops naming who acted last — every turn is the opening again",
-    file: ENC, catches: "with one membership and nothing changing",
-    edit: (t) => t.replace("lastActor: lastTurnActor });", "lastActor: null });") },
-
-  { name: "a turn that did NOT count still moves the pointer (the nothing-left-to-hit revert)",
-    file: ENC, catches: "with one membership and nothing changing",
-    edit: (t) => t.replace("turnsTaken -= 1; lastTurnActor = priorTurnActor; continue; }", "turnsTaken -= 1; continue; }") },
-
-  { name: "the wipe keeps the old attempt's last actor — a new fight opens mid-ring",
-    file: ENC, catches: "a wipe clears who acted last",
-    edit: (t) => t.replace("      lastTurnActor = null;", "") },
-
   // ── the seat (founder-ruled 2026-08-29) ─────────────────────────────────
 
   { name: "seating stops seating — a human in a portal ground gets only the portal's verbs",
@@ -195,154 +131,6 @@ const FLIPS = [
     file: GRANTS, catches: "a verb with no requires is unfenced",
     edit: (t) => t.replace('if (!requires || typeof requires !== "object") return { ok: true };',
                            'if (!requires || typeof requires !== "object") return { ok: false, why: "no" };') },
-
-  // ── the encounter: the wheel, the dice, downed-not-dead ─────────
-  // REWRITTEN 2026-08-26 for the founder's turn+dice rulings. The cooldown
-  // flips are gone with the cooldowns; what replaced them is not fewer, and
-  // every one of them breaks a clause a falsifier quotes verbatim.
-  { name: "a die roll enters the damage from an UNWITNESSED source",
-    file: ENC, catches: "no source of randomness exists in the module",
-    edit: (t) => t.replace("  const n = h.readUInt32BE(0);", "  const n = h.readUInt32BE(0) + Math.floor(Math.random() * 3);") },
-
-  { name: "the module reads the wall clock",
-    file: ENC, catches: "no source of randomness exists in the module",
-    edit: (t) => t.replace("const ms = (iso) => {", "const ms = (iso) => { void Date.now();") },
-
-  { name: "the roll stops depending on the actor (two hands, one fate)",
-    file: ENC, catches: "every one of the three entropy terms actually changes the roll",
-    edit: (t) => t.replace("const key = `${at}|${actId}|${actor}|${salt}`;", "const key = `${at}|${actId}|${salt}`;") },
-
-  { name: "the roll stops depending on its position in the log",
-    file: ENC, catches: "every one of the three entropy terms actually changes the roll",
-    edit: (t) => t.replace("const key = `${at}|${actId}|${actor}|${salt}`;", "const key = `${actId}|${actor}|${salt}`;") },
-
-  { name: "the die stops being a die (one face, every time)",
-    file: ENC, catches: "a roll is WITNESSED",
-    edit: (t) => t.replace("return { value: (n % d) + 1,", "return { value: 1,") },
-
-  // Retargeted 2026-08-29 (the queue): removing the gate no longer produces a
-  // refusal to inspect — it produces an act that RESOLVES out of turn, which is
-  // what the queue test names. Same break, the assertion that catches it moved.
-  { name: "the wheel stops gating — anyone may act at any time",
-    file: ENC, catches: "an act out of turn is QUEUED, not refused",
-    edit: (t) => t.replace("      if (w.turn && w.turn !== actor) {", "      if (false) {") },
-
-  // Retargeted 2026-08-29: the fold no longer writes a refusal to name, because
-  // out-of-turn acts are held rather than refused. The NAMING survived the
-  // change and moved to the door's queued answer, so that is what this now
-  // breaks — the property is unchanged, its home moved.
-  { name: "the queued answer stops naming whose turn it is",
-    file: ARENA_SRC, catches: "the answer names whose turn it is",
-    edit: (t) => t.replace("whose_turn: state.wheel?.turn ?? null,", "") },
-
-  // Retargeted 2026-08-29 with the gate narrowing — the predicate stopped being
-  // spelled `verb !== "loot"` and this flip went silently inert.
-  { name: "the wheel gates a room with no fight in it",
-    file: ENC, catches: "with no encounter live, nothing is gated",
-    edit: (t) => t.replace("    if (live && WHEEL_GATED.includes(verb)) {", "    if (WHEEL_GATED.includes(verb)) {") },
-
-  { name: "a latecomer is sorted in by initiative instead of appended",
-    file: ENC, catches: "a late joiner lands at the BOTTOM of the order",
-    edit: (t) => t.replace("  const seats = [...order, ...late];", "  const seats = [...order, ...late].sort((a, b) => b.initiative - a.initiative);") },
-
-  { name: "a leaver keeps their seat on the wheel (a jail)",
-    file: ENC, catches: "a leaver is skipped by the wheel",
-    edit: (t) => t.replace("  const active = seats.filter((j) => !left.has(j.who));", "  const active = seats;") },
-
-  { name: "the door heals you — re-entering restores full strength",
-    file: ENC, catches: "fleeing and re-entering keeps the HP you fled with",
-    edit: (t) => t.replace("      left.delete(actor);", "      left.delete(actor); hp.delete(actor);") },
-
-  { name: "the driver hands the door a turn when no fight is live",
-    file: ENC, catches: "nothing due when no encounter is live",
-    edit: (t) => t.replace("  if (!state?.encounter_live) return out;", "") },
-
-  { name: "a downed hand keeps acting",
-    file: ENC, catches: "at zero you are DOWN",
-    edit: (t) => t.replace("      if (downed.has(actor)) { ignored.push({ seq: r.seq, actor, why: `${actor} is down — someone has to lift you` }); continue; }", "") },
-
-  { name: "what you were holding stays in your hands when you go down",
-    file: ENC, catches: "at zero you are DOWN",
-    edit: (t) => t.replace("          const id = held.thing ?? held.id ?? String(held);", "          const id = null;") },
-
-  { name: "the lifted come back whole instead of partial",
-    file: ENC, catches: "an ally spends their WHOLE turn to lift",
-    edit: (t) => t.replace("hp.set(target, D.liftTo);", "hp.set(target, D.guestHp);") },
-
-  { name: "anyone may be lifted, down or not",
-    file: ENC, catches: "lifting someone who is not down is refused",
-    edit: (t) => t.replace("      if (!downed.has(target)) { ignored.push({ seq: r.seq, actor, why: `${target || \"nobody\"} is not down` }); continue; }", "") },
-
-  { name: "the wipe never fires — the room stays down forever",
-    file: ENC, catches: "when the whole room goes down: the wipe",
-    edit: (t) => t.replace("    if (hands.length && hands.every((j) => downed.has(j.who))) {", "    if (false) {") },
-
-  // Retargeted 2026-08-29: the line grew its `persistent` condition, so the old
-  // string matched nothing and this flip had quietly stopped being a flip.
-  { name: "a full-room wipe leaves the adversary wounded",
-    file: ENC, catches: "when the whole room goes down: the wipe",
-    edit: (t) => t.replace("      if (!D.bossPersistent) bossHp = D.bossHpMax;", "      bossHp = Math.max(1, bossHp);") },
-
-  // ── THE BIRTHDAY AMENDMENTS (founder-ruled 2026-08-29) ───────────────────
-
-  // 2 · the persistent adversary
-  { name: "the persistent dial is ignored — every wipe heals the adversary whole",
-    file: ENC, catches: "a PERSISTENT adversary keeps its wounds across a wipe",
-    edit: (t) => t.replace("      if (!D.bossPersistent) bossHp = D.bossHpMax;", "      bossHp = D.bossHpMax;") },
-
-  { name: "the dial inverts — EVERY adversary becomes a one-off boss",
-    file: ENC, catches: "a PERSISTENT adversary keeps its wounds across a wipe",
-    edit: (t) => t.replace("      if (!D.bossPersistent) bossHp = D.bossHpMax;", "      if (D.bossPersistent) bossHp = D.bossHpMax;") },
-
-  { name: "a persistent wipe also spares the HANDS — a room nobody ever wakes up in",
-    file: ENC, catches: "a PERSISTENT adversary keeps its wounds across a wipe",
-    edit: (t) => t.replace("      for (const j of hands) { downed.delete(j.who); hp.set(j.who, D.guestHp); left.add(j.who); }", "") },
-
-  { name: "the wipe beat stops saying which law it took",
-    file: ENC, catches: "a PERSISTENT adversary keeps its wounds across a wipe",
-    edit: (t) => t.replace("                  persistent: D.bossPersistent,", "                  persistent: false,") },
-
-  // 1 · the gate narrows
-  { name: "the fold gates by exception again — every verb the wheel has not heard of",
-    file: ENC, catches: "the wheel gates the acts it COUNTS, and nothing else",
-    edit: (t) => t.replace("if (live && WHEEL_GATED.includes(verb)) {", 'if (live && verb !== "loot") {') },
-
-  { name: "the wheel gates nothing at all — the narrowing becomes a removal",
-    file: ENC, catches: "the wheel gates the acts it COUNTS, and nothing else",
-    edit: (t) => t.replace("if (live && WHEEL_GATED.includes(verb)) {", "if (false) {") },
-
-  // ── the site lane's weapon hover, added 2026-08-29 ───────────────────────
-  { name: "a hand stops saying what it holds — the bonus is invisible outside the office again",
-    file: ENC, catches: "says what it is HOLDING",
-    edit: (t) => t.replace("      const held = letGo ? null : weaponOf(j.who, null);", "      const held = null;") },
-
-  { name: "a DOWNED hand still claims the weapon lying at its feet",
-    file: ENC, catches: "says what it is HOLDING",
-    edit: (t) => t.replace("      const letGo = dropped.some((d) => d.by === j.who);", "      const letGo = false;") },
-
-  { name: "the timeout answers without being given an instant",
-    file: ENC, catches: "an absent hand's turn passes at the NEXT DOOR TOUCH",
-    edit: (t) => t.replace("  if (since == null || !Number.isFinite(Number(nowMs))) return { out: false, why: \"no instant to judge against\" };", "  if (false) return { out: false };") },
-
-  { name: "the timeout fires immediately, ignoring its dial",
-    file: ENC, catches: "an absent hand's turn passes at the NEXT DOOR TOUCH",
-    edit: (t) => t.replace("  const limit = Number(state.wheel.turn_timeout_s) * 1000;", "  const limit = 0;") },
-
-  { name: "a pass does not spend the turn",
-    file: ENC, catches: "a pass spends the turn and moves the wheel on",
-    edit: (t) => t.replace("    if (verb === \"pass\") { turnsTaken += 1;", "    if (verb === \"pass\") {") },
-
-  { name: "the fold starts speaking the world's vocabulary",
-    file: ENC, catches: "NOTHING the fold derives is a claim about the world outside the portal",
-    edit: (t) => t.replace("    derivation: \"no store holds any of this", "    tier: \"market\",\n    derivation: \"no store holds any of this") },
-
-  { name: "an initiative tie breaks on the sort's accident, not the log's order",
-    file: ENC, catches: "an initiative tie breaks on the log's own order",
-    edit: (t) => t.replace("    (b.initiative - a.initiative) || (a.seq - b.seq));", "    (b.initiative - a.initiative) || (b.seq - a.seq));") },
-
-  { name: "a missing dial is substituted in silence",
-    file: ENC, catches: "a dial the record does not carry is DISCLOSED",
-    edit: (t) => t.replace("if (v === undefined || v === null) { missing.push(", "if (v === undefined || v === null) { ([]).push(") },
 
   // ── the embodiment fence ────────────────────────────────────────────────
   { name: "the fence is read off a corner instead of the centre",

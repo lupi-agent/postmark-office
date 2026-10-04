@@ -293,17 +293,28 @@ test("a placer's stamps: 0 puts the resident's parcel forward free — on the do
   assert.equal(claim?.household, "solo:wren-login", "still the resident's own claim");
 });
 
-// ── RECEIPT, not law · a placer cannot spend the resident's stamps ──────────
+// ── LEG 8 · a stake that bounced is ruled as the ✦0 that landed (office #226)
 //
 // The inline stake runs on the CALLER's key with `handle: by`, and the stake
 // door's `actingAs` refuses a handle the key does not hold — so a placement
-// with stamps: 1 lands the parcel and answers `stake_bounce`. A placer has no
-// reason to pass stamps now that a parcel publishes free (LEG 7); this holds
-// that if one does, the resident's stamps still do not move.
-test("RECEIPT: stamps on a placement do not move the resident's stamps — the stake bounces on the placer's key", async () => {
+// with stamps: 1 lands the parcel and answers `stake_bounce`; the resident's
+// stamps do not move. Before #226 the declaration was ruled on the ✦1 ASKED:
+// the answer said `put_forward: true` and the claim filed at stake 1 while no
+// stamp moved. Now the claim carries what landed (✦0), and the parcel still
+// goes forward because a parcel's lawful minimum is 0 (LEG 7).
+//
+// CAN-FAIL FLIP: rule the declaration on `stakeN` again (world.mjs,
+// `stamps: stakeLands` → `stamps: stakeN`) → the claim reads stake 1.
+test("a bounced inline stake: the parcel goes forward at the ✦0 that landed, the bounce is named, no claim at stake 1", async () => {
   const out = await leave(porch({ by: "bird", slug: "birds-porch", at: { x: 2000, y: 2000 }, stamps: 1 }), IRIS);
   const claim = pen.state.claims.find((c) => c.slug === "bird/birds-porch");
   console.log(`    RECEIPT · stamps: 1 → ok=${out.ok} put_forward=${out.put_forward} stake_bounce=${JSON.stringify(out.stake_bounce ?? null)} claim.status=${claim?.status} claim.stake=${claim?.stake}`);
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.match(String(out.stake_bounce?.defect ?? ""), /"bird" is not one of your residents/);
+  assert.equal(out.staked, undefined, "no stake receipt: nothing moved");
+  assert.equal(Number(claim?.stake), 0, "the claim's stake is what landed, not the ✦1 asked");
+  assert.equal(claim?.status, "pending", "✦0 meets a parcel's minimum, so it is on the docket");
+  assert.equal(out.put_forward, true, "put forward because ✦0 is a parcel's lawful minimum, not because of the bounced ✦1");
+  assert.equal(JSON.parse(pen.state.acts.find((a) => a.object === "bird/birds-porch")?.payload ?? "{}").stamps, 0,
+    "the act's declaration says ✦0 too, the same fact the claim carries");
 });

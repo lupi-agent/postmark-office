@@ -52,6 +52,7 @@ import { fixtureDb } from "./fixture.mjs";
 import { appendTownJournal, ensureTownJournal } from "../src/town-journal.mjs";
 import { letterDate, outboxRelPath } from "../src/write.mjs";
 import { MAIL_ACT } from "../src/town-mail.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TOOL = join(ROOT, "tools", "town-drain-run.mjs");
@@ -87,25 +88,30 @@ function indexDb() {
   return path;
 }
 
-function seededDb(seed) {
+async function seededDb(seed) {
   const home = mkdtempSync(join(tmpdir(), "pos158-entry-odb-"));
   temps.push(home);
   const path = join(home, "oauth.db");
   const o = openOauthDb(path);
   ensureTownJournal(o);
-  seed(o);
+  await seed(o);
   o.close();                 // Windows holds the file open otherwise
   return path;
 }
 
 /** Run the REAL entrypoint and read what an operator reads. */
-function runTool(clone, odbPath, { dbPath = null, args = [] } = {}) {
+function runTool(clone, odbPath, { dbPath = null, args = [], noRecord = false } = {}) {
+  // noRecord: the tool on office.db with no record at all, the old way. Only the
+  // deferral test below asks for it; that class is decided in office.db's
+  // deletion (POS-268, 5a), where an office with no record cannot boot.
+  const env = noRecord ? { ...process.env, TOWN_SINGLE_LOG: "1" } : { ...process.env, ...IX.env, TOWN_SINGLE_LOG: "1" };
+  if (noRecord) delete env.TOWN_INDEX_READS;
   const res = { status: 0, stdout: "", stderr: "" };
   try {
     res.stdout = execFileSync(process.execPath,
       [TOOL, "--clone", clone, "--oauth-db", odbPath, "--unlocked", "--json",
         ...(dbPath ? ["--db", dbPath] : []), ...args],
-      { encoding: "utf8", env: { ...process.env, TOWN_SINGLE_LOG: "1" } });
+      { encoding: "utf8", env });
   } catch (e) {
     res.status = e.status ?? 1;
     res.stdout = e.stdout ?? "";
@@ -121,15 +127,21 @@ const outbox = (clone, h) => {
 
 test.after(() => { for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5 }); });
 
-test("THE ENTRYPOINT SETTLES: a letter row becomes real files, and the tool exits 0", () => {
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
+
+test("THE ENTRYPOINT SETTLES: a letter row becomes real files, and the tool exits 0", async () => {
   // CAN-FAIL, and it is the half that catches the exact defect: drop the
   // `await` in `tools/town-drain-run.mjs` and this still exits 0 — because the
   // broken caller always did — but the outbox is EMPTY, because the process
   // ended before the promise ran.
   const clone = townClone();
   const date = letterDate();
-  const odbPath = seededDb((o) => {
-    appendTownJournal(o, {
+  const odbPath = await seededDb(async (o) => {
+    await appendTownJournal(o, {
       cls: "letter", act: MAIL_ACT, household: "keemin", handle: "wright",
       ghId: "42", ghLogin: "keeminlee",
       payload: {
@@ -150,7 +162,7 @@ test("THE ENTRYPOINT SETTLES: a letter row becomes real files, and the tool exit
   assert.equal(report.counts.letter, 1);
 });
 
-test("THE ENTRYPOINT REFUSES: a deferred row reaches `$?` as a 1, and stays pending", () => {
+test("THE ENTRYPOINT REFUSES: a deferred row reaches `$?` as a 1, and stays pending", async () => {
   // THE REFUSAL THIS TOOL REALLY MEETS. A foreign-class row cannot be seeded —
   // `appendTownJournal` refuses one at WRITE time, which is its own tripwire
   // working — so the refusal exercised here is the deferral tripwire, reached
@@ -163,15 +175,15 @@ test("THE ENTRYPOINT REFUSES: a deferred row reaches `$?` as a 1, and stays pend
   // defect, and to an `&&`-joined ferry chain a refusal that exits 0 is
   // indistinguishable from a clean crossing.
   const clone = townClone();
-  const odbPath = seededDb((o) => {
-    appendTownJournal(o, {
+  const odbPath = await seededDb(async (o) => {
+    await appendTownJournal(o, {
       cls: "join", act: "declare-household", household: "newcomers", handle: "newcomer",
       ghId: "777", ghLogin: "newcomer-gh",
       payload: { household: "Newcomers", card: "A newcomer's card." },
     });
   });
 
-  const r = runTool(clone, odbPath, { dbPath: indexDb() });
+  const r = runTool(clone, odbPath, { dbPath: indexDb(), noRecord: true });
   assert.equal(r.status, 1, "a refusal is an exit 1, or the ferry chain runs on past it");
   const report = JSON.parse(r.stdout);
   assert.equal(report.ran, false);
@@ -181,12 +193,12 @@ test("THE ENTRYPOINT REFUSES: a deferred row reaches `$?` as a 1, and stays pend
     "and nobody was settled");
 });
 
-test("the report is real JSON with real fields, never a stringified promise", () => {
+test("the report is real JSON with real fields, never a stringified promise", async () => {
   // `JSON.stringify(aPromise, null, 2)` is `{}`, which parses, has no fields
   // and asserts nothing. This names the shape so a future un-awaited call
   // cannot pass by being merely parseable.
   const clone = townClone();
-  const odbPath = seededDb(() => { /* nothing pending */ });
+  const odbPath = await seededDb(() => { /* nothing pending */ });
   const r = runTool(clone, odbPath);
   assert.equal(r.status, 0);
   const report = JSON.parse(r.stdout);

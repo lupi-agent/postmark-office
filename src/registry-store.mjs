@@ -23,28 +23,13 @@
 // for "I looked". A registry read that turned "I could not look" into "the town
 // has no households" would hand `planRegistryJoin` an empty registry, and an
 // empty registry is a registry in which every account is unknown and every
-// house is available — which mints duplicates over live rows. The callers
-// below must branch on null, and the one that cannot is named in the header of
-// this lane's PR as the reason the door readers did not move this week.
+// house is available — which mints duplicates over live rows. Every caller
+// branches on null: the doors refuse on it (src/declare.mjs § readRegisters,
+// src/residency.mjs § requestResidency), and so do the ceremonies.
 //
-// ── WHY NOTHING IN `src/` IMPORTS THIS YET ──────────────────────────────────
-//
-// See § THE STOP in the PR body, and the same sentence here so it is impossible
-// to wire this in by accident:
-//
-//     The ceremony that DECLARES a household reads the registry, folds a whole
-//     new registry object over it, and commits that object as the FILE
-//     (src/declare-exec.mjs:50 + src/declare.mjs:410, src/residency.mjs:547 +
-//     :584). Nothing writes the table. So a reader switched to the store today
-//     would read a table frozen at its seed, fold over it, and commit a file
-//     that DROPS every house declared since — which is precisely the revert
-//     `src/residency.mjs:540-546` already warns about, arriving by the other
-//     door. The table has to gain its write (POS-158's mint, which calls
-//     `drainRegistry()` after its own commit) before any reader may leave the
-//     file.
-//
-// Until then this module is proven against fixtures and imported by nothing at
-// a door. `tools/registry-drain.mjs` uses it, and it only ever READS.
+// The store is the registry's one writer (src/ceremony.mjs); the town's
+// tools/households.json and tools/github-ids.json are printed from it by
+// tools/registry-drain.mjs.
 
 import { actsQuery } from "./world2-acts.mjs";
 import { registryFromRows, pinsFromRows, HOUSEHOLD_KEYS, PIN_KEYS } from "./registry-rows.mjs";
@@ -63,7 +48,7 @@ import { registryFromRows, pinsFromRows, HOUSEHOLD_KEYS, PIN_KEYS } from "./regi
 // today is all 118 rows for both.
 const HOUSEHOLDS_SQL = `
   SELECT slug, ord, name, human, accounts, residents, since, member_of, declared_by, formerly,
-         provisional
+         provisional, home_images
     FROM households
    ORDER BY ord`;
 
@@ -213,6 +198,12 @@ export async function loadPins(env = process.env) {
 // falsified here so that lane inherits a writer rather than inventing one.
 
 const COLUMNS = ["slug", "ord", "name", "human", "accounts", "residents", "since", "member_of", "declared_by", "formerly", "provisional"];
+// `home_images` (050, POS-219) is NOT in COLUMNS, on purpose: COLUMNS is what
+// `upsertHousehold` rewrites, and a ceremony that rebuilds a house's row from
+// what it knew would reset every resident's picture to its `{}` default. The
+// column has ONE writer, `setHomeImage` below. Only the seed, which fills an
+// EMPTY table from the town's files, carries it in with the rest of the row.
+const SEED_COLUMNS = [...COLUMNS, "home_images"];
 const PIN_COLUMNS = ["handle", "login", "gh_id", "pinned", "renamed", "note", "retired", "renamed_to"];
 
 const placeholders = (n, offset = 0) => Array.from({ length: n }, (_, i) => `$${i + 1 + offset}`).join(", ");
@@ -231,6 +222,7 @@ const placeholders = (n, offset = 0) => Array.from({ length: n }, (_, i) => `$${
 const valuesOf = (row, cols) => cols.map((c) => {
   if (c === "accounts") return JSON.stringify(row[c] ?? []);
   if (c === "provisional") return row[c] === true;
+  if (c === "home_images") return JSON.stringify(row[c] ?? {});
   return row[c] ?? null;
 });
 
@@ -247,8 +239,8 @@ export async function insertRegistryRows(rows, env = process.env) {
     counts.meta++;
   }
   for (const r of rows.households ?? []) {
-    await actsQuery(`INSERT INTO households (${COLUMNS.join(", ")}) VALUES (${placeholders(COLUMNS.length)})`,
-      valuesOf(r, COLUMNS), env);
+    await actsQuery(`INSERT INTO households (${SEED_COLUMNS.join(", ")}) VALUES (${placeholders(SEED_COLUMNS.length)})`,
+      valuesOf(r, SEED_COLUMNS), env);
     counts.households++;
   }
   for (const r of rows.pins ?? []) {
@@ -399,6 +391,33 @@ export async function renameHousehold({ from, to, formerly = [], provisional = f
     [to, formerly, provisional === true, name ?? null, from], env);
   if (r === null) return null;
   return r.length ? { slug: r[0].slug, ord: Number(r[0].ord) } : null;
+}
+
+/**
+ * One resident's house picture, written onto their household's row (POS-219).
+ *
+ * The ONE store writer of `home_images` (migration 050); `src/home-picture.mjs`
+ * is the one act that calls it. It sets exactly one key of the map, the
+ * resident's own handle, and touches no other column and no other resident's
+ * picture: a `||` merge on jsonb replaces that key and keeps every other.
+ *
+ * THE ROW IS FOUND BY ITS RESIDENT, in the same statement that writes it: the
+ * `WHERE` names the handle as one of the row's `residents`, so a picture can
+ * only ever land on the house the resident stands in at that moment, and a
+ * stale caller who thought otherwise writes nothing rather than the wrong row.
+ *
+ * Returns `{ slug }` of the house written, `null` when the office is not
+ * pointed at the record, or `{ slug: null }` when no house holds the handle.
+ */
+export async function setHomeImage({ handle, url }, env = process.env) {
+  const r = await actsQuery(
+    `UPDATE households
+        SET home_images = home_images || jsonb_build_object($1::text, $2::text)
+      WHERE $1 = ANY(residents)
+  RETURNING slug`,
+    [handle, url], env);
+  if (r === null) return null;
+  return { slug: r.length ? r[0].slug : null };
 }
 
 // Re-exported so a future reader importing "the registry's grammar" gets it

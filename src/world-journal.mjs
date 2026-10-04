@@ -70,7 +70,7 @@
 
 import { execFileSync } from "node:child_process";
 
-import { openDynamic, dynamicDbPath, singleLogEnabled } from "./dynamic-store.mjs";
+import { singleLogEnabled } from "./dynamic-store.mjs";
 import { mirrorAct, mirrorSettled, world2Enabled } from "./world2-acts.mjs";
 import { candleEnabled, claimEligible, claimHouseholdFor, claimTxFromJournal, docketSettled } from "./world2-claims.mjs";
 import { PenUnreachableError, laneFlipped, laneOf, penSettled, penWrite, shadowWrite } from "./world2-pen.mjs";
@@ -102,7 +102,6 @@ function privateDraftAct(row) {
     && candleEnabled()
     && (() => { try { return JSON.parse(row.payload ?? "{}")?.put_forward !== true; } catch { return false; } })();
 }
-import { draftDeltaForKey, mainRef, publishedState, resolvedWorldHousehold } from "./world-branches.mjs";
 
 export { singleLogEnabled };
 
@@ -152,12 +151,10 @@ export const CLASS_MOVE = "move";
 // not have to be read twice to tell the two apart. Machinery: world-ride.mjs.
 export const CLASS_RIDE = "ride";
 
-// The arena's beats. DECLARED HERE rather than in `arena.mjs` since G1
-// (POS-156): `appendArenaRow` below is the one sqlite INSERT the deletion
-// leaves standing, and it refuses any other class by name — so the constant it
-// checks against has to live beside the write it guards, not in the module that
-// calls it. `arena.mjs` re-exports it, so nothing that imported it from there
-// moved. It is a row class like the six above and it always was.
+// The arena's beats. The arena closed on 2026-09-30 (Keemin) and writes none;
+// its old rows stay in dynamic.db's journal until they are archived
+// (tools/arena-archive.mjs reads them by this class). `appendArenaRow`, the
+// one sqlite INSERT G1 had left standing, closed with it.
 export const CLASS_ARENA_ACT = "arena-act";
 
 // ── THE LEDGER CONTRACT (POS-5 §3's finisher) ───────────────────────────────
@@ -401,53 +398,6 @@ export async function appendJournal(db, entry = {}) {
   return { seq: null, actId, record: draft ? "claims" : "acts", ...row };
 }
 
-// ── THE ARENA'S OWN ROW, NARROW AND NAMED (DEC-1 / P-143) ───────────────────
-//
-// The arena is the one lane that keeps writing sqlite, and it is an exception
-// BY RULING, carrying the ruling's own words — Keemin, 2026-08-29, the party's
-// own night: "we can just keep the arena on sqlite for now". P-143: "Keep
-// `dynamic.db` and the arena's journal path as a NAMED, manifested exception
-// carrying its own registry row and its own death condition."
-//
-// It has its own function rather than a flag on `appendJournal`, and that is
-// the whole shape of the exemption: G1 deletes the GENERAL insert, and what
-// survives is a narrow path with the arena's name on it that nothing else can
-// reach by passing an option. An exception you can opt into is not an
-// exception, it is a switch.
-//
-// WHY IT CANNOT SIMPLY MOVE TO `acts` WITH EVERYTHING ELSE: the beat's `seq` is
-// its IDENTITY inside the fold, not a receipt. `arena.mjs` keys the wheel, the
-// queue, the rolls and every driven beat on it (`bySeq`, `drivenRows`,
-// `mine.seq`), and `readJournal(db, { cls: arena-act })` reads the same rows
-// back. The hardened rebuild lands 2.0-native instead of porting this; until
-// then the rows stay where the fold reads them.
-//
-// IT STILL REACHES `acts` THE JOURNALLED WAY. The lane census is explicit that
-// the flip refusal "is a fact about `W2_PEN`, not about the mirror — a beat
-// still reaches `acts` the journalled way", so the mirror stays on this path
-// and stays fire-and-forget: here the sqlite row above genuinely IS the SoT,
-// which is the condition `shadowWrite`'s header names and the only place in
-// the office where it is still true.
-export function appendArenaRow(db, entry = {}) {
-  const row = normalizeRow(entry);
-  if (row.class !== CLASS_ARENA_ACT) {
-    throw new Error(
-      `appendArenaRow is the arena's exemption (DEC-1/P-143) and takes ${CLASS_ARENA_ACT} rows only — got "${row.class}". `
-      + "Every other class writes the record through appendJournal; the sqlite journal is not a store any other lane may reach.");
-  }
-
-  const stmt = db.prepare(
-    `INSERT INTO journal (${ROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  const res = stmt.run(
-    row.crossing, row.actor, row.action, row.object,
-    row.at_anchor, row.at_dx, row.at_dy,
-    row.witnesses, row.class, row.payload, row.effect,
-    row.household, row.written_at);
-
-  const seq = Number(res.lastInsertRowid);
-  mirrorAct(row, seq);
-  return { seq, ...row };
-}
 
 /**
  * THE FLIPPED WRITE — the pen-flip design's §3 ordering, per lane (D1).
@@ -500,7 +450,7 @@ export function appendArenaRow(db, entry = {}) {
  * words (src/world2-acts.mjs). `mark` keeps its ordinary expiry.
  */
 const FLIP_REFUSED = Object.freeze({
-  arena: "the arena stays sqlite-first by founder ruling (2026-08-29) — the hardened rebuild lands 2.0-native instead; unset it from W2_PEN",
+  arena: "the arena is closed (Keemin, 2026-09-30) and writes nothing; unset it from W2_PEN",
 });
 
 export async function appendActFlipped(db, entry = {}) {
@@ -1215,78 +1165,6 @@ export function filedPathOfAt(repo, sha) {
 /** Drop the cached path indexes — for tests that rewrite a repo in place at the same sha. */
 export function resetPathIndex() { _pathIndex = null; _frozen = null; }
 
-/**
- * THE §1c CONTRACT, over whichever store holds the drafts.
- *
- * Flag OFF: `draftDeltaForKey` verbatim, byte for byte — this function adds
- * nothing to that path, which is what makes the flag-off falsifier meaningful.
- *
- * Flag ON: the git delta UNIONED with the journal's replay, journal winning on
- * a shared id. Both halves, not one — §0's model has three sources and the
- * cutover retires none of them:
- *
- *   canon        published main (the caller's own read; the ids come from here)
- *   sketchbook   `draft/<household>`, still holding every draft written BEFORE
- *                the flag flipped. Dropping it would make a resident's existing
- *                work vanish from their overlay on the day of the cutover.
- *   journal      everything declared since, which is the only thing that moves
- *                between saves once the drain lands.
- *
- * The journal wins a collision because it is later by construction: a
- * declaration in the log was made after the sketchbook was last written to.
- *
- * The shape is unchanged, key for key, because the viewer half is untouched.
- * `draft` is the sketchbook's commit sha and stays exactly that — it does not
- * quietly start meaning something else when the flag is on. What the journal
- * contributes is disclosed in its own `log` block rather than smuggled into a
- * field that already means a commit.
- */
-export function draftsForKey(repo, key) {
-  const gitDelta = draftDeltaForKey(repo, key);
-  if (!singleLogEnabled() || gitDelta?.error) return gitDelta;
-
-  const household = resolvedWorldHousehold(key);
-  let head = 0, replayed = { marks: [], counts: { added: 0, modified: 0, deleted: 0 } };
-  try {
-    const state = publishedState(repo).state ?? {};
-    const publishedIds = new Set((state.marks ?? []).map((m) => m.id));
-    // LAZY, and that is the point of this whole ladder: the index costs an
-    // `ls-tree` over ~900 mark paths, and it is consulted for a withdrawal of a
-    // PUBLISHED mark and for gate A — both rare. Building it eagerly would put
-    // whole-tree work back on the request path, which is the class §0 exists to
-    // keep off it. The manifest arm inside `filedPathOfAt` is one JSON read and
-    // answers first, so the common gate-A case never reaches the `ls-tree`.
-    const sha = String(gitDelta.main ?? mainRef(repo));
-    const publishedPathOf = filedPathOfAt(repo, sha);
-    const canonById = new Map((state.marks ?? []).map((m) => [m.id, m]));
-    const publishedMarkOf = (id) => canonById.get(id) ?? null;
-
-    const db = openDynamic(dynamicDbPath(), { readOnly: true });
-    try {
-      head = journalHead(db);
-      replayed = replayDrafts(readJournal(db, { household, cls: CLASS_MARK }), { publishedIds, publishedPathOf, publishedMarkOf });
-    } finally { try { db.close(); } catch { /* already gone */ } }
-  } catch (e) {
-    // A live layer this door cannot read is a fact the caller must be told, not
-    // an empty overlay. The sketchbook half still answers; the block says what
-    // is missing from it.
-    return { ...gitDelta, log: { readable: false, reason: String(e?.message ?? e).slice(0, 200) } };
-  }
-
-  const byId = new Map();
-  for (const m of gitDelta.marks ?? []) if (m.id) byId.set(m.id, m);
-  for (const m of replayed.marks) if (m.id) byId.set(m.id, m);
-  const marks = [...byId.values()].sort((a, b) => String(a.path).localeCompare(String(b.path)));
-
-  return {
-    ...gitDelta,
-    exists: gitDelta.exists || marks.length > 0,
-    marks,
-    counts: {
-      added: marks.filter((m) => m.status === "added").length,
-      modified: marks.filter((m) => m.status === "modified").length,
-      deleted: marks.filter((m) => m.status === "deleted").length,
-    },
-    log: { readable: true, head, marks: replayed.marks.length },
-  };
-}
+// `draftsForKey` — the §1c overlay over the sqlite journal — is gone (POS-269):
+// no door called it, and world2-guards.mjs § guardedDraftsForKey answers the
+// same contract from the record.

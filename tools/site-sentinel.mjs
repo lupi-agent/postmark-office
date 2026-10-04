@@ -17,7 +17,8 @@
 //
 // Posture, borrowed verbatim from harbor-watch.mjs because it is the same
 // posture: "This script only reads and reports — it never writes to any world."
-// It touches no clone, holds no pen, takes no lock. Its only writes are its own
+// It writes to no clone (§8 READS the office's town clone, with git's optional
+// locks off), holds no pen, takes no lock. Its only writes are its own
 // state file, its own status board, and an HTTP POST to a Discord webhook.
 //
 // ── WHAT IT WILL NOT DO, AND WHY ────────────────────────────────────────────
@@ -94,6 +95,11 @@
 //                 health: these two workflows cancel each other by concurrency
 //                 group all day, and the first version of this probe called that
 //                 green and reported the 08-25 fire itself as fine.
+//  8. CLONES     — the office's town clone has no uncommitted tracked files
+//                 and is not off the town's main past one tick. Dirt is DOWN:
+//                 every write that pulls the clone refuses while it stands
+//                 (2026-09-28, 4.5 hours, found by a resident). The reader is
+//                 tools/clone-state.mjs, shared with the box roll-call.
 //
 // ── THE STALENESS CLOCK, AND WHY IT IS ANCHORED WHERE IT IS ─────────────────
 //
@@ -135,6 +141,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // this?" gets the arithmetic without a second copy of it, and there stays
 // exactly one place the ruling lives.
 import { CROSSING_EPOCH_UTC, CROSSING_MS } from "../src/crossings.mjs";
+import { DIRTY_GRACE_MS, readCloneState, judgeDirt, nameFiles } from "./clone-state.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -173,7 +180,8 @@ export const CONFIG = {
   //   site code : the release train is roughly weekly, but a cut tag should
   //               reach prod within an hour of being cut.
   //   town data : sync-atlas runs every ~30 min and Deploy follows it.
-  //   office    : the rehydrate timer fires at *:07,22,37,52 — every 15 min.
+  //   office    : the rehydrate timer fires every 15 min (*:09,24,39,54 since
+  //               the POS-268 split; *:07,22,37,52 on a pre-split box).
   //               30m under the divergence anchor is TWO DEAD TICKS behind a
   //               known-newer tip (Keemin-tightened 2026-08-31, the same
   //               night the anchor was fixed). History of the number: 45m
@@ -245,6 +253,33 @@ export const CONFIG = {
     unit: "postmark-site-refresh.timer",
     cadenceMs: 30 * MINUTE,
   },
+
+  // §8 — the office's own town clone, read from the disk this runs on. The
+  // office's writes all begin `git pull --rebase` in it, so a tracked change
+  // left uncommitted there bounces every write until a person clears it:
+  // 2026-09-28, 18:37Z to 23:3xZ, thirty refusals, and only a resident said so.
+  //
+  // `behindAfterMs` is not one sentinel interval, and that was measured, not
+  // relaxed: this clone only moves when something pulls it — an office write,
+  // or the rehydrate tick at *:07,22,37,52 — so a town merge landing just after
+  // a quiet tick leaves it honestly behind for up to fifteen minutes. Ten would
+  // page on every such merge. Twenty-five is the tick's window plus one of
+  // ours: past it, a tick has had its turn and did not land.
+  //
+  // THE WORLD CLONE IS NOT HERE, ON PURPOSE. The office writes it differently:
+  // ensureDraftCheckout (src/world-branches.mjs) runs `reset --hard` and
+  // `clean -fd` before every write and refuses a tree it could not clean, and
+  // the tick only FETCHES it, because a pen branch diverged from origin is its
+  // normal state between writes (deploy/office-tick.sh). Dirt there cannot
+  // strand the next write, and "behind" there is the design.
+  clones: [
+    {
+      key: "town_clone", label: "the office's town clone",
+      path: process.env.TOWN_CLONE || "/srv/postmark-office/town-clone",
+    },
+  ],
+  cloneDirtyGraceMs: DIRTY_GRACE_MS,
+  cloneBehindAfterMs: 25 * MINUTE,
 
   requestTimeoutMs: 20_000,
   // One reminder every twelve hours while a probe stays bad. Not per tick —
@@ -760,6 +795,63 @@ export function classifySiteRefresh({
 
 // ── the edge-triggered alert machine ────────────────────────────────────────
 
+// §8 — a clone the office writes through. PURE: `state` is what
+// tools/clone-state.mjs read, `seen` is this probe's divergence memory.
+//
+// DIRT IS DOWN, not STALE, because it is not a freshness question: while a
+// tracked file sits uncommitted, the write doors that pull this clone are
+// refusing residents. BEHIND is STALE, on classifyStamp's own divergence
+// clock — the law is not restated here — with the reason reworded to say which
+// side of the upstream the clone is on, because the repairs differ: behind is
+// a pull that is not landing; ahead is signed rows the pen never pushed, which
+// the tick's `pull --ff-only` then refuses on too (the 2026-08-26 race).
+export function classifyClone({ state, seen = null, nowMs, dirtyGraceMs = DIRTY_GRACE_MS, behindAfterMs, label = "the clone" }) {
+  if (!state || state.exists === false) {
+    return { verdict: "UNKNOWN", reason: `there is no clone at ${state?.path ?? "the configured path"} — this probe reads the office box's own clone (TOWN_CLONE in the sentinel's unit)`, seen };
+  }
+  if (!state.readable) {
+    return { verdict: "UNKNOWN", reason: `git could not read ${state.path}: ${state.error ?? "no reason given"}`, seen };
+  }
+
+  const clock = state.remote_tip
+    ? classifyStamp({ served: state.head, reference: state.remote_tip, seen, nowMs, staleAfterMs: behindAfterMs, what: label, referenceName: "the town's main" })
+    : { verdict: "UNKNOWN", seen };
+
+  const dirt = judgeDirt(state, { nowMs, graceMs: dirtyGraceMs });
+  if (dirt.dirty && !dirt.in_grace) {
+    const age = dirt.age_ms == null ? "an unknown time (every changed path is a deletion, so there is no mtime to read)" : humanDuration(dirt.age_ms);
+    return {
+      verdict: "DOWN",
+      reason: `${state.path} has ${dirt.files.length} uncommitted tracked file${dirt.files.length > 1 ? "s" : ""}, the oldest changed ${age} ago: ${nameFiles(state)}. Every office write that pulls this clone (git pull --rebase) refuses until a person commits the change or restores the file`,
+      seen: clock.seen,
+      detail: { files: dirt.files, dirty_since: dirt.since_ms == null ? null : new Date(dirt.since_ms).toISOString() },
+    };
+  }
+
+  if (!state.remote_tip) {
+    return { verdict: "UNKNOWN", reason: `${state.path} is clean, but the town's main tip could not be read to say whether it is current`, seen };
+  }
+  const side = state.against_remote;
+  const at = String(state.head).slice(0, 10);
+  const tip = String(state.remote_tip).slice(0, 10);
+  const inFlight = dirt.dirty ? ` (${dirt.files.length} tracked change${dirt.files.length > 1 ? "s" : ""} under ${humanDuration(dirtyGraceMs)} old — a write in flight)` : "";
+  if (side === "at" || clock.verdict === "OK") {
+    const where = side === "at" ? `clean and at the town's main (${at})` : `${side} the town's main (clone ${at}, main ${tip}) — inside the ${humanDuration(behindAfterMs)} pull window`;
+    return { verdict: "OK", reason: `${state.path} is ${where}${inFlight}`, seen: clock.seen };
+  }
+  const behindFor = humanDuration(nowMs - clock.seen.diverged_since);
+  const why = side === "ahead"
+    ? "it holds commits the pen never landed on the town, and the tick's --ff-only pull refuses on them"
+    : side === "diverged"
+      ? "it holds commits the pen never landed AND lacks the town's newer ones, and neither the tick nor a write can fast-forward it"
+      : "the pulls that should carry it forward are not landing";
+  return {
+    verdict: "STALE",
+    reason: `${state.path} has been ${side} the town's main for ${behindFor} (clone ${at}, main ${tip}): ${why}`,
+    seen: clock.seen,
+  };
+}
+
 export const BAD = new Set(["DOWN", "STALE"]);
 
 /**
@@ -969,6 +1061,7 @@ export async function tick({
   nowMs = Date.now(),
   config = CONFIG,
   token = null,
+  readClone = readCloneState,
 } = {}) {
   const nowIso = new Date(nowMs).toISOString();
   const probes = [];
@@ -1147,6 +1240,19 @@ export async function tick({
     // `detail` rides onto the board so the site's header popover can say "48
     // doors are missing" rather than only "failed" — postmark-site#97 reads it.
     probes.push({ key: sr.key, label: sr.label, kind: "refresh", verdict: r.verdict, reason: r.reason, ...(r.detail ? { detail: r.detail } : {}) });
+  }
+
+  // §8 — the clones the office writes through. A local read of the working
+  // tree; the reference is the town tip §3 already read over ls-remote, so
+  // this costs no request and never fetches into the clone it is judging.
+  for (const c of config.clones ?? []) {
+    const cs = classifyClone({
+      state: readClone(c.path, { remoteTip: townTip }),
+      seen: stamps[c.key] ?? null, nowMs,
+      dirtyGraceMs: config.cloneDirtyGraceMs, behindAfterMs: config.cloneBehindAfterMs, label: c.label,
+    });
+    if (cs.seen) stamps[c.key] = cs.seen;
+    probes.push({ key: c.key, label: c.label, kind: "clone", verdict: cs.verdict, reason: cs.reason, ...(cs.detail ? { detail: cs.detail } : {}) });
   }
 
   // the edges

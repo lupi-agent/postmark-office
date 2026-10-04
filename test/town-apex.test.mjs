@@ -38,9 +38,14 @@ const spy = () => { const calls = []; return { calls, call: async (tool, fields)
 const ctx = (extra = {}) => ({ schemas, schemaRequired, ...extra });
 
 // ── THE REGISTER LAW ────────────────────────────────────────────────────────
-test("THE REGISTER, 2026-08-31: the roster is the lanes' pen AND the stake gesture — post, stake, unstake", () => {
-  assert.deepEqual([...TOWN_DISPATCHABLE], ["post", "stake", "unstake"],
-    "the matrix's two directions, both built: put an ask on a lane, put stamps behind one — and take them back");
+test("THE REGISTER, 2026-09-30: the lanes' pen, the post machine's life, the reveal, and the stake gesture — post, amend, close, advance, reveal, stake, unstake", () => {
+  assert.deepEqual([...TOWN_DISPATCHABLE], ["post", "amend", "close", "advance", "reveal", "stake", "unstake"],
+    "put something up, carry it through its life (POS-288), reveal a shipped bug's critter (POS-236), put stamps behind one — and take them back");
+  assert.equal(townDispatchToolFor("reveal"), "town_reveal", "the reveal charges as its own flat verb, never as `town`");
+  assert.equal(townDispatchToolFor("amend"), "town_amend");
+  assert.equal(townDispatchToolFor("close"), "town_close");
+  assert.equal(townDispatchToolFor("advance"), "town_advance",
+    "the post machine's three charge as their own flat verbs, never as `town`");
   assert.equal(townDispatchToolFor("post"), "town_post",
     "post charges as the flat verb town_post — an apex act is never a second, uncounted door");
   assert.equal(townDispatchToolFor("stake"), "town_stake");
@@ -158,13 +163,20 @@ test("THE STAKE GESTURE DISPATCHES: stake and unstake reach their flat verbs, fi
 // says what each lane is FOR, in the five buildings' own plaques. The count is
 // the closed-union guard, so it is deliberately updated with the read rather
 // than loosened to a `>=`.
-test("THE COMMONS' READS: nineteen (thirteen + the three lanes + the quarter + marks + calendar), and each one SERVES a flat verb rather than reimplementing it", async () => {
+test("THE COMMONS' READS: twenty-two (thirteen + the three lanes + the quarter + marks + calendar + event + posts + quest), and each one SERVES a flat verb rather than reimplementing it", async () => {
   // The number is the guard, and the parenthesis is its derivation — a read born
   // unadvertised is exactly what this catches, so the count is updated by hand
   // and the sentence says which addition moved it. `marks` joined 2026-09-07
   // (lane E item 2, the walk's "what has Errant put in the world?"). `calendar`
   // joined 2026-09-24 (POS-207): what is on, what is coming, what just ended.
-  assert.equal(TOWN_READABLE.length, 19);
+  // `event` joined 2026-09-28 (POS-288): the event class's posts, which are the
+  // calendar — it serves the same flat verb, read_calendar, never a second one.
+  // `posts` and `quest` joined 2026-09-28 evening (POS-294): the one posts read
+  // that takes a class, and the quest class's alias of it — one flat verb,
+  // read_posts, with the class fixed for the alias.
+  assert.equal(TOWN_READABLE.length, 22);
+  assert.equal(TOWN_READS.quest.tool, TOWN_READS.posts.tool, "read: \"quest\" is the posts read, one answer");
+  assert.equal(TOWN_READS.event.tool, TOWN_READS.calendar.tool, "read: \"event\" is the calendar, one answer");
   for (const r of TOWN_READABLE) {
     const { calls, call } = spy();
     const out = await townApex({ read: r }, key(), ctx({ call }));
@@ -216,7 +228,7 @@ test("THE GRAMMAR: the bare call speaks the acts shape the household apex speaks
 
 test("the bare read carries every act's card and the named-not-built ledger", async () => {
   const answer = await townApex({}, key(), ctx({ call: spy().call }));
-  assert.equal(answer.acts.length, 3, "three cards — post, and the stake pair");
+  assert.equal(answer.acts.length, 7, "seven cards — post, the post machine's amend / close / advance, the reveal, and the stake pair");
   const byAct = Object.fromEntries(answer.acts.map((a) => [a.act, a]));
   assert.equal(byAct.post.dispatches_to, "town_post");
   for (const f of ["class", "slug", "body"])

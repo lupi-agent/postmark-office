@@ -22,11 +22,20 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
-import { awaitListening } from "./spawn-office.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 43891;
-const BASE = `http://127.0.0.1:${PORT}`;
+// The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+// asked for); it was the fixed 43891, a door every pool tree on the box shares.
+let PORT;
+let BASE;
 
 // The cap is five mints an hour from one address (src/server.mjs § claimMintLimited).
 const CAP = 5;
@@ -45,19 +54,19 @@ before(async () => {
     }));
   }
   seed.close();
+  const IX_ENV = await storeFor(dbPath);
   const clone = join(tmp, "town-clone");
   mkdirSync(join(clone, "tools"), { recursive: true });
   writeFileSync(join(clone, "tools", "github-ids.json"), "{}");
 
-  child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT),
+  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", dbPath, "--oauth-db", join(tmp, "oauth.db")], {
-    env: { ...process.env, OFFICE_KEYS: "statickey=keemin:wright", TOWN_CLONE: clone, TOWN_PUSH: "", PUBLIC_BASE: BASE },
+    env: { ...process.env, ...IX_ENV, OFFICE_KEYS: "statickey=keemin:wright", TOWN_CLONE: clone, TOWN_PUSH: "", PUBLIC_BASE: `http://127.0.0.1:${port}` },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  // The wait that used to live here had no `error` listener and kept no
-  // stderr, so every spawn-level fault arrived as "server never listened" with
-  // its cause thrown away. See test/spawn-office.mjs.
-  await awaitListening(child);
+  })));
+  // The wait is spawn-office.mjs § awaitListening, inside bootOnFreePort: it
+  // names the fault it was handed rather than reporting a timeout.
+  BASE = `http://127.0.0.1:${PORT}`;
 });
 
 after(async () => {

@@ -34,6 +34,9 @@ import { SCHEMA } from "../src/world-store.mjs";
 import { runLints, readLawPairing, LAW, LAW_ROOT } from "../src/world-lints.mjs";
 import { worldGraphView, resetGraphCache } from "../src/world-graph.mjs";
 import { worldStoreFixture } from "./world-graph-fixture.mjs";
+// The lints read a loaded graph; a fixture is world.db's rows, built through the
+// one construction (POS-270 lane W 3a), never opened as a file by the office.
+import { graphOf, publishWorld } from "./helpers/world-rows.mjs";
 
 // ── THE MARKS, AS THE TOWN WROTE THEM ────────────────────────────────────────
 //
@@ -131,7 +134,7 @@ function emptyStore(name) {
 // ── the citation ─────────────────────────────────────────────────────────────
 
 test("every lint carries the mark it enforces and that mark's claim, verbatim", async () => {
-  const { lints } = await runLints({ dbPath: emptyStore("cited.db"), treePath: worldTree("cited") });
+  const { lints } = await runLints({ store: graphOf(emptyStore("cited.db")), treePath: worldTree("cited") });
 
   // "The standing questions: each invariant is a class here, its mechanic
   //  naming the code that asks it — a question no code asks is not being asked."
@@ -172,7 +175,7 @@ test("CAN-FAIL — a moved dial is an L0 RED that names which lint moved", async
   // all eight findings go on quoting law the town no longer holds, and every
   // one of them still reads clean.
   const bent = worldTree("bent-dial", { bend: (m) => (m.slug === "the-reaching-mechanic" ? { lint: "L9" } : {}) });
-  const { lints } = await runLints({ dbPath: emptyStore("bent-dial.db"), treePath: bent });
+  const { lints } = await runLints({ store: graphOf(emptyStore("bent-dial.db")), treePath: bent });
 
   const l0 = lints.find((l) => l.id === "L0");
   assert.ok(l0, "a drifted pairing must SPEAK — a silent skip is the failure this lint exists to prevent");
@@ -190,7 +193,7 @@ test("CAN-FAIL — a moved dial is an L0 RED that names which lint moved", async
 
 test("CAN-FAIL — a rewritten claim is an L0 RED: the quote must stay verbatim", async () => {
   const bent = worldTree("bent-claim", { bend: (m) => (m.slug === "the-conforming-instance" ? { claim: "Every instance conforms to its class, more or less." } : {}) });
-  const { lints } = await runLints({ dbPath: emptyStore("bent-claim.db"), treePath: bent });
+  const { lints } = await runLints({ store: graphOf(emptyStore("bent-claim.db")), treePath: bent });
 
   const l0 = lints.find((l) => l.id === "L0");
   assert.ok(l0, "a rewritten claim must speak");
@@ -226,7 +229,7 @@ test("no invariant family in the tree is `unavailable`, never a manufactured red
   // dressing a missing clone up as a constitutional disagreement; a green would
   // be it claiming a check it never ran. Both are the laundering it exists to
   // refuse, and since 2026-08-23 silence is too — the row is always there.
-  const { lints } = await runLints({ dbPath: emptyStore("no-family.db"), treePath: bare });
+  const { lints } = await runLints({ store: graphOf(emptyStore("no-family.db")), treePath: bare });
   const l0 = lints.find((l) => l.id === "L0");
   assert.ok(l0, "L0 speaks at every hydration, including one that checked nothing");
   assert.equal(l0.verdict, "N/A");
@@ -259,7 +262,9 @@ test("law and law_text survive lint_findings into the /world/graph payload", () 
   }));
   db.close();
 
-  const view = worldGraphView({ dbPath: path });
+  publishWorld(path);
+  resetGraphCache();
+  const view = worldGraphView({});
   const l1 = view.lints.find((l) => l.lint === "L1");
   assert.equal(l1.law, "the-town/the-reaching-mechanic");
   assert.equal(l1.law_text, markOf("L1").claim);
@@ -351,7 +356,7 @@ test("CAN-FAIL — one mechanic reaching nothing is L1 RED, however many sibling
   //  mechanic reaches nothing is ink." (the-reaching-mechanic). Every. The mark
   //  does not grade on a curve, so one resolved sibling cannot absolve the rest.
   const { dbPath, treePath } = mechanicWorld("one-unreached");
-  const l1 = l1Of((await runLints({ dbPath, treePath })).lints);
+  const l1 = l1Of((await runLints({ store: graphOf(dbPath), treePath })).lints);
 
   assert.equal(l1.verdict, "RED", "a mechanic that reaches nothing is ink, and ink is red");
   const byName = Object.fromEntries(l1.rows.map((r) => [r.mechanic, r]));
@@ -369,7 +374,7 @@ test("THE FLIP — declare the missing mechanic's module and the same store goes
   // Same two mechanics, same marks, same office. The only change is that
   // ENGINE.md now says where tide-turning runs, and the office loads it.
   const { dbPath, treePath } = mechanicWorld("both-reached", { resolved: true });
-  const l1 = l1Of((await runLints({ dbPath, treePath })).lints);
+  const l1 = l1Of((await runLints({ store: graphOf(dbPath), treePath })).lints);
 
   assert.equal(l1.verdict, "GREEN", "both mechanics reach running declared code; nothing is left to be red about");
   assert.deepEqual(l1.rows.map((r) => r.verdict).sort(), ["GREEN", "GREEN"]);
@@ -381,7 +386,7 @@ test("the leniency is gone: a set that is only PART underivable no longer passes
   // creep back: `underivable.length === claimed.length ? RED : GREEN` would
   // have returned GREEN here, because 1 !== 2.
   const { dbPath, treePath } = mechanicWorld("part-underivable");
-  const l1 = l1Of((await runLints({ dbPath, treePath })).lints);
+  const l1 = l1Of((await runLints({ store: graphOf(dbPath), treePath })).lints);
   const claimed = l1.rows.filter((r) => r.carried_by.length);
   const underivable = claimed.filter((r) => r.verdict === "UNDERIVABLE");
 
@@ -399,7 +404,7 @@ test("L3 and L4 disclose that their watch lists are CLOSED", async () => {
   // constants and one class. logos/the-invariant requires an invariant to name
   // "its method and its limits", so the gap between the mark's every and the
   // code's few has to be stated, not left for a reader to discover.
-  const { lints } = await runLints({ dbPath: emptyStore("closed.db"), treePath: worldTree("closed") });
+  const { lints } = await runLints({ store: graphOf(emptyStore("closed.db")), treePath: worldTree("closed") });
 
   for (const id of ["L3", "L4"]) {
     const l = lints.find((x) => x.id === id);
@@ -409,7 +414,7 @@ test("L3 and L4 disclose that their watch lists are CLOSED", async () => {
   // and each names what it is closed AROUND, so "closed" is a fact and not a mood
   const l3 = lints.find((x) => x.id === "L3");
   assert.match(l3.limits, /three constants long/);
-  for (const c of ["405", "25", "15"]) assert.ok(l3.limits.includes(c), `L3 must name the constant ${c} it watches`);
+  for (const c of ["405", "25", "60"]) assert.ok(l3.limits.includes(c), `L3 must name the constant ${c} it watches`);
   assert.match(lints.find((x) => x.id === "L4").limits, /CLOSED, and it is one class: the parcel/);
 });
 
@@ -421,7 +426,7 @@ test("a clean run emits exactly eight verdict rows, and L0 is GREEN among them",
   // run and a run that never happened indistinguishable, which is the noise
   // floor hidden in the one place this lint cannot see it.
   const { dbPath, treePath } = mechanicWorld("eight-rows", { resolved: true });
-  const { lints } = await runLints({ dbPath, treePath });
+  const { lints } = await runLints({ store: graphOf(dbPath), treePath });
 
   assert.equal(lints.length, 8, `the verdict set is eight rows: ${lints.map((l) => l.id).join(",")}`);
   assert.deepEqual(lints.map((l) => l.id).sort(), ["L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7"]);
@@ -441,7 +446,7 @@ test("CAN-FAIL — an unreadable source file turns that same clean run RED", asy
   // corpus quietly.
   const { dbPath, treePath } = mechanicWorld("swept-file", { resolved: true });
   rmSync(join(treePath, "tools", "the-tide.mjs"), { force: true });
-  const { lints } = await runLints({ dbPath, treePath });
+  const { lints } = await runLints({ store: graphOf(dbPath), treePath });
 
   const l0 = lints.find((l) => l.id === "L0");
   assert.equal(l0.verdict, "RED");
@@ -456,7 +461,7 @@ test("no finding cites §2.10 — the pointers are re-anchored to the invariants
   // WORLD/ENGINE.md carries no numbered sections at all, so a limits string
   // citing §2.10 sent every reader of that finding to nothing. L4's was the last
   // one inside a finding; the rest lived in world-hydrate.mjs and world-store.mjs.
-  const { lints } = await runLints({ dbPath: emptyStore("swept.db"), treePath: worldTree("swept") });
+  const { lints } = await runLints({ store: graphOf(emptyStore("swept.db")), treePath: worldTree("swept") });
   for (const l of lints)
     for (const field of ["headline", "method", "limits"])
       assert.ok(!/§\s*2\.10/.test(l[field] ?? ""), `${l.id}.${field} still points at §2.10`);
@@ -507,14 +512,14 @@ test("L4 reads the parcel contract off the class mark's DIAL, not off a geometry
   // The dial is the only place the number lives on a class mark. A lint that
   // reads `attr.w` here reads null and falls through to whatever it was going
   // to guess — which is how the retired-node bug stayed invisible.
-  const { lints } = await runLints({ dbPath: parcelStore("l4-dial.db", { dials: { extent_m: 25 } }), treePath: worldTree("l4-dial") });
+  const { lints } = await runLints({ store: graphOf(parcelStore("l4-dial.db", { dials: { extent_m: 25 } })), treePath: worldTree("l4-dial") });
   const l4 = l4of(lints);
   assert.equal(l4.verdict, "GREEN", "a 25x25 parcel conforms to a 25 dial");
   assert.match(l4.method, /dials\.extent_m/, "L4 must say it reads the dial, since that is what it now does");
 
   // AND IT MOVES WITH THE RECORD, which `?? 25` never could: same parcel, a
   // class that declares 40, and the verdict has to change.
-  const moved = await runLints({ dbPath: parcelStore("l4-moved.db", { dials: { extent_m: 40 } }), treePath: worldTree("l4-moved") });
+  const moved = await runLints({ store: graphOf(parcelStore("l4-moved.db", { dials: { extent_m: 40 } })), treePath: worldTree("l4-moved") });
   assert.equal(l4of(moved.lints).verdict, "RED",
     "with the contract at 40 and the parcel at 25, a lint actually reading the contract goes red — the hardcoded 25 could not");
   assert.match(l4of(moved.lints).headline, /not 40x40/);
@@ -524,7 +529,7 @@ test("L4 rules N/A, never GREEN, when the parcel contract cannot be read", async
   // THE CONTROL FOR THE WHOLE BUG. Under the old code this store — no class
   // declaration at all — produced a confident GREEN off the hardcoded 25.
   // Silence about a contract is not evidence of conformity to it.
-  const { lints } = await runLints({ dbPath: parcelStore("l4-gone.db", { classId: null }), treePath: worldTree("l4-gone") });
+  const { lints } = await runLints({ store: graphOf(parcelStore("l4-gone.db", { classId: null })), treePath: worldTree("l4-gone") });
   const l4 = l4of(lints);
   assert.equal(l4.verdict, "N/A", "with no declaration to read, there is no verdict to give");
   assert.match(l4.headline, /no verdict/);
@@ -532,7 +537,7 @@ test("L4 rules N/A, never GREEN, when the parcel contract cannot be read", async
   assert.ok(l4.rows.every((r) => r.conforms === null), "an unmeasured parcel is not a failing one");
 
   // and the same when the node stands but declares no numeric dial
-  const noDial = await runLints({ dbPath: parcelStore("l4-nodial.db", { dials: {} }), treePath: worldTree("l4-nodial") });
+  const noDial = await runLints({ store: graphOf(parcelStore("l4-nodial.db", { dials: {} })), treePath: worldTree("l4-nodial") });
   assert.equal(l4of(noDial.lints).verdict, "N/A");
   assert.match(l4of(noDial.lints).headline, /declares no numeric extent_m dial/);
 });
@@ -542,7 +547,7 @@ test("neither L3 nor L4 keys on the retired the-town/parcel-class", async () => 
   // store whose declaration stands ONLY at the retired id must not satisfy
   // either lint. If some later hand repoints one of them back, this reds.
   const { lints } = await runLints({
-    dbPath: parcelStore("l4-retired.db", { classId: "the-town/parcel-class" }),
+    store: graphOf(parcelStore("l4-retired.db", { classId: "the-town/parcel-class" })),
     treePath: worldTree("l4-retired"),
   });
   assert.equal(l4of(lints).verdict, "N/A",
@@ -568,7 +573,7 @@ test("L3 reports a constitutional number no engine reads, and takes a flagged on
         implements: ["flagged_cap is ASPIRATIONAL — declared ahead of its wiring; nothing reads it yet"] }],
     ],
   });
-  const { lints } = await runLints({ dbPath, treePath: worldTree("l3-dials") });
+  const { lints } = await runLints({ store: graphOf(dbPath), treePath: worldTree("l3-dials") });
   const l3 = l3of(lints);
 
   const quiet = l3.declared.find((d) => d.slot === "unread_cap");
@@ -588,7 +593,7 @@ test("L3 reports a constitutional number no engine reads, and takes a flagged on
     extra: [["the-town/sneak", { class: "sneak", path: FIXTURE_WORKS + "/postmark-edge/sneak", dials: { other_cap: 11 },
       implements: ["something_else is ASPIRATIONAL — declared ahead of its wiring"] }]],
   });
-  const l3b = l3of((await runLints({ dbPath: laundered, treePath: worldTree("l3-launder") })).lints);
+  const l3b = l3of((await runLints({ store: graphOf(laundered), treePath: worldTree("l3-launder") })).lints);
   assert.equal(l3b.declared.find((d) => d.slot === "other_cap").verdict, "orphan",
     "the flag must name the dial it excuses");
 });
@@ -604,7 +609,7 @@ test("L3 walks a mark planted since the last fold — standing is read from the 
     extra: [["the-town/fresh", { class: "fresh", in_works: false,
       path: FIXTURE_WORKS + "/postmark-edge/fresh", dials: { fresh_cap: 13 } }]],
   });
-  const l3 = l3of((await runLints({ dbPath, treePath: worldTree("l3-fresh") })).lints);
+  const l3 = l3of((await runLints({ store: graphOf(dbPath), treePath: worldTree("l3-fresh") })).lints);
   assert.ok(l3.declared.some((d) => d.slot === "fresh_cap"),
     "a just-planted dial must be walked — in_works: false is the fold being stale, not the mark being outside the works");
 });
@@ -613,7 +618,7 @@ test("L3 discloses that its dial->code half is OPEN, beside the closed one", asy
   // logos/the-invariant: an invariant "names its method and its limits". The
   // two halves have different limits and both have to be stated — the closed
   // watch list above, and the name-matching this half rules on.
-  const l3 = l3of((await runLints({ dbPath: emptyStore("l3-open.db"), treePath: worldTree("l3-open") })).lints);
+  const l3 = l3of((await runLints({ store: graphOf(emptyStore("l3-open.db")), treePath: worldTree("l3-open") })).lints);
   assert.match(l3.limits, /DIAL->CODE HALF IS NOT CLOSED/, "the open half must say it is open");
   assert.match(l3.method, /DIAL -> CODE/, "and the method must describe both directions");
   // the three limits that actually bite, each named rather than discovered later

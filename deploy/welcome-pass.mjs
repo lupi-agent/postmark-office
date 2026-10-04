@@ -71,7 +71,16 @@
 // EXIT: 0 when every owed bundle was written (or none was owed), 1 when any
 // refused — with each refusal named. The tick treats a non-zero as non-fatal and
 // says so in the journal: a household waits one crossing, it does not lose a
-// bundle, and the ledger is never left half-verified.
+// bundle.
+//
+// What keeps the ledger from being left half-verified is the TICK, not this
+// file. This pass appends and returns; on 2026-09-28 its line then sat
+// uncommitted in the town clone for 4.5 h because the verify after it failed on
+// an older line and nothing put the file back (POS-295). The tick now refuses to
+// run the pass onto a ledger that arrives red, and restores the ledger's arrival
+// bytes from an EXIT trap when the verify after it fails (deploy/office-tick.sh
+// § WHOLE OR NOTHING). A bundle rolled back that way is still owed, so the plan
+// names the household again on the next tick.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";

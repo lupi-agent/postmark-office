@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { installActsPen, uninstallActsPen } from "./acts-pen-stub.mjs";
 import {
   hostAtOffice, cancelAtOffice, rsvpAtOffice, calendarAtOffice, eventActs, announceAtOffice,
+  postAtTown, amendAtTown, closeAtTown, advanceAtTown,
 } from "../src/events-store.mjs";
 import { phaseAt, judgeInterval, EVENT_MAX_DAYS, FELL_BACK_NO_ECHO, BUDGET_DEFAULT, SECRET_NOTE, ANNOUNCE_TEXT_MAX } from "../src/events.mjs";
 import { compareRebuild, dryRun, NEVER_TOUCHED_LINE } from "../world2/tools/events-rebuild.mjs";
@@ -36,41 +37,60 @@ function txKeys(st) {
 }
 
 function eventTables() {
-  const events = new Map();
-  const rsvps = new Map();
+  // `posts` and `responses` since 028 (POS-288). `events` is keyed by id and
+  // `rsvps` by "event handle" as before, holding rows in the 026 shape, so the
+  // assertions below read the calendar exactly as they did: the stub keeps the
+  // post-shaped row it was written and answers each view from it.
+  const posts = new Map();
+  const responses = new Map();
   const harnesses = new Map();   // household_harnesses, by handle
-  const EV = ["id", "title", "invitation", "host", "household", "place_mark", "place_x", "place_y",
-    "doors_open", "starts", "ends", "revised", "cancelled", "hosted_act", "last_act"];
+  const PC = ["id", "class", "title", "body", "author", "household", "place_mark", "place_x", "place_y",
+    "starts", "ends", "state", "fields", "revised", "posted_act", "last_act"];
+  const asJson = (v) => (typeof v === "string" ? JSON.parse(v) : v);
+  const eventOf = (r) => ({ id: r.id, title: r.title, invitation: r.body, host: r.author, household: r.household,
+    place_mark: r.place_mark, place_x: r.place_x, place_y: r.place_y, doors_open: r.fields.doors_open,
+    starts: r.starts, ends: r.ends, revised: r.revised, cancelled: r.state === "cancelled",
+    hosted_act: r.posted_act, last_act: r.last_act });
+  const rsvpOf = (r) => ({ event: r.post, handle: r.handle, household: r.household,
+    harness: r.fields.harness, budget: r.fields.budget, fell_back: r.fields.fell_back ?? null, act: r.act });
+  // The two views the assertions read, derived on every look (never a second store).
+  const events = { get: (id) => (posts.has(id) ? eventOf(posts.get(id)) : undefined), get size() { return posts.size; },
+    values: () => [...posts.values()].map(eventOf)[Symbol.iterator](), has: (id) => posts.has(id) };
+  const rsvps = { get: (k) => { const [e, h] = k.split(" "); const r = responses.get(`${e} ${h} rsvp`); return r ? rsvpOf(r) : undefined; },
+    get size() { return responses.size; }, values: () => [...responses.values()].map(rsvpOf)[Symbol.iterator]() };
   const also = [
-    [/^INSERT INTO events/i, (q, p) => {
-      if (events.has(p[0])) throw new Error(`duplicate key value violates unique constraint "events_pkey"`);
-      events.set(p[0], Object.fromEntries(EV.map((k, i) => [k, p[i]])));
+    [/^INSERT INTO posts/i, (q, p) => {
+      if (posts.has(p[0])) throw new Error(`duplicate key value violates unique constraint "posts_pkey"`);
+      const r = Object.fromEntries(PC.map((k, i) => [k, p[i]]));
+      r.fields = asJson(r.fields);
+      posts.set(p[0], r);
       return { rows: [], rowCount: 1 };
     }],
-    [/^UPDATE events SET/i, (q, p) => {
-      const r = events.get(p[0]);
-      Object.assign(r, { title: p[1], invitation: p[2], place_mark: p[3], place_x: p[4], place_y: p[5],
-        doors_open: p[6], starts: p[7], ends: p[8], revised: p[9], cancelled: p[10], last_act: p[11] });
+    [/^UPDATE posts SET/i, (q, p) => {
+      const r = posts.get(p[0]);
+      Object.assign(r, { title: p[1], body: p[2], place_mark: p[3], place_x: p[4], place_y: p[5],
+        starts: p[6], ends: p[7], state: p[8], fields: asJson(p[9]), revised: p[10], last_act: p[11] });
       return { rows: [], rowCount: 1 };
     }],
-    [/FROM events WHERE id = \$1/i, (q, p) => {
-      const r = events.get(p[0]);
-      return { rows: r ? [{ ...r }] : [], rowCount: r ? 1 : 0 };
+    [/FROM posts WHERE id = \$1 AND class = \$2/i, (q, p) => {
+      const r = posts.get(p[0]);
+      const hit = r && r.class === p[1];
+      return { rows: hit ? [{ ...r, fields: { ...r.fields } }] : [], rowCount: hit ? 1 : 0 };
     }],
-    [/FROM events WHERE id LIKE \$1/i, (q, p) => {
+    [/FROM posts WHERE id LIKE \$1/i, (q, p) => {
       const pre = String(p[0]).replace(/%$/, "");
-      const rows = [...events.values()].filter((r) => r.id.startsWith(pre)).map((r) => ({ id: r.id, cancelled: r.cancelled, ends: r.ends }));
+      const rows = [...posts.values()].filter((r) => r.id.startsWith(pre)).map((r) => ({ id: r.id, state: r.state, ends: r.ends }));
       return { rows, rowCount: rows.length };
     }],
-    [/FROM events WHERE ends > \$1 ORDER BY starts, id/i, (q, p) => {
-      const rows = [...events.values()].filter((r) => Date.parse(r.ends) > Date.parse(p[0]))
-        .sort((a, b) => Date.parse(a.starts) - Date.parse(b.starts) || a.id.localeCompare(b.id)).map((r) => ({ ...r }));
+    [/FROM posts WHERE class = \$1 AND ends > \$2 ORDER BY starts, id/i, (q, p) => {
+      const rows = [...posts.values()].filter((r) => r.class === p[0] && Date.parse(r.ends) > Date.parse(p[1]))
+        .sort((a, b) => Date.parse(a.starts) - Date.parse(b.starts) || a.id.localeCompare(b.id)).map((r) => ({ ...r, fields: { ...r.fields } }));
       return { rows, rowCount: rows.length };
     }],
-    [/^INSERT INTO event_rsvps/i, (q, p) => {
-      if (/\baddress\b/i.test(q)) throw new Error("event_rsvps has no address column (026: it lives on household_harnesses)");
-      const [event, handle, household, harness, budget, fell_back, act] = p;
-      rsvps.set(`${event} ${handle}`, { event, handle, household, harness, budget, fell_back, act });
+    [/^INSERT INTO responses/i, (q, p) => {
+      if (/address/i.test(q)) throw new Error("responses has no address column (026: it lives on household_harnesses)");
+      const [post, handle, household, kind, state, fields, act] = p;
+      responses.set(`${post} ${handle} ${kind}`, { post, handle, household, kind, state, fields: asJson(fields), act });
       return { rows: [], rowCount: 1 };
     }],
     // THE HARNESS ROW, with 026's row policy modelled rather than shrugged at:
@@ -95,24 +115,25 @@ function eventTables() {
         : { handle, household, kind, address, secret, registered_at, rotated_at: null });
       return { rows: [], rowCount: 1 };
     }],
-    [/^SELECT \* FROM events ORDER BY id$/i, () => {
-      const rows = [...events.values()].sort((a, b) => a.id.localeCompare(b.id)).map((r) => ({ ...r }));
+    [/^SELECT \* FROM posts WHERE class = \$1 ORDER BY id$/i, (q, p) => {
+      const rows = [...posts.values()].filter((r) => r.class === p[0]).sort((a, b) => a.id.localeCompare(b.id)).map((r) => ({ ...r, fields: { ...r.fields } }));
       return { rows, rowCount: rows.length };
     }],
-    [/^SELECT \* FROM event_rsvps ORDER BY event, handle$/i, () => {
-      const rows = [...rsvps.values()].sort((a, b) => a.event.localeCompare(b.event) || a.handle.localeCompare(b.handle)).map((r) => ({ ...r }));
+    [/^SELECT \* FROM responses WHERE kind = \$1 ORDER BY post, handle$/i, (q, p) => {
+      const rows = [...responses.values()].filter((r) => r.kind === p[0])
+        .sort((a, b) => a.post.localeCompare(b.post) || a.handle.localeCompare(b.handle)).map((r) => ({ ...r, fields: { ...r.fields } }));
       return { rows, rowCount: rows.length };
     }],
-    [/SELECT handle FROM event_rsvps WHERE event = \$1/i, (q, p) => {
-      const rows = [...rsvps.values()].filter((r) => r.event === p[0]).map((r) => ({ handle: r.handle })).sort((a, b) => a.handle.localeCompare(b.handle));
+    [/SELECT handle FROM responses WHERE post = \$1 AND kind = \$2/i, (q, p) => {
+      const rows = [...responses.values()].filter((r) => r.post === p[0] && r.kind === p[1]).map((r) => ({ handle: r.handle })).sort((a, b) => a.handle.localeCompare(b.handle));
       return { rows, rowCount: rows.length };
     }],
-    [/FROM event_rsvps WHERE event = ANY\(\$1\)/i, (q, p) => {
-      const rows = [...rsvps.values()].filter((r) => p[0].includes(r.event)).map((r) => ({ event: r.event, handle: r.handle }));
+    [/FROM responses WHERE post = ANY\(\$1\) AND kind = \$2/i, (q, p) => {
+      const rows = [...responses.values()].filter((r) => p[0].includes(r.post) && r.kind === p[1]).map((r) => ({ post: r.post, handle: r.handle }));
       return { rows, rowCount: rows.length };
     }],
   ];
-  return { events, rsvps, harnesses, also };
+  return { events, rsvps, posts, responses, harnesses, also };
 }
 
 const MARKS = [
@@ -151,7 +172,8 @@ test("falsifier · a host act with a standing mark answers the id and the absolu
   assert.deepEqual(r.event.place, { mark: "current-the-reader/the-snug-harbour", name: "the-snug-harbour", x: -350, y: 4978 });
   assert.equal(pen.rows().length, 1);
   const act = pen.rows()[0];
-  assert.equal(act.class, "event"); assert.equal(act.action, "host"); assert.equal(act.object, r.event.id);
+  // `post` since POS-288: the household's host writes the post machine's act.
+  assert.equal(act.class, "event"); assert.equal(act.action, "post"); assert.equal(act.object, r.event.id);
   assert.equal(act.at_anchor, "current-the-reader/the-snug-harbour", "the act's anchor is the mark (an anchor and an offset, never a bare x,y)");
   assert.deepEqual([act.at_dx, act.at_dy], [0, 0]);
 
@@ -239,7 +261,8 @@ test("amend · host with event: changes only what was sent, counts the revision,
   assert.deepEqual(r.amended, ["ends"]);
   assert.equal(r.event.revised, 1);
   assert.equal(r.event.title, "The Snug Harbour Grand Opening");
-  assert.deepEqual(pen.rows().map((a) => a.action), ["host", "amend-event"]);
+  assert.deepEqual(pen.rows().map((a) => a.action), ["post", "amend"]);
+  assert.deepEqual(Object.keys(JSON.parse(pen.rows()[1].payload)).sort(), ["changed", "ends", "post"], "the amend act carries only the field that changed");
   // someone else's event is not theirs to change
   await refusedWith(hostAtOffice({ event: event.id, title: "mine now" }, ERRANT), 403, /not yours to change/);
   assert.equal(pen.rows().length, 2);
@@ -442,7 +465,7 @@ test("the row policy · the harness row is read and written only inside a transa
 });
 
 test("the secret never enters a log line or an error: a failing write after the mint answers the pen's fixed sentence", async () => {
-  const { pen } = setup({ failOn: (q) => /^INSERT INTO event_rsvps/i.test(q) });
+  const { pen } = setup({ failOn: (q) => /^INSERT INTO responses/i.test(q) });
   const { event } = await hostAtOffice(HOST(Date.now()), WRIGHT);
   const lines = [];
   const keep = { log: console.log, error: console.error, warn: console.warn, info: console.info };
@@ -463,7 +486,7 @@ test("the secret never enters a log line or an error: a failing write after the 
 // ── the rebuild ─────────────────────────────────────────────────────────────
 
 test("rebuild · the tables equal what the act log alone derives — and a hand-edited row is caught", async () => {
-  const { pen, events, rsvps } = setup();
+  const { pen, posts, responses } = setup();
   const now = Date.now();
   const a = await hostAtOffice(HOST(now), WRIGHT);
   await hostAtOffice({ event: a.event.id, title: "The Snug Harbour, opened" }, WRIGHT);
@@ -473,40 +496,54 @@ test("rebuild · the tables equal what the act log alone derives — and a hand-
   await rsvpAtOffice({ event: a.event.id, budget: 3 }, ERRANT);   // a second RSVP replaces the first
   const acts = await eventActs(pen);
   assert.equal(acts.length, 6);
-  const stored = () => ({ events: [...events.values()], rsvps: [...rsvps.values()] });
+  const stored = () => ({ posts: [...posts.values()], responses: [...responses.values()] });
   const ok = compareRebuild(stored(), acts);
   assert.deepEqual(ok.drift, []); assert.equal(ok.equal, true);
-  assert.deepEqual(ok.counts, { acts: 6, events: 2, event_rsvps: 1 });
-  events.get(a.event.id).title = "edited by hand";
+  assert.deepEqual(ok.counts, { acts: 6, posts: 2, responses: 1 });
+  posts.get(a.event.id).title = "edited by hand";
   const bad = compareRebuild(stored(), acts);
   assert.equal(bad.equal, false);
   assert.match(bad.drift[0], /title: stored "edited by hand"/);
 });
 
-// 026's own column lists, read from the migration, so a column added there and
-// not compared here reds rather than passing as "equal".
+// The column lists, read from the migrations, so a column added there and not
+// compared here reds rather than passing as "equal": 026 creates the tables,
+// and 028 renames them (events → posts, event_rsvps → responses) and renames,
+// adds and drops columns, each an ALTER this reads back in order.
 function columnsOf(table) {
-  const sql = readFileSync(join(HERE, "..", "world2", "schema", "026_events.sql"), "utf8").replace(/\r\n/g, "\n");
-  const body = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(([\\s\\S]*?)\\n\\);`).exec(sql)[1];
-  return body.split("\n").map((l) => l.trim()).filter((l) => /^[a-z_]+\s/.test(l) && !/^(CONSTRAINT|PRIMARY)\b/i.test(l)).map((l) => l.split(/\s+/)[0]);
+  const read = (f) => readFileSync(join(HERE, "..", "world2", "schema", f), "utf8").replace(/\r\n/g, "\n");
+  const born = { posts: "events", responses: "event_rsvps" }[table] ?? table;
+  const body = new RegExp(`CREATE TABLE IF NOT EXISTS ${born} \\(([\\s\\S]*?)\\n\\);`).exec(read("026_events.sql"))[1];
+  let cols = body.split("\n").map((l) => l.trim()).filter((l) => /^[a-z_]+\s/.test(l) && !/^(CONSTRAINT|PRIMARY)\b/i.test(l)).map((l) => l.split(/\s+/)[0]);
+  if (born === table) return cols;
+  for (const m of read("028_posts.sql").matchAll(new RegExp(`ALTER TABLE ${table} (RENAME COLUMN (\\w+) TO (\\w+)|ADD COLUMN (\\w+)|DROP COLUMN (\\w+))`, "g"))) {
+    if (m[2]) cols = cols.map((c) => (c === m[2] ? m[3] : c));
+    else if (m[4]) cols.push(m[4]);
+    else cols = cols.filter((c) => c !== m[5]);
+  }
+  return cols;
 }
 
-test("rebuild · restores and compares EVERY column of events and event_rsvps — a hand edit to any one of them is caught", async () => {
-  const { pen, events, rsvps } = setup();
+test("rebuild · restores and compares EVERY column of posts and responses — a hand edit to any one of them is caught", async () => {
+  const { pen, posts, responses } = setup();
   const now = Date.now();
   const a = await hostAtOffice(HOST(now), WRIGHT);
   await rsvpAtOffice({ event: a.event.id, harness: { kind: "webhook", url: "https://hooks.example.org/z" } }, ERRANT, { fetchImpl: echoing([]) });
   const acts = await eventActs(pen);
-  const evCols = columnsOf("events"), rsCols = columnsOf("event_rsvps");
-  assert.ok(evCols.length >= 15 && rsCols.length >= 7, `${evCols} / ${rsCols}`);
-  assert.ok(!rsCols.includes("address"), "event_rsvps still has an address column");
-  const fresh = () => ({ events: [...events.values()].map((r) => ({ ...r })), rsvps: [...rsvps.values()].map((r) => ({ ...r })) });
+  const evCols = columnsOf("posts"), rsCols = columnsOf("responses");
+  assert.deepEqual([...evCols].sort(), ["author", "body", "class", "ends", "fields", "household", "id", "last_act", "place_mark",
+    "place_x", "place_y", "posted_act", "revised", "starts", "state", "title"], `${evCols}`);
+  assert.deepEqual([...rsCols].sort(), ["act", "fields", "handle", "household", "kind", "post", "state"], `${rsCols}`);
+  assert.ok(!rsCols.includes("address"), "responses has an address column");
+  const fresh = () => ({ posts: [...posts.values()].map((r) => ({ ...r, fields: { ...r.fields } })),
+    responses: [...responses.values()].map((r) => ({ ...r, fields: { ...r.fields } })) });
   assert.equal(compareRebuild(fresh(), acts).equal, true);
-  for (const [table, cols, key] of [["events", evCols, "events"], ["event_rsvps", rsCols, "rsvps"]]) {
+  for (const [table, cols, key] of [["posts", evCols, "posts"], ["responses", rsCols, "responses"]]) {
     for (const c of cols) {
       const s = fresh();
       const r = s[key][0];
-      r[c] = /^(doors_open|starts|ends)$/.test(c) ? new Date(Date.parse(r[c]) + 12345).toISOString()
+      r[c] = /^(starts|ends)$/.test(c) ? new Date(Date.parse(r[c]) + 12345).toISOString()
+        : c === "fields" ? { ...r[c], edited: true }
         : typeof r[c] === "number" ? r[c] + 7 : typeof r[c] === "boolean" ? !r[c] : `${r[c]}-edited`;
       const out = compareRebuild(s, acts);
       assert.equal(out.equal, false, `${table}.${c} was edited and the rebuild called it equal`);
@@ -525,7 +562,7 @@ test("rebuild · the dry run asks the store for the event acts and the two table
   assert.equal(out.equal, true, out.drift.join("; "));
   assert.deepEqual(out.never_touched, ["household_harnesses"]);
   assert.match(NEVER_TOUCHED_LINE, /never read or touched: household_harnesses/);
-  assert.ok(asked.some((q) => /FROM event_rsvps/.test(q)) && asked.some((q) => /FROM events/.test(q)) && asked.some((q) => /FROM acts/.test(q)), asked.join(" | "));
+  assert.ok(asked.some((q) => /FROM responses/.test(q)) && asked.some((q) => /FROM posts/.test(q)) && asked.some((q) => /FROM acts/.test(q)), asked.join(" | "));
   assert.deepEqual(asked.filter((q) => /household_harnesses/i.test(q)), []);
 });
 
@@ -657,15 +694,15 @@ test("announce · uncapped by default — twelve on one event are all taken; wit
 });
 
 test("announce · the rebuild still equals the tables: an announcement changes no row", async () => {
-  const { pen, events, rsvps } = setup();
+  const { pen, posts, responses } = setup();
   const now = Date.now();
   const a = await hostAtOffice(HOST(now), WRIGHT, { now });
   await rsvpAtOffice({ event: a.event.id }, ERRANT, { now });
   await announceAtOffice({ event: a.event.id, text: "hello" }, WRIGHT, { now, env: noCap() });
   const acts = await eventActs(pen);
-  const out = compareRebuild({ events: [...events.values()], rsvps: [...rsvps.values()] }, acts);
+  const out = compareRebuild({ posts: [...posts.values()], responses: [...responses.values()] }, acts);
   assert.equal(out.equal, true, out.drift.join("; "));
-  assert.deepEqual(out.counts, { acts: 3, events: 1, event_rsvps: 1 });
+  assert.deepEqual(out.counts, { acts: 3, posts: 1, responses: 1 });
 });
 
 test("the household door dispatches announce", async () => {
@@ -698,4 +735,162 @@ test("test/fixtures/calendar.sample.json has the live read's keys, at the top an
     assert.deepEqual(keys(e.rsvps), keys(liveEvent.rsvps));
     assert.equal(e.phase, phaseAt(e, Date.parse(sample.as_of)), `sample event ${e.id}'s phase is not the office's`);
   }
+});
+
+// ── THE POST MACHINE AT THE TOWN DOOR (POS-288) ─────────────────────────────
+//
+// Keemin, 2026-09-27 (the Posts project, § The shape): one record with a life,
+// every change an act, one door. The gate on POS-288: the calendar runs
+// unchanged for residents on the general machine; an amend that changes one
+// field changes only that field; the author hears every outcome.
+
+const TOWN_EVENT = (now, extra = {}) => ({ class: "event", title: "Office Hours", body: "Come by with a question.",
+  place: { at: { x: 120, y: 64 } }, doors_open: iso(now + 0.5 * H), starts: iso(now + 1 * H), ends: iso(now + 3 * H), ...extra });
+
+test("post machine · town { do: \"post\", class: \"event\" } writes a `post` act and a posts row the calendar reads — with the post's names beside the calendar's", async () => {
+  const { pen, posts } = setup();
+  const now = Date.now();
+  const r = await postAtTown(TOWN_EVENT(now), WRIGHT, { now });
+  assert.equal(r.post.id, "wright/office-hours");
+  assert.match(r.receipt, /^posted: wright\/office-hours \(an event\)/);
+  assert.match(r.read, /town \{ read: "event", args: \{ post: "wright\/office-hours" \} \}/);
+  const act = pen.rows()[0];
+  assert.deepEqual([act.class, act.action, act.object], ["event", "post", "wright/office-hours"]);
+  const p = JSON.parse(act.payload);
+  assert.deepEqual(Object.keys(p).sort(), ["body", "class", "ends", "fields", "place", "post", "starts", "title"]);
+  assert.deepEqual(p.fields, { doors_open: iso(now + 0.5 * H) }, "doors_open is the event class's own field");
+  const row = posts.get("wright/office-hours");
+  assert.equal(row.class, "event"); assert.equal(row.state, "announced"); assert.equal(row.author, "wright");
+  const { event } = await calendarAtOffice({ post: "wright/office-hours" }, { now });
+  assert.equal(event.phase, "announced");
+  for (const [k, v] of [["class", "event"], ["author", "wright"], ["host", "wright"], ["body", "Come by with a question."],
+    ["invitation", "Come by with a question."], ["state", "announced"], ["cancelled", false]]) assert.deepEqual(event[k], v, k);
+  assert.deepEqual(event.fields, { doors_open: event.doors_open });
+});
+
+test("post machine · the gate: an amend that changes one field changes ONLY that field — in the act, and in the row", async () => {
+  const { pen, posts } = setup();
+  const now = Date.now();
+  await postAtTown(TOWN_EVENT(now), WRIGHT, { now });
+  const before = structuredClone(posts.get("wright/office-hours"));
+  const r = await amendAtTown({ post: "wright/office-hours", ends: iso(now + 4 * H) }, WRIGHT, { now });
+  assert.deepEqual(r.amended, ["ends"]);
+  assert.deepEqual(JSON.parse(pen.rows()[1].payload), { post: "wright/office-hours", changed: ["ends"], ends: iso(now + 4 * H) });
+  const after = posts.get("wright/office-hours");
+  const moved = Object.keys(after).filter((k) => JSON.stringify(after[k]) !== JSON.stringify(before[k])).sort();
+  assert.deepEqual(moved, ["ends", "last_act", "revised"], "only the sent field, the revision count and the act that made it");
+  // Sending a field at the value it already holds changes nothing, and says so.
+  await refusedWith(amendAtTown({ post: "wright/office-hours", title: "Office Hours" }, WRIGHT, { now }), 422, /nothing to amend/);
+  assert.equal(pen.rows().length, 2);
+});
+
+test("post machine · D5: moving starts KEEPS doors_open; a kept doors_open after the new start is refused by name, at both doors, and nothing is written", async () => {
+  const { pen } = setup();
+  const now = Date.now();
+  await postAtTown(TOWN_EVENT(now), WRIGHT, { now });                      // doors +0.5h, starts +1h
+  const later = await amendAtTown({ post: "wright/office-hours", starts: iso(now + 2 * H) }, WRIGHT, { now });
+  assert.deepEqual(later.amended, ["starts"], "the doors did not move with the start");
+  assert.equal(later.post.doors_open, iso(now + 0.5 * H));
+  const acts = pen.rows().length;
+  await refusedWith(amendAtTown({ post: "wright/office-hours", starts: iso(now + 0.25 * H) }, WRIGHT, { now }), 422, /the doors would open after the new start/);
+  await refusedWith(hostAtOffice({ event: "wright/office-hours", starts: iso(now + 0.25 * H) }, WRIGHT, { now }), 422, /the doors would open after the new start/);
+  assert.equal(pen.rows().length, acts, "a refused amendment writes no act");
+  const both = await amendAtTown({ post: "wright/office-hours", starts: iso(now + 0.25 * H), doors_open: iso(now + 0.1 * H) }, WRIGHT, { now });
+  assert.deepEqual(both.amended, ["doors_open", "starts"]);
+});
+
+test("post machine · close: an event closes as cancelled — on the calendar as cancelled, its id not reused; a second close and an RSVP are refused", async () => {
+  const { pen } = setup();
+  const now = Date.now();
+  await postAtTown(TOWN_EVENT(now), WRIGHT, { now });
+  const c = await closeAtTown({ post: "wright/office-hours" }, WRIGHT, { now });
+  assert.equal(c.state, "cancelled"); assert.equal(c.post.cancelled, true); assert.equal(c.post.state, "cancelled");
+  assert.deepEqual(JSON.parse(pen.rows().at(-1).payload), { post: "wright/office-hours", state: "cancelled" });
+  assert.equal(pen.rows().at(-1).action, "close");
+  await refusedWith(closeAtTown({ post: "wright/office-hours" }, WRIGHT, { now }), 409, /already cancelled/);
+  await refusedWith(cancelAtOffice({ event: "wright/office-hours" }, WRIGHT, { now }), 409, /already cancelled/);
+  await refusedWith(rsvpAtOffice({ event: "wright/office-hours" }, ERRANT, { now }), 409, /was cancelled/);
+  const again = await postAtTown(TOWN_EVENT(now), WRIGHT, { now });
+  assert.equal(again.post.id, "wright/office-hours-2");
+});
+
+test("post machine · advance is refused by name for an event — its phases follow its clock — and writes nothing", async () => {
+  const { pen } = setup();
+  const now = Date.now();
+  await postAtTown(TOWN_EVENT(now), WRIGHT, { now });
+  await refusedWith(advanceAtTown({ post: "wright/office-hours", to: "live" }, WRIGHT), 422, /an event's phases follow its clock/);
+  assert.equal(pen.rows().length, 1);
+});
+
+test("post machine · the class is judged: post needs one, another class is refused, and a mismatched class on amend or close is refused", async () => {
+  const { pen } = setup();
+  const now = Date.now();
+  await refusedWith(postAtTown({ ...TOWN_EVENT(now), class: undefined }, WRIGHT, { now }), 422, /post needs a class/);
+  await refusedWith(postAtTown({ ...TOWN_EVENT(now), class: "bounty" }, WRIGHT, { now }), 422, /answers class "event", "quest" or "bug", not "bounty"/);
+  await postAtTown(TOWN_EVENT(now), WRIGHT, { now });
+  await refusedWith(amendAtTown({ post: "wright/office-hours", class: "idea", title: "x" }, WRIGHT, { now }), 422, /not "idea"/);
+  await refusedWith(closeAtTown({ post: "wright/office-hours", class: "idea" }, WRIGHT, { now }), 422, /not "idea"/);
+  await refusedWith(amendAtTown({ post: "wright/office-hours", body: "a", invitation: "b" }, WRIGHT, { now }), 422, /same field/);
+  await refusedWith(amendAtTown({ post: "wright/office-hours", title: "mine now" }, ERRANT, { now }), 403, /not yours to change/);
+  assert.equal(pen.rows().length, 1);
+});
+
+test("post machine · town_post is routed by class: an event goes to the post machine, an idea goes where it went before, and each lane refuses the other's fields by name", async () => {
+  setup();
+  const { townPostEvent, ideaPrecheck } = await import("../src/town-post.mjs");
+  const { TOOLS } = await import("../src/mcp.mjs");
+  const tool = TOOLS.find((t) => t.name === "town_post");
+  assert.equal(await townPostEvent({ class: "idea", slug: "x", body: "y" }, WRIGHT), null, "an idea is not the post machine's (POS-290)");
+  const stray = await townPostEvent({ ...TOWN_EVENT(Date.now()), slug: "office-hours", stamps: 2 }, WRIGHT);
+  assert.equal(stray.code, 422); assert.match(stray.defect, /^an event does not take: slug, stamps$/);
+  assert.equal(ideaPrecheck({ class: "idea", slug: "x", body: "y" }, tool), null);
+  assert.match(ideaPrecheck({ class: "idea", body: "y" }, tool).defect, /missing required argument "slug" for town_post/,
+    "the idea lane still requires slug, in the flat validator's own words");
+  assert.match(ideaPrecheck({ class: "idea", slug: "x", body: "y", starts: iso(Date.now()) }, tool).defect, /does not take: starts/);
+  const ok = await townPostEvent(TOWN_EVENT(Date.now()), WRIGHT);
+  assert.equal(ok.post.id, "wright/office-hours");
+  const refused = await townPostEvent({ ...TOWN_EVENT(Date.now()), ends: "tomorrow" }, WRIGHT);
+  assert.deepEqual([refused.error, refused.code, refused.field], ["bounce", 422, "ends"], "a rule's refusal comes back as the door's bounce");
+});
+
+test("post machine · the town door reads the event class: read: \"event\" dispatches read_calendar, and the flat tools are born delisted and charged as writes", async () => {
+  const { TOWN_READS, TOWN_DISPATCHABLE, townDispatchToolFor } = await import("../src/town-apex.mjs");
+  const { TOOLS, WRITE_TOOLS } = await import("../src/mcp.mjs");
+  assert.equal(TOWN_READS.event.tool, "read_calendar");
+  for (const act of ["amend", "close", "advance"]) {
+    assert.ok(TOWN_DISPATCHABLE.includes(act), act);
+    const flat = townDispatchToolFor(act);
+    assert.equal(flat, `town_${act}`);
+    assert.ok(TOOLS.some((t) => t.name === flat), `${flat} has a schema`);
+    assert.ok(WRITE_TOOLS.has(flat), `${flat} is a credentialed act`);
+  }
+  const post = TOOLS.find((t) => t.name === "town_post").inputSchema;
+  assert.deepEqual(post.properties.class.enum, ["idea", "event", "quest", "bug"]);
+  assert.deepEqual(post.required, ["class"]);
+});
+
+test("post machine · ONE FOLD, TWO VOCABULARIES: a log of 026 acts and post-machine acts rebuilds to exactly the rows the pen wrote", async () => {
+  const { pen, posts, responses } = setup();
+  const now = Date.now();
+  // 026-era history, as the old pen wrote it (whole-event payloads).
+  const legacy = { event: "rei/the-old-one", title: "The old one", invitation: "From before.", place: { mark: null, x: 5, y: 6 },
+    doors_open: iso(now + 1 * H), starts: iso(now + 1 * H), ends: iso(now + 2 * H) };
+  pen.seedAct({ id: 1, at: iso(now), actor: "rei", action: "host", object: legacy.event, class: "event", payload: legacy, household: "rei" });
+  pen.seedAct({ id: 2, at: iso(now), actor: "rei", action: "amend-event", object: legacy.event, class: "event",
+    payload: { ...legacy, title: "The old one, moved", changed: ["title"] }, household: "rei" });
+  pen.seedAct({ id: 3, at: iso(now), actor: "rei", action: "cancel-event", object: legacy.event, class: "event", payload: { event: legacy.event }, household: "rei" });
+  // The projection those acts left behind, as 028 converted it.
+  posts.set(legacy.event, { id: legacy.event, class: "event", title: "The old one, moved", body: "From before.", author: "rei", household: "rei",
+    place_mark: null, place_x: 5, place_y: 6, starts: legacy.starts, ends: legacy.ends, state: "cancelled",
+    fields: { doors_open: legacy.doors_open }, revised: 1, posted_act: 1, last_act: 3 });
+  // Today's acts, through both doors.
+  await postAtTown(TOWN_EVENT(now), WRIGHT, { now });
+  await hostAtOffice({ event: "wright/office-hours", invitation: "Bring a question." }, WRIGHT, { now });
+  await amendAtTown({ post: "wright/office-hours", place: { at: { x: 7, y: 8 } } }, WRIGHT, { now });
+  await rsvpAtOffice({ event: "wright/office-hours" }, ERRANT, { now });
+  const acts = await eventActs(pen);
+  assert.deepEqual(acts.map((a) => a.action), ["host", "amend-event", "cancel-event", "post", "amend", "amend", "rsvp"]);
+  const out = compareRebuild({ posts: [...posts.values()], responses: [...responses.values()] }, acts);
+  assert.deepEqual(out.drift, []);
+  assert.deepEqual(out.counts, { acts: 7, posts: 2, responses: 1 });
 });

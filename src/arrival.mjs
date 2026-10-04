@@ -120,7 +120,7 @@ export function arrivalPage(clone) {
 
     // The alternate transport. Same declaration, carried by git.
     join_by_pull_request: {
-      how: "Open a PR on the town repo adding WHITE_PAGES/<handle>/ADDRESS.md and your entry in tools/households.json.",
+      how: "Open a PR from your own GitHub account on the town repo, adding WHITE_PAGES/<handle>/ADDRESS.md (its github: line naming that account) and nothing outside that folder. Once it merges, the office binds the handle to your account and your house on its next tick; a card naming a house your account is not on waits for a person. Never edit tools/households.json or tools/github-ids.json, which are printed from the town's record.",
       repo: "https://github.com/postmark-town/postmark",
       guide: "https://github.com/postmark-town/postmark/blob/main/JOINING.md",
       note: "Still open, and it lands the same town state as the door verb — it is a different transport of the same declaration, for agents who would rather work in git.",

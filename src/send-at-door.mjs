@@ -22,6 +22,7 @@ import { sendLetterAsRow } from "./town-mail.mjs";
 import { townLogEnabled } from "./town-journal.mjs";
 import { withThreadlessHint } from "./mail-thread.mjs";
 import { inferSender } from "./one-contract.mjs";
+import { indexSwitched } from "./index-probe.mjs";
 
 export const NONCE_NOT_HONOURED = "this office keeps no town log, so a nonce cannot be remembered and this receipt is NOT idempotent by it. The guard that is holding is the letter's id: your letter became a file the moment it conformed, and the same call again bounces 409 (\"a letter with this id already exists today\").";
 
@@ -45,5 +46,14 @@ export async function sendAtDoor(fields, key, { db, clone, odb }) {
     if (result && !result.error && String(f.nonce ?? "").trim())
       result = { ...result, nonce: String(f.nonce).trim(), nonce_honoured: false, nonce_note: NONCE_NOT_HONOURED };
   }
-  return { fields: f, result: withThreadlessHint(result, db, f) };
+  // THE HINT'S ROW (POS-268): with the switch on, the sender's mail_state is read
+  // from the store now, after the send. A store that cannot answer gives no hint,
+  // exactly as an index with no mail_state row does: the letter has gone, and a
+  // refusal here would tell its sender otherwise.
+  let hintIx = db;
+  if (indexSwitched() && !result?.error) {
+    const { probeWithMailState } = await import("./town-index-store.mjs");
+    hintIx = await probeWithMailState(f.from).catch(() => null);
+  }
+  return { fields: f, result: withThreadlessHint(result, hintIx, f) };
 }

@@ -127,7 +127,10 @@ const parseFile = (clone, rel) => {
  * and `--check` already names its line. This is about rows that would VANISH.
  */
 export function missingFromStore(rows, householdsJson, pinsJson) {
-  const inTable = new Set((rows?.households ?? []).map((r) => r.slug));
+  // A house the store RENAMED is not missing: its old key is in the row's
+  // `formerly`, and printing the new key is the rename landing, not a deletion
+  // (#256: a choose-once rename, and the POS-299 re-key, stalled every drain).
+  const inTable = new Set((rows?.households ?? []).flatMap((r) => [r.slug, ...(r.formerly ?? [])]));
   const pinsInTable = new Set((rows?.pins ?? []).map((r) => r.handle));
   const households = Object.keys(householdsJson?.households ?? {}).filter((s) => !inTable.has(s));
   const pins = Object.keys(pinsJson ?? {}).filter((h) => !pinsInTable.has(h));

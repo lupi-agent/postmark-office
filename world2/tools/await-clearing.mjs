@@ -100,7 +100,8 @@
 // (`not-newest-closed-window`). The shadow publishes nothing, so re-folding a
 // published docket is its point: the write-down skips every mark canon already
 // holds byte-for-byte, and what is left is what the next crossing would carry.
-// Never a crossing's door — `settlement-auto.sh` does not pass it.
+// Never a publishing crossing's door: `settlement-auto.sh` passes it only under
+// SETTLEMENT_DRY=1, the dry leg, which publishes nothing either (POS-242).
 
 const argOf = (n, d = null) => { const i = process.argv.indexOf(n); return i !== -1 ? process.argv[i + 1] : d; };
 

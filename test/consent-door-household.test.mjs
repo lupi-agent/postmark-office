@@ -59,7 +59,7 @@ after(() => { sweep(repo); sweep(tmpHome); });
 const dbPath = join(repo, "consent-world.db");
 const dynPath = join(repo, "consent-dynamic.db");
 process.env.WORLD_CLONE = repo;
-process.env.WORLD_STORE_DB = dbPath;
+process.env.WORLD_STORE_DB = join(repo, "no-world-db-here.db");   // the world is the published rows below (POS-270 lane W 3a)
 process.env.WORLD_DYNAMIC_DB = dynPath;
 process.env.WORLD_APEX = "1";
 process.env.WORLD_SINGLE_LOG = "1";
@@ -189,6 +189,8 @@ const { SCHEMA } = await import("../src/world-store.mjs");
   }
   db.close();
 }
+const { publishWorld } = await import("./helpers/world-rows.mjs");
+publishWorld(dbPath);
 
 // ── the code under test ─────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Postmark office — pull town + rebuild index + bounce the server
+Description=Postmark office — rebuild the read indexes (office.db, world.db + the world graph snapshot) and confirm the door took them
 
 [Service]
 Type=oneshot
@@ -10,14 +10,16 @@ Type=oneshot
 # rootward from the live unit.
 User=meepo
 EnvironmentFile=/etc/postmark-office.env
+# The law pen's credential, for the world graph snapshot's store write
+# (deploy/office-rehydrate.sh § ONE HYDRATION, TWO OUTPUTS). The same file the
+# law-ingest and town-index units read: root:root 0600, so systemd reads it and
+# hands the values in, and meepo never opens it. Read second, so a key both
+# files carry is this one's.
+EnvironmentFile=/etc/postmark-world2-dev.env
 WorkingDirectory=/srv/postmark-office
-# The chain lives in deploy/office-tick.sh (snapshot-under-lock / derive-
-# outside, 2026-07-30): the lock covers only the pulls + a git clone --local
-# snapshot (seconds); hydrate + publish-windows run against the frozen
-# snapshot so the hold no longer grows with the town's history (~2 min
-# measured before, vs 30-second write-path waits — the write-starvation
-# class, pulse wright-2026-07-30-office-tick-lock-starves-write-paths).
-# The ferry still shares the same lock for its crossings; publish-windows
-# keeps its stage-and-swap (a failed publish leaves the live webroot
-# untouched and fails the tick loudly).
-ExecStart=/bin/sh /srv/postmark-office/deploy/office-tick.sh
+# The chain lives in deploy/office-rehydrate.sh: a `git clone --local` snapshot
+# under the town lock (seconds), then hydrate + world-hydrate against the frozen
+# snapshot, then the door's as-of receipt. The pulls, the mint, the settlements
+# row and the panes moved to postmark-office-keep (POS-268, 2026-09-27), so this
+# unit is exactly what retiring the sqlite reads deletes.
+ExecStart=/bin/sh /srv/postmark-office/deploy/office-rehydrate.sh

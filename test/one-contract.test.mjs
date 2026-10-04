@@ -467,14 +467,17 @@ test("paper nonce · flag-off, a nonce is DISCLOSED as unhonoured at both doors,
 // judges its envelope only once the store has answered which act the ground
 // affords, and this fixture has no world store (the reason § 3 gives).
 // NARROWED by POS-265: POST /world/say takes the say's nonce (on world_say's
-// own schema); the walk and the mark still refuse it by name.
-test("nonce · a world act still refuses a nonce by name at the plain API — its store has nowhere to keep one until 027_act_nonce.sql", async () => {
+// own schema). POS-246: the other world acts keep a nonce at the WORLD DOOR
+// (world-act-nonce.test.mjs); these plain twins do not read one, so they still
+// refuse it by name, and the hint names the door that keeps it.
+test("nonce · a world act's plain route still refuses a nonce by name, and points at the world door that keeps one", async () => {
   const say = await rest(B, "POST", "/world/say", { nonce: "w-k1" });
   assert.notEqual(say.body.defect, "world_say does not take: nonce", "the say's retry key is on its schema now");
   for (const [route, tool] of [["/world/walks", "world_walk"], ["/world/marks", "world_leave_mark"]]) {
     const r = await rest(B, "POST", route, { nonce: "w-k1" });
     assert.equal(r.status, 422, `${route}: ${r.status} ${r.body.defect}`);
     assert.equal(r.body.defect, `${tool} does not take: nonce`);
+    assert.match(r.body.hint, /the world door does — world \{ do: "/);
   }
 });
 

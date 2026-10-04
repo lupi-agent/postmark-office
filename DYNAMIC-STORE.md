@@ -1,5 +1,21 @@
 # The dynamic store
 
+> **Retired on the record's flags (POS-269, 2026-09-30).** Where
+> `WORLD_POSITIONS=1`, `WORLD2_PG=1` with a URL, `W2_PEN` has `say` and `hold`,
+> and `W2_GUARDS=1` (prod's flags), `openDynamic` refuses by name, and only
+> the git-road drain may open the file (`src/dynamic-store.mjs §
+> RETIRED_LEGACY_READERS`). Its readers and writers are gone from every door:
+>
+> - presence reads the position projection;
+> - the hold door reads and writes the hold acts, and refuses off the hold lane;
+> - a voice's record is its say act;
+> - the crossing-save reads the ledger and the store's acts, taking them in
+>   through `--record-fixture` in the suites.
+>
+> `tools/dynamic-rebuild.mjs`, `tools/thread-parity.mjs`, `refreshEntities`
+> and the entities table's readers are deleted. What follows is the store's
+> design and history, kept as the record of how it worked.
+
 `dynamic.db` — the town's **third** database, and the first one that is not an
 index. `office.db` indexes the town repo, `world.db` indexes the world repo, and
 both may be deleted at any moment without losing a fact the town owns. This one
@@ -13,15 +29,12 @@ behind one flag, off by default, and off is byte-identical to not having it.
 ## Run it
 
 ```
-npm run dynamic:rebuild                 # re-derive entities from the ledger; recover attachments from STATE/
 npm run dynamic:store                   # the flag's instrument panel (= GET /world/dynamic)
 npm run crossing:save                   # crystallize the live layer into the world repo's STATE/
 npm run crossing:replay-check           # THE FALSIFIER — rebuild from STATE/ alone and diff
 npm run world:drain                     # POS-5: empty the journal into the record, then truncate (WORLD_SINGLE_LOG=1)
-npm run threads:parity                  # the store's threads vs the shipped clusterVoices
 node --test test/dynamic-presence.test.mjs
 node --test test/dynamic-store.test.mjs
-node --test test/dynamic-emissions.test.mjs
 node --test test/crossing-save.test.mjs
 node --test test/world-journal.test.mjs
 node --test test/world-drain.test.mjs
@@ -38,12 +51,10 @@ node --test test/settle-at-save.test.mjs
 | `src/dynamic-presence.mjs` | who is near whom: `near`, `everyone`, and the section the doors hang off |
 | `src/world-journal.mjs` | **the single log** (POS-5 slice 1): the journal's row schema, the anchor+offset witness stamp, the replay reader, and the §1c read door |
 | `src/world-drain.mjs` | **the drain** (POS-5 slice 2): journal → sketchbooks + `STATE/log/<N>.journal.jsonl` → truncate, as one act; and the two public ledgers, materialized at the save |
-| `tools/state-to-r2.mjs` | the cold archive — wired AT THE SAVE by the drain (§5), never on a timer of its own |
+| `tools/state-to-r2.mjs` | the cold archive — wired AT THE SAVE by the drain (§5), never on a timer of its own; its live dynamic.db pass is gone (POS-269) |
 | `tools/crossing-save.mjs` | the save tick: `STATE/snapshot/<N>/entities.json` + `STATE/log/<N>.jsonl`, committed with the pen |
 | `tools/crossing-replay-check.mjs` | rebuild from `STATE/` alone; EQUAL or the save does not save the world |
-| `tools/thread-parity.mjs` | store threads vs `voices.mjs`'s shipped `clusterVoices`, as a partition |
-| `tools/dynamic-rebuild.mjs` | the covenant, executable |
-| `deploy/postmark-crossing-save.{service,timer}` | crossing-aligned, **delivered but not installed** |
+| `deploy/postmark-crossing-save.{service,timer}` | crossing-aligned, and **running on the box**: the world repo carries a `crossing-save <N>` commit a few minutes after each crossing (save 220 at 2026-09-30 00:04Z) |
 
 ## The covenant, which is narrower than the other two
 
@@ -245,6 +256,13 @@ STATE/snapshot/<N>/entities.json   state AT THE BOUNDARY of crossing N
 STATE/log/<N>.jsonl                events DURING crossing N
 STATE/log/<N>.meta.json            the window that file actually covers
 ```
+
+**`seq` on an `attachment` log line is null for the acts era.** Where the hold
+edge is on `acts` (W2_PEN has hold and W2_GUARDS=1, POS-269), the save reads
+holdings from the record, and a holding act has no sqlite rowid to carry, so
+its line writes `"seq": null`. Earlier lines keep the rowid they were written
+with. No reader keys on it: the replay check keys on actor, target and `at`,
+and `attachmentsFromState` drops it (Wright-ruled 2026-09-30).
 
 Snapshot-at-the-boundary is the only reading under which snapshot and log
 compose: a snapshot of save-instant state would have the crossing's own events

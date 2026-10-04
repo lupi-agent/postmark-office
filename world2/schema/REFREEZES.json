@@ -1,0 +1,4 @@
+{
+ "about": "Declared re-freezes of archived history (POS-242 item 3). A migration or backfill that changes what a CLOSED window's archive re-derives adds its entry here, in its own PR: id (a lowercase slug, consumed once and recorded in the notary repo's REFREEZES-CONSUMED.json), class (drop-field | field-change | rows-added), field (drop-field and field-change only), reason, and go (whose, and when). The notary re-freezes only the archives whose difference verifies as a declared class; everything else still refuses. See world2/tools/snapshot-export.mjs § DECLARED RE-FREEZES.",
+ "declarations": []
+}

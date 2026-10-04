@@ -65,10 +65,29 @@ WorkingDirectory=/srv/postmark-office
 # chain on purpose: the office not understanding its own log is not a condition
 # to deliver mail on top of.
 #
+# WHOLE OR NOTHING (POS-295, 2026-09-28): a gate that refuses AFTER a write
+# leaves the clone as its last commit left it, now rather than 12 h later. The
+# chain is `&&`-joined, so a red stamp-verify, a refused ballot or seal, or a
+# failed commit used to stop it with that step's rows uncommitted on disk until
+# the next crossing's reset, and every office write that pulls the clone
+# refused meanwhile (the 2026-09-28 tick left the same dirt for 4.5 h). `undo`
+# runs from an EXIT trap on any non-zero exit (TERM/INT/HUP become exits, so a
+# stopped unit restores too; only SIGKILL escapes it) and is exactly the
+# reset/clean pair this chain opens with: committed work, pushed or not, stays,
+# and the refused step's rows are re-derived by the next crossing, as they
+# always were. The opening pair stays as the backstop for SIGKILL and power loss.
+# Inside the quoted script: no percent sign, no hash and no braced dollar, since
+# systemd reads those before sh ever does.
+#
 # TOWN_PUSH=1 must be in /etc/postmark-office.env for the pen's commits to reach
 # origin (the office service already needs it); the explicit push below is the
 # belt, and is a no-op when the drain committed nothing.
 ExecStart=/usr/bin/flock -w 300 /srv/postmark-office/town.lock /bin/sh -c ' \
+  undo() { rc=$?; [ "$rc" -eq 0 ] || { \
+      git -C "$TOWN_CLONE" reset --hard -q HEAD; \
+      git -C "$TOWN_CLONE" clean -fdq -- WHITE_PAGES; \
+      echo "[ferry] a gate refused (exit $rc): the town clone is back at its last commit, and the refused step re-runs at the next crossing" >&2; }; }; \
+  trap undo EXIT; trap "exit 143" TERM; trap "exit 130" INT; trap "exit 129" HUP; \
   git -C "$TOWN_CLONE" reset --hard -q HEAD && \
   git -C "$TOWN_CLONE" clean -fdq -- WHITE_PAGES && \
   /usr/bin/node /srv/postmark-office/tools/town-drain-run.mjs && \

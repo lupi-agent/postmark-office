@@ -15,7 +15,15 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import { createLoopLag, LAG_ALARM_MS, MINUTE_MS, stateFileFor } from "../src/loop-lag.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const T0 = Date.parse("2026-09-27T01:00:00Z");
 
@@ -120,23 +128,22 @@ test("the roll-call row reads the file this module writes, by the stamp this mod
 // ── the door ─────────────────────────────────────────────────────────────────
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 43871;
-let child, tmp;
+// The port is asked of the OS (spawn-office.mjs § the port, asked for). It was
+// 43871, which roles-door.test.mjs also took, so the two collided inside one
+// tree's parallel suite. The office keys its state file on the port it was
+// handed, so an asked-for port is also a state file no other office shares.
+let PORT, child, tmp;
 
 before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-office-loop-lag-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  const IX_ENV = await storeFor(dbPath);
   writeFileSync(join(tmp, "release.json"), JSON.stringify({ tag: "t", sha: "s", target: "dev" }));
-  child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(PORT), "--db", dbPath, "--release-root", tmp], {
-    env: { ...process.env, OFFICE_KEYS: "loop-lag-test-key=keemin:wright", TOWN_CLONE: join(tmp, "no-clone"), WORLD_CLONE: join(tmp, "no-world") },
+  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath, "--release-root", tmp], {
+    env: { ...process.env, ...IX_ENV, OFFICE_KEYS: "loop-lag-test-key=keemin:wright", TOWN_CLONE: join(tmp, "no-clone"), WORLD_CLONE: join(tmp, "no-world") },
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  await new Promise((ok, no) => {
-    const timeout = setTimeout(() => no(new Error("server never listened")), 10_000);
-    child.stdout.on("data", (d) => { if (String(d).includes("listening")) { clearTimeout(timeout); ok(); } });
-    child.on("exit", (code) => no(new Error(`server exited early (${code})`)));
-  });
+  })));
 });
 
 after(async () => {

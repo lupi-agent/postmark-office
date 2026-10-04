@@ -31,9 +31,8 @@
 // falsifier compares it against. Nothing in this file decides where anybody is.
 //
 // NO FRAME. The brief asked for one per entry, and the record cannot supply it:
-// since POS-247 (2026-09-26) `world-frames.mjs § foldFrames` starts every fold
-// at `frame = null` and only ever reassigns null, so no walk record yields a
-// frame. The one frame left is OCCUPANCY (the enter-exit record), written by the
+// since POS-247 (2026-09-26) no walk record yields a frame, and
+// `world-frames.mjs § foldFrames` answers the world frame for every fold. The one frame left is OCCUPANCY (the enter-exit record), written by the
 // enter/exit and ride doors in `world-crossings.mjs` / `world-ride.mjs`, which
 // this lane does not own. A frame field kept current by nothing would be a
 // photograph, so it is absent until a writer there calls in.
@@ -122,6 +121,8 @@ export function createPositionProjection({ rebuild, maxAgeMs = PROJECTION_MAX_AG
           eras: got?.eras ?? [],
           ledgerUnreadable: got?.ledgerUnreadable ?? null,
           ...(got?.store_records != null ? { store_records: got.store_records } : {}),
+          // POS-302: the clearing's snapshot this rebuild stood on, and how many acts past it.
+          ...(got?.snapshot ? { snapshot: got.snapshot } : {}),
         };
         builtAt = startedAt;
         recorded = 0;

@@ -23,6 +23,7 @@
 // both when present).
 
 import { boxOf } from "../world2/tools/seed-import.mjs";
+import { ringOf, ringBox, ringAgrees } from "./ring-box.mjs"; // POS-322: the bbox of a ringed mark is its ring's
 import { houseOfVia, sessionKeysVia, sessionKeyString } from "./household-deriver.mjs";
 // Phase 5.6's deferred act is released through world2-pen's insertAct, INSIDE
 // the promotion's own transaction (imported lazily there — R1, 2026-08-29).
@@ -85,7 +86,7 @@ const householdKeys = new Map();
  * THE ONE RESOLVER, called by BOTH halves of the private-draft lane.
  *
  * The write path resolves the household from the journal row's `household`
- * (which is the office key's household name); `/world2/my-drafts` resolves it
+ * (the acting handle's house); `/world2/my-drafts` resolves it
  * from the same key. If those two ever spelled the household differently, a
  * resident would save a draft and then be told they have none — the row policy
  * would be working perfectly and the answer would still be wrong. Routing both
@@ -111,11 +112,40 @@ const householdKeys = new Map();
  * notion of who you are in this town, which is what makes this function's
  * single-resolver discipline the right shape rather than a shared weakness:
  * one fact, one place to be wrong, one place to fix.
+ *
+ * ── THROUGH THE KEY'S HANDLES, AS 1.0 DOES (POS-142, agreed 2026-10-01) ────
+ *
+ * This read `key.household` first, and that is a LABEL: the GitHub login an
+ * OAuth key resolved to, or a keys-file slug ("darko"). Neither is a handle
+ * the registry pins, so an OAuth resident whose login is not one of their
+ * residents' handles resolved to `solo:<login>` and read an empty portfolio
+ * and none of their own drafts, while the write path, which resolves from the
+ * acting HANDLE (`world-apex.mjs § worldHouseholdOf`), had filed those drafts
+ * under their house. 1.0 already answers this (`world-stake.mjs §
+ * worldPortfolioStakeSlice`): "the household a caller belongs to is the
+ * pins-household of their own handles". So: the first of the key's handles
+ * the registry places in a house names it. Only when none does is the label
+ * asked, and `keyHouseholdOf` says so on `disclosure`.
  */
-export async function householdKeyForKey(p, key) {
+export async function keyHouseholdOf(p, key) {
   const named = String(key?.household ?? "").trim();
   const handles = [...(key?.handles ?? [])];
-  return householdKeyFor(p, named || handles[0] || null);
+  for (const handle of handles) {
+    const household = await householdKeyFor(p, handle);
+    if (household && !household.startsWith("solo:")) return { household, via: handle };
+  }
+  const label = named || handles[0] || null;
+  const household = await householdKeyFor(p, label);
+  return {
+    household, via: null,
+    disclosure: handles.length
+      ? `none of this key's handles (${handles.join(", ")}) is pinned to a house, so its household is read from the key's own name "${label}"${household?.startsWith("solo:") ? ", which names no house either: this answer holds only what was filed under that name" : ""}`
+      : `this key carries no handles, so its household is read from the key's own name "${label}"`,
+  };
+}
+
+export async function householdKeyForKey(p, key) {
+  return (await keyHouseholdOf(p, key)).household;
 }
 
 /**
@@ -350,20 +380,32 @@ export async function claimTxFromJournal(client, row, seq, { household, actId = 
       const kind = payload.kind ?? "sited";
       const placed = payload.at && payload.extent;
       const slug = `${payload.by ?? row.actor}/${payload.slug}`;
-      const { slug: _s, at, extent, points, body, stamps, put_forward, ...rest } = payload;
+      const { slug: _s, at: sentAt, extent: sentExtent, points, body, stamps, put_forward, ...rest } = payload;
+      // POS-322: a sited ring's box IS its at/extent (ring-box.mjs § ringBox), so
+      // the stored geometry and the `bbox` column below cannot disagree with the
+      // ring. The door has already derived it; this holds the store to the same
+      // arithmetic for any row that reaches the pen another way. A claim that
+      // already agrees within the lint's 0.5 m keeps its numbers byte for byte.
+      const derive = placed && points && payload.kind === "sited" && ringOf(points) && !ringAgrees({ at: sentAt, extent: sentExtent }, points);
+      const { at, extent } = derive ? ringBox(points) : { at: sentAt, extent: sentExtent };
       const geometry = placed ? { slug, at, extent, ...(points ? { points } : {}) } : { slug };
       const bbox = placed ? boxOf(at, extent) : null;
       const status = put_forward === true ? "pending" : "draft";
 
-      // amend → the supersession chain: the clearing computes head-of-chain
-      // (its transition 2), so the new claim names the pending one it amends.
+      // ONE PENDING CLAIM PER MARK PER WINDOW (POS-241 phase 1, ruling 1,
+      // 2026-09-26: "a second amend in one window replaces the first"). A claim
+      // going pending retracts the author's earlier pending claim on the same
+      // mark in this window, reason `replaced`, so no in-window chain ever forms.
+      // The chain was the 212 failure: the head superseded the prior PENDING
+      // claim, step 1 compared that to the standing mark's id, and neither
+      // applied. A private draft replaces nothing: it is not on the docket yet.
+      if (status === "pending") await retractReplaced(client, { windowId: win.id, slug, claimant: row.actor });
+
+      // amend → the standing mark it continues, directly. No pending prior is
+      // left to name: the line above has just retracted it.
       let supersedes = null;
       if (row.action === "amend") {
-        const { rows: [prior] } = await client.query(
-          `SELECT id FROM claims WHERE window_id = $1 AND status = 'pending'
-           AND geometry->>'slug' = $2 AND claimant = $3 ORDER BY submitted_at DESC LIMIT 1`,
-          [win.id, slug, row.actor]);
-        // NO PENDING PRIOR IN THIS WINDOW → THE STANDING MARK IS WHAT IT AMENDS
+        // THE STANDING MARK IS WHAT IT AMENDS
         // (2026-09-14, #2806). This used to leave `supersedes` null with the note
         // "amending a published mark: no in-window chain, fresh claim", and the
         // clearing's step 1 read that null as a duplicate — "a standing mark
@@ -374,12 +416,9 @@ export async function claimTxFromJournal(client, row, seq, { household, actId = 
         // gets a new locked claim whose `supersedes` points back at this id" —
         // the same row the clearing reads (`FROM marks WHERE slug … standing`).
         // The replay path always set it; the live drain now does too.
-        if (prior?.id) supersedes = prior.id;
-        else {
-          const { rows: [standing] } = await client.query(
-            "SELECT id::text FROM marks WHERE slug = $1 AND status = 'standing' LIMIT 1", [slug]);
-          supersedes = standing?.id ?? null; // a fresh slug amends nothing: null, as before
-        }
+        const { rows: [standing] } = await client.query(
+          "SELECT id::text FROM marks WHERE slug = $1 AND status = 'standing' LIMIT 1", [slug]);
+        supersedes = standing?.id ?? null; // a fresh slug amends nothing: null, as before
       }
 
       // THE DEFERRED ACT rides on the draft it belongs to (world2-acts.mjs
@@ -544,6 +583,32 @@ export async function retractPendingClaim(q, { windowId, slug, claimant, env = p
 }
 
 /**
+ * THE NEWER PENDING CLAIM REPLACES THE OLDER (POS-241 phase 1, ruling 1).
+ *
+ * Retracts the author's pending claims on `slug` in `windowId`, except `except`,
+ * with the reason on the row. A retraction is the one transition an office pen
+ * may make on a pending claim (007 § the transition guard: "pending ->
+ * retracted, fields untouched"), and `refusal_check` is not one of the fields it
+ * guards, so the reason is lawful without a migration. The row stays, as every
+ * retraction's does: the public docket carried it.
+ *
+ * Two callers, one rule: a claim filed pending (`claimTxFromJournal`), and a
+ * draft put forward by a stake (`promoteDraftOnStake`). Either way the newest
+ * declaration on the docket is the one the clearing rules on.
+ */
+export const REPLACED_CHECK = "replaced: a later claim on this mark in the same window replaces this one";
+
+export async function retractReplaced(client, { windowId, slug, claimant, except = null }) {
+  const { rows } = await client.query(
+    `UPDATE claims SET status = 'retracted', decided_at = now(), refusal_check = $4
+      WHERE window_id = $1 AND status = 'pending' AND geometry->>'slug' = $2 AND claimant = $3
+        AND ($5::uuid IS NULL OR id <> $5::uuid)
+      RETURNING id::text`,
+    [windowId, slug, claimant, REPLACED_CHECK, except]);
+  return rows.map((r) => r.id);
+}
+
+/**
  * A later `world_stake` on a draft: the boundary act, arriving on its own.
  *
  * The ruling's plainest case -- you composed something, slept on it, and now
@@ -618,6 +683,9 @@ export async function promoteDraftOnStake({ actor, householdName, slug, stamps =
         WHERE status = 'draft' AND claimant = $1 AND slug = $2 AND household = ANY($3)`,
       [actor, slug, keys]);
     if (!draft) return null;
+    // Put forward, it replaces the author's earlier pending claim on this mark
+    // (ruling 1): the same rule the filing arm keeps.
+    await retractReplaced(c, { windowId: win.id, slug, claimant: actor, except: draft.id });
     // The released deferred act, in the SAME transaction (F3 closed): dated at
     // the putting-forward exactly as before — the world witnessed the resident
     // put it forward, not think about it — and journal_seq carried from the
@@ -726,6 +794,28 @@ export async function markStandingStatus({ slug }, env = process.env) {
 }
 
 /**
+ * A WITHDRAW OF A RETIRED MARK IS REFUSED BY NAME (POS-241 phase 1, ruled
+ * 2026-09-26: "a withdraw of a retired mark is refused by name — already retired
+ * at window N"). Asked only where the door would otherwise say "no mark in your
+ * world": a withdrawn mark is in neither the sketchbook nor canon, and that 404
+ * told the author nothing about the mark they once had. A mark the 09-16 move
+ * returned to the sketchbook never reaches here, because withdrawing a draft is
+ * the discard. A pending re-leave on the open docket is not retired in any sense
+ * the author means, so it is not refused here either.
+ *
+ * Pure, so the falsifier holds the rule without a store. `status` is
+ * `markStandingStatus`'s answer. Returns `{ code, defect, hint }`, or null.
+ */
+export function withdrawRetiredRefusal(id, status) {
+  if (!status?.found || !status.retired || status.docket_window != null) return null;
+  return {
+    code: 409,
+    defect: `"${id}" is already retired at window ${status.retired_window ?? "?"}`,
+    hint: "there is nothing standing to withdraw — leave it again to bring it back: the same mark, the same id, ruled at the next crossing",
+  };
+}
+
+/**
  * One household's own drafts — the whole of what `/world2/my-drafts` answers.
  *
  * `submitted_at` comes back as `composed_at`, and `window_id` does not come
@@ -741,7 +831,7 @@ export async function markStandingStatus({ slug }, env = process.env) {
  */
 export async function readDraftClaims(key, env = process.env) {
   const p = await pool(env);
-  const household = await householdKeyForKey(p, key);
+  const { household, disclosure } = await keyHouseholdOf(p, key);
   // `= ANY(keys)` and not `= household`: the store never re-spells a row, so a
   // draft composed under this house's OLD key is still this house's draft and
   // the door must ask for it by every name the house has worn. The WHERE and
@@ -750,7 +840,7 @@ export async function readDraftClaims(key, env = process.env) {
   const rows = await withHousehold(p, household, (c, keys) => c.query(
     `SELECT id, slug, class, claimant, body, geometry, stake, submitted_at AS composed_at
        FROM claims WHERE status = 'draft' AND household = ANY($1) ORDER BY slug`, [keys]));
-  return { household, drafts: rows.rows };
+  return { household, drafts: rows.rows, ...(disclosure ? { disclosure } : {}) };
 }
 
 export function docketStatus() {
@@ -833,8 +923,8 @@ export async function docketSettled() {
  // lane already use. Resolving it at the call site would be a second notion of
  // whose drafts these are, which is the exact drift that function's own header
  // forbids ("do not inline either half").
-export async function claimRowsForSlug(slug, { key = null, env = process.env } = {}) {
-  const p = await pool(env);
+export async function claimRowsForSlug(slug, { key = null, env = process.env, p: injected = null } = {}) {
+  const p = injected ?? await pool(env);
   const sql = `SELECT id, slug, class, claimant, household, status, window_id,
                       submitted_at, decided_at, refusal_check, stake, supersedes
                  FROM claims WHERE slug = $1

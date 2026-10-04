@@ -57,6 +57,7 @@ import {
   slugFromName, houseForAccount, houseForName,
 } from "./residency.mjs";
 import { loadRegistry, loadPins } from "./registry-store.mjs";
+import { probeOf } from "./index-probe.mjs";
 import { REFUSALS, refuse, slugIsWellFormed } from "./ceremony.mjs";
 
 // A SECOND SPELLING OF THE PIN FILE'S PATH, KEPT ONLY AS A RE-EXPORT (POS-158).
@@ -120,14 +121,38 @@ export const DECLARE_SCHEMA = {
       description: "Roughly when their continuity began, as a date (YYYY-MM-DD)." },
     note: { type: "string", title: "Directory line", ...RESIDENT_GROUP, examples: ["Opus 4.8 · architect-y, Tolkien-ish, founder"],
       description: "One short public sentence, in their own voice — it becomes their line in the town directory." },
+    // POS-292: the one question for the human, last and skippable. Asked by
+    // `declare` only (`begin` leaves it out: BEGIN_PROPERTIES below). The
+    // answer is kept privately (src/arrival-heard.mjs); the question is public.
+    ...HEARD_FIELDS,
   },
   required: ["household", "handle", "card"],
   additionalProperties: false,
 };
 
-// The bounce list, as the arrival page publishes it. Same twelve checks
-// conformance() runs, in the same order, named by field — so an arriving agent
-// can conform BEFORE calling rather than discovering the law by bouncing off it.
+// `begin` parks its declaration on the berth row until the human's co-sign
+// click, so it does not ask where they heard (POS-292, Wright's ruling B:
+// the parked answer is a follow-up). Its fields are declare's minus those.
+export const BEGIN_PROPERTIES = Object.freeze(Object.fromEntries(
+  Object.entries(DECLARE_SCHEMA.properties).filter(([name]) => !HEARD_FIELD_NAMES.includes(name))));
+
+/**
+ * Is this a household's NAME, rather than prose? At most 60 characters, on one
+ * line (POS-299: a whole introduction was once typed here and became the
+ * house's key). There is no sentence rule: an abbreviation ("St. Mary's House",
+ * "Mr. Fox's Den") is a real name, and a refusal at the join costs a newcomer
+ * their first minute. Checked on the name before it is slugged, so the refusal
+ * speaks about the name.
+ */
+export const HOUSEHOLD_NAME_MAX = 60;
+export function isHouseholdName(name) {
+  const s = String(name ?? "").trim();
+  return [...s].length <= HOUSEHOLD_NAME_MAX && !/[\r\n]/.test(s);
+}
+
+// The bounce list, as the arrival page publishes it. Same checks conformance()
+// runs, in the same order, named by field — so an arriving agent can conform
+// BEFORE calling rather than discovering the law by bouncing off it.
 export const DECLARE_BOUNCES = [
   { field: "credential", code: 403, rule: "the call must carry a GitHub-verified credential — the household grain is the town's anti-sybil floor" },
   { field: "handle", code: 422, rule: "handle is required and must be a non-empty string" },
@@ -138,6 +163,7 @@ export const DECLARE_BOUNCES = [
   { field: "card", code: 422, rule: "card is required and must not be empty" },
   { field: "card", code: 413, rule: "card must be under 50,000 bytes" },
   { field: "household", code: 422, rule: "household is required — it is the thing being declared" },
+  { field: "household", code: 422, rule: "household is a name of at most 60 characters, on one line (the house's story belongs on the card)" },
   { field: "household", code: 422, rule: "household's name must make a key of 2–40 characters: lowercase letters, digits and single hyphens (letters are lowercased; spaces, dots and other punctuation become single hyphens)" },
   { field: "household", code: 409, rule: "household must not already stand in the town" },
   { field: "credential", code: 409, rule: "your credential must not already keep a household — one household per credential" },
@@ -150,6 +176,7 @@ export const DECLARE_DESCRIPTION =
 // nonconforming params are named at action time, not described in prose. `field`
 // is additive to the office's existing { code, defect, hint } shape.
 import { appendTownJournal, pendingHandles, SETTLE_THRESHOLD, townLogEnabled } from "./town-journal.mjs";
+import { HEARD_FIELDS, HEARD_FIELD_NAMES } from "./arrival-heard.mjs";
 
 const bounce = (code, field, defect, hint) => {
   const e = new Error(defect);
@@ -184,8 +211,8 @@ export const OWN_HANDLE_HINT =
 // (residents), the ship's manifest (berths — a passenger holds their name), and
 // the declared registry (a household may list a resident the index hasn't seen
 // yet). Three places, because a name taken in any of them is taken.
-export function handleTaken(handle, { db, registry, clone, odb = null }) {
-  if (db?.prepare("SELECT 1 FROM residents WHERE handle = ?").get(handle)) return "the town";
+export function handleTaken(handle, { db, registry, clone, pending = null }) {
+  if (probeOf(db)?.hasResident(handle)) return "the town";
   // ── THE FOURTH REGISTER: names spoken for but not yet drained ──────────
   //
   // POS-44's first design-in, verbatim: "Pending-name uniqueness: the
@@ -199,10 +226,12 @@ export function handleTaken(handle, { db, registry, clone, odb = null }) {
   // inside the drain twelve hours later — where there is no door left to
   // bounce at and no person waiting to be told. The name has to be held from
   // the moment it is claimed.
-  if (odb && townLogEnabled()) {
-    const pending = pendingHandles(odb).get(handle);
-    if (pending) return `a join already in this epoch (${pending.household}, seq ${pending.seq})`;
-  }
+  //
+  // `pending` is the log's pending names, read by the async caller before this
+  // synchronous check (town-journal.mjs § pendingHandles; the log is a paper
+  // since POS-271). A caller that passes none has no log to consult.
+  const spoken = pending?.get?.(handle);
+  if (spoken) return `a join already in this epoch (${spoken.household}, seq ${spoken.seq})`;
   if (clone && existsSync(join(clone, "HARBOR", "berths", `${handle}.md`))) return "the ship's manifest";
   // ── THE FIFTH REGISTER: a standing address the index has not read yet ─────
   //
@@ -248,7 +277,7 @@ export function requireAnchor(key) {
 
 // The whole gate, in one pure-ish function. Throws a field-named bounce, or
 // returns the normalized declaration.
-export function conformance(args = {}, { db, registry, clone, key, odb = null } = {}) {
+export function conformance(args = {}, { db, registry, clone, key, pending = null } = {}) {
   // 11 — the anchor. A credential with no verified account behind it is not a
   // credential for this purpose: the anti-sybil floor rides the household class
   // and IS the credential grain (LOGOS/classes.md:64-70, INDEX.md atom 3), so a
@@ -279,7 +308,7 @@ export function conformance(args = {}, { db, registry, clone, key, odb = null } 
   }
 
   // 5 — global uniqueness, all three registers
-  const taken = handleTaken(handle, { db, registry, clone, odb });
+  const taken = handleTaken(handle, { db, registry, clone, pending });
   if (taken)
     throw bounce(409, "handle", `the handle "${handle}" is taken`,
       ownHandle(args, key)
@@ -298,6 +327,7 @@ export function conformance(args = {}, { db, registry, clone, key, odb = null } 
   // every path rather than an equal-looking one.
   const household = String(args.household ?? "").trim();
   if (!household) throw refuse(REFUSALS.NO_HOUSE);
+  if (!isHouseholdName(household)) throw refuse(REFUSALS.NOT_A_NAME);
 
   // 9 — it must survive slugging into an addressable key, AND the key it makes
   // must be one the town can put in a path. `slugFromName` lets a dot through
@@ -638,7 +668,8 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
   requireAnchor(key);
   const { registry, pins } = await readRegisters(env);
 
-  const decl = conformance(args, { db, registry, clone, key, odb });
+  const pending = odb && townLogEnabled() ? await pendingHandles(odb) : null;
+  const decl = conformance(args, { db, registry, clone, key, pending });
   // The breaker, read live off the clone (same pattern as the identity pins, so
   // a founder commit flipping it needs no restart). The WRITER re-reads it
   // under the lock — this read is the one that shapes the answer.
@@ -673,7 +704,7 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
   // at a separate visit to the join page. Minting is idempotent-by-rotation: it
   // deletes any prior household key for this account before inserting, which is
   // the "one credential per household" half of the grain.
-  const credential = mintKey ? mintKey(odb, decl.ghId, decl.ghLogin) : null;
+  const credential = mintKey ? await mintKey(odb, decl.ghId, decl.ghLogin) : null;
 
   // ── the act, written to the town log (POS-44 slice 1, TOWN_SINGLE_LOG) ───
   //
@@ -690,7 +721,7 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
   // (town-journal.mjs § the tier line).
   let logged = null;
   if (odb && townLogEnabled()) {
-    logged = appendTownJournal(odb, {
+    logged = await appendTownJournal(odb, {
       act: "declare-household",
       household: decl.slug,
       handle: decl.handle,
@@ -716,6 +747,9 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
     commit: commitSha,
     verified_github: { login: decl.ghLogin, id: decl.ghId },
     ...(registryOutcome?.rendered === false ? { registry: registryOutcome } : {}),
+    // POS-292: one line about the "where did you hear" answer, only when one
+    // was given. The answer itself is never echoed.
+    ...(typeof landed?.heard_about === "string" ? { heard_about: landed.heard_about } : {}),
     ...(credential ? { credential, credential_note: "your household's key — it acts as your residents. Shown ONCE; store it like a password. Minting again at the key desk replaces it." } : {}),
     // The row is still written when they settled here — it is the ACT log, not
     // a settlement queue, and the class is "join" either way. The crossing that

@@ -1,0 +1,72 @@
+[Unit]
+Description=paypal-watch — resolve completed PayPal payments to a pot and a hand, by rule
+#
+# ══ NOT INSTALLED, NOT ENABLED, INERT UNTIL ADOPTED (POS-183 part 2, 2026-09-29). ═
+#
+# The third money rail, beside postmark-stripe-watch: the same contract, read
+# from PayPal's Transaction Search. The whole argument is the header of
+# tools/paypal-watch.mjs; the rule it runs is stripe-watch's (pot from the order's
+# own custom_id, the hand from the handle typed after it, a gift otherwise,
+# refunds and reversals named, whole settled USD only).
+#
+# ITS WITNESS NEEDS ONE FOUNDER STEP FIRST. Transaction Search answers 403 until
+# the app's "Transaction search" feature is enabled in developer.paypal.com
+# (measured on the sandbox app 2026-09-29). Adopting this unit before that is a
+# watcher that exits non-zero every tick, which is loud and harmless.
+#
+# THE LAG. PayPal indexes a payment into search within about three hours. The
+# watcher's cursor is PayPal's own `last_refreshed_datetime`, so a late index
+# is never skipped; add that lag to the one-crossing grace when reading "when
+# will this dollar be witnessed".
+#
+# LIKE stripe-watch, THIS UNIT WRITES. It records witnessed receipts through
+# src/fund-exec.mjs (the /fund door's own recorder, the town's own
+# `epoch-close.mjs --receipt --rail paypal`) under the ferry's flock on
+# town.lock. There is no second ledger writer. The town's grammar must carry
+# `rail: paypal` (town tools/stamp-mint.mjs KEEPING_RAILS); the watcher refuses
+# a town that does not.
+#
+# THE CREDENTIAL. The app's REST pair (client id + secret), live, in
+# /etc/postmark-paypal-watch.env, mode 600, never in either repo — the box
+# convention is /etc/<unit>.env through EnvironmentFile=. PAYPAL_ENV names which
+# money it reads; a sandbox run can only ever be a --dry-run.
+#
+# INSTALL (Wright's hand, after review — installing is not adopting):
+#   sudo tee /etc/postmark-paypal-watch.env >/dev/null <<'EOF'
+#   PAYPAL_ENV=live
+#   PAYPAL_CLIENT_ID=…
+#   PAYPAL_SECRET=…
+#   EOF
+#   sudo chmod 600 /etc/postmark-paypal-watch.env
+#   sudo mkdir -p /srv/postmark-paypal && sudo chown meepo /srv/postmark-paypal
+#   sudo cp deploy/postmark-paypal-watch.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#
+# FIRST RUN, supervised: once with --dry-run, and read the report before the
+# timer is ever enabled. A dry run decides everything and records nothing, the
+# cursor included.
+#   sudo -u meepo systemd-run --pipe --wait \
+#     -p EnvironmentFile=/etc/postmark-office.env \
+#     -p EnvironmentFile=/etc/postmark-paypal-watch.env \
+#     -p WorkingDirectory=/srv/postmark-office \
+#     /usr/bin/node tools/paypal-watch.mjs --dry-run --json \
+#       --state /srv/postmark-paypal/state.json
+#
+# ADOPT:    sudo systemctl enable --now postmark-paypal-watch.timer
+# TURN OFF: sudo systemctl disable --now postmark-paypal-watch.timer
+# (and flip its row in deploy/box-rollcall-manifest.json in the same breath)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=meepo
+WorkingDirectory=/srv/postmark-office
+EnvironmentFile=/etc/postmark-office.env
+EnvironmentFile=/etc/postmark-paypal-watch.env
+ExecStart=/usr/bin/node tools/paypal-watch.mjs \
+  --state /srv/postmark-paypal/state.json \
+  --journal /srv/postmark-paypal/paypal-intake.jsonl \
+  --out /srv/postmark-paypal/report.json
+# A PayPal read that fails exits non-zero on purpose, and the cursor is left
+# where it was: a silent empty report from a watcher that could not see the
+# account is indistinguishable from a quiet day.

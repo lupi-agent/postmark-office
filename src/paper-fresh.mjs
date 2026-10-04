@@ -87,6 +87,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { parseFrontmatter } from "../vendor/tools/lib/town.mjs";
+import { homePictureIn } from "./registry-rows.mjs";
+import { REGISTRY_PATH } from "./residency.mjs";
 import { readProfile } from "./profiles.mjs";
 import { readWindowState } from "./panes.mjs";
 import { pendingPaperRows, PAPER_ACTS, SETTLES_AT } from "./town-updates.mjs";
@@ -130,6 +132,14 @@ export function readHomeFile(clone, handle) {
   } catch { return null; }
 }
 
+/** The house's picture as the clone's households.json keeps it (POS-219), or
+ *  null. The drain renders that file in the same act that keeps a picture, so
+ *  this is the record a moment ago rather than at the last hydrate. */
+export function readHomePicture(clone, handle) {
+  try { return homePictureIn(JSON.parse(readFileSync(join(clone, REGISTRY_PATH), "utf8")), handle); }
+  catch { return null; }
+}
+
 /** The files under HOME/ that ARE images, for the card's `homeImages`. */
 export function readHomeImages(clone, handle) {
   try {
@@ -159,7 +169,20 @@ const same = (a, b) => {
  * never be the reason a public read 500s — a freshness stamp is worth less than
  * the answer it decorates.
  */
-export function freshnessFor(handle, { odb = null, clone = null, asOf = null } = {}) {
+// THE PENDING ROWS ARE READ BY THE DOOR, BEFORE THE READ (POS-271). The town log
+// is a paper now (paperwork.mjs) and answers with a promise, while the composed
+// reads this context feeds (queries.mjs § resident, home, windowRead, doorstep)
+// are synchronous. So an async door calls `freshFor` first and hands the
+// composed read a context that already holds the rows; `freshnessFor` only
+// reads them. A context built without `freshFor` has no rows and composes no
+// overlay: the settled index answers, which is this module's garnish rule.
+export async function freshFor(handle, { odb = null, clone = null, asOf = null } = {}) {
+  let pendingRows = [];
+  try { pendingRows = await pendingPaperRows(odb, handle); } catch { /* garnish only */ }
+  return { clone, asOf, pendingRows };
+}
+
+export function freshnessFor(handle, { clone = null, asOf = null, pendingRows = [] } = {}) {
   const ctx = { handle, clone: null, asOf: asOf ?? null, suspended: false, pending: new Map() };
   if (!handle) return ctx;
 
@@ -178,9 +201,7 @@ export function freshnessFor(handle, { odb = null, clone = null, asOf = null } =
   if (ctx.suspended) { ctx.clone = null; return ctx; }
 
   // Newest-last, so a resident who edited twice is described by the second row.
-  try {
-    for (const row of pendingPaperRows(odb, handle)) ctx.pending.set(row.act, row);
-  } catch { /* garnish only */ }
+  for (const row of pendingRows ?? []) if (row.handle === handle) ctx.pending.set(row.act, row);
 
   return ctx;
 }
@@ -279,7 +300,10 @@ export function composeResidentCard(card, ctx) {
   const imagesFresher = !same(images, (card.homeImages ?? []).slice().sort());
   if (homeFresher) card.home = { data: home.data, body: home.body };
   if (imagesFresher) card.homeImages = images;
-  fields["home"] = stampFor(ctx, "home", homeFresher || imagesFresher);
+  const picture = readHomePicture(ctx.clone, ctx.handle);
+  const pictureFresher = !same(picture, card.homePicture ?? null);
+  if (pictureFresher) card.homePicture = picture;
+  fields["home"] = stampFor(ctx, "home", homeFresher || imagesFresher || pictureFresher);
 
   const profile = readProfile(ctx.clone, ctx.handle);
   const profileFresher = !same(profile, card.profile ?? null);
@@ -308,6 +332,8 @@ export function composeHome(row, ctx) {
       fresher = !same(title, row.title) || !same(description, row.description) || !same(images, row.images);
       if (fresher) { row.title = title; row.description = description; row.images = images; }
     }
+    const picture = readHomePicture(ctx.clone, ctx.handle);
+    if (!same(picture, row.picture ?? null)) { row.picture = picture; fresher = true; }
   }
   row.freshness = freshnessBlock(ctx, { home: stampFor(ctx, "home", fresher) });
   return row;

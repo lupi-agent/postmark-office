@@ -28,11 +28,36 @@
 // one (POS-208 C is a later row).
 
 export const EVENT_CLASS = "event";
+// The 026 act names. FROZEN: acts already written under them stay as they are
+// (the act log is never rewritten), and the one fold below still reads them.
+// Nothing writes them since POS-288.
 export const ACT_HOST = "host";
 export const ACT_AMEND = "amend-event";
 export const ACT_CANCEL = "cancel-event";
 export const ACT_RSVP = "rsvp";
 export const ACT_ANNOUNCE = "announce";
+
+// ── THE POST MACHINE'S ACTS (POS-288; the Posts project, § The shape) ────────
+//
+// Keemin, 2026-09-27: one record with a life, every change an act — post,
+// amend (only the changed fields), advance, close, withdraw, revive. Events are
+// its first class, so an event's acts are class `event` with these actions.
+// An RSVP is a RESPONSE and an announcement a spoken act; they keep their names.
+export const ACT_POST = "post";
+export const ACT_AMEND_POST = "amend";
+export const ACT_CLOSE = "close";
+// The bug class's one move along its lifecycle (Posts phase 2): the state it
+// moves to, and the class's own fields that stage sets.
+export const ACT_ADVANCE = "advance";
+// The bug's critter image, revealed at ship (POS-236): the post's whole reveal,
+// as the act left it, and nothing else.
+export const ACT_REVEAL = "reveal";
+// A post's stored state is what its acts made it. An event's clock phases
+// (announced · doors-open · underway · ended) are `phaseAt`'s, never stored.
+export const STATE_ANNOUNCED = "announced";
+export const STATE_CANCELLED = "cancelled";
+export const RESPONSE_RSVP = "rsvp";
+export const RESPONSE_STANDING = "standing";
 
 // ── THE DIALS, named once ───────────────────────────────────────────────────
 //
@@ -224,7 +249,12 @@ export function anchorForPlace(place, worldAnchor) {
 
 // ── THE HOST ACT'S FIELDS ───────────────────────────────────────────────────
 
-export function judgeText({ title, invitation }, { partial = false } = {}) {
+/**
+ * Judge an event's title and its text. Returns `{ title?, body? }`. The text is
+ * the post's `body`; the household door calls it the `invitation` and the town
+ * door the `body`, so `bodyField` names it in the refusal the caller reads.
+ */
+export function judgeText({ title, body }, { partial = false, bodyField = "invitation" } = {}) {
   const out = {};
   if (title !== undefined || !partial) {
     const t = String(title ?? "").trim();
@@ -232,12 +262,13 @@ export function judgeText({ title, invitation }, { partial = false } = {}) {
     if (t.length > TITLE_MAX) throw refuse(422, `a title is at most ${TITLE_MAX} characters`, `this one is ${t.length}`, { field: "title" });
     out.title = t;
   }
-  if (invitation !== undefined) {
-    if (invitation !== null && typeof invitation !== "string") throw refuse(422, "invitation is text", "a short invitation, in your own words", { field: "invitation" });
-    const i = String(invitation ?? "").trim();
-    if (i.length > INVITATION_MAX) throw refuse(422, `an invitation is at most ${INVITATION_MAX} characters`, `this one is ${i.length}`, { field: "invitation" });
-    out.invitation = i;
-  } else if (!partial) out.invitation = "";
+  if (body !== undefined) {
+    const a = bodyField === "invitation" ? "an invitation" : "a body";
+    if (body !== null && typeof body !== "string") throw refuse(422, `${bodyField} is text`, "a short invitation, in your own words", { field: bodyField });
+    const i = String(body ?? "").trim();
+    if (i.length > INVITATION_MAX) throw refuse(422, `${a} is at most ${INVITATION_MAX} characters`, `this one is ${i.length}`, { field: bodyField });
+    out.body = i;
+  } else if (!partial) out.body = "";
   return out;
 }
 
@@ -326,49 +357,97 @@ export function harnessPlan(existing, harness) {
 
 // ── THE ONE WAY AN ACT BECOMES A ROW ────────────────────────────────────────
 //
-// `state` is `{ events: Map<id,row>, rsvps: Map<"event handle",row> }`, table-
-// shaped (the columns of 026_events.sql). `act` is an `acts` row: `id`,
+// `state` is `{ posts: Map<id,row>, responses: Map<"post handle kind",row> }`,
+// table-shaped (the columns of 028_posts.sql). `act` is an `acts` row: `id`,
 // `action`, `actor`, `object`, `payload`, `household`. Every column of both
 // tables comes from the act, so a rebuild restores every one of them. An RSVP's
 // address and secret live on the resident's harness row, which no act carries
 // and no rebuild touches (026 § THE HARNESS ROW).
 //
+// ONE FOLD, TWO VOCABULARIES (POS-288). The act log is never rewritten, so the
+// 026 acts (`host`, `amend-event`, `cancel-event`, each host/amend carrying the
+// WHOLE event) are read here beside the post machine's (`post`, `amend`
+// carrying ONLY the changed fields, `close` carrying the state it closes to).
+// A log that mixes the two folds to the same rows either would alone.
+//
 // It mutates `state` and returns the row it wrote, so the pen can write exactly
 // that row and the rebuild can fold a whole log with the same call.
-export const rsvpKey = (event, handle) => `${event} ${handle}`;
+export const responseKey = (post, handle, kind = RESPONSE_RSVP) => `${post} ${handle} ${kind}`;
+export const rsvpKey = (post, handle) => responseKey(post, handle, RESPONSE_RSVP);
 
-export function applyEventAct(state, act) {
+const placeCols = (place) => ({
+  place_mark: place?.mark ?? null,
+  place_x: place == null || place.x == null ? null : Number(place.x),
+  place_y: place == null || place.y == null ? null : Number(place.y),
+});
+
+export function applyPostAct(state, act) {
   const p = typeof act.payload === "string" ? JSON.parse(act.payload) : (act.payload ?? {});
-  const id = String(act.object ?? p.event);
+  const id = String(act.object ?? p.post ?? p.event);
   const actId = Number(act.id);
+  const prev = state.posts.get(id);
+
+  // The 026 host and amendment: the whole event, every time.
   if (act.action === ACT_HOST || act.action === ACT_AMEND) {
-    const prev = state.events.get(id);
     const row = {
-      id, title: p.title, invitation: p.invitation ?? "",
-      host: prev?.host ?? act.actor, household: prev?.household ?? act.household ?? null,
-      place_mark: p.place?.mark ?? null, place_x: Number(p.place?.x), place_y: Number(p.place?.y),
-      doors_open: p.doors_open, starts: p.starts, ends: p.ends,
+      id, class: prev?.class ?? EVENT_CLASS, title: p.title, body: p.invitation ?? "",
+      author: prev?.author ?? act.actor, household: prev?.household ?? act.household ?? null,
+      ...placeCols(p.place), starts: p.starts, ends: p.ends,
+      state: prev?.state ?? STATE_ANNOUNCED, fields: { doors_open: p.doors_open },
       revised: act.action === ACT_AMEND ? (prev?.revised ?? 0) + 1 : 0,
-      cancelled: prev?.cancelled ?? false,
-      hosted_act: prev?.hosted_act ?? actId, last_act: actId,
+      posted_act: prev?.posted_act ?? actId, last_act: actId,
     };
-    state.events.set(id, row);
+    state.posts.set(id, row);
     return row;
   }
-  if (act.action === ACT_CANCEL) {
-    const prev = state.events.get(id);
+  if (act.action === ACT_POST) {
+    const row = {
+      id, class: p.class ?? act.class ?? EVENT_CLASS, title: p.title, body: p.body ?? "",
+      author: act.actor, household: act.household ?? null,
+      ...placeCols(p.place), starts: p.starts ?? null, ends: p.ends ?? null,
+      state: p.state ?? STATE_ANNOUNCED, fields: { ...(p.fields ?? {}) },
+      revised: 0, posted_act: actId, last_act: actId,
+    };
+    state.posts.set(id, row);
+    return row;
+  }
+  // The amendment: ONLY what the payload names changes (the gate: "an amend
+  // that changes one field changes only that field").
+  if (act.action === ACT_AMEND_POST) {
     if (!prev) return null;
-    const row = { ...prev, cancelled: true, last_act: actId };
-    state.events.set(id, row);
+    const row = { ...prev, fields: { ...prev.fields }, revised: (prev.revised ?? 0) + 1, last_act: actId };
+    for (const k of ["title", "body", "starts", "ends"]) if (k in p) row[k] = p[k];
+    if ("place" in p) Object.assign(row, placeCols(p.place));
+    if (p.fields) Object.assign(row.fields, p.fields);
+    state.posts.set(id, row);
+    return row;
+  }
+  if (act.action === ACT_CANCEL || act.action === ACT_CLOSE) {
+    if (!prev) return null;
+    const row = { ...prev, state: act.action === ACT_CANCEL ? STATE_CANCELLED : (p.state ?? STATE_CANCELLED), last_act: actId };
+    state.posts.set(id, row);
+    return row;
+  }
+  // The advance: the state it names, and ONLY the class fields it carries.
+  if (act.action === ACT_ADVANCE) {
+    if (!prev) return null;
+    const row = { ...prev, fields: { ...prev.fields, ...(p.fields ?? {}) }, state: p.to, last_act: actId };
+    state.posts.set(id, row);
+    return row;
+  }
+  if (act.action === ACT_REVEAL) {
+    if (!prev) return null;
+    const row = { ...prev, fields: { ...prev.fields, reveal: p.reveal ?? null }, last_act: actId };
+    state.posts.set(id, row);
     return row;
   }
   if (act.action === ACT_RSVP) {
     const row = {
-      event: id, handle: act.actor, household: act.household ?? null,
-      harness: p.harness, budget: Number(p.budget),
-      fell_back: p.fell_back ?? null, act: actId,
+      post: id, handle: act.actor, kind: RESPONSE_RSVP, state: RESPONSE_STANDING, household: act.household ?? null,
+      fields: { harness: p.harness, budget: Number(p.budget), ...(p.fell_back ? { fell_back: p.fell_back } : {}) },
+      act: actId,
     };
-    state.rsvps.set(rsvpKey(id, act.actor), row);
+    state.responses.set(responseKey(id, act.actor), row);
     return row;
   }
   // An `announce` act changes no row: the announcement IS the act, and the
@@ -378,9 +457,9 @@ export function applyEventAct(state, act) {
 }
 
 /** Fold a whole log (ordered by id) into the two tables. The rebuild. */
-export function foldEventActs(acts) {
-  const state = { events: new Map(), rsvps: new Map() };
-  for (const a of acts) applyEventAct(state, a);
+export function foldPostActs(acts) {
+  const state = { posts: new Map(), responses: new Map() };
+  for (const a of acts) applyPostAct(state, a);
   return state;
 }
 
@@ -389,18 +468,24 @@ export function foldEventActs(acts) {
 const iso = (v) => (v == null ? null : new Date(v).toISOString());
 
 /**
- * One event as the calendar read answers it. `rsvpHandles` is the handles that
- * RSVPed, and nothing else: the public read never carries a harness, a url, a
- * secret or a budget (the brief § 6).
+ * One event as the calendar read answers it, from its `posts` row. `rsvpHandles`
+ * is the handles that RSVPed, and nothing else: the public read never carries a
+ * harness, a url, a secret or a budget (the brief § 6).
+ *
+ * TWO KEY SETS FOR ONE RELEASE (POS-288). The calendar's own keys (`host`,
+ * `invitation`, `doors_open`, `cancelled`) are what the site reads today; the
+ * post's (`class`, `author`, `body`, `state`, `fields`) ride beside them with
+ * the same values, so a reader can move over before the old ones go.
  */
 export function eventView(row, rsvpHandles, now, announcements = []) {
-  const doors_open = iso(row.doors_open), starts = iso(row.starts), ends = iso(row.ends);
+  const starts = iso(row.starts), ends = iso(row.ends);
+  const doors_open = iso(row.fields?.doors_open ?? row.starts);
   const residents = [...rsvpHandles].sort();
   return {
     id: row.id,
     title: row.title,
-    invitation: row.invitation ?? "",
-    host: row.host,
+    invitation: row.body ?? "",
+    host: row.author,
     household: row.household ?? null,
     place: { mark: row.place_mark ?? null, name: markName(row.place_mark), x: Number(row.place_x), y: Number(row.place_y) },
     doors_open, starts, ends,
@@ -409,10 +494,16 @@ export function eventView(row, rsvpHandles, now, announcements = []) {
     ends_in_s: Math.round((Date.parse(ends) - now) / 1000),
     rsvps: { total: residents.length, residents },
     revised: Number(row.revised ?? 0),
-    cancelled: row.cancelled === true,
+    cancelled: row.state === STATE_CANCELLED,
     // The host's announcements, oldest first. Resident text in its own field,
     // never folded into a sentence of the office's (the reading law).
     announcements: announcements.map((a) => ({ at: iso(a.at), text: a.text })),
+    // The post's own names for the same record (POS-288).
+    class: row.class ?? EVENT_CLASS,
+    author: row.author,
+    body: row.body ?? "",
+    state: row.state ?? STATE_ANNOUNCED,
+    fields: { doors_open },
   };
 }
 

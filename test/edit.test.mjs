@@ -5,11 +5,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, rmSync, readFileSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
+import { existsSync, rmSync, readFileSync, readdirSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fixtureDb, editClone, fixtureKey } from "./fixture.mjs";
-import { updateAddressBody, updateHome, updateHomeImage, updateProfile, updateProfileAvatar, updateWindow } from "../src/edit.mjs";
+import { HOME_TITLE_MAX, updateAddressBody, updateHome, updateHomeImage, updateProfile, updateProfileAvatar, updateWindow } from "../src/edit.mjs";
 
 delete process.env.TOWN_PUSH; // belt and braces: the spine must stay local
 
@@ -299,30 +299,108 @@ test("body edits: empty body → 422, frontmatter-smuggle → 422, missing file 
 
 // ── the home founds on first write (chat-only residents have no PR hands) ─────
 
-test("update_home: first call founds the home (UNPLACED, office-stamped frontmatter), second edits body-only", () => {
+test("update_home: first call founds the home (UNPLACED, office-stamped frontmatter, its title), second edits body-only", () => {
   const clone = editClone();
   try {
     // a key that acts for a handle with no HOME yet — the chat-only resident who
     // could never open the founding PR by hand
     const newKey = { household: "keemin", handles: new Set(["newhome"]) };
-    const first = updateHome({ handle: "newhome", body: "# my first house\n\nOne warm room by the water." }, newKey, db, clone);
+    const first = updateHome({ handle: "newhome", title: "the fig house", body: "# my first house\n\nOne warm room by the water." }, newKey, db, clone);
     assert.equal(first.founded, true);
     assert.equal(first.file, "WHITE_PAGES/newhome/HOME/HOME.md");
     assert.ok(first.commit, "founding commits");
+    assert.deepEqual(first.written, ["body", "title"], "the receipt names the title it wrote");
 
     const founded = read(clone, "WHITE_PAGES", "newhome", "HOME", "HOME.md");
-    // office-stamped frontmatter is exactly the identity tie — UNPLACED, no title/region/sits
-    assert.equal(founded, "---\nresident: newhome\n---\n\n# my first house\n\nOne warm room by the water.\n");
-    assert.doesNotMatch(founded, /region:|sits:|title:/);
+    // office-stamped frontmatter is the identity tie and the name — UNPLACED, no region/sits
+    assert.equal(founded, "---\nresident: newhome\ntitle: the fig house\n---\n\n# my first house\n\nOne warm room by the water.\n");
+    assert.doesNotMatch(founded, /region:|sits:/);
     assert.match(lastLog(clone), /newhome: home founded .*key household keemin/);
 
     // second call edits body-only, frontmatter preserved verbatim
     const second = updateHome({ handle: "newhome", body: "Two rooms now, and a lamp in the window." }, newKey, db, clone);
     assert.equal(second.founded, false);
     const edited = read(clone, "WHITE_PAGES", "newhome", "HOME", "HOME.md");
-    assert.ok(edited.startsWith("---\nresident: newhome\n---"), "frontmatter untouched on edit");
+    assert.ok(edited.startsWith("---\nresident: newhome\ntitle: the fig house\n---"), "frontmatter untouched on edit");
     assert.match(edited, /---\n\nTwo rooms now, and a lamp in the window\.\n$/);
     assert.match(lastLog(clone), /newhome: home description updated/);
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+// ── POS-224: a home founded through the door has a name ──────────────────────
+//
+// stellar-scribe's home (town d8c45200f, 2026-09-23) was founded here with
+// `resident:` alone, and the site's card set its first paragraph in the
+// title's seat. Keemin, 2026-09-25: "we should require a name for the home as I
+// believe other things depend on that".
+
+test("POS-224 a founding with no title is REFUSED, by name, saying what a title is — and nothing is written", () => {
+  const clone = editClone();
+  try {
+    const freshKey = { household: "keemin", handles: new Set(["nameless"]) };
+    const e = bounceOf(() => updateHome({ handle: "nameless", body: "In the depths of the High Ground, where the moonlight filters through." }, freshKey, db, clone));
+    assert.equal(e.code, 422);
+    assert.match(e.defect, /no title/);
+    assert.match(e.hint, /a name, not a sentence/);
+    assert.ok(!existsSync(join(clone, "WHITE_PAGES", "nameless", "HOME", "HOME.md")), "a refused founding writes nothing");
+    // missing BOTH is one refusal naming both, not two round trips
+    const both = bounceOf(() => updateHome({ handle: "nameless", assets: [] }, freshKey, db, clone));
+    assert.match(both.defect, /no title and no body/);
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+test("POS-224 a title is a name: capped at HOME_TITLE_MAX, one line, never read back as data — and never quoted in the door's sentence", () => {
+  const clone = editClone();
+  try {
+    const freshKey = { household: "keemin", handles: new Set(["nameless"]) };
+    const found = (title) => bounceOf(() => updateHome({ handle: "nameless", title, body: "A room." }, freshKey, db, clone));
+    const long = "a house ".repeat(11).trim(); // 87 characters
+    const e = found(long);
+    assert.equal(e.code, 422);
+    assert.match(e.defect, new RegExp(`at most ${HOME_TITLE_MAX} characters`));
+    assert.ok(!`${e.defect} ${e.hint}`.includes(long), "the resident's text is never interpolated into the door's own sentence");
+    assert.equal(found("the fig\nhouse").code, 422);
+    assert.equal(found("   ").code, 422);
+    assert.equal(found(["the fig house"]).code, 422);
+    assert.equal(found("[the fig house]").code, 422);
+    // exactly the cap is a name
+    const r = updateHome({ handle: "nameless", title: "x".repeat(HOME_TITLE_MAX), body: "A room." }, freshKey, db, clone);
+    assert.equal(r.founded, true);
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+test("POS-224 a home founded before this (no title) may set one ONCE; a second, different title is refused and the first stands", () => {
+  const clone = editClone();
+  try {
+    // the shape the door founded until today: resident alone
+    setFm(clone, "---\nresident: wright\n---");
+    const one = updateHome({ handle: "wright", title: "the Trueing-House" }, fixtureKey, db, clone);
+    assert.deepEqual(one.written, ["title"]);
+    assert.ok(one.commit);
+    assert.match(lastLog(clone), /wright: home named/);
+    const named = homeMd(clone);
+    assert.ok(named.startsWith("---\nresident: wright\ntitle: the Trueing-House\n---\n\n# a home\n\nThe prose.\n"), named);
+
+    const e = bounceOf(() => updateHome({ handle: "wright", title: "the Leaning House", body: "New prose." }, fixtureKey, db, clone));
+    assert.equal(e.code, 422);
+    assert.match(e.defect, /this door does not write: title/);
+    assert.match(e.hint, /by PR/);
+    assert.equal(homeMd(clone), named, "the title is unchanged and the body with it — a refusal is total");
+
+    // the same name again is COMPARED, not refused: a resent envelope is not a rename
+    const again = updateHome({ handle: "wright", title: "the Trueing-House" }, fixtureKey, db, clone);
+    assert.equal(again.unchanged, true);
+    assert.deepEqual(again.compared, ["title"]);
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+test("POS-224 the join template's blank `title:` counts as none, and is filled where it stands", () => {
+  const clone = editClone();
+  try {
+    setFm(clone, "---\nresident: wright\ntitle:\nstyle: stone\n---");
+    updateHome({ handle: "wright", title: "the Trueing-House", body: "Warmer." }, fixtureKey, db, clone);
+    assert.ok(homeMd(clone).startsWith("---\nresident: wright\ntitle: the Trueing-House\nstyle: stone\n---\n\nWarmer.\n"));
+    assert.match(lastLog(clone), /wright: home description updated \+ named/);
   } finally { rmSync(clone, { recursive: true, force: true }); }
 });
 
@@ -737,73 +815,81 @@ test("#865 assets: neither body nor assets is a bounce, not a silent no-op", () 
   } finally { rmSync(clone, { recursive: true, force: true }); }
 });
 
-test("#865 image door: an upload lands in HOME/ and DECLARES itself", async () => {
+// ── POS-219: the image door keeps the house's picture on the household's record ──
+//
+// It used to write HOME/ and declare the file (#865). Now it mints the bytes
+// through the media door and hands the URL to the one writer. `upload` and
+// `keep` are the door's injectables, so these prove the act without a bucket or
+// a store; test/home-picture.test.mjs proves the writer itself.
+const PICTURE = "https://media.postmark.town/media/keemin/0f3c.png";
+const stubs = () => {
+  const calls = { upload: [], keep: [] };
+  return {
+    calls,
+    upload: async (args, key, odb, deps) => { calls.upload.push({ args, key, bytes: deps.bytes }); return { url: PICTURE }; },
+    keep: async (args, key, deps) => { calls.keep.push({ args, clone: deps.clone }); return { picture: args.url, household: "keemin", registry: { rendered: true }, commit: null }; },
+  };
+};
+const homeDirOf = (clone) => readdirSync(join(clone, "WHITE_PAGES", "wright", "HOME")).sort();
+
+test("POS-219 image door: the bytes are minted through the media door and the URL is kept on the household's record; HOME/ is untouched", async () => {
   const clone = editClone();
   try {
     setFm(clone, "---\nresident: wright\ntitle: the Trueing-House\n---");
-    const r = await updateHomeImage({ handle: "wright", image: b64(PNG), name: "my-house.png" }, fixtureKey, db, clone);
-    assert.equal(r.image, "my-house.png");
+    const before = { dir: homeDirOf(clone), md: homeMd(clone), log: lastLog(clone) };
+    const s = stubs();
+    const r = await updateHomeImage({ handle: "wright", image: b64(PNG), name: "my-house.png" }, fixtureKey, db, clone, null, s);
+    assert.equal(s.calls.upload.length, 1, "one mint");
+    assert.deepEqual(s.calls.upload[0].args, { by: "wright" }, "the door's own resident, and nothing a skin could fill");
+    assert.deepEqual(Buffer.from(s.calls.upload[0].bytes), PNG, "the bytes the resident sent, decoded once");
+    assert.deepEqual(s.calls.keep.map((c) => c.args), [{ handle: "wright", url: PICTURE }], "the URL the mint answered, kept by the one writer");
+    assert.equal(r.picture, PICTURE);
     assert.equal(r.media_type, "image/png");
-    assert.deepEqual(r.assets, ["my-house.png"]);
-    assert.ok(existsSync(join(clone, "WHITE_PAGES", "wright", "HOME", "my-house.png")));
-    assert.match(homeMd(clone), /^assets: \["my-house\.png"\]$/m);
-    assert.match(lastLog(clone), /home image hung/);
+    assert.deepEqual(homeDirOf(clone), before.dir, "no file lands in HOME/");
+    assert.equal(homeMd(clone), before.md, "and HOME.md's assets are not rewritten");
+    assert.equal(lastLog(clone), before.log, "no pen commit to the town's pages");
   } finally { rmSync(clone, { recursive: true, force: true }); }
 });
 
-test("#865 image door: the bytes decide the extension, never the caller's label", async () => {
+test("POS-219 image door: a name is accepted and ignored — the media door names an object by its bytes", async () => {
   const clone = editClone();
   try {
-    const e = (await bounceOfAsync(() => updateHomeImage({ handle: "wright", image: b64(PNG), name: "house.jpg" }, fixtureKey, db, clone)));
-    assert.equal(e.code, 422);
-    assert.match(e.defect, /bytes are a PNG, not a JPG/);
-    assert.match(e.hint, /"house\.png"/);
+    const s = stubs();
+    const r = await updateHomeImage({ handle: "wright", image: b64(PNG), name: "house.jpg" }, fixtureKey, db, clone, null, s);
+    assert.equal(r.picture, PICTURE);
   } finally { rmSync(clone, { recursive: true, force: true }); }
 });
 
-test("#865 image door: a second upload adds to the declaration, never replaces the first", async () => {
-  const clone = editClone();
-  try {
-    setFm(clone, "---\nresident: wright\n---");
-    await updateHomeImage({ handle: "wright", image: b64(PNG), name: "exterior.png" }, fixtureKey, db, clone);
-    const r = await updateHomeImage({ handle: "wright", image: b64(JPEG), name: "library.jpg" }, fixtureKey, db, clone);
-    assert.deepEqual(r.assets, ["exterior.png", "library.jpg"]);   // sol's two-image case
-    assert.match(homeMd(clone), /^assets: \["exterior\.png", "library\.jpg"\]$/m);
-  } finally { rmSync(clone, { recursive: true, force: true }); }
-});
-
-test("#865 image door: re-uploading the same name replaces the file and declares once", async () => {
-  const clone = editClone();
-  try {
-    setFm(clone, "---\nresident: wright\n---");
-    await updateHomeImage({ handle: "wright", image: b64(PNG), name: "house.png" }, fixtureKey, db, clone);
-    const r = await updateHomeImage({ handle: "wright", image: b64(PNG), name: "house.png" }, fixtureKey, db, clone);
-    assert.equal(r.replaced, true);
-    assert.deepEqual(r.assets, ["house.png"]);
-    assert.equal(homeMd(clone).match(/house\.png/g).length, 1);
-  } finally { rmSync(clone, { recursive: true, force: true }); }
-});
-
-test("#865 image door: no home yet points at the founding door instead of guessing", async () => {
+test("POS-219 image door: no HOME.md is needed — the picture hangs on the household's record, not a wall in the repo", async () => {
   const clone = editClone();
   try {
     rmSync(join(clone, "WHITE_PAGES", "wright", "HOME", "HOME.md"));
-    const e = (await bounceOfAsync(() => updateHomeImage({ handle: "wright", image: b64(PNG) }, fixtureKey, db, clone)));
-    assert.equal(e.code, 404);
-    assert.match(e.hint, /PATCH \/home\/wright/);
+    const r = await updateHomeImage({ handle: "wright", image: b64(PNG) }, fixtureKey, db, clone, null, stubs());
+    assert.equal(r.picture, PICTURE);
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+test("POS-219 image door: bytes the door refuses never reach the mint", async () => {
+  const clone = editClone();
+  try {
+    const s = stubs();
+    const e = await bounceOfAsync(() => updateHomeImage({ handle: "wright", image: b64(Buffer.from("not an image at all")) }, fixtureKey, db, clone, null, s));
+    assert.equal(e.code, 422);
+    assert.equal(s.calls.upload.length, 0);
+    assert.equal(s.calls.keep.length, 0);
   } finally { rmSync(clone, { recursive: true, force: true }); }
 });
 
 test("#865 image door: a fenceless HOME.md is named as such (fabel) — never silently rewritten", async () => {
   const clone = editClone();
   try {
-    // fabel's real file: tab-separated keys, no --- fence anywhere
+    // fabel's real file: tab-separated keys, no --- fence anywhere. The image
+    // door no longer reads HOME.md (POS-219), so it keeps the picture; the
+    // declaration door still refuses the file for the same honest reason.
     writeFileSync(join(clone, "WHITE_PAGES", "wright", "HOME", "HOME.md"),
       "resident\twright\ntitle\tThe Heart House\nassets\t\nHeartHouse_by_Sol.png\n");
-    const e = (await bounceOfAsync(() => updateHomeImage({ handle: "wright", image: b64(PNG) }, fixtureKey, db, clone)));
-    assert.equal(e.code, 422);
-    assert.match(e.defect, /no frontmatter to preserve/);
-    // and the declaration door refuses the same file for the same honest reason
+    const r = await updateHomeImage({ handle: "wright", image: b64(PNG) }, fixtureKey, db, clone, null, stubs());
+    assert.equal(r.picture, PICTURE);
     putArt(clone, "HeartHouse_by_Sol.png");
     assert.equal(bounceOf(() => updateHome({ handle: "wright", assets: ["HeartHouse_by_Sol.png"] }, fixtureKey, db, clone)).code, 422);
   } finally { rmSync(clone, { recursive: true, force: true }); }

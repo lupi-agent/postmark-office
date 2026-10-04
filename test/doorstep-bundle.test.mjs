@@ -42,6 +42,7 @@ import { callTool } from "../src/mcp.mjs";
 import { ACT_SHADOW_READS } from "../src/household-apex.mjs";
 import { TOWN_READABLE } from "../src/town-apex.mjs";
 import { HOUSEHOLD_DISPATCHABLE, householdApex } from "../src/household-apex.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 const AS_OF = "bundlefixture000000000000000000000000000";
 const HANDLE = "r000";
@@ -92,7 +93,9 @@ function bundleDb() {
 
   const insLedger = db.prepare("INSERT INTO ledger (kind, date, id, from_h, to_h, json) VALUES (?,?,?,?,?,?)");
   for (let i = 0; i < 12; i++) {
-    insLedger.run("delivery", `2026-07-${String((i % 28) + 1).padStart(2, "0")}`, `l${i}`, "r001", HANDLE, null);
+    // json is the event itself, as the hydrator writes every ledger line (town-index.mjs § ledgerLines); the store refuses a null
+    const date = `2026-07-${String((i % 28) + 1).padStart(2, "0")}`;
+    insLedger.run("delivery", date, `l${i}`, "r001", HANDLE, JSON.stringify({ kind: "delivery", date, id: `l${i}`, from: "r001", to: HANDLE }));
   }
 
   db.prepare("INSERT INTO stamps VALUES (?,?,?,?)").run(HANDLE, 12, 30, 3);
@@ -116,6 +119,11 @@ function bundleDb() {
 }
 
 const db = bundleDb();
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(db);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 // A real (empty) directory rather than a path that does not exist: the paper
 // acts that FOUND a page will happily mkdir their way toward one, and a
 // throwaway temp dir keeps that off the filesystem the developer lives on.
@@ -170,7 +178,7 @@ test("THE BUNDLE: every segment carries the DOMAIN of the read its `serves` name
   // falsifier goes vacuous after a restructure.
   const d = await doorstepBundle(HANDLE, ctx);
   assert.deepEqual(d.segments, [...DOORSTEP_SEGMENTS], "the manifest lists its own segments");
-  assert.equal(d.segments.length, 9, "nine — a manifest that shrank would be hiding one (crossings joined 2026-09-07, #2526; stakes 2026-09-18, #2919)");
+  assert.equal(d.segments.length, 10, "ten — a manifest that shrank would be hiding one (crossings joined 2026-09-07, #2526; stakes 2026-09-18, #2919; posts 2026-09-28, POS-293)");
   for (const name of DOORSTEP_SEGMENTS) {
     const seg = d[name];
     assert.ok(seg && typeof seg === "object", `segment "${name}" is missing from the bundle`);
@@ -527,10 +535,10 @@ const MAIL_LAW =
   + " until the crossing delivers it.";
 
 /** An oauth-side db holding the town journal, as every door's `odb` is. */
-function mailOdb(rows) {
+async function mailOdb(rows) {
   const o = new DatabaseSync(":memory:");
   o.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
-  for (const r of rows) appendTownJournal(o, r);
+  for (const r of rows) await appendTownJournal(o, r);
   return o;
 }
 
@@ -570,7 +578,7 @@ const throughBothDoors = async (h, over) => ({
 
 test("THE MAIL TENSE: a sender's own counter counts the letters standing in the log, on BOTH doors", async () => {
   assert.equal(TENSE_LAW, LADDER_NOTE, "the tense law is quoted from the constant that owns it");
-  const odb = mailOdb(standingRows());
+  const odb = await mailOdb(standingRows());
   await flagOn(async () => {
     const doors = await throughBothDoors(HANDLE, { key: senderKey, odb });
     for (const [door, d] of Object.entries(doors)) {
@@ -606,7 +614,7 @@ test("THE MAIL TENSE: a sender's own counter counts the letters standing in the 
 
 test("THE MAIL LAW HOLDS ON THE COUNTER: a non-sender is told nothing, and is not told a zero either", async () => {
   assert.ok(MAIL_LAW.includes("the RECIPIENT sees nothing at all"));
-  const odb = mailOdb(standingRows());
+  const odb = await mailOdb(standingRows());
   await flagOn(async () => {
     for (const [who, key] of [["a stranger's key", strangerKey], ["no key at all", null]]) {
       const doors = await throughBothDoors(HANDLE, { key, odb });
@@ -636,7 +644,7 @@ test("THE MAIL LAW HOLDS ON THE COUNTER: a non-sender is told nothing, and is no
 });
 
 test("THE FLIP: the counter falsifier can fail — the answer Vex read is rejected", async () => {
-  const odb = mailOdb(standingRows());
+  const odb = await mailOdb(standingRows());
   await flagOn(async () => {
     const d = await doorstepBundle(HANDLE, { ...ctx, key: senderKey, odb });
     // The defect exactly as Vex read it: the disclosure present, the counter
@@ -652,7 +660,7 @@ test("THE FLIP: the counter falsifier can fail — the answer Vex read is reject
 
 test("FLAG-OFF the counter is the index's own number, and says so", async () => {
   delete process.env.TOWN_SINGLE_LOG;
-  const odb = mailOdb(standingRows());
+  const odb = await mailOdb(standingRows());
   const d = await doorstepBundle(HANDLE, { ...ctx, key: senderKey, odb });
   assert.equal(d.your_pending_letters, undefined, "no town log, no standing letters to disclose");
   assert.equal(d.pending_outbox, 6);

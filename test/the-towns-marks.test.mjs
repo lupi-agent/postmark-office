@@ -38,6 +38,7 @@ import { planAdoption } from "../src/solo-adoption.mjs";
 import { conformance, DECLARE_BOUNCES } from "../src/declare.mjs";
 import { validateResidencyRequest } from "../src/residency.mjs";
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 /** A roll that does NOT name the town: the real roll's shape (121 houses, none holds `the-town`). */
 const ROLL = { berthillon: { accounts: [{ login: "devadavisson", id: 12345 }], residents: ["berthillon"] } };
@@ -71,6 +72,12 @@ const refusedAsNoSuchHouse = (who) => (e) => {
   assert.equal(e.code, 404);
   return true;
 };
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("the exception is one named constant, spelled the way the store already holds the town's 378 rows", () => {
   assert.equal(TOWN_CLAIMANT, "the-town");

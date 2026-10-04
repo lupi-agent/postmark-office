@@ -39,6 +39,12 @@ after(() => {
 });
 
 const { penVoiceAct } = await import("../src/world.mjs");
+// THE CROSSING IS BORROWED, NOT THE SUBJECT: nothing here asserts what
+// happened at a named window, so the acts are stamped with the window open
+// when this file runs, through the guard's own currentCrossing (the #302
+// lesson: a pinned crossing decays the moment the town crosses past it).
+const { currentCrossing } = await import("../src/crossings.mjs");
+const OPEN = currentCrossing();
 
 const voice = { handle: "wright", text: "evening", x: 10, y: 20, at: Date.parse("2026-09-27T01:00:00Z"), place: "the snug" };
 const stamp = async () => ({ at: { anchor: "the-town/the-snug", dx: 0, dy: 0 }, witnesses: { source: "presence", list: [] } });
@@ -47,7 +53,7 @@ test("THE SAY TAKES NO STORE — the pen is handed no handle and dynamic.db is n
   const handed = [];
   const out = await penVoiceAct(voice, null, {
     witnessStampAt: stamp,
-    currentCrossing: () => 200,
+    currentCrossing: () => OPEN,
     appendActFlipped: async (db, entry) => { handed.push(db); return { seq: null, actId: 4242, record: "acts", ...entry }; },
   });
   assert.deepEqual(out, { ok: true, seq: null, actId: 4242 });
@@ -59,7 +65,7 @@ test("THE REFUSAL IS UNCHANGED — an unreachable record is the ruled bounce, an
   const err = Object.assign(new Error("the office's record cannot be reached — nothing was written, and nothing was lost."), { name: "PenUnreachableError" });
   const out = await penVoiceAct(voice, null, {
     witnessStampAt: stamp,
-    currentCrossing: () => 200,
+    currentCrossing: () => OPEN,
     appendActFlipped: async () => { throw err; },
   });
   assert.equal(out.error, "bounce");
@@ -67,14 +73,12 @@ test("THE REFUSAL IS UNCHANGED — an unreachable record is the ruled bounce, an
   assert.equal(existsSync(NOWHERE), false);
 });
 
-test("THE SOURCE OPENS NOTHING — no dynamic.db open in the six doors' files but the arena's wheel", () => {
+test("THE SOURCE OPENS NOTHING — no dynamic.db open in the six doors' files, the apex's included", () => {
   const opens = (file) => readFileSync(join(HERE, "..", "src", file), "utf8")
     .split("\n").filter((l) => /\bopenDynamic\(/.test(l) && !/^\s*(\/\/|\*)/.test(l));
   for (const file of ["world.mjs", "walk-exec.mjs", "crossing-exec.mjs", "world-stance.mjs"])
     assert.deepEqual(opens(file), [], `${file} opens the dynamic store again`);
-  // The one left in the apex is the arena's enter/leave wheel (P-143), which
-  // reads and writes the arena journal by ruling.
-  const apex = opens("world-apex.mjs");
-  assert.equal(apex.length, 1, `world-apex.mjs opens the store ${apex.length} times, expected only the arena wheel's`);
-  assert.match(apex[0], /dyn = openDynamic\(\);/);
+  // The apex's last one was the arena's enter/leave wheel (P-143). The arena
+  // closed on 2026-09-30 (Keemin) and took it with it.
+  assert.deepEqual(opens("world-apex.mjs"), [], "world-apex.mjs opens the dynamic store again");
 });

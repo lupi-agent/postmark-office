@@ -255,18 +255,22 @@ test("the day comes from the town's clock, not the box's", () => {
 // BEFORE the verify — where its rows are sealed and pushed by the commit that is
 // already there. Nothing in a unit test can observe a shell script's order.
 test("the tick runs the welcome pass after the append and before the verify", () => {
-  const sh = readFileSync(new URL("../deploy/office-tick.sh", import.meta.url), "utf8");
+  const sh = readFileSync(new URL("../deploy/office-keep.sh", import.meta.url), "utf8");
   const append = sh.indexOf("stamp-mint.mjs --append");
   const pass = sh.indexOf("deploy/welcome-pass.mjs");
-  const verify = sh.indexOf("stamp-verify.mjs");
+  // POS-295: the tick now verifies TWICE, once on arrival (before anything is
+  // written) and once after the pass. The pin is on the one after the pass.
+  const check = sh.indexOf("stamp-verify.mjs");
+  const verify = sh.indexOf("stamp-verify.mjs", pass);
   assert.ok(append !== -1 && pass !== -1 && verify !== -1,
     "the tick must run all three: the mint append, the welcome pass, the verify");
+  assert.ok(check < append, "the arrival check comes before the first write: a red ledger gets nothing appended");
   assert.ok(append < pass, "the welcome pass onto an unsettled tail is refused by the town — the append comes first");
   assert.ok(pass < verify, "a welcome row written after the verify would sit unsealed until the next tick");
 });
 
 test("a refused bundle cannot strand the mint pass's own rows", () => {
-  const sh = readFileSync(new URL("../deploy/office-tick.sh", import.meta.url), "utf8");
+  const sh = readFileSync(new URL("../deploy/office-keep.sh", import.meta.url), "utf8");
   const line = sh.split(/\r?\n/).findIndex((l) => l.includes("deploy/welcome-pass.mjs"));
   const around = sh.split(/\r?\n/).slice(line - 1, line + 4).join("\n");
   assert.match(around, /\|\|\s*echo/,

@@ -31,41 +31,26 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort, freePort } from "./spawn-office.mjs";
 import { workerSafe, penTokenFor } from "../src/role.mjs";
 import { openOauthDb } from "../src/oauth.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-// ⚑ THE PORTS ARE DERIVED FROM THE PID, and this comment says so because the
-// last one did not. It read "THE PORTS ARE ASKED FOR ... the kernel is asked for
-// three free ports" — describing an approach I wrote, found broken
-// (`server.listen(0)` does not know its port until the 'listening' event, so
-// `.address()` reads null) and replaced with this one, WITHOUT rewriting the
-// prose above it. A comment describing the approach you ABANDONED is worse than
-// none: it tells a reviewer to stop reading at the line that is actually there.
-//
-// Why derived at all: this file boots up to three servers, and an earlier draft
-// pinned them at 43861-43863. 43861 is `hot-reload.test.mjs`'s port — safe only
-// because the suite runs at concurrency 1 — and this file failed all ten legs
-// against a second concurrent run of ITSELF, which for a minute read like a real
-// defect. A reviewer runs this file once per flip while other lanes' suites share
-// the machine, so a fixed port here is a flake I would be handing them.
-//
-// The base is 46000, ABOVE the neighbourhood: sixteen fixed ports live between
-// 43000 and 43999 across twelve other test files, and the previous derivation
-// (43000 + pid*7 % 2000) landed squarely inside them. Nothing in test/ sits above
-// 44000. The stride of 7 keeps two adjacent pids seven apart, which is more than
-// the three ports this file uses. Not a guarantee — a collision is still
-// possible — but it is a small chance where a fixed port was a certainty.
-const PORT = 46000 + ((process.pid * 7) % 2000);
-const BASE = `http://127.0.0.1:${PORT}`;
+// THE PORTS ARE ASKED OF THE OS (spawn-office.mjs § the port, asked for). They
+// were derived from the pid — 46000 + pid*7 % 2000, a berth above the fixed
+// ports, and this file's own note said "a collision is still possible — but it
+// is a small chance". Every office in test/ now asks instead, so there is no
+// neighbourhood left to keep clear of. The worker's port is read back from its
+// boot; the control writer and the two refusal legs each ask for their own.
+let PORT, BASE;
 const KEY = "read-worker-test-key";
 const PEN = "ghp_a_token_a_read_worker_must_not_hold";
 const WRITER = "https://postmark.town/api";
 
 let child, tmp, dynPath;
 
-const boot = (extraArgs, extraEnv = {}) => new Promise((ok, no) => {
+const boot = async (extraArgs, extraEnv = {}) => {
   // The env is built ONCE and handed back with the process, so §4 can assert
   // about the environment THIS WORKER was started with. Reading
   // `process.env` there would have been an assertion about the test runner —
@@ -80,22 +65,22 @@ const boot = (extraArgs, extraEnv = {}) => new Promise((ok, no) => {
     WORLD_CLONE: join(tmp, "no-world-clone"),
     ...extraEnv,
   };
-  const proc = spawn(process.execPath, [
-    join(ROOT, "src", "server.mjs"),
-    "--port", String(PORT),
-    "--db", join(tmp, "fixture.db"),
-    "--oauth-db", join(tmp, "oauth.db"),
-    "--roles-db", join(tmp, "roles.db"),
-    ...extraArgs,
-  ], { env, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
-  const t = setTimeout(() => no(new Error(`server never listened; stdout was: ${out}`)), 20_000);
-  proc.stdout.on("data", (d) => {
-    out += String(d);
-    if (out.includes("listening")) { clearTimeout(t); ok({ proc, line: out, env }); }
-  });
-  proc.on("exit", (c) => no(new Error(`server exited early (${c})`)));
-});
+  const { child: proc, port } = await bootOnFreePort((port) => {
+    out = "";
+    const p = spawn(process.execPath, [
+      join(ROOT, "src", "server.mjs"),
+      "--port", String(port),
+      "--db", join(tmp, "fixture.db"),
+      "--oauth-db", join(tmp, "oauth.db"),
+      "--roles-db", join(tmp, "roles.db"),
+      ...extraArgs,
+    ], { env, stdio: ["ignore", "pipe", "pipe"] });
+    p.stdout.on("data", (d) => { out += String(d); });
+    return p;
+  }, { budgetMs: 20_000 });
+  return { proc, line: out, env, port };
+};
 
 before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-read-worker-"));
@@ -114,6 +99,8 @@ before(async () => {
 
   const booted = await boot(["--role", "read", "--writer", WRITER]);
   child = booted.proc;
+  PORT = booted.port;
+  BASE = `http://127.0.0.1:${PORT}`;
   globalThis.__bootLine = booted.line;
   globalThis.__bootEnv = booted.env;
 });
@@ -173,7 +160,7 @@ test("§0 a read worker refuses to boot without the writer's key store", async (
   // the file it was missing.
   const absent = join(tmp, "no-such-oauth.db");
   const p = spawn(process.execPath, [
-    join(ROOT, "src", "server.mjs"), "--port", String(PORT + 2),
+    join(ROOT, "src", "server.mjs"), "--port", String(await freePort()),
     "--db", join(tmp, "fixture.db"), "--oauth-db", absent,
     "--roles-db", join(tmp, "roles.db"), "--role", "read",
   ], { env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, WORLD_DYNAMIC_DB: dynPath,
@@ -200,7 +187,7 @@ test("§0b a read worker refuses to boot on an ABSENT dynamic store", async () =
   // traffic. Same rule and same exit code as the key store's.
   const absent = join(tmp, "no-such-dir", "dynamic.db");
   const p = spawn(process.execPath, [
-    join(ROOT, "src", "server.mjs"), "--port", String(PORT + 3),
+    join(ROOT, "src", "server.mjs"), "--port", String(await freePort()),
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"),
     "--roles-db", join(tmp, "roles.db"), "--role", "read",
   ], { env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, WORLD_DYNAMIC_DB: absent,
@@ -257,23 +244,17 @@ test("§1b the refusal is the ROLE's, not the router's — a writer answers thes
   // (the oauth trio) are GETs a writer really does serve, so the difference is
   // the whole claim. Booted on a second port so the worker under test is
   // untouched.
-  const proc = await new Promise((ok, no) => {
-    const p = spawn(process.execPath, [
-      join(ROOT, "src", "server.mjs"), "--port", String(PORT + 1),
-      "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth-w.db"),
-      "--roles-db", join(tmp, "roles-w.db"),
-    ], {
-      env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, POSTMARK_PEN_TOKEN: PEN,
-        WORLD_DYNAMIC_DB: dynPath, TOWN_CLONE: join(ROOT, "town-clone"), WORLD_CLONE: join(tmp, "no-world-clone") },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let out = "";
-    const t = setTimeout(() => no(new Error("control server never listened")), 20_000);
-    p.stdout.on("data", (d) => { out += String(d); if (out.includes("listening")) { clearTimeout(t); ok(p); } });
-    p.on("exit", (c) => no(new Error(`control exited early (${c})`)));
-  });
+  const { child: proc, port: WRITER_PORT } = await bootOnFreePort((port) => spawn(process.execPath, [
+    join(ROOT, "src", "server.mjs"), "--port", String(port),
+    "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth-w.db"),
+    "--roles-db", join(tmp, "roles-w.db"),
+  ], {
+    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, POSTMARK_PEN_TOKEN: PEN,
+      WORLD_DYNAMIC_DB: dynPath, TOWN_CLONE: join(ROOT, "town-clone"), WORLD_CLONE: join(tmp, "no-world-clone") },
+    stdio: ["ignore", "pipe", "pipe"],
+  }), { budgetMs: 20_000 });
   try {
-    const res = await fetch(`http://127.0.0.1:${PORT + 1}/.well-known/openid-configuration`);
+    const res = await fetch(`http://127.0.0.1:${WRITER_PORT}/.well-known/openid-configuration`);
     assert.notEqual(res.status, 405, "the writer must SERVE oauth discovery — otherwise §1 proves nothing about the role");
     await res.text();
 
@@ -282,7 +263,7 @@ test("§1b the refusal is the ROLE's, not the router's — a writer answers thes
     // because false is the TRUE answer for a worker — an assertion that only
     // ever reads the read role cannot tell a disclosure from a constant. The
     // writer must say the opposite through the same line of code.
-    const rel = await (await fetch(`http://127.0.0.1:${PORT + 1}/release`)).json();
+    const rel = await (await fetch(`http://127.0.0.1:${WRITER_PORT}/release`)).json();
     assert.equal(rel.role, "write");
     assert.equal(rel.write_grant, true,
       "the WRITER holds a pen and must say so — otherwise `write_grant` is a constant wearing a disclosure's clothes");
@@ -321,12 +302,18 @@ test("§2c GET /world/holdings is a door and not a rumour (#2599)", async () => 
   // write-mode handle on the dynamic store, which is the handle DEC-4 forbids
   // this process. Waking the route without changing the mode would have made it
   // the sixth write-mode reader, so the door and the handle are one claim.
+  //
+  // THIS OFFICE KEEPS NO RECORD (no WORLD2_PG), and since POS-269 the holdings
+  // are the hold acts or there are none: dynamic.db, which answered this read
+  // for an unflipped office, is retired. So the keyed answer is the door's OWN
+  // refusal, by name — which is still the thing this leg exists to tell apart
+  // from the catch-all. The answer over a record is world-things.test.mjs §
+  // world_holdings, on the hold lane as prod runs it.
   const keyed = await call("/world/holdings");
   const body = await keyed.json().catch(() => ({}));
-  assert.equal(keyed.status, 200, `the manifest advertises this read: ${JSON.stringify(body).slice(0, 160)}`);
-  assert.equal(body.handle, "wright", "it answers for the key's own resident");
-  assert.ok(Array.isArray(body.holding), "and in the shape the tool describes: a list of things in hand");
-  assert.equal(typeof body.count, "number", "with the true count beside the page");
+  assert.equal(keyed.status, 503, `the door answers for itself, even with no record to read: ${JSON.stringify(body).slice(0, 160)}`);
+  assert.match(String(body.defect ?? ""), /holding things needs the hold lane's record/,
+    "and says which record it lacks, never the catch-all's 'no such door'");
 
   // The other pole. Without it a handler that answered 200 to everything would
   // pass the line above — and the point of the fix is that the request is
@@ -437,7 +424,7 @@ test("§3 the store is unwritable underneath the worker and the reads keep worki
   }
 });
 
-test("§3b ALL SEVEN store readers ask for a READ handle, and the ask is load-bearing", async () => {
+test("§3b ALL FOUR store readers ask for a READ handle, and the ask is load-bearing", async () => {
   // ⚑ THE TITLE SAID FOUR AND THE BODY DROVE ONE (reviewer's repair C, lap 5).
   // And my first fix of that said FIVE over a loop of SIX — the same defect,
   // committed inside the repair for it, which is how little attention a title
@@ -470,22 +457,12 @@ test("§3b ALL SEVEN store readers ask for a READ handle, and the ask is load-be
         const { groundWithinReach } = await import(`../src/world-apex.mjs?p=${m}`);
         return groundWithinReach({ standpoint: { x: 0, y: 0 } }, null);
       }],
-      ["phaseAt", async (m) => {
-        const { phaseAt } = await import(`../src/world-apex.mjs?p=${m}`);
-        return phaseAt(null, []);
-      }],
-      ["portalBlockAt", async (m) => {
-        const { portalBlockAt } = await import(`../src/world-apex.mjs?p=${m}`);
-        return portalBlockAt(null, []);
-      }],
       ["readHoldEffects", async (m) => {
         const { readHoldEffects } = await import(`../src/world-hold.mjs?p=${m}`);
         return readHoldEffects({ handles: ["wright"] });
       }],
-      ["weaponInHand", async (m) => {
-        const { weaponInHand } = await import(`../src/arena.mjs?p=${m}`);
-        return weaponInHand(null, "wright");
-      }],
+      // FOUR, not seven, since 2026-09-30: `phaseAt`, `portalBlockAt` and
+      // `weaponInHand` were the arena's readers, and they closed with it.
       // SEVEN, not six: `callHoldTool`'s `world_holdings` branch is a reader
       // too, and it was opening the store in WRITE mode — it just had no way in
       // over HTTP, because the REST route into it was dead (#2599). Waking that
@@ -498,9 +475,9 @@ test("§3b ALL SEVEN store readers ask for a READ handle, and the ask is load-be
     ]) {
       const missing = join(tmp, `no-store-${name}`, "dynamic.db");
       process.env.WORLD_DYNAMIC_DB = missing;
-      let threw = null;
-      try { await drive(name); } catch (e) { threw = String(e?.message ?? e).slice(0, 80); }
-      results.push({ name, created: existsSync(missing), threw });
+      let threw = null, code = null;
+      try { await drive(name); } catch (e) { threw = String(e?.message ?? e).slice(0, 80); code = e?.code ?? null; }
+      results.push({ name, created: existsSync(missing), threw, code });
     }
   } finally {
     if (before === undefined) delete process.env.WORLD_DYNAMIC_DB;
@@ -511,11 +488,18 @@ test("§3b ALL SEVEN store readers ask for a READ handle, and the ask is load-be
   assert.equal(creators.length, 0,
     "THESE READS CREATED THE STORE — a write-mode open, which is the handle DEC-4 forbids a worker to hold: "
     + creators.map((r) => r.name).join(", "));
-  const throwers = results.filter((r) => r.threw);
+  // world_holdings is the one reader that REFUSES here, and by name: this
+  // office keeps no hold record, and since POS-269 there is no dynamic.db to
+  // answer "you hold nothing" in its place — an empty answer from nowhere is
+  // the untrue sentence §3c exists to forbid. It must still create nothing.
+  const holdings = results.find((r) => r.name === "callHoldTool-world_holdings");
+  assert.equal(holdings.code, 503, `world_holdings with no record must refuse by name: ${holdings.threw}`);
+  assert.match(holdings.threw, /holding things needs the hold lane's record/);
+  const throwers = results.filter((r) => r.threw && r !== holdings);
   assert.equal(throwers.length, 0,
     "a reader met an absent store and threw instead of answering empty: "
     + throwers.map((r) => `${r.name} (${r.threw})`).join(", "));
-  assert.equal(results.length, 7, "the count in the title must be the count in the loop");
+  assert.equal(results.length, 4, "the count in the title must be the count in the loop");
 });
 
 test("§3c readHoldEffects says UNREADABLE on an absent RECORD, not empty", async () => {

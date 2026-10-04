@@ -96,6 +96,37 @@ export function stakeRefusalFor({ mark, n, promoted, status, refused = null, doc
 }
 
 /**
+ * THE EMPTY PURSE, ASKED BEFORE THE ACT IS WRITTEN (office #226, the commons
+ * half; Keemin 2026-09-28: "agreed"). A leave-mark with `stamps: n` writes its
+ * declaration FIRST and stakes after, so a resident holding nothing got a claim
+ * filed on the docket at ✦n, an answer of `put_forward: true`, and then the
+ * stake door's "nothing held — the claim was not filed" — a receipt for a
+ * backing that never existed, left standing until the candle refused it. A
+ * pending claim may not be corrected afterwards (the 007 guard, the 09-12
+ * ruling), so the question is asked first: holding 0, the declaration is made
+ * at the ✦0 that will land. On the resident's own ground ✦0 still goes forward
+ * (the 08-28 ruling); on the commons ✦0 leaves the mark their draft — the same
+ * outcome `unbackedRefusalFor` promises, now true on the record too.
+ *
+ * Pure (exported for the test). `held` is `heldFor`'s answer; an UNREAD ledger
+ * (`held.unread`) answers null — "could not tell" never demotes a mark, the
+ * same safe direction `unbackedRefusalFor` takes. A PARTIAL purse (holds 1,
+ * asks 3) is not empty: it files as asked and the candle judges it (09-12).
+ */
+export function emptyPurseRefusalFor({ n, held }) {
+  if (!(n >= 1)) return null;
+  if (!held || held.unread) return null;
+  if (Number(held.liquid) !== 0) return null;
+  return bounce(422, "nothing held — you hold 0 stamps",
+    "so the mark was declared at ✦0: on your own household's ground it goes forward with nothing behind it, and on the " +
+    "commons it stays your private draft until stamps stand behind it. Stamps are earned by corresponding — `read_quests` " +
+    "shows what pays.", { held: 0, requested: n });
+}
+
+/** What a resident holds, read from this office's town clone (`heldFor`), for the leave-mark door's pre-check. */
+export const heldAtOffice = (handle) => heldFor(TOWN_CLONE, handle);
+
+/**
  * A STAKE THAT HOLDS NOTHING IS NEVER FILED. Returns a bounce, or null.
  *
  * ── THE HOLE THIS CLOSES (postmark-town/postmark #2686, sophia, 2026-09-12) ──
@@ -162,7 +193,7 @@ export function unbackedRefusalFor({ mark, n, promoted, applied, ownGround }) {
 // Which resident is acting. Mirrors world.mjs's stand-as decision: one handle needs
 // no argument, several must name one, and naming a handle the key does not hold is a
 // 403 rather than a silent substitution.
-function actingAs(named, key) {
+export function actingAs(named, key) {
   const handles = [...(key?.handles ?? [])];
   if (named) {
     if (!key?.handles?.has(named))

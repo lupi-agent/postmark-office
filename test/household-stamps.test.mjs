@@ -19,6 +19,13 @@ import { clipPotStake } from "../src/pot-stake-exec.mjs";
 import { intakeDisclosure, INTAKE } from "../src/fund.mjs";
 import { readIntakeMap } from "../src/intake-map.mjs";
 import { HOUSEHOLD_DISPATCHABLE, HOUSEHOLD_READS, householdDispatchToolFor } from "../src/household-apex.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
+
+// The doors below run in this process. They never had a town index, and the
+// office will not run without one (POS-268): this file's is an empty store.
+const IX = await indexStore(null);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 // A town whose WHITE_PAGES holds exactly the pot shapes the law now allows.
 function tempTown(pots) {
@@ -337,7 +344,8 @@ test("fund-verify wraps the eight-guard door and never reimplements it", () => {
   // fund.mjs's header: "THE ORDER OF THE GUARDS IS THE LAW." A second
   // implementation would be a second order.
   const src = readFileSync(new URL("../src/household-apex.mjs", import.meta.url), "utf8");
-  assert.match(src, /case "fund-verify": \{[\s\S]*?fundVerifyViaOffice\(clone, fields\)/,
+  // POS-317 follow-up: the caller's key rides along, so the door can take the payer's account from it
+  assert.match(src, /case "fund-verify": \{[\s\S]*?fundVerifyViaOffice\(clone, fields, \{ key \}\)/,
     "the act calls fund.mjs's own implementation");
   assert.equal(/verifyUsdcPayment|intakeCheck|foldPotReceipts/.test(src), false,
     "and the apex holds no guard of its own");

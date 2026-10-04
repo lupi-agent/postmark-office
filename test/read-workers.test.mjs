@@ -34,6 +34,14 @@
 // For the hotfix: drop `&& !listensToVoices(path, query)` from `workerTakes`, or
 // the `url.searchParams` server.mjs passes it, and § 5's listen names worker-0
 // and misses the say.
+//
+//   § 6  READING BACK STAYS HOME TOO (POS-226): a `before:` page of the REST
+//        listen is answered by the main thread, and at the door a voice from
+//        before the world clone's newest settlement is never heard while the
+//        voices since it page back twenty at a time. FLIPS: drop
+//        `&& !listensToVoices(path, query)` from `workerTakes` and the page names
+//        worker-0; drop the window filter in voices.mjs § snapshot and the older
+//        voice is heard.
 
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -43,8 +51,11 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 import { mcpWorkerTakes, startReadPool, workerTakes } from "../src/read-workers.mjs";
 import { WORLD_CLONE } from "../src/world-store.mjs";
+import { publishedSettlementAt } from "../src/hearing-window.mjs";
+import { writeFileSync } from "node:fs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const haveClone = existsSync(join(WORLD_CLONE, "WORLD", "walk-ledger.md"));
@@ -183,6 +194,8 @@ test("the dispatch rule: GETs go to workers except the main thread's RAM reads; 
   assert.equal(workerTakes("GET", "/world/conversations"), false);
   assert.equal(workerTakes("GET", "/world/dynamic"), false);
   assert.equal(workerTakes("GET", "/household"), false);
+  // the house's posts (POS-293) ride the household door's path, so they stay home with it
+  assert.equal(workerTakes("GET", "/household", new URLSearchParams("read=posts&handle=wright")), false);
   // the say stream waits on voices, which land on the main thread (merge seam, POS-265 × POS-266)
   assert.equal(workerTakes("GET", "/world/say/stream"), false);
   assert.equal(workerTakes("POST", "/world/walks"), false);
@@ -241,22 +254,19 @@ test("§ 3 an agent's MCP read is answered by a worker, and anything else handed
 });
 
 test("§ 4 a real office hands the agents' reads to its worker and keeps the acts", { skip: !haveClone && `needs the world clone at ${WORLD_CLONE}` }, async () => {
-  const port = 47000 + ((process.pid * 11) % 1500);
-  const proc = spawn(process.execPath, [
+  // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+  // asked for); it was a berth derived from the pid, a guess at a door every
+  // pool tree on the box shares.
+  const { child: proc, port } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
   ], {
     env: { ...process.env, OFFICE_READ_WORKERS: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
       WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
     stdio: ["ignore", "pipe", "pipe"],
-  });
+  }), { budgetMs: 30_000 });
   const gone = new Promise((ok) => proc.on("exit", ok));
   try {
-    let out = "";
-    await new Promise((ok, no) => {
-      const t = setTimeout(() => no(new Error(`the office never listened: ${out}`)), 30_000);
-      proc.stdout.on("data", (d) => { out += String(d); if (out.includes("listening")) { clearTimeout(t); ok(); } });
-    });
     const base = `http://127.0.0.1:${port}`;
     let ready = 0;
     for (let i = 0; i < 300 && ready !== 1; i++) {
@@ -277,6 +287,13 @@ test("§ 4 a real office hands the agents' reads to its worker and keeps the act
     const listen = await post("world", { read: "say" });
     await listen.text();
     assert.equal(listen.headers.get("x-pm-reader"), null, "a listen was handed to a worker");
+    // THE HOUSE'S POSTS (POS-293) are answered where /household is: the main
+    // thread, beside the same office's worker that just answered world_orient.
+    const posts = await fetch(`${base}/household?read=posts&handle=wright`);
+    const postsBody = await posts.text();
+    assert.equal(posts.status, 200, postsBody.slice(0, 200));
+    assert.ok(JSON.parse(postsBody).put_up, `GET /household?read=posts answered another read: ${postsBody.slice(0, 200)}`);
+    assert.equal(posts.headers.get("x-pm-reader"), null, "the house's posts were handed to a worker");
   } finally {
     proc.kill();
     await gone;
@@ -286,24 +303,22 @@ test("§ 4 a real office hands the agents' reads to its worker and keeps the act
 test("§ 5 the REST listen is answered by the main thread and hears the say before it; the bare apex read still goes to the worker (POS-284's hotfix)", { skip: !haveClone && `needs the world clone at ${WORLD_CLONE}` }, async () => {
   // The listen's card is the class layer's answer, so this office has a world store.
   const worldDb = join(tmp, "world.db");
-  execFileSync(process.execPath, [join(ROOT, "src", "world-hydrate.mjs"), "--world", WORLD_CLONE, "--db", worldDb, "--no-gexf", "--no-lints"], { stdio: "ignore" });
-  const port = 48500 + ((process.pid * 13) % 1000);
-  const proc = spawn(process.execPath, [
+  execFileSync(process.execPath, [join(ROOT, "src", "world-hydrate.mjs"), "--world", WORLD_CLONE, "--no-db", "--rows-out", `${worldDb}.rows.json`, "--no-gexf", "--no-lints"], { stdio: "ignore" });
+  // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+  // asked for); it was a berth derived from the pid, a guess at a door every
+  // pool tree on the box shares.
+  const { child: proc, port } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
   ], {
     env: { ...process.env, OFFICE_READ_WORKERS: "1", WORLD_APEX: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
-      WORLD_STORE_DB: worldDb, VOICES_LOG: join(tmp, "voices-5.jsonl"),
+      WORLD_GRAPH_ROWS: `${worldDb}.rows.json`, WORLD_STORE_DB: join(tmp, "no-world-db-here.db"),   // the world is the rows (POS-270 lane W 3a)
+      VOICES_LOG: join(tmp, "voices-5.jsonl"),
       WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
     stdio: ["ignore", "pipe", "pipe"],
-  });
+  }), { budgetMs: 30_000 });
   const gone = new Promise((ok) => proc.on("exit", ok));
   try {
-    let out = "";
-    await new Promise((ok, no) => {
-      const t = setTimeout(() => no(new Error(`the office never listened: ${out}`)), 30_000);
-      proc.stdout.on("data", (d) => { out += String(d); if (out.includes("listening")) { clearTimeout(t); ok(); } });
-    });
     const base = `http://127.0.0.1:${port}`;
     let ready = 0;
     for (let i = 0; i < 300 && ready !== 1; i++) {
@@ -330,6 +345,129 @@ test("§ 5 the REST listen is answered by the main thread and hears the say befo
     const look = await get("");
     await look.text();
     assert.equal(look.headers.get("x-pm-reader"), "worker-0", "the bare apex read stopped going to the worker");
+  } finally {
+    proc.kill();
+    await gone;
+  }
+});
+
+test("§ 6 a `before:` page is answered by the main thread; at the door a voice from before the settlement is never heard (POS-226)", { skip: !haveClone && `needs the world clone at ${WORLD_CLONE}` }, async () => {
+  const settledAt = await publishedSettlementAt(WORLD_CLONE);
+  assert.ok(Number.isFinite(settledAt), "the pinned world clone carries a published settlement");
+  const worldDb = join(tmp, "world-6.db");
+  execFileSync(process.execPath, [join(ROOT, "src", "world-hydrate.mjs"), "--world", WORLD_CLONE, "--no-db", "--rows-out", `${worldDb}.rows.json`, "--no-gexf", "--no-lints"], { stdio: "ignore" });
+  const voicesLog = join(tmp, "voices-6.jsonl");
+  // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+  // asked for); it was a berth derived from the pid, a guess at a door every
+  // pool tree on the box shares.
+  const { child: proc, port } = await bootOnFreePort((port) => spawn(process.execPath, [
+    join(ROOT, "src", "server.mjs"), "--port", String(port),
+    "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
+  ], {
+    env: { ...process.env, OFFICE_READ_WORKERS: "1", WORLD_APEX: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
+      WORLD_GRAPH_ROWS: `${worldDb}.rows.json`, WORLD_STORE_DB: join(tmp, "no-world-db-here.db"),   // the world is the rows (POS-270 lane W 3a)
+      VOICES_LOG: voicesLog,
+      WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") },
+    stdio: ["ignore", "pipe", "pipe"],
+  }), { budgetMs: 30_000 });
+  const gone = new Promise((ok) => proc.on("exit", ok));
+  try {
+    const base = `http://127.0.0.1:${port}`;
+    let ready = 0;
+    for (let i = 0; i < 300 && ready !== 1; i++) {
+      ready = (await (await fetch(`${base}/release`)).json()).read_workers?.ready ?? 0;
+      if (ready !== 1) await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(ready, 1, "the office's worker never came up");
+    const auth = { authorization: `Bearer ${KEY}` };
+    // Where wright stands, from the spectator-free orient — before any voice is
+    // asked for, so the office has not yet read the log this test is about to write.
+    const orient = await fetch(`${base}/mcp`, { method: "POST",
+      headers: { ...auth, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "world_orient", arguments: {} } }) });
+    const ob = await orient.text();
+    const sp = JSON.parse(JSON.parse(ob.slice(ob.indexOf("{"))).result.content[0].text).standpoint;
+    assert.ok(Number.isFinite(sp?.x) && Number.isFinite(sp?.y), `no standpoint in orient: ${ob.slice(0, 300)}`);
+    const line = (at, text) => JSON.stringify({ at: new Date(at).toISOString(), handle: "rei", text, x: sp.x, y: sp.y, place: null, aboard: false });
+    const lines = [line(settledAt - 60_000, "said before the settlement")];
+    for (let i = 1; i <= 25; i++) lines.push(line(settledAt + i * 16_000, `since ${String(i).padStart(2, "0")}`));
+    writeFileSync(voicesLog, `${lines.join("\n")}\n`);
+
+    const get = (qs) => fetch(`${base}/world/apex${qs}`, { headers: auth });
+    const body = async (res) => { const t = await res.text(); assert.equal(res.status, 200, t.slice(0, 300)); return JSON.parse(t); };
+    const first = await get("?read=say");
+    assert.equal(first.headers.get("x-pm-reader"), null, "the listen was handed to a worker");
+    const room = await body(first);
+    const heard = room.heard ?? room;
+    assert.equal(heard.voices.length, 20, "the default reply is the newest twenty");
+    assert.equal(heard.hearable_since, new Date(settledAt).toISOString(), "the window opens at the clone's newest publish");
+    assert.ok(Number.isFinite(heard.older), "the cursor back rides");
+
+    const back = await get(`?read=say&args=${encodeURIComponent(JSON.stringify({ before: heard.older }))}`);
+    assert.equal(back.headers.get("x-pm-reader"), null, "a `before:` page was handed to a worker");
+    const page = (await body(back)).heard;
+    assert.deepEqual(page.voices.map((v) => v.said), ["since 01", "since 02", "since 03", "since 04", "since 05"],
+      "the page back stops at the settlement: the older voice is not heard");
+    assert.equal(page.older, null);
+  } finally {
+    proc.kill();
+    await gone;
+  }
+});
+
+// ── § 7 A LETTER OPENED IN FULL IS A WRITE (POS-286, ruling (a)) ────────────
+//
+// A full letter read clears unread for the recipients the caller's key holds,
+// and a read-role worker does not write. So a KEYED GET /letters/{id} or
+// GET /town/apex?read=letter is answered here on the main thread, and a keyless
+// one (which writes nothing) still goes to the worker. The answer's bytes are
+// the same on both threads. Whether the clear lands is proved with a store in
+// test/unread.test.mjs (§ 7, through the stub) and against a real Postgres in
+// the lane's paperwork; this office has no store, so it proves the ROUTING.
+test("§ 7 a keyed full letter read stays on the main thread; a keyless one goes to the worker, and the bytes agree", async () => {
+  const KEY2 = "read-workers-test-key-limen";
+  const env = { ...process.env, OFFICE_READ_WORKERS: "1", WORLD_APEX: "1",
+    OFFICE_KEYS: `${KEY}=keemin:wright;${KEY2}=limen-house:limen`,
+    WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"), TOWN_CLONE: join(ROOT, "town-clone") };
+  delete env.WORLD2_PG; delete env.WORLD2_PG_URL;
+  // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
+  // asked for); it was a berth derived from the pid, a guess at a door every
+  // pool tree on the box shares.
+  const { child: proc, port } = await bootOnFreePort((port) => spawn(process.execPath, [
+    join(ROOT, "src", "server.mjs"), "--port", String(port),
+    "--db", join(tmp, "fixture.db"), "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db"),
+  ], { env, stdio: ["ignore", "pipe", "pipe"] }), { budgetMs: 30_000 });
+  const gone = new Promise((ok) => proc.on("exit", ok));
+  try {
+    const base = `http://127.0.0.1:${port}`;
+    let ready = 0;
+    for (let i = 0; i < 300 && ready !== 1; i++) {
+      ready = (await (await fetch(`${base}/release`)).json()).read_workers?.ready ?? 0;
+      if (ready !== 1) await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(ready, 1, "the office's worker never came up");
+    const id = "limen-2026-07-01-to-wright-the-gap";   // limen → wright
+    const get = async (p, bearer) => {
+      const r = await fetch(`${base}${p}`, { headers: bearer ? { authorization: `Bearer ${bearer}` } : {} });
+      return { status: r.status, reader: r.headers.get("x-pm-reader"), body: await r.text() };
+    };
+    const letterPath = `/letters/${encodeURIComponent(id)}`;
+    const keyless = await get(letterPath);
+    assert.equal(keyless.status, 200, keyless.body.slice(0, 200));
+    assert.equal(keyless.reader, "worker-0", "a keyless letter read writes nothing and should be the worker's");
+    for (const [who, bearer] of [["the recipient", KEY], ["the sender", KEY2]]) {
+      const r = await get(letterPath, bearer);
+      assert.equal(r.status, 200, r.body.slice(0, 200));
+      assert.equal(r.reader, null, `${who}'s keyed letter read was handed to a worker, which cannot write the opening`);
+      assert.equal(r.body, keyless.body, `${who}'s answer is not the letter's bytes`);
+    }
+    const apexPath = `/town/apex?read=letter&args=${encodeURIComponent(JSON.stringify({ id }))}`;
+    const apexKeyed = await get(apexPath, KEY);
+    assert.equal(apexKeyed.status, 200, apexKeyed.body.slice(0, 200));
+    assert.equal(apexKeyed.reader, null, "the keyed town letter read was handed to a worker");
+    const apexKeyless = await get(apexPath);
+    assert.equal(apexKeyless.reader, "worker-0");
+    assert.equal(apexKeyed.body, apexKeyless.body);
   } finally {
     proc.kill();
     await gone;

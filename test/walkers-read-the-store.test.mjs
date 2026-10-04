@@ -394,11 +394,13 @@ test("PIN: the departure read goes through `reading`, not a pool of its own", ()
   assert.match(body, /_ledger' IS NULL/, "the founding era is no longer excluded — it will reach the merge twice");
 });
 
-test("PIN: `framesByHandle` no longer opens the dynamic store", () => {
+// The walkers door's frame map is presence's riders since POS-261 (the walk
+// fold it replaced was `framesByHandle`); the pin moves with it.
+test("PIN: the walkers door's frame map opens no dynamic store", () => {
   const text = src("world.mjs");
-  const fn = text.slice(text.indexOf("async function framesByHandle"));
+  const fn = text.slice(text.indexOf("async function walkersInFrames"));
   const body = code(fn.slice(0, fn.indexOf("\n}\n")));
   assert.ok(body.length > 100, "the function moved — this pin is reading the wrong region");
   assert.equal(/openDynamicReadOnly\(|store\.close\(\)/.test(body), false,
-    `the frame map still opens sqlite — its only reason to was the departure read:\n${body}`);
+    `the frame map opens sqlite:\n${body}`);
 });

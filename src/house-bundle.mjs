@@ -44,8 +44,10 @@ import { join } from "node:path";
 
 import { doorstep, DOORSTEP_STANCES, mailList, mailAwaiting, stampsDetail, windowRead, outboxSettled } from "./queries.mjs";
 import { ownerGate } from "./doorstep-bundle.mjs";
+import { unreadFor } from "./unread-store.mjs";
 import { nextCrossingForDoorstep, currentCrossing, CROSSING_EPOCH_UTC, CROSSING_MS } from "./crossings.mjs";
 import { resolveHouse, houseRows, VIA } from "./household-deriver.mjs";
+import { freshFor } from "./paper-fresh.mjs"; // POS-271: the pending paper rows, read before a composed read
 
 /** The doorstep keys that are the same on every resident's page: carried once, at the top. */
 export const HOUSE_ONCE = Object.freeze(["clocks", "psa", "town", "bulletin", "town_pulse"]);
@@ -75,7 +77,7 @@ export function isoEvents(events = []) {
  * town clone's own `tools/households.json` (the file households.mjs reads).
  * `from` says which, because the two can disagree for a crossing.
  */
-async function registryFor(clone, readers = {}) {
+export async function registryFor(clone, readers = {}) {
   if (readers.registry) return { ...readers.registry, from: readers.registry.from ?? "injected" };
   try {
     const rows = await houseRows();
@@ -206,23 +208,41 @@ function lastActiveOf(db, handle) {
 export const DOORSTEP_INBOX = 20;
 export function residentSegments(db, handle, fresh) {
   const one = (sql, ...p) => Object.values(db.prepare(sql).get(...p))[0];
-  return {
-    mail: { serves: "household.mail", args: { handle, view: "inbox", limit: DOORSTEP_INBOX },
-      ...mailList(db, handle, "inbox", { limit: DOORSTEP_INBOX }) },
-    awaiting: { serves: "household.mail", args: { handle, view: "awaiting" }, ...mailAwaiting(db, handle, { offset: 0 }) },
-    stamps: { serves: "town.stamps", args: { handle }, handle, ...stampsDetail(db, handle) },
-    window: { serves: "household.window", args: { handle }, ...windowRead(db, handle, fresh) },
-    pending_outbox: outboxSettled(db, handle),
+  return residentSegmentsOf({
+    mail: mailList(db, handle, "inbox", { limit: DOORSTEP_INBOX }),
+    awaiting: mailAwaiting(db, handle, { offset: 0 }),
+    stamps: stampsDetail(db, handle),
+    window: windowRead(db, handle, fresh),
+    pendingOutbox: outboxSettled(db, handle),
     counts: {
       received: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery' AND to_h = ?", handle),
       sent: one("SELECT COUNT(*) FROM ledger WHERE kind = 'delivery' AND from_h = ?", handle),
     },
+  }, handle);
+}
+
+/** One resident's segments from their reads' answers. Shared with the store's twin (town-index-store.mjs). */
+export function residentSegmentsOf({ mail, awaiting, stamps, window, pendingOutbox, counts }, handle) {
+  return {
+    mail: { serves: "household.mail", args: { handle, view: "inbox", limit: DOORSTEP_INBOX }, ...mail },
+    awaiting: { serves: "household.mail", args: { handle, view: "awaiting" }, ...awaiting },
+    stamps: { serves: "town.stamps", args: { handle }, handle, ...stamps },
+    window: { serves: "household.window", args: { handle }, ...window },
+    pending_outbox: pendingOutbox,
+    counts,
   };
 }
 
 const ashoreIn = (db, handles) => handles.filter((h) => {
   try { return Boolean(db.prepare("SELECT 1 FROM residents WHERE handle = ?").get(h)); } catch { return false; }
 });
+
+// The same test through an index the door picked (POS-268), in the house's order.
+const ashoreVia = async (ix, handles) => {
+  const out = [];
+  for (const h of handles) if (await ix.hasResident(h)) out.push(h);
+  return out;
+};
 
 // ── household { read: "house" } ──────────────────────────────────────────────
 
@@ -234,10 +254,13 @@ const ashoreIn = (db, handles) => handles.filter((h) => {
  * `{ refused: [code, defect, hint] }`.
  */
 export async function houseBundle({ household = null } = {}, ctx = {}) {
-  const { db, key = null, meta, asOf, clone, odb, nowMs = Date.now(), readers = {} } = ctx;
+  const { db, key = null, meta, clone, odb, nowMs = Date.now(), readers = {}, ix = null } = ctx;
   const house = await houseMembers({ household, key, clone, readers });
   if (house.refused) return house;
-  const ashore = ashoreIn(db, house.members);
+  // With the store's index (the switch), the house is dated by the store's
+  // head and every per-resident read goes through it.
+  const asOf = ix ? await ix.asOf() : ctx.asOf;
+  const ashore = ix ? await ashoreVia(ix, house.members) : ashoreIn(db, house.members);
   const notAshore = house.members.filter((h) => !ashore.includes(h));
   const holds = ashore.some((h) => key?.handles?.has?.(h) === true);
 
@@ -264,14 +287,23 @@ export async function houseBundle({ household = null } = {}, ctx = {}) {
   // costly part of a doorstep (it parses every resident for the latest
   // arrivals and folds the PSA board and the pulse), so it is paid once here
   // where nine doorsteps paid it nine times.
-  const first = ashore.length ? doorstep(db, ashore[0], asOf, { fresh: { odb, clone, asOf }, nowMs }) : null;
+  const firstOpts = ashore.length ? { fresh: await freshFor(ashore[0], { odb, clone, asOf }), nowMs } : null;
+  const first = !ashore.length ? null : ix ? await ix.doorstep(ashore[0], asOf, firstOpts) : doorstep(db, ashore[0], asOf, firstOpts);
   const once = first ? Object.fromEntries(HOUSE_ONCE.filter((k) => k in first).map((k) => [k, first[k]])) : {};
+
+  // UNREAD, ONCE FOR THE HOUSE (POS-286): one store read for every resident
+  // this key holds, handed to each resident's owner gate.
+  const held = ashore.filter((h) => key?.handles?.has?.(h) === true);
+  const unread = held.length
+    ? await unreadFor(db, held, { ix }).then((rows) => ({ rows }), (error) => ({ error }))
+    : null;
 
   const residents = {};
   for (const h of ashore) {
-    const d = { handle: h, ...residentSegments(db, h, { odb, clone, asOf }) };
-    await ownerGate(d, h, { db, clone, key, odb, meta, asOf });
-    d.last_active = lastActiveOf(db, h);
+    const fresh = await freshFor(h, { odb, clone, asOf });
+    const d = { handle: h, ...(ix ? await ix.residentSegments(h, fresh) : residentSegments(db, h, fresh)) };
+    await ownerGate(d, h, { db, clone, key, odb, meta, asOf, unread, ix });
+    d.last_active = ix ? await ix.lastActive(h) : lastActiveOf(db, h);
     d.stands = stands.byHandle[h] ?? null;
     residents[h] = d;
   }
@@ -298,12 +330,12 @@ export async function houseBundle({ household = null } = {}, ctx = {}) {
  * house only: every list here is either the house's own ground or its own mail.
  */
 export async function needsYou({ household = null } = {}, ctx = {}) {
-  const { db, key = null, clone, odb, nowMs = Date.now(), readers = {} } = ctx;
+  const { db, key = null, clone, odb, nowMs = Date.now(), readers = {}, ix = null } = ctx;
   const held = [...(key?.handles ?? [])];
   if (!held.length) return { refused: [401, "whose house?", "needs-you is your own house's list — call with a key that holds its residents"] };
   const house = await houseMembers({ household, key, clone, readers });
   if (house.refused) return house;
-  const mine = ashoreIn(db, house.members).filter((h) => key.handles.has(h));
+  const mine = (ix ? await ashoreVia(ix, house.members) : ashoreIn(db, house.members)).filter((h) => key.handles.has(h));
   if (!mine.length) return { refused: [403, `this key holds no resident of "${house.slug}"`,
     "needs-you is read by the house it is about — the public half of any house is household { read: \"house\", household: \"<slug>\" }", { your_residents: held }] };
 
@@ -324,10 +356,10 @@ export async function needsYou({ household = null } = {}, ctx = {}) {
   const bounces = [];
   for (const h of mine) {
     try {
-      const a = readers.mailAwaiting ? readers.mailAwaiting(h) : (await import("./queries.mjs")).mailAwaiting(db, h);
+      const a = readers.mailAwaiting ? readers.mailAwaiting(h) : ix ? await ix.mailAwaiting(h) : (await import("./queries.mjs")).mailAwaiting(db, h);
       for (const b of a?.unplaced_bounces ?? []) bounces.push({ handle: h, ...b,
         cause: b.reason ? `a letter that never arrived: ${b.reason}` : "a letter that never arrived — the ferry could not place its recipient" });
-    } catch { /* one resident's mail law not reading does not empty the others' */ }
+    } catch (e) { if (e?.name === "TownIndexUnreachable") throw e; /* one resident's mail law not reading does not empty the others' */ }
   }
 
   const keyAsks = [];
@@ -337,7 +369,7 @@ export async function needsYou({ household = null } = {}, ctx = {}) {
     const { claimState } = readers.claimState ? { claimState: readers.claimState } : await import("./oauth.mjs");
     for (const h of mine) {
       try {
-        const s = claimState(odb, h);
+        const s = await claimState(odb, h);
         if (s && s.cosigned === false && s.asks_standing) keyAsks.push({
           handle: h, asks_standing: s.asks_standing,
           cause: `${h} has asked for a key of their own; it grants nothing until this house's GitHub account co-signs the ask`,

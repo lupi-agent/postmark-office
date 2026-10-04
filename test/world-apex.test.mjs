@@ -35,7 +35,7 @@ import test, { after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -71,7 +71,10 @@ process.env.TEMP = process.env.TMP = process.env.TMPDIR = tmpHome;
 after(() => rmSync(tmpHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
 process.env.WORLD_CLONE = repo;
-process.env.WORLD_STORE_DB = dbPath;
+// The world is the rows (test/helpers/world-rows.mjs, POS-270 lane W 3a): the
+// fixtures below are published as the world graph snapshot, and world.db's
+// path points nowhere, so no read here can stand on the file.
+process.env.WORLD_STORE_DB = join(repo, "no-world-db-here.db");
 process.env.VOICES_LOG = join(repo, "voices-log.jsonl");
 delete process.env.WORLD_APEX;
 delete process.env.WORLD_PRESENCE;
@@ -280,6 +283,8 @@ function buildStore(marks = MARKS, path = dbPath) {
 buildStore();
 const stageDPath = join(repo, "apex-world-stage-d.db");
 buildStore(STAGE_D_MARKS, stageDPath);
+const W = await import("./helpers/world-rows.mjs");   // after the TEMP redirect, like every ../src import
+W.publishWorld(dbPath);
 
 // ── the code under test ──────────────────────────────────────────────────────
 
@@ -309,11 +314,7 @@ const actions = (r) => (r.actions ?? []).map((a) => a.action);
 // Run a case against a different store — used for the Stage-D world, where the
 // wheelhouse's `board` affordance is restored and a SITED (non-ambient)
 // affordance therefore exists to test reach against.
-async function withStore(path, fn) {
-  const kept = process.env.WORLD_STORE_DB;
-  process.env.WORLD_STORE_DB = path;
-  try { return await fn(); } finally { process.env.WORLD_STORE_DB = kept; }
-}
+const withStore = (path, fn) => W.withWorld(path, fn);
 
 // ── a real office, for the falsifiers about ABSENCE ──────────────────────────
 //
@@ -351,7 +352,7 @@ async function withOffice(env, fn) {
   // to the office root), which is a live file the developer's own office holds:
   // a test must not write there, and two test offices must not write it at once.
   const child = spawn(process.execPath, [new URL("../src/server.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"), "--port", String(port), "--db", officeDb, "--oauth-db", join(dir, "oauth.db")], {
-    env: { ...process.env, ...env, OFFICE_KEYS: "apexkey=house-a:alpha", TOWN_CLONE: join(dir, "no-clone"), WORLD_CLONE: repo, WORLD_STORE_DB: dbPath, VOICES_LOG: join(dir, "voices.jsonl"), TOWN_PUSH: "", TEMP: dir, TMP: dir, TMPDIR: dir },
+    env: { ...process.env, ...env, OFFICE_KEYS: "apexkey=house-a:alpha", TOWN_CLONE: join(dir, "no-clone"), WORLD_CLONE: repo, ...W.rowsEnv(dbPath, dir), VOICES_LOG: join(dir, "voices.jsonl"), TOWN_PUSH: "", TEMP: dir, TMP: dir, TMPDIR: dir },
     stdio: ["ignore", "pipe", "pipe"],
   });
   try {
@@ -935,13 +936,13 @@ test("REST: the door answers anonymously over HTTP, and refuses to ACT over a GE
 
 test("the trust gate: the SQL and the predicate select the same marks, node for node", async () => {
   on();
-  const { loadWorldGraph, nodesWhere, isClassMark } = await import("../src/world-store.mjs");
+  const { nodesWhere, isClassMark } = await import("../src/world-store.mjs");
   for (const path of [dbPath, stageDPath]) {
     const db = new DatabaseSync(path, { readOnly: true });
     // ACTION_QUERY_ALL's shape: gate only, no reach restriction
     const bySql = new Set(db.prepare(`SELECT id FROM nodes WHERE ${(await import("../src/world-store.mjs")).CLASS_MARK_GATE_SQL}`).all().map((r) => r.id));
     db.close();
-    const byPredicate = new Set(nodesWhere(loadWorldGraph(path).graph, isClassMark).map((n) => n.id));
+    const byPredicate = new Set(nodesWhere(W.graphOf(path).graph, isClassMark).map((n) => n.id));
     assert.deepEqual([...bySql].sort(), [...byPredicate].sort(), path);
   }
   // and on main, the gate passes exactly one mark: the wheelhouse is law but
@@ -954,18 +955,18 @@ test("the trust gate: the SQL and the predicate select the same marks, node for 
 
 test("the ambient rule: the SQL and the predicate select the same marks, node for node", async () => {
   on();
-  const { loadWorldGraph, nodesWhere, isAmbient, AMBIENT_REACH_SQL } = await import("../src/world-store.mjs");
+  const { nodesWhere, isAmbient, AMBIENT_REACH_SQL } = await import("../src/world-store.mjs");
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const bySql = new Set(db.prepare(`SELECT id FROM nodes WHERE ${AMBIENT_REACH_SQL}`).all().map((r) => r.id));
   db.close();
-  const byPredicate = new Set(nodesWhere(loadWorldGraph(dbPath).graph, isAmbient).map((n) => n.id));
+  const byPredicate = new Set(nodesWhere(W.graphOf(dbPath).graph, isAmbient).map((n) => n.id));
   assert.deepEqual([...bySql].sort(), [...byPredicate].sort());
   assert.deepEqual([...bySql].sort(), ["the-town/sound"]);
 });
 
 test("the ambient rule is strict: only the boolean true widens reach", async () => {
   on();
-  const { loadWorldGraph, nodesWhere, isAmbient, AMBIENT_REACH_SQL } = await import("../src/world-store.mjs");
+  const { nodesWhere, isAmbient, AMBIENT_REACH_SQL } = await import("../src/world-store.mjs");
   // The shapes a careless frontmatter could produce, none of which are law.
   //
   // The STRING "true" is in this list on purpose, and it is not a hypothetical:
@@ -988,7 +989,7 @@ test("the ambient rule is strict: only the boolean true widens reach", async () 
   const bySql = db.prepare(`SELECT id FROM nodes WHERE ${AMBIENT_REACH_SQL}`).all().map((r) => r.id);
   db.close();
   assert.deepEqual(bySql.sort(), ["the-town/sound"]);
-  assert.deepEqual(nodesWhere(loadWorldGraph(path).graph, isAmbient).map((n) => n.id), ["the-town/sound"]);
+  assert.deepEqual(nodesWhere(W.graphOf(path).graph, isAmbient).map((n) => n.id), ["the-town/sound"]);
   // and they really are unreachable from far away, not merely un-flagged
   await withStore(path, async () => {
     const r = await worldApex({ ...FAR }, null);
@@ -999,7 +1000,7 @@ test("the ambient rule is strict: only the boolean true widens reach", async () 
 test("lint L6: the world as it stands is GREEN — one action exposed, and it dispatches", async () => {
   on();
   const { runLints } = await import("../src/world-lints.mjs");
-  const { lints } = await runLints({ dbPath, treePath: repo });
+  const { lints } = await runLints({ store: W.graphOf(dbPath), treePath: repo });
   const l6 = lints.find((l) => l.id === "L6");
   assert.equal(l6.verdict, "GREEN", l6.headline);
   // `for` rides every row since the actor-kind growth (2026-08-17): absent on
@@ -1023,7 +1024,7 @@ test("lint L6: the act-as-human red FLIPPED GREEN — the door resolves the huma
   const path = join(repo, "apex-l6-human.db");
   buildStore([...MARKS, ...humanLaw], path);
   const { runLints } = await import("../src/world-lints.mjs");
-  const { lints } = await runLints({ dbPath: path, treePath: repo });
+  const { lints } = await runLints({ store: W.graphOf(path), treePath: repo });
   const l6 = lints.find((l) => l.id === "L6");
   assert.equal(l6.verdict, "GREEN", "the human kind resolves at the door now — a RED here means the resolution was dropped");
   const humanRow = l6.rows.find((r) => r.action === "say" && r.for === "human");
@@ -1038,7 +1039,7 @@ test("lint L6: an action law exposes with no handler behind it is RED, and named
   // Stage D restores `board` — this is the world law declined to ship without
   // its handler, and the lint is what makes that refusal checkable rather than
   // a matter of remembering.
-  const { lints } = await runLints({ dbPath: stageDPath, treePath: repo });
+  const { lints } = await runLints({ store: W.graphOf(stageDPath), treePath: repo });
   const l6 = lints.find((l) => l.id === "L6");
   assert.equal(l6.verdict, "RED");
   assert.match(l6.headline, /board \(the-town\/the-wheelhouse\)/);
@@ -1050,9 +1051,7 @@ test("lint L6: an action law exposes with no handler behind it is RED, and named
 
 test("no store: the read says the law cannot be read, and the act refuses", async () => {
   on();
-  const kept = process.env.WORLD_STORE_DB;
-  process.env.WORLD_STORE_DB = join(repo, "no-such-store.db");
-  try {
+  await W.withNoWorld(async () => {
     const read = await worldApex({ ...A }, null);
     assert.deepEqual(read.actions, []);
     assert.match(read.law.unavailable, /no world store/);
@@ -1060,7 +1059,7 @@ test("no store: the read says the law cannot be read, and the act refuses", asyn
     assert.equal(act.error, "bounce");
     assert.equal(act.code, 503);
     assert.match(act.hint, /you were not shown at the door/);
-  } finally { process.env.WORLD_STORE_DB = kept; }
+  });
 });
 
 // ── the rename's transition seam (2026-08-15) ────────────────────────────────
@@ -1164,16 +1163,14 @@ test("envelope: an unknown field bounces BY NAME against the target's own schema
 });
 
 // POS-70 §5 (ruled 2026-09-24): the send and the five paper acts take a retry
-// key now; a world act's receipt is a row in the store's `acts` table, which has
-// no column for one until 027_act_nonce.sql installs — so the world door still
-// refuses it BY NAME, the MCP half of test/one-contract.test.mjs's plain-API leg.
-// NARROWED by POS-265: the say takes a nonce now, on world_say's own schema,
-// and keeps its spent nonces in the voices module (voices.mjs § THE RETRY KEY).
-// Every other world act still refuses it by name.
-test("envelope: a nonce on a world act bounces by name — the world's store keeps no retry key yet", async () => {
+// key. POS-265: the say takes one on world_say's own schema. POS-246: every
+// other world act takes one too, as a DOOR field (one-contract.mjs §
+// DOOR_FIELDS) the world door reads and act-nonce.mjs keeps on the act's row —
+// so the envelope no longer refuses it by name, and a READ still does.
+test("envelope: a nonce on a world act is the door's own field — not refused by name (POS-246)", async () => {
   on();
   // walk, granted ambiently to the resident class (the fixture's own ground
-  // affords only say, which takes the nonce now)
+  // affords only say)
   const residentLaw = [
     { id: "the-town/resident", by: "the-town", kind: "sited", tier: "constitution", at: { x: 2200, y: 2200 }, extent: { w: 10, h: 10 },
       body: "A household's living voice.",
@@ -1183,9 +1180,13 @@ test("envelope: a nonce on a world act bounces by name — the world's store kee
   buildStore([...MARKS, ...residentLaw], path);
   await withStore(path, async () => {
     const r = await worldApex({ do: "walk", args: { x: 1, y: 1, nonce: "w-k1" } }, KEY_ALPHA);
-    assert.equal(r.error, "bounce");
-    assert.equal(r.code, 422);
-    assert.match(r.defect, /does not take: nonce/);
+    assert.doesNotMatch(String(r.defect ?? ""), /does not take: nonce/, "the walk refused its retry key by name");
+    const long = await worldApex({ do: "walk", args: { x: 1, y: 1, nonce: "x".repeat(201) } }, KEY_ALPHA);
+    assert.equal(long.code, 422);
+    assert.match(long.defect, /nonce must be under 200 bytes/);
+    const read = await worldApex({ read: "walk", args: { nonce: "w-k1" } }, KEY_ALPHA);
+    assert.equal(read.code, 422);
+    assert.match(read.defect, /a read performs nothing, so a nonce has nothing to guard/);
   });
 });
 
@@ -1314,10 +1315,10 @@ test("PARITY · an unknown envelope field on a shadow read bounces BY NAME, with
   assert.equal(r.error, "bounce");
   assert.equal(r.code, 422);
   assert.equal(r.defect, 'unknown argument "bogus" for world { read: "say" }');
-  // `nonce` (POS-265) is declared the way `text` is: named here, then answered
+  // `nonce` (POS-265) and `rules_read` (POS-300) are declared the way `text` is: named here, then answered
   // by the shadow's own teaching refusal rather than the generic one.
-  assert.equal(r.hint, "this read takes: text, since, nonce, wait", "and the hint names what this shadow does answer to");
-  assert.deepEqual(r.accepted, ["text", "since", "nonce", "wait"]);
+  assert.equal(r.hint, "this read takes: text, since, before, nonce, rules_read, wait", "and the hint names what this shadow does answer to");
+  assert.deepEqual(r.accepted, ["text", "since", "before", "nonce", "rules_read", "wait"]);
 });
 
 // ── #2559 · THE SHADOW CARRIES THE CURSOR IT WAS HANDED ─────────────────────
@@ -1424,6 +1425,13 @@ test("POS-265 · a nonce on a say-read is refused by name — a read speaks noth
   assert.match(r.defect, /a read speaks nothing, so a nonce has nothing to guard/);
 });
 
+test("POS-300 · rules_read on a say-read is refused by name — a read writes no acknowledgement", async () => {
+  on();
+  const r = await worldApex({ read: "say", args: { rules_read: true } }, { berth: true, slug: "read-only-visitor", household: null, handles: new Set() });
+  assert.equal(r.code, 422);
+  assert.match(r.defect, /a read writes nothing, so it records no acknowledgement/);
+});
+
 test("PARITY · a documented envelope field answers exactly as before", async () => {
   on();
   const r = await worldApex({ read: "say" }, KEY_ALPHA);
@@ -1450,13 +1458,51 @@ test("PARITY · the top level is judged ONCE, by the door's own closed schema", 
 // ── the berth: emissions only, from the quay (arrival ruling 2026-08-15) ────
 
 const BERTH_KEY = { berth: true, slug: "field-tester", household: null, handles: new Set() };
+// A berth that has acknowledged the town's rules for visitors (POS-300): the
+// key carries what its row says, as berthLookup resolves it per request.
+const BERTH_KEY_READ = { ...BERTH_KEY, rulesRead: true };
 
 test("berth: say flows through the apex — the one write a berth holds", async () => {
   on();
-  const r = await worldApex({ do: "say", args: { text: "a voice from the gangplank" } }, BERTH_KEY);
+  const r = await worldApex({ do: "say", args: { text: "a voice from the gangplank" } }, BERTH_KEY_READ);
   assert.ok(!r.error, JSON.stringify(r).slice(0, 300));
   assert.equal(r.did, "say");
   assert.equal(r.result.spoke, true, "the berth's voice must actually land");
+});
+
+test("berth: the first say through the apex comes back with the town's rules for visitors, and nothing is said (POS-300)", async () => {
+  on();
+  const { VISITOR_RULES, useRulesRecorder } = await import("../src/visitor-rules.mjs");
+  const fresh = { ...BERTH_KEY, slug: "rules-reader" };
+  const words = "visit my hotline for agents";
+  const r = await worldApex({ do: "say", args: { text: words } }, fresh);
+  assert.equal(r.error, "bounce");
+  assert.equal(r.code, 403);
+  assert.deepEqual(r.visitor_rules, VISITOR_RULES, "the rules ride the apex's refusal");
+  const heard = await worldApex({ do: "say", args: {} }, BERTH_KEY_READ);
+  assert.ok(!JSON.stringify(heard).includes(words), "a refused say is never heard");
+  // The acknowledgement on the same say lands it, recorded under the berth's slug.
+  const seen = [];
+  useRulesRecorder(async (slug) => { seen.push(slug); });
+  try {
+    const ok = await worldApex({ do: "say", args: { text: "hello, quay", rules_read: true } }, fresh);
+    assert.ok(!ok.error, JSON.stringify(ok).slice(0, 300));
+    assert.equal(ok.result.spoke, true);
+    assert.deepEqual(seen, ["rules-reader"]);
+  } finally { useRulesRecorder(null); }
+});
+
+test("a resident is never shown the visitors' gate: the say lands, with or without rules_read (POS-300)", async () => {
+  on();
+  // The first lands. The second meets the voice's own 15-second limiter, which
+  // is not the gate: what it must not be is the visitors' refusal.
+  // gamma, because alpha speaks elsewhere in this file and the limiter is per speaker.
+  const first = await worldApex({ do: "say", args: { text: "a resident at the lantern", rules_read: true } }, KEY_GAMMA);
+  assert.ok(!first.error, JSON.stringify(first).slice(0, 300));
+  assert.equal(first.result.spoke, true);
+  const second = await worldApex({ do: "say", args: { text: "a resident again" } }, KEY_GAMMA);
+  assert.equal(second.visitor_rules, undefined, JSON.stringify(second).slice(0, 300));
+  assert.ok(!second.error || second.defect === "you just spoke", JSON.stringify(second).slice(0, 300));
 });
 
 test("berth: nothing durable — a mark refuses a berth at the dispatch, terms still shown", async () => {
@@ -1690,4 +1736,39 @@ test("POS-70 · GET /world/apex carries every field the apex declares — `read:
     const bare = await fetch(`${BASE}/world/apex?x=-900&y=-760`);
     assert.equal(bare.status, 200);
   });
+});
+
+// THE ARENA IS CLOSED (Keemin, 2026-09-30). A store whose resident class grants
+// the arena's verbs, and the apex's own door: every arena verb answers the one
+// refusal, BEFORE any guard (loot's phase precondition would otherwise refuse
+// it as "not performed here", which is true and is not the reason), and the
+// door never creates dynamic.db on the way.
+test("THE ARENA IS CLOSED: do: strike and do: loot answer \"the arena is closed\" at the apex door, and dynamic.db is not touched", async () => {
+  on();
+  const arenaLaw = [
+    { id: "the-town/resident", by: "the-town", kind: "sited", tier: "constitution", at: { x: 2200, y: 2200 }, extent: { w: 10, h: 10 },
+      body: "A household's living voice.",
+      props: { class: "resident", class_version: 5, ambient: true,
+        actions: [{ action: "strike", residue: "the-town/sound" }, { action: "loot", residue: "the-town/sound" }] } },
+  ];
+  const path = join(repo, "apex-world-arena-closed.db");
+  buildStore([...MARKS, ...arenaLaw], path);
+  const dyn = join(repo, "arena-closed-no-such", "dynamic.db");
+  const was = process.env.WORLD_DYNAMIC_DB;
+  process.env.WORLD_DYNAMIC_DB = dyn;
+  try {
+    await withStore(path, async () => {
+      for (const verb of ["strike", "loot"]) {
+        const r = await worldApex({ do: verb, args: {} }, KEY_ALPHA);
+        assert.equal(r.error, "bounce", `${verb}: ${JSON.stringify(r).slice(0, 200)}`);
+        assert.equal(r.code, 501);
+        assert.equal(r.defect, "the arena is closed");
+        assert.match(r.hint, /the arena is closed while it is rebuilt/);
+        assert.equal(r.action, verb);
+      }
+    });
+  } finally {
+    if (was === undefined) delete process.env.WORLD_DYNAMIC_DB; else process.env.WORLD_DYNAMIC_DB = was;
+  }
+  assert.equal(existsSync(dyn), false, "an arena verb at the apex created dynamic.db");
 });

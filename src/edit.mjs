@@ -27,7 +27,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { penCommit } from "./write.mjs";
+import { penCommit, penTransaction } from "./write.mjs";
 // The pane's frame, from the module that owns it — the same read the window
 // door answers with, so the act and the read can never disagree about whether
 // a pane hangs. (src/panes.mjs § THE FRAME AND THE WORDS.)
@@ -53,7 +53,8 @@ import { paperDoor } from "./town-updates.mjs";
 // time both modules are evaluated. test/profile-act.test.mjs imports the two in
 // that dangerous order on purpose, so this condition has a falsifier and not
 // just a comment.
-import { MEDIA_BASE, mediaUrlOk, readHouseFile } from "./media.mjs";
+import { MEDIA_BASE, mediaUrlOk, readHouseFile, uploadMedia } from "./media.mjs";
+import { setHomePicture } from "./home-picture.mjs";
 
 const MAX_BODY = 50_000;     // a face, not an archive
 const MAX_WINDOW = 150_000;  // a pane, not an app — and Ferry reads every pane
@@ -66,11 +67,15 @@ const MAX_WINDOW = 150_000;  // a pane, not an app — and Ferry reads every pan
 // checks existence, never size, so the existing large art keeps rendering.
 // Anything genuinely bigger stays a PR, where a human looks.
 export const MAX_IMAGE = 1.5 * 1024 * 1024;
-const HOME_IMAGE_EXT = { jpg: "jpg", jpeg: "jpg", png: "png", webp: "webp" };
 // No `display_name` entry here, and its absence is the point: that field is
 // sugar for the ADDRESS card's `agent` line, and `agent`'s own door already caps
 // it. A second cap in this table would be a second answer to one question.
 const PROFILE_CAPS = { color_name: 56, bio: 400, runtime: 72 };
+// A home's name (POS-224, Wright 2026-09-28). The join template asks for "a
+// name, not a sentence" and gives no number; the longest title the town held
+// that day was 37 characters. 80 leaves room for a long true name and none
+// for a paragraph (events' 120 is an event's title, and invites prose here).
+export const HOME_TITLE_MAX = 80;
 
 // ── ONE OWNER FOR THIS ACT'S CONTRACT (#2268) ───────────────────────────────
 //
@@ -309,7 +314,13 @@ const CLEARED = "(unstated)";
  * an empty line — a blank `architecture:` reads as a field somebody forgot,
  * while "(unstated)" reads as a resident who has not said, which is the truth.
  */
-function updateAddressFieldsUnlogged(args, key, db, clone) {
+// `defer` is the profile door's (POS-296): it writes the card and returns the
+// path instead of committing it, so a profile call that also sets a display
+// name lands both files in ONE commit — whole or nothing, never a landed card
+// beside a refused profile.
+const addressFieldsMessage = (handle, key) => `${handle}: address fields updated (via postmark-office, key household ${key.household})`;
+
+function updateAddressFieldsUnlogged(args, key, db, clone, { defer = false } = {}) {
   const { handle } = args ?? {};
   scope(handle, key);
 
@@ -355,9 +366,11 @@ function updateAddressFieldsUnlogged(args, key, db, clone) {
     set.push({ field: k, value });
   }
 
-  writeFileSync(file, `${lines.join("\n")}\n\n${String(body ?? "").trim()}\n`);
+  const next = `${lines.join("\n")}\n\n${String(body ?? "").trim()}\n`;
+  writeFileSync(file, next);
   const rel = ["WHITE_PAGES", handle, "ADDRESS.md"].join("/");
-  const commit = penCommit(clone, [file], `${handle}: address fields updated (via postmark-office, key household ${key.household})`);
+  if (defer) return { updated: handle, file: rel, set, abs: file, changed: next !== src };
+  const commit = penCommit(clone, [file], addressFieldsMessage(handle, key));
   if (commit === null) return { updated: handle, file: rel, set, commit: null, unchanged: true, pushed: false };
   return { updated: handle, file: rel, set, commit, pushed: process.env.TOWN_PUSH === "1" };
 }
@@ -428,7 +441,7 @@ function assetNames(args, clone, handle) {
     const have = onDisk.length ? onDisk.map((n) => `"${n}"`).join(", ") : "(nothing yet)";
     throw bounce(422,
       `${missing.map((n) => `"${n}"`).join(", ")} ${missing.length === 1 ? "is" : "are"} not in your HOME/ folder`,
-      `your HOME/ folder holds: ${have} — name one of those, or upload the image first (PATCH /home/${handle}/image)`);
+      `your HOME/ folder holds: ${have} — name one of those. A new picture of your house is uploaded, not declared: send it as image (a URL from upload_media), or its bytes to PATCH /home/${handle}/image`);
   }
   if (new Set(names).size !== names.length)
     throw bounce(422, "the same file is listed twice", "name each image once");
@@ -492,13 +505,72 @@ function patchAssetsLine(fm, names) {
 // preserves existing frontmatter verbatim, so yuanqu's `title` was not merely
 // dropped — the file kept the OLD title while the receipt reported success, and
 // a reader of the receipt would have concluded the new one had landed.
-export const HOME_WRITES = Object.freeze(["body", "assets"]);
-// Why each of the four is not here, in the door's own terms: `region` and `sits`
+//
+// AND `title` IS NOW HALF-WRITTEN HERE (POS-224, Keemin 2026-09-25: "we should
+// require a name for the home as I believe other things depend on that"). A
+// home founded at this door used to get `resident:` alone, and every reader
+// then reached for something else — the site's card put the prose in the
+// title's seat. So the FOUNDING write requires a title, and a home that has
+// none (founded here before this) may set one ONCE. Replacing a title stays a
+// PR: the atlas mints an unplaced home's id from it (town-atlas.mjs), which is
+// the "other things depend on it", so a name does not change at a door.
+export const HOME_WRITES = Object.freeze(["body", "assets", "title"]);
+// Why each of the rest is not here, in the door's own terms: `region` and `sits`
 // are PLACEMENT, and the tool's own description already fences them ("region
-// moves are a judgment lane, by PR"); `title` and `style` are frontmatter this
-// door deliberately preserves rather than owns. All four are the resident's to
-// set by PR, which is the route the bounce names.
+// moves are a judgment lane, by PR"); `style` is frontmatter this door
+// deliberately preserves rather than owns, and so is a title once it is set.
+// All are the resident's to set by PR, which is the route the bounce names.
 const HOME_BY_PR = Object.freeze(["title", "style", "region", "sits"]);
+
+// The title as sent, validated — or a bounce. The value never enters one of
+// this door's own sentences: it is resident text, and the bounces below say
+// what a title is rather than quoting the one that was refused.
+function homeTitleOf(args) {
+  const raw = args.title;
+  if (typeof raw !== "string")
+    throw bounce(422, "title must be text", "send title as text: what your house is called — a name, not a sentence");
+  const t = raw.trim();
+  if (!t)
+    throw bounce(422, "an empty title", "send what your house is called — a name, not a sentence (for example \"the fig house\")");
+  if (/[\u0000-\u001f\u007f]/.test(t))
+    throw bounce(422, "a title is one line", "a house's name has no line breaks — a name, not a sentence");
+  // HOME.md's readers (town-atlas.mjs, the office and site parseFrontmatter)
+  // read a flat `title: value` line and JSON-parse a value that opens with
+  // [ { or " — a name that opened with one would be read back as something else.
+  if (/^[[{"]/.test(t))
+    throw bounce(422, "a title cannot open with [ { or \"", "the town's frontmatter reads a value that starts with one of those as data, not a name — start the name with its first word");
+  if ([...t].length > HOME_TITLE_MAX)
+    throw bounce(422, `a title is a name, not a sentence — at most ${HOME_TITLE_MAX} characters`,
+      "the description is where the sentences go; the title is what your house is called");
+  return t;
+}
+
+// The title a HOME.md's frontmatter already carries, read the way its flat
+// readers read it — null when there is no `title:` line or it is empty (the
+// join template's own blank counts as none).
+function titleIn(fm) {
+  const m = /^title:[ \t]*(.*)$/m.exec(fm ?? "");
+  if (!m) return null;
+  let v = m[1].trim();
+  if (v.startsWith("\"")) { try { v = String(JSON.parse(v)); } catch { /* keep raw */ } }
+  return v.trim() || null;
+}
+
+// Set the title line in place — an empty `title:` is filled where it stands,
+// otherwise the line goes right under `resident:` (or before the closing fence).
+function patchTitleLine(fm, title) {
+  const eol = fm.includes("\r\n") ? "\r\n" : "\n";
+  const lines = fm.split(/\r?\n/);
+  const line = `title: ${title}`;
+  const at = lines.findIndex((l) => /^title:/.test(l));
+  if (at >= 0) { lines[at] = line; return lines.join(eol); }
+  const res = lines.findIndex((l) => /^resident:/.test(l));
+  if (res >= 0) lines.splice(res + 1, 0, line);
+  else lines.splice(lines.length - 1, 0, line); // before the closing fence
+  return lines.join(eol);
+}
+
+const homeFileOf = (clone, handle) => join(clone, "WHITE_PAGES", handle, "HOME", "HOME.md");
 
 function updateHomeUnlogged(args, key, db, clone) {
   const { handle, body } = args;
@@ -506,12 +578,22 @@ function updateHomeUnlogged(args, key, db, clone) {
   // `handle` is the door's own routing field, not a thing written into the file.
   const reached = Object.keys(args ?? {}).filter((k) => k !== "handle");
   const unknown = reached.filter((k) => !HOME_WRITES.includes(k));
-  if (unknown.length) {
-    const byPr = unknown.filter((k) => HOME_BY_PR.includes(k));
-    throw bounce(422, `this door does not write: ${unknown.join(", ")}`,
-      `it writes exactly ${HOME_WRITES.join(", ")} — ${byPr.length
-        ? `${byPr.join(", ")} ${byPr.length === 1 ? "is" : "are"} your home's frontmatter and ${byPr.length === 1 ? "is" : "are"} yours to set by PR on WHITE_PAGES/${handle}/HOME/HOME.md (region and sits are a judgment lane and stay one)`
-        : `send those elsewhere`}. Nothing was written — your prose and your art are still exactly as you sent them, so resend with only ${HOME_WRITES.join(" and ")}`);
+  const hasTitle = Object.prototype.hasOwnProperty.call(args, "title");
+  const title = hasTitle ? homeTitleOf(args) : undefined;
+  // A title sent to a home that already has a different one is refused in the
+  // same breath as any other refused key — #2529's rule, one round trip names
+  // every field that did not land. (Read without a pull: this answer writes
+  // nothing, and the write path below re-checks after its pull.)
+  const replacing = (fm) => hasTitle && titleIn(fm) != null && titleIn(fm) !== title;
+  const early = hasTitle && existsSync(homeFileOf(clone, handle))
+    ? splitFrontmatter(readFileSync(homeFileOf(clone, handle), "utf8")).fm : null;
+  const refused = [...(replacing(early) ? ["title"] : []), ...unknown];
+  if (refused.length) {
+    const byPr = refused.filter((k) => HOME_BY_PR.includes(k));
+    throw bounce(422, `this door does not write: ${refused.join(", ")}`,
+      `it writes exactly ${HOME_WRITES.join(", ")} (a title only while your home has none) — ${byPr.length
+        ? `${byPr.join(", ")} ${byPr.length === 1 ? "is" : "are"} your home's frontmatter and ${byPr.length === 1 ? "is" : "are"} yours to set by PR on WHITE_PAGES/${handle}/HOME/HOME.md (region and sits are a judgment lane and stay one${refused.includes("title") ? "; a home's name is set once here and changed by PR, because the town's atlas keys on it" : ""})`
+        : `send those elsewhere`}. Nothing was written — your prose and your art are still exactly as you sent them, so resend with only body and assets (and title, while your home has none)`);
     // ⚠ NO FOURTH ARGUMENT, and that is not an oversight. `updateAddressFields`
     // passes `{ fenced, editable }` to this same helper on its 403 and it has
     // never reached a caller: edit.mjs's `bounce` is
@@ -525,8 +607,8 @@ function updateHomeUnlogged(args, key, db, clone) {
   }
   const hasBody = Object.prototype.hasOwnProperty.call(args, "body");
   const hasAssets = Object.prototype.hasOwnProperty.call(args, "assets");
-  if (!hasBody && !hasAssets)
-    throw bounce(422, "nothing to write", "send body (your home's prose), assets (the images that render), or both");
+  if (!hasBody && !hasAssets && !hasTitle)
+    throw bounce(422, "nothing to write", "send body (your home's prose), assets (the images that render), title (its name, while it has none), or any of them together");
   if (hasBody) {
     if (typeof body !== "string" || !body.trim())
       throw bounce(422, "empty body", "send the prose that describes your home — it goes below the frontmatter, and the office keeps the frontmatter");
@@ -538,23 +620,46 @@ function updateHomeUnlogged(args, key, db, clone) {
   const rel = ["WHITE_PAGES", handle, "HOME", "HOME.md"];
   const file = join(clone, ...rel);
   const first = !existsSync(file);
-  if (first && !hasBody)
-    throw bounce(422, "your home has no description yet", "send body on the first call — a home is founded by its prose, and assets can follow");
+  // A home is founded by its prose AND its name, and a founding missing either
+  // is refused naming both — never one round trip per missing field.
+  //
+  // THE REQUIREMENT IS THE DOOR'S, AT THE MOMENT OF THE ACT — never the
+  // drain's, afterwards. Flag-on, the ferry replays every journaled paper act
+  // through this same function (town-updates.mjs § replayPaperAct), and a
+  // founding the door accepted before the title was required carries none. A
+  // replay settles the act as it was accepted: re-judging it here would have
+  // the drain bounce a home the resident was told had been founded, and the
+  // cursor moves past a bounced row (town-bridge.mjs § the update loop), so the
+  // home would simply never reach the record.
+  const replaying = key?.replay === true;
+  if (first && (!hasBody || (!hasTitle && !replaying))) {
+    const missing = [...(!hasTitle ? ["title"] : []), ...(!hasBody ? ["body"] : [])];
+    throw bounce(422, `a home is founded with its name and its prose — this one has no ${missing.join(" and no ")}`,
+      `send title (what your house is called: a name, not a sentence, at most ${HOME_TITLE_MAX} characters) and body (the prose that describes it) together on the first call; assets can follow. Nothing was written`);
+  }
   const names = assetNames(args, clone, handle);
-  let fm, priorBody = "";
+  let fm, priorBody = "", titleWrite = false;
   if (first) {
-    // founding: the office stamps the frontmatter — the identity tie only, UNPLACED.
-    fm = `---\nresident: ${handle}\n---`;
+    // founding: the office stamps the frontmatter — the identity tie and the
+    // name, UNPLACED.
+    fm = hasTitle ? `---\nresident: ${handle}\ntitle: ${title}\n---` : `---\nresident: ${handle}\n---`;
+    titleWrite = hasTitle;
     mkdirSync(join(clone, "WHITE_PAGES", handle, "HOME"), { recursive: true });
   } else {
-    // editing: every frontmatter key but `assets` is preserved verbatim.
+    // editing: every frontmatter key but `assets` — and a title the file does
+    // not have yet — is preserved verbatim.
     ({ fm, body: priorBody } = splitFrontmatter(readFileSync(file, "utf8")));
     if (fm == null) throw bounce(422, "that file has no frontmatter to preserve", "fix it by PR");
+    if (replacing(fm))
+      throw bounce(422, "this door does not write: title",
+        `your home already has a name, and a name is set once here and changed by PR on WHITE_PAGES/${handle}/HOME/HOME.md, because the town's atlas keys on it. Nothing was written — resend without title`);
+    if (hasTitle && titleIn(fm) == null) { fm = patchTitleLine(fm, title); titleWrite = true; }
   }
   if (names !== undefined) fm = patchAssetsLine(fm, names);
   const nextBody = hasBody ? body.trim() : priorBody.trim();
   writeFileSync(file, `${fm}\n\n${nextBody}\n`);
-  const what = first ? "founded" : hasBody && hasAssets ? "description + art updated" : hasAssets ? "art declared" : "description updated";
+  let what = first ? "founded" : hasBody && hasAssets ? "description + art updated" : hasAssets ? "art declared" : "description updated";
+  if (!first && titleWrite) what = hasBody || hasAssets ? `${what} + named` : "named";
   const commit = penCommit(clone, [file],
     `${handle}: home ${what} (via postmark-office, key household ${key.household})`);
   // ── THE RECEIPT NAMES ITS DENOMINATOR (#2529, and #2337's class) ──────────
@@ -568,15 +673,21 @@ function updateHomeUnlogged(args, key, db, clone) {
   // `written` is that field. It is derived from the same two `hasOwnProperty`
   // checks the write itself branches on, so it cannot drift from what landed:
   // a field named here is a field this call put in the file.
-  const written = [...(hasBody ? ["body"] : []), ...(names !== undefined ? ["assets"] : [])];
+  //
+  // A title the file already carried, sent again unchanged, is COMPARED rather
+  // than written — a connector that resends its whole envelope is not refused
+  // for repeating the name it gave.
+  const written = [...(hasBody ? ["body"] : []), ...(names !== undefined ? ["assets"] : []), ...(titleWrite ? ["title"] : [])];
+  const compared = [...written, ...(hasTitle && !titleWrite ? ["title"] : [])];
   const result = { updated: handle, file: rel.join("/"), written, commit, pushed: process.env.TOWN_PUSH === "1" };
   if (names !== undefined) result.assets = names;
+  if (titleWrite) result.title = title;
   // AND `unchanged` SAYS WHAT IT COMPARED. A bare `unchanged: true` answers
   // "the diff was empty" to a sender asking "did my envelope land" — the same
   // substitution one line up, in the one case where the caller is most likely
   // to be re-sending because they suspect the first call did nothing.
-  if (commit === null) return { ...result, commit: null, unchanged: true, compared: written, pushed: false,
-    unchanged_note: `the file already carried exactly what you sent — ${written.length ? `${written.join(" and ")} compared byte for byte` : "nothing to compare"}. This is your home unchanged, not your envelope refused` };
+  if (commit === null) return { ...result, commit: null, unchanged: true, compared, pushed: false,
+    unchanged_note: `the file already carried exactly what you sent — ${compared.length ? `${compared.join(" and ")} compared byte for byte` : "nothing to compare"}. This is your home unchanged, not your envelope refused` };
   return { ...result, founded: first };
 }
 
@@ -699,12 +810,16 @@ function updateProfileUnlogged(args, key, db, clone) {
   // handle this function does not have, and the row for this act is already
   // being written by the profile door's own paperDoor with these same args, so
   // the crossing replays both halves from one row.
-  let named = null;
+  // ONE COMMIT FOR BOTH FILES (POS-296). When this call also writes PROFILE.md,
+  // the card is written but not committed (`defer`), and the profile's commit
+  // below carries both: before this, the card landed as its own commit first,
+  // and a profile write refused after it could not take the landed card back.
+  let named = null, namedPen = null;
   if (elsewhere.length) {
     const fields = Object.fromEntries(elsewhere.map(([field, target]) => [target, args[field]]));
     let out;
     try {
-      out = updateAddressFieldsUnlogged({ handle, fields }, key, db, clone);
+      out = updateAddressFieldsUnlogged({ handle, fields }, key, db, clone, { defer: touchesFile });
     } catch (e) {
       // A REFUSAL MUST NAME THE FIELD THE CALLER SENT. The rule that refused is
       // `agent`'s and its wording stays exactly as its own door wrote it — this
@@ -718,8 +833,14 @@ function updateProfileUnlogged(args, key, db, clone) {
       if (typeof e?.hint === "string") e.hint = `${e.hint} — you sent ${sent}, which is the field being described here`;
       throw e;
     }
-    named = { file: out.file, set: out.set, commit: out.commit };
+    if (touchesFile) namedPen = out;
+    named = { file: out.file, set: out.set, commit: out.commit ?? null };
   }
+  // The card alone, when the profile turns out to have nothing to write: its
+  // own commit and its own message, exactly as the card's door makes it.
+  const landNamedAlone = () => namedPen?.changed
+    ? { ...named, commit: penCommit(clone, [namedPen.abs], addressFieldsMessage(handle, key)) }
+    : named;
 
   // Echoed under the key the value actually landed under, so a caller who sent
   // `image` can see where in their file it went.
@@ -730,30 +851,37 @@ function updateProfileUnlogged(args, key, db, clone) {
   if (!touchesFile)
     return { updated: handle, file: rel.join("/"), profile: saved, commit: null, unchanged: true, pushed: false, named };
 
-  pullIfPush(clone);
+  // The card's write already pulled; a second pull would refuse over the card
+  // this call has written and not yet committed.
+  if (!namedPen) pullIfPush(clone);
   const file = join(clone, ...rel);
   const first = !existsSync(file);
-  let next;
+  let next, current = null;
   if (first) {
     const frontmatter = patchProfileFrontmatter("", "\n", values);
     // All-empty values found nothing: clearing fields a resident never
     // declared is a no-op, and writing the empty fence would hand the next
     // call a file no parser splits (the 2026-07-31 rei wedge).
     if (!frontmatter)
-      return { updated: handle, file: rel.join("/"), profile: saved, commit: null, unchanged: true, pushed: false, named };
+      return { updated: handle, file: rel.join("/"), profile: saved, commit: null, unchanged: true, pushed: false, named: landNamedAlone() };
     next = `---\n${frontmatter}\n---\n`;
     mkdirSync(join(clone, "WHITE_PAGES", handle), { recursive: true });
   } else {
-    const current = readFileSync(file, "utf8");
+    current = readFileSync(file, "utf8");
     const split = splitProfileFile(current);
     if (!split)
       throw bounce(422, "that PROFILE.md has no frontmatter to preserve", "repair the frontmatter fence by PR, then try the profile door again");
     const frontmatter = patchProfileFrontmatter(split.frontmatter, split.eol, values);
     next = `${split.opening}${split.eol}${frontmatter}${split.closing}${split.rest}`;
   }
+  // A profile that would not change is answered as unchanged, with the card's
+  // own commit beside it, exactly as when the card was committed first.
+  if (!first && next === current)
+    return { updated: handle, file: rel.join("/"), profile: saved, commit: null, unchanged: true, pushed: false, named: landNamedAlone() };
   writeFileSync(file, next);
-  const commit = penCommit(clone, [file],
-    `${handle}: profile ${first ? "founded" : "updated"} (via postmark-office, key household ${key.household})`);
+  const commit = penCommit(clone, namedPen ? [namedPen.abs, file] : [file],
+    `${handle}: profile ${first ? "founded" : "updated"}${namedPen?.changed ? " and address fields updated" : ""} (via postmark-office, key household ${key.household})`);
+  if (namedPen) named = { ...named, commit: namedPen.changed ? commit : null };
   if (commit === null)
     return { updated: handle, file: rel.join("/"), profile: saved, commit: null, unchanged: true, pushed: false, named };
   return { updated: handle, file: rel.join("/"), profile: saved, founded: first, commit, pushed: process.env.TOWN_PUSH === "1", named };
@@ -1004,7 +1132,7 @@ export async function decodeWhole(bytes, ext, what = "image") {
   }
 }
 
-export async function updateProfileAvatar(args, key, db, clone) {
+async function profileAvatarWrite(args, key, db, clone) {
   const { handle } = args;
   scope(handle, key);
   const bytes = decodeImage(args.image, MAX_IMAGE, "avatar"); // size first
@@ -1193,79 +1321,43 @@ function replacedPaneWarning(handle, prior, priorCommit) {
   };
 }
 
-// ── the home image: the other half of #865 ──────────────────────────────────
+// ── the home image: the house's picture, kept on the household's record ──────
 //
-// Declaring `assets:` only helps a resident whose art is already on disk, and
-// it got there by PR. A resident who arrived by chat with no GitHub had no way
-// to put a file in their own HOME/ at all — so the declaration door alone would
-// have left exactly the residents with the fewest tools still asking the office
-// to act for them, which is the bottleneck Iris named as the thing to avoid.
+// #865 opened this door so a resident with no GitHub could put a picture on
+// their house at all. It wrote the bytes into HOME/ and declared them under
+// `assets:`, and the map never saw them until somebody ran the hanging.
 //
-// This is the avatar door's shape (byte-validated, REST-only, pen-committed),
-// pointed at HOME/ and carrying one deliberate difference: the upload DECLARES.
-// That is not the parser inferring — the resident performed an explicit act
-// naming an explicit file. Refusing to write the line they just earned would
-// re-create the original silence one step later.
-
-export async function updateHomeImage(args, key, db, clone) {
+// POS-219 (Keemin, 2026-09-27/28): a house's picture is kept on the HOUSEHOLD's
+// record, one per resident, as a media-door URL, and the map and the site both
+// read it there. So this door keeps its byte checks (the home door's own set:
+// no SVG, no GIF) and then does the one act: the bytes are minted through the
+// SAME `uploadMedia` every image in the town goes through, and the URL it hands
+// back is kept by `setHomePicture` (src/home-picture.mjs). It no longer writes
+// HOME/ (Wright, 2026-09-28: HOME/ keeps what is there as history), and it no
+// longer needs a HOME.md: the picture hangs on the household's record, not on a
+// wall in the repo. A `name` is accepted and ignored — the media door names an
+// object by its bytes.
+//
+// `deps` is injectable so a test can prove the act without a bucket or a store.
+async function homeImageWrite(args, key, db, clone, odb, { upload = uploadMedia, keep = setHomePicture } = {}) {
   const { handle } = args;
   scope(handle, key);
   const bytes = decodeImage(args.image, MAX_IMAGE, "home image");
   const { ext, mediaType } = imageFormat(bytes);
   await decodeWhole(bytes, ext, "home image"); // POS-150 — the middle, not just the edges
   void args.type; // caller-declared MIME is courtesy only, never authoritative
+  void args.name; // the media door names an object by its bytes
 
-  // The resident names their own art. Default is honest and boring rather than
-  // clever: their handle, so two uploads from one resident don't silently
-  // overwrite each other under a fixed name the way avatars deliberately do.
-  const raw = typeof args.name === "string" && args.name.trim() ? args.name.trim() : `${handle}-home.${ext}`;
-  if (raw.includes("/") || raw.includes("\\") || raw.startsWith("."))
-    throw bounce(422, `"${raw.slice(0, 60)}" is not a plain filename`, "name just the file — no folders, no leading dot");
-  if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(raw))
-    throw bounce(422, `"${raw.slice(0, 60)}" has characters the map can't carry`, "use letters, digits, spaces, dots, dashes and underscores");
-  const stem = raw.replace(RASTER, "");
-  const declared = /\.[A-Za-z0-9]+$/.test(raw) ? raw.slice(raw.lastIndexOf(".") + 1).toLowerCase() : null;
-  // The bytes decide the extension, never the caller's spelling of it.
-  if (declared && HOME_IMAGE_EXT[declared] !== ext)
-    throw bounce(422, `that file's bytes are a ${ext.toUpperCase()}, not a ${declared.toUpperCase()}`,
-      `name it "${stem}.${ext}" — the office reads the bytes, never the label`);
-  const name = `${stem}.${ext}`;
-
-  pullIfPush(clone);
-  const homeDir = join(clone, "WHITE_PAGES", handle, "HOME");
-  const mdRel = ["WHITE_PAGES", handle, "HOME", "HOME.md"];
-  const mdFile = join(clone, ...mdRel);
-  if (!existsSync(mdFile))
-    throw bounce(404, "your home has no description yet",
-      `found your home first with PATCH /home/${handle} and its prose — then the picture has a wall to hang on`);
-  const { fm, body } = splitFrontmatter(readFileSync(mdFile, "utf8"));
-  if (fm == null)
-    throw bounce(422, "that HOME.md has no frontmatter to preserve", "repair the frontmatter fence by PR, then try the image door again");
-
-  mkdirSync(homeDir, { recursive: true });
-  const imageFile = join(homeDir, name);
-  const replacing = existsSync(imageFile);
-  writeFileSync(imageFile, bytes);
-
-  // Declare it: keep every other name already declared, add this one once.
-  const prior = homeImageNames(clone, handle);
-  const already = /^assets:\s*\[(.*)\]\s*$/m.exec(fm);
-  const kept = already
-    ? (already[1].match(/"[^"]*"|'[^']*'/g) ?? []).map((s) => s.slice(1, -1)).filter((n) => prior.includes(n) && n !== name)
-    : [];
-  const names = [...kept, name];
-  writeFileSync(mdFile, `${patchAssetsLine(fm, names)}\n\n${body.trim()}\n`);
-
-  const commit = penCommit(clone, [imageFile, mdFile],
-    `${handle}: home image ${replacing ? "replaced" : "hung"} (via postmark-office, key household ${key.household})`);
+  const minted = await upload({ by: handle }, key, odb, { bytes, clone });
+  const kept = await keep({ handle, url: minted.url }, key, { clone });
   return {
     updated: handle,
-    file: `WHITE_PAGES/${handle}/HOME/${name}`,
-    image: name,
+    picture: kept.picture,
+    household: kept.household,
     media_type: mediaType,
-    assets: names,
-    replaced: replacing,
-    commit,
+    already: minted.already === true,
+    registry: kept.registry,
+    commit: kept.commit,
     pushed: process.env.TOWN_PUSH === "1",
   };
 }
@@ -1304,8 +1396,47 @@ export async function updateHomeImage(args, key, db, clone) {
 // not among them — so wrapping them would invent a sixth and seventh class of
 // row that no drain has a replay for. Whether the image doors should log is a
 // real question and it is wave 2's to answer, not this repair's.
-export const updateAddressBody = paperDoor("address-body", updateAddressBodyUnlogged);
-export const updateAddressFields = paperDoor("address-fields", updateAddressFieldsUnlogged);
-export const updateHome = paperDoor("home", updateHomeUnlogged);
-export const updateProfile = paperDoor("profile", updateProfileUnlogged);
-export const updateWindow = paperDoor("window", updateWindowUnlogged);
+//
+// AND EVERY DOOR IS WHOLE OR NOTHING (POS-296). `whole` runs the write inside
+// `penTransaction`: a bounce after a file was written, or a push that cannot
+// land, leaves the clone exactly as it was — no half-written card, no local
+// commit for the next write to carry. It sits INSIDE paperDoor, so a refused
+// edit is put back before paperDoor decides whether a row is written.
+const whole = (impl) => (args, key, db, clone, ...rest) => penTransaction(clone, () => impl(args, key, db, clone, ...rest));
+
+export const updateAddressBody = paperDoor("address-body", whole(updateAddressBodyUnlogged));
+export const updateAddressFields = paperDoor("address-fields", whole(updateAddressFieldsUnlogged));
+export const updateHome = paperDoor("home", whole(updateHomeUnlogged));
+export const updateProfile = paperDoor("profile", whole(updateProfileUnlogged));
+export const updateWindow = paperDoor("window", whole(updateWindowUnlogged));
+// The image doors keep their own names (paper-seam P8b tells them from the
+// paper doors by name), and are whole the same way.
+export function updateProfileAvatar(args, key, db, clone) {
+  return penTransaction(clone, () => profileAvatarWrite(args, key, db, clone));
+}
+export function updateHomeImage(args, key, db, clone, odb = null, deps = {}) {
+  return penTransaction(clone, () => homeImageWrite(args, key, db, clone, odb, deps));
+}
+
+// ── THE HOME ACT, WITH THE HOUSE'S PICTURE (POS-219) ────────────────────────
+//
+// `household { do: "home", args: { image } }` and the flat `update_home` take
+// the house's picture as a media-door URL the resident minted with
+// `upload_media`. The picture is not paper — it is kept on the household's
+// record by `setHomePicture`, the one writer — so it is split off here and the
+// paper door sees only its own fields, exactly as before. A call carrying
+// nothing but `image` writes no paper at all. The URL is checked before any
+// paper is written, so a bad picture refuses the whole call rather than
+// landing the prose and dropping the picture.
+export async function updateHomeAct(args, key, db, clone, odb = null, { keep = setHomePicture } = {}) {
+  if (!Object.prototype.hasOwnProperty.call(args ?? {}, "image")) return updateHome(args, key, db, clone, odb);
+  const { image, ...paper } = args;
+  scope(args.handle, key);
+  if (!mediaUrlOk(image))
+    throw bounce(422, "a house's picture is a media-door URL",
+      "upload the image first (upload_media) and pass the url it hands back as image — nothing was written");
+  const writesPaper = Object.keys(paper).some((k) => k !== "handle");
+  const home = writesPaper ? updateHome(paper, key, db, clone, odb) : null;
+  const picture = await keep({ handle: args.handle, url: image }, key, { clone });
+  return home ? { ...home, picture } : { updated: args.handle, picture };
+}

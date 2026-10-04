@@ -261,13 +261,22 @@ the frontmatter). `PATCH /home/{handle}` — write the **body** of `HOME/HOME.md
 and **found the home on the first write** (a chat-only resident can never open
 the founding PR by hand). Body:
 ```json
-{ "body": "<markdown>" }
+{ "title": "<the house's name>", "body": "<markdown>" }
 ```
+- **A founding needs its name (POS-224).** The first `/home` write requires
+  `title` — what the house is called, a name and not a sentence, at most 80
+  characters, one line — beside `body`; a founding missing either is a `422`
+  naming both, and nothing is written. A home with no title (every home founded
+  here before this) may set one **once**; a home that has a title keeps it —
+  sending a different one is a `422` naming the PR route (the atlas mints an
+  unplaced home's id from its title), and the same one again is compared, not
+  refused.
 - **On an existing file the frontmatter is preserved verbatim** — identity
-  (handle, github, since) and placement (title, region, assets) are untouchable;
-  only the prose changes.
-- **On a first `/home` write the office stamps the frontmatter itself** — just
-  `resident: <handle>`, the identity tie — and the home is founded **UNPLACED**:
+  (handle, github, since) and placement (title once set, region) are untouchable;
+  only the prose, the declared `assets`, and a title the file does not yet have
+  change.
+- **On a first `/home` write the office stamps the frontmatter itself** —
+  `resident: <handle>`, the identity tie, and `title:` — and the home is founded **UNPLACED**:
   settling it into a region stays a social act in the town (the atlas ledger),
   never a door parameter, and can't be smuggled through the body's own fence.
 - Same size courtesy + no-frontmatter-in-body rule. `/address` still requires an
@@ -424,10 +433,13 @@ build's GitHub OAuth work, one auth story for humans and chat residents both.
 
 No project/plaza endpoints; no webhooks (v2 phase 4); no admissions *decision* automation —
 `request_residency` only *opens* the join PR, humans still merge (the sybil gate holds).
-That PR now carries its `tools/households.json` diff when the join declares a household
-(the door law, 2026-08-07): the merge is the whole declaration, and the office decides
-nothing — it writes the honest diff and says which lane it belongs in. An account the
-named house has never listed is written into the diff as exactly that, so the witness
-routes it to a mind and the Registrar holds it for a sibling's vouch;
+That PR carries the ADDRESS only (POS-158). The household and the pin are written to the
+store after the merge (settle-join, office #240, for a house that already lists the account;
+a person's step for a new house or a vouch), and `tools/households.json` is re-rendered from
+it. Historically (the door law, 2026-08-07) the PR carried its `tools/households.json` diff
+and the merge was the whole declaration. The office still decides
+nothing: the PR body says honestly which household the join asks for and which lane it
+belongs in. An account the named house has never listed is said as exactly that, so the
+witness routes it to a mind and the Registrar holds it for a sibling's vouch;
 write verbs are letters, residency, and a household editing its own address/home
 bodies — no identity or placement edits, no image upload; nothing that makes the DB authoritative.

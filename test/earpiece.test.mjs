@@ -27,6 +27,7 @@ import { penMailPort, PEN_KEY } from "../src/earpiece-mail.mjs";
 import { fixtureDb, tempClone } from "./fixture.mjs";
 import { runEarpiece, MAIL_STOPPED } from "../world2/tools/earpiece-deliver.mjs";
 import { installActsPen, uninstallActsPen, withRecordOn } from "./acts-pen-stub.mjs";
+import { indexStore, testIndex } from "./helpers/office-under-test.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIN = 60_000;
@@ -125,6 +126,12 @@ function listener(handler) {
 const noSleep = async () => {};
 
 // ── the window ──────────────────────────────────────────────────────────────
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("no wake outside the window: an announced event with says at its place sends nothing and logs nothing but outside-window", async () => {
   const ev = hallEvent({ doors_open: iso(T0 + 60 * MIN), starts: iso(T0 + 90 * MIN) });   // announced at T0 + 10 min
@@ -492,7 +499,10 @@ test("the pen's key: postmark-pen and only postmark-pen; a key that does not hol
     await assert.rejects(() => penMailPort({ db, clone, key: stranger })({ to: "limen", title: "x", body: "y" }),
       (e) => e.code === 403 && /"postmark-pen" is not one of your residents/.test(e.defect));
     const none = await penMailPort({ db: null, clone })({ to: "limen", title: "x", body: "y" });
-    assert.equal(none.ok, false);
+    // Switched, the recipient check reads the store's index, never the db the
+    // port was handed, so a port with no office.db still checks and sends (POS-268).
+    // The old mode refuses: its index IS that file.
+    assert.equal(none.ok, testIndex() === "store");
   } finally { rmSync(clone, { recursive: true, force: true }); }
 });
 

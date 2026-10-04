@@ -28,6 +28,8 @@
 // two things that can drift — the same argument `tools/mail-state.mjs` itself
 // is the repair for.
 
+import { probeOf } from "./index-probe.mjs";
+
 /** The value `thread` takes. */
 export const THREAD_IS_THE_LETTER_ID =
   "thread = the `id` of the letter you are answering, exactly as your inbox lists it";
@@ -100,11 +102,12 @@ const ANSWERABLE = new Set(["new_inbound", "they_spoke_again"]);
  * promise, and the ordinal it publishes is.
  */
 export function unansweredFrom(db, { handle, sender } = {}) {
-  if (!db || !handle || !sender) return [];
+  const ix = probeOf(db); // office.db's row, or the one the send read from the store (POS-268)
+  if (!ix || !handle || !sender) return [];
   let law = null;
   try {
-    const row = db.prepare("SELECT json FROM mail_state WHERE handle = ?").get(handle);
-    law = row ? JSON.parse(row.json) : null;
+    const json = ix.mailStateJson(handle);
+    law = json != null ? JSON.parse(json) : null;
   } catch { return []; } // an index built before this seam has no mail_state — say nothing rather than guess
   const rows = Array.isArray(law?.conversations) ? law.conversations : [];
   return rows

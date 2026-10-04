@@ -36,7 +36,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname, delimiter } from "node:path";
@@ -67,6 +67,10 @@ import {
   ALARM_OUTCOME,
   ALARM_CUSTODY,
   ALARM_TREE,
+  ALARM_UNBLESSED,
+  HOUR,
+  classifyBlessing,
+  readBlessing,
   scanCustody,
   judgeOutcome,
   classifyTree,
@@ -245,6 +249,27 @@ function healthy(m = manifest()) {
     };
   }
 
+  // §2d: every clone clean by construction — readable, nothing uncommitted, and
+  // level with its own upstream ref.
+  const clones = {};
+  for (const row of m.clones ?? []) {
+    clones[row.id] = {
+      path: row.path, exists: true, readable: true, dirty: [], head: "c0ffee0000",
+      upstream: "origin/main", local_ahead: 0, local_behind: 0,
+    };
+  }
+
+  // §2e: every blessing fresh by construction — the newest tag cut two hours
+  // before T0, and the clone fetched five minutes before it.
+  const blessings = {};
+  for (const row of m.blessings ?? []) {
+    blessings[row.id] = {
+      path: row.path, exists: true, readable: true, tags: 88,
+      newest: { tag: "settlement/S88", n: 88, tagged_at: new Date(T0 - 2 * HOUR).toISOString() },
+      fetched_at: new Date(T0 - 5 * MINUTE).toISOString(),
+    };
+  }
+
   // §2c: every tree row healthy by construction — each unit running the tree its
   // row says it must, and the deployed stamp readable. Generated from the shipped
   // manifest for the reason everything else here is: a tree row somebody adds
@@ -281,7 +306,7 @@ function healthy(m = manifest()) {
     }
   }
 
-  return { schema: 1, collected_at: new Date(T0).toISOString(), host: "meepo-ec2", discovered, units, services, files, custody, tree_sources, tree_realpath, releases, file_copies };
+  return { schema: 1, collected_at: new Date(T0).toISOString(), host: "meepo-ec2", discovered, units, services, files, custody, clones, blessings, tree_sources, tree_realpath, releases, file_copies };
 }
 
 // Deep-equality guard. A mutation that changes nothing is a falsifier that never
@@ -319,8 +344,10 @@ test("THE CONTROL: the planted healthy state is entirely green and exits 0", () 
   // a verdict rather than an omission. Whether the SHIPPED manifest carries a
   // parked row today is a fact about the town, not about this checker, so the
   // PARKED path itself is proven below over a row this file plants.
-  assert.equal(result.rows.length, m.units.length + (m.custody ?? []).length + (m.trees?.rows ?? []).length);
+  assert.equal(result.rows.length, m.units.length + (m.custody ?? []).length + (m.clones ?? []).length + (m.blessings ?? []).length + (m.trees?.rows ?? []).length);
   assert.ok((m.custody ?? []).length > 0, "the manifest declares no custody row — §2b is not being run at all");
+  assert.ok((m.clones ?? []).length > 0, "the manifest declares no clone row — §2d is not being run at all");
+  assert.ok((m.blessings ?? []).length > 0, "the manifest declares no blessing row — §2e is not being run at all");
   assert.ok((m.trees?.rows ?? []).length > 0, "the manifest declares no tree row — §2c is not being run at all");
   for (const p of m.units.filter((u) => u.stage === "parked")) {
     assert.equal(rowFor(result, p.unit).verdict, PARKED);
@@ -2005,4 +2032,126 @@ test("THE FLIP: with the tree comparison removed, the 2026-09-10 board reads CLE
   assert.equal(without.exitCode, 0);
   assert.equal(rowFor(without, "postmark-world2-clearing.timer").verdict, OK);
   assert.match(formatLines(without).at(-1), /^roll-call clean/);
+});
+
+// ── §2e THE KEEPER'S NEWEST BLESSING (smalls-0930 D) ────────────────────────
+//
+// 2026-09-27 → 09-29: the box published three crossings, the keeper blessed
+// none, and nothing rang. The row alarms when the newest settlement/S<n> tag is
+// older than 14 h, naming the tag and its age.
+
+const BLESS = "blessing:world-blessing";
+
+test("§2e STALE BLESS: the newest tag 16 h old is ALARM-unblessed, naming the tag, its age and the allowance", () => {
+  const m = manifest();
+  const snap = mutate(healthy(m), (s) => { s.blessings["world-blessing"].newest.tagged_at = new Date(T0 - 16 * HOUR).toISOString(); });
+  const result = rollcall(m, snap, T0);
+  const r = rowFor(result, BLESS);
+  assert.equal(r.verdict, ALARM_UNBLESSED);
+  assert.match(r.reason, /settlement\/S88/);
+  assert.match(r.reason, /16\.0h ago/);
+  assert.match(r.reason, /allowance is 14 h/);
+  assert.equal(result.exitCode, 1, "an unblessed world is an ALARM, and the roll-call exits 1");
+  assert.equal(result.counts.ALARM, 1, "and it is the only row that moved");
+});
+
+test("§2e THE BOUNDARY: 13 h 59 min is OK and 14 h 01 min is ALARM — the allowance is 14 hours, not a round-number guess", () => {
+  const m = manifest();
+  const row = m.blessings[0];
+  const at = (mins) => mutate(healthy(m), (s) => { s.blessings[row.id].newest.tagged_at = new Date(T0 - mins * MINUTE).toISOString(); });
+  assert.equal(classifyBlessing(row, at(14 * 60 - 1), T0).verdict, OK);
+  assert.equal(classifyBlessing(row, at(14 * 60 + 1), T0).verdict, ALARM_UNBLESSED);
+  assert.equal(row.max_age_hours, 14);
+});
+
+test("§2e A STALE FETCH IS NAMED: an old tag on a clone that has not fetched in hours says the age may be the fetch's", () => {
+  const m = manifest();
+  const snap = mutate(healthy(m), (s) => {
+    s.blessings["world-blessing"].newest.tagged_at = new Date(T0 - 20 * HOUR).toISOString();
+    s.blessings["world-blessing"].fetched_at = new Date(T0 - 6 * HOUR).toISOString();
+  });
+  const r = rowFor(rollcall(m, snap, T0), BLESS);
+  assert.equal(r.verdict, ALARM_UNBLESSED);
+  assert.match(r.reason, /last fetched 6\.0h ago, so part of this age may be the fetch's/);
+});
+
+test("§2e ABSENCE IS NOT FRESHNESS: no clone, an unreadable clone, and a clone with no settlement tag each alarm by name", () => {
+  const m = manifest();
+  const cases = [
+    [(s) => { s.blessings["world-blessing"] = { exists: false, path: "/srv/postmark-office/world-clone" }; }, /is not on the box/],
+    [(s) => { s.blessings["world-blessing"] = { exists: true, readable: false, path: "x", error: "dubious ownership" }; }, /could not read the tags .*dubious ownership/],
+    [(s) => { s.blessings["world-blessing"].newest = null; }, /carries no settlement\/S<n> tag at all/],
+  ];
+  for (const [fn, want] of cases) {
+    const r = rowFor(rollcall(m, mutate(healthy(m), fn), T0), BLESS);
+    assert.equal(r.verdict, ALARM_UNBLESSED);
+    assert.match(r.reason, want);
+  }
+});
+
+test("§2e THE COLLECTOR, on a real repository: the newest is the HIGHEST NUMBER (S10 over S9), and its age is the tag's own date", () => {
+  const dir = mkdtempSync(join(tmpdir(), "rollcall-bless-"));
+  try {
+    const git = (args, env = {}) => spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", env: { ...process.env, ...env } });
+    git(["init", "-q"]);
+    git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "c"]);
+    const tag = (name, iso) => git(["-c", "user.name=keeper", "-c", "user.email=k@k", "tag", "-a", name, "-m", name], { GIT_COMMITTER_DATE: iso });
+    tag("settlement/S10", "2026-09-29T18:30:00Z");
+    tag("settlement/S9", "2026-09-30T01:00:00Z");     // a later DATE on a lower number
+    tag("release/2026-w41", "2026-09-30T02:00:00Z");  // not a settlement
+    const b = readBlessing(dir);
+    assert.equal(b.readable, true, JSON.stringify(b));
+    assert.equal(b.newest.tag, "settlement/S10", "S10 sorts before S9 as a string; the newest blessing is the highest number");
+    assert.equal(b.newest.tagged_at, "2026-09-29T18:30:00.000Z", "the age is the tag's own tagger date");
+    assert.equal(b.tags, 2);
+    assert.equal(b.fetched_at, null, "a clone that has never fetched says so");
+    assert.equal(readBlessing(join(dir, "nope")).exists, false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("§2e THE ROW IS STRICT: a blessing row with no allowance or no why is refused at load", () => {
+  for (const [drop, want] of [["max_age_hours", /names no max_age_hours/], ["why", /does not say what goes wrong/], ["activation_owner", /names no activation_owner/]]) {
+    const m = JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));
+    delete m.blessings[0][drop];
+    const p = join(mkdtempSync(join(tmpdir(), "rollcall-bless-m-")), "m.json");
+    writeFileSync(p, JSON.stringify(m));
+    assert.throws(() => loadManifest(p), want);
+  }
+});
+
+// ── one household, one mint key (Darko, 2026-10-04) ─────────────────────────
+//
+// deploy/office-keep.sh appends the town's tools/household-keys.mjs --json line
+// each tick. The SHIPPED row is judged here, against lines in the exact shape
+// that step writes (exercised on the town at d95e81c1c: clean, tool absent, and
+// a ledger with one 07fa74d6a line dropped).
+//
+// THE CAN-FAIL FLIP: drop the outcome block from the rehydrate row; the split
+// and unchecked tests red, the clean one stays green as the control.
+const HK_ROW = manifest().units.find((u) => u.unit === "postmark-office-rehydrate.timer");
+const hkLog = (...lines) => ({ files: { [HK_ROW.outcome?.history_path]: { exists: true, text: lines.map((l) => JSON.stringify(l)).join("\n") + "\n" } } });
+const HK_CLEAN = { at: "2026-10-04T04:44:20Z", split_households: [], shared_keys: [], detail: [], checked: true };
+
+test("household keys: a split house on the latest line alarms, naming the house", () => {
+  const said = judgeOutcome(HK_ROW, hkLog(HK_CLEAN, { at: "2026-10-04T05:00:00Z", split_households: ["house-of-many-doors"], shared_keys: [],
+    detail: ["house-of-many-doors mints under 2 keys: gh:334016343 (seasiren) · hh:house-of-many-doors (kinofire, wayward-archivist, wildcat)"], checked: true }));
+  assert.ok(said, "a house minting under two keys must not read green");
+  assert.match(said, /house-of-many-doors/);
+  assert.match(said, /two daily caps/, "the row's own list_means prints");
+});
+
+test("household keys: a key across two houses alarms too", () => {
+  const said = judgeOutcome(HK_ROW, hkLog({ ...HK_CLEAN, shared_keys: ["gh:9"] }));
+  assert.match(said ?? "", /gh:9/);
+});
+
+test("household keys: a clean line is silent", () => {
+  assert.equal(judgeOutcome(HK_ROW, hkLog(HK_CLEAN)), null);
+});
+
+test("household keys: a line that says the check did not run alarms, and an empty log alarms", () => {
+  const said = judgeOutcome(HK_ROW, hkLog({ at: "x", checked: false, split_households: [], shared_keys: [], error: "Cannot find module" }));
+  assert.match(said ?? "", /checked/);
+  assert.match(said ?? "", /older than d95e81c1c/);
+  assert.match(judgeOutcome(HK_ROW, { files: {} }) ?? "", /empty or unreadable/);
 });

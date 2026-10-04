@@ -43,7 +43,7 @@ import { openOauthDb } from "../src/oauth.mjs";
 import { ensureTownJournal, TOWN_DRAIN_CURSOR } from "../src/town-journal.mjs";
 import { logPaperAct, PAPER_ACTS, PAPER_ACT_NAMES, SETTLES_AT, hotTenseBlock } from "../src/town-updates.mjs";
 import { resident, home, windowRead, residentPage } from "../src/queries.mjs";
-import { TENSE, LADDER_NOTE } from "../src/paper-fresh.mjs";
+import { TENSE, LADDER_NOTE, freshFor } from "../src/paper-fresh.mjs";
 import {
   updateAddressBody, updateAddressFields, updateHome, updateProfile, updateWindow,
 } from "../src/edit.mjs";
@@ -92,9 +92,9 @@ function odbFile() {
 }
 
 const KEY = { household: "keemin", handles: new Set(["wright"]), ghId: "42", ghLogin: "keeminlee" };
-const flagOn = (fn) => {
+const flagOn = async (fn) => {
   process.env.TOWN_SINGLE_LOG = "1";
-  try { return fn(); } finally { delete process.env.TOWN_SINGLE_LOG; }
+  try { return await fn(); } finally { delete process.env.TOWN_SINGLE_LOG; }
 };
 
 const quarantine = (clone, handle, reason) =>
@@ -105,7 +105,7 @@ const quarantine = (clone, handle, reason) =>
 // F0 · THE RUNG THAT FIRES TODAY: a pen edit the index has not seen is WRITTEN
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("F0 · WRITTEN: the pen's edit reaches the PUBLIC card before the next rehydrate, stamped", () => {
+test("F0 · WRITTEN: the pen's edit reaches the PUBLIC card before the next rehydrate, stamped", async () => {
   const db = fixtureDb();
   const clone = townClone();
   try {
@@ -116,7 +116,7 @@ test("F0 · WRITTEN: the pen's edit reaches the PUBLIC card before the next rehy
 
     // The pen writes the record. No log, no flag, no crossing — this is exactly
     // what a resident's edit does on the live box today.
-    const out = updateAddressBody({ handle: "wright", body: "the trueing house, repainted" }, KEY, db, clone);
+    const out = await updateAddressBody({ handle: "wright", body: "the trueing house, repainted" }, KEY, db, clone);
     assert.ok(out.commit, "the pen committed to the town record");
 
     const after = resident(db, "wright", { clone });
@@ -137,11 +137,11 @@ test("F0 · WRITTEN: the pen's edit reaches the PUBLIC card before the next rehy
   } finally { db.close(); }
 });
 
-test("F0b · WRITTEN reaches home and window too, and each names its own act", () => {
+test("F0b · WRITTEN reaches home and window too, and each names its own act", async () => {
   const db = fixtureDb();
   const clone = townClone();
   try {
-    updateHome({ handle: "wright", body: "the roof is off this week." }, KEY, db, clone);
+    await updateHome({ handle: "wright", title: "the Trueing-House", body: "the roof is off this week." }, KEY, db, clone);
     const h = home(db, "wright", { clone });
     assert.equal(h.description, "the roof is off this week.");
     assert.equal(h.freshness.fields.home.tense, TENSE.written);
@@ -149,7 +149,7 @@ test("F0b · WRITTEN reaches home and window too, and each names its own act", (
     assert.equal(h.region, "the-terrace",
       "placement is the atlas ledger's and is never composed — no door can move it");
 
-    updateWindow({ handle: "wright", html: '<!doctype html><html><body><script type="application/json" id="window-state">{"lamp":"lit"}</script></body></html>' }, KEY, db, clone);
+    await updateWindow({ handle: "wright", html: '<!doctype html><html><body><script type="application/json" id="window-state">{"lamp":"lit"}</script></body></html>' }, KEY, db, clone);
     const w = windowRead(db, "wright", { clone });
     assert.deepEqual(w.window, { lamp: "lit" });
     assert.equal(w.freshness.fields.window.tense, TENSE.written);
@@ -162,20 +162,20 @@ test("F0b · WRITTEN reaches home and window too, and each names its own act", (
 // F1 · PENDING: an un-drained row is PUBLIC, and it says it is pending
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("F1 · PENDING is public: a stranger's read of the card carries the tense and the crossing", () => {
+test("F1 · PENDING is public: a stranger's read of the card carries the tense and the crossing", async () => {
   const db = fixtureDb();
   const clone = townClone();
   const odb = odbFile();
   try {
-    flagOn(() => {
-      const seq = logPaperAct(odb, { act: "address-body", handle: "wright", household: "keemin", args: { body: "x" }, key: KEY });
+    await flagOn(async () => {
+      const seq = await logPaperAct(odb, { act: "address-body", handle: "wright", household: "keemin", args: { body: "x" }, key: KEY });
       assert.ok(seq, "the row is in the town log");
-      updateAddressBody({ handle: "wright", body: "written at the door, not yet settled" }, KEY, db, clone);
+      await updateAddressBody({ handle: "wright", body: "written at the door, not yet settled" }, KEY, db, clone);
 
       // NO KEY AT ALL. This is the half the founder ruled in: the compose is
       // the town's, not the caller's. `hotPaperActs` is the caller-scoped one
       // and is untouched (F5).
-      const card = resident(db, "wright", { clone, odb });
+      const card = resident(db, "wright", (await freshFor("wright", { clone, odb })));
       assert.equal(card.address.body, "written at the door, not yet settled");
       const stamp = card.freshness.fields["address.body"];
       assert.equal(stamp.tense, TENSE.pending, "an un-drained row outranks the written file");
@@ -189,21 +189,21 @@ test("F1 · PENDING is public: a stranger's read of the card carries the tense a
   } finally { db.close(); odb.close(); }
 });
 
-test("F1b · POST-DRAIN the same field steps DOWN the ladder — pending, then written, then settled", () => {
+test("F1b · POST-DRAIN the same field steps DOWN the ladder — pending, then written, then settled", async () => {
   const db = fixtureDb();
   const clone = townClone();
   const odb = odbFile();
   try {
-    flagOn(() => {
-      const seq = logPaperAct(odb, { act: "profile", handle: "wright", household: "keemin", args: { bio: "b" }, key: KEY });
-      updateProfile({ handle: "wright", bio: "a house that shows its bones" }, KEY, db, clone);
-      assert.equal(resident(db, "wright", { clone, odb }).freshness.fields.profile.tense, TENSE.pending);
+    await flagOn(async () => {
+      const seq = await logPaperAct(odb, { act: "profile", handle: "wright", household: "keemin", args: { bio: "b" }, key: KEY });
+      await updateProfile({ handle: "wright", bio: "a house that shows its bones" }, KEY, db, clone);
+      assert.equal(resident(db, "wright", (await freshFor("wright", { clone, odb }))).freshness.fields.profile.tense, TENSE.pending);
 
       // The drain advances its cursor past the row. The record is unchanged —
       // a paper replay writes the same bytes — so the field is now `written`:
       // in the record, not yet in the index.
       odb.prepare("INSERT OR REPLACE INTO meta VALUES (?, ?)").run(TOWN_DRAIN_CURSOR, String(seq));
-      const drained = resident(db, "wright", { clone, odb });
+      const drained = resident(db, "wright", (await freshFor("wright", { clone, odb })));
       assert.equal(drained.freshness.fields.profile.tense, TENSE.written);
       assert.equal(drained.freshness.settles_at, undefined);
       assert.deepEqual(drained.profile, { bio: "a house that shows its bones" },
@@ -216,7 +216,7 @@ test("F1b · POST-DRAIN the same field steps DOWN the ladder — pending, then w
     db.prepare("UPDATE residents SET json = ? WHERE handle = ?").run(
       JSON.stringify({ ...JSON.parse(db.prepare("SELECT json FROM residents WHERE handle = ?").get("wright").json),
         profile: { bio: "a house that shows its bones" } }), "wright");
-    const settled = resident(db, "wright", { clone, odb });
+    const settled = resident(db, "wright", (await freshFor("wright", { clone, odb })));
     assert.equal(settled.freshness.fields.profile.tense, TENSE.settled);
     assert.equal(settled.freshness.tense, TENSE.settled, "the whole read is back on the floor");
   } finally { db.close(); odb.close(); }
@@ -226,20 +226,20 @@ test("F1b · POST-DRAIN the same field steps DOWN the ladder — pending, then w
 // F2 · THE STANDING GATE: a suspended handle gets no overlay — and still reads
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("F2 · a SUSPENDED handle's pending row does not compose, and their record still reads", () => {
+test("F2 · a SUSPENDED handle's pending row does not compose, and their record still reads", async () => {
   const db = fixtureDb();
   const clone = townClone();
   const odb = odbFile();
   try {
-    flagOn(() => {
-      logPaperAct(odb, { act: "address-body", handle: "wright", household: "keemin", args: { body: "x" }, key: KEY });
-      updateAddressBody({ handle: "wright", body: "a claim the audit has not seen" }, KEY, db, clone);
-      assert.equal(resident(db, "wright", { clone, odb }).address.body, "a claim the audit has not seen",
+    await flagOn(async () => {
+      await logPaperAct(odb, { act: "address-body", handle: "wright", household: "keemin", args: { body: "x" }, key: KEY });
+      await updateAddressBody({ handle: "wright", body: "a claim the audit has not seen" }, KEY, db, clone);
+      assert.equal(resident(db, "wright", (await freshFor("wright", { clone, odb }))).address.body, "a claim the audit has not seen",
         "…which composes freely while the resident is in good standing");
 
       quarantine(clone, "wright", "sybil suspicion, pending audit");
 
-      const card = resident(db, "wright", { clone, odb });
+      const card = resident(db, "wright", (await freshFor("wright", { clone, odb })));
       assert.equal(card.address.body, "# wright",
         "the overlay is withheld: the card answers from the settled index");
       for (const [name, stamp] of Object.entries(card.freshness.fields))
@@ -253,9 +253,9 @@ test("F2 · a SUSPENDED handle's pending row does not compose, and their record 
         "their card, their record and the sha it is as-of all still answer");
       // …and the gate is one resident wide. limen is in good standing, so
       // limen's own pen still reaches limen's own card while wright's is held.
-      updateAddressBody({ handle: "limen", body: "still at the lamplight's edge" },
+      await updateAddressBody({ handle: "limen", body: "still at the lamplight's edge" },
         { household: "limen-house", handles: new Set(["limen"]) }, db, clone);
-      const neighbour = resident(db, "limen", { clone, odb });
+      const neighbour = resident(db, "limen", (await freshFor("limen", { clone, odb })));
       assert.equal(neighbour.address.body, "still at the lamplight's edge");
       assert.equal(neighbour.freshness.fields["address.body"].tense, TENSE.written,
         "nobody else is gated by one resident's standing");
@@ -267,22 +267,22 @@ test("F2 · a SUSPENDED handle's pending row does not compose, and their record 
 // F3 · THE WINDOW FLOWS: no special case, no held tense (the founder, 08-25)
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("F3 · a pending window body SERVES — the pane is not held for a crossing", () => {
+test("F3 · a pending window body SERVES — the pane is not held for a crossing", async () => {
   const db = fixtureDb();
   const clone = townClone();
   const odb = odbFile();
   try {
-    flagOn(() => {
-      const seq = logPaperAct(odb, { act: "window", handle: "wright", household: "keemin", args: { html: "h" }, key: KEY });
-      updateWindow({ handle: "wright", html: '<!doctype html><html><body>hello<script type="application/json" id="window-state">{"note":"back at six"}</script></body></html>' }, KEY, db, clone);
+    await flagOn(async () => {
+      const seq = await logPaperAct(odb, { act: "window", handle: "wright", household: "keemin", args: { html: "h" }, key: KEY });
+      await updateWindow({ handle: "wright", html: '<!doctype html><html><body>hello<script type="application/json" id="window-state">{"note":"back at six"}</script></body></html>' }, KEY, db, clone);
 
-      const w = windowRead(db, "wright", { clone, odb });
+      const w = windowRead(db, "wright", (await freshFor("wright", { clone, odb })));
       assert.deepEqual(w.window, { note: "back at six" }, "the pane's state serves at once");
       assert.equal(w.freshness.fields.window.tense, TENSE.pending);
       assert.equal(w.freshness.fields.window.seq, seq);
 
       // …and through the card, which is where a stranger meets it.
-      const card = resident(db, "wright", { clone, odb });
+      const card = resident(db, "wright", (await freshFor("wright", { clone, odb })));
       assert.deepEqual(card.window_state, { note: "back at six" });
       assert.equal(card.freshness.fields.window_state.tense, TENSE.pending);
     });
@@ -293,12 +293,12 @@ test("F3 · a pending window body SERVES — the pane is not held for a crossing
 // F4 · THE OWNER'S DISCLOSURE IS UNCHANGED
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("F4 · `your_pending_edits` is what it was: DISCLOSED to the owner, key-scoped", () => {
+test("F4 · `your_pending_edits` is what it was: DISCLOSED to the owner, key-scoped", async () => {
   const odb = odbFile();
   try {
-    flagOn(() => {
-      const seq = logPaperAct(odb, { act: "window", handle: "wright", household: "keemin", args: { html: "h" }, key: KEY });
-      const mine = hotTenseBlock(odb, KEY, { handle: "wright" });
+    await flagOn(async () => {
+      const seq = await logPaperAct(odb, { act: "window", handle: "wright", household: "keemin", args: { html: "h" }, key: KEY });
+      const mine = await hotTenseBlock(odb, KEY, { handle: "wright" });
       assert.equal(mine.pending.length, 1);
       assert.equal(mine.pending[0].act, "window");
       assert.equal(mine.pending[0].seq, seq);
@@ -308,8 +308,8 @@ test("F4 · `your_pending_edits` is what it was: DISCLOSED to the owner, key-sco
       // still key-scoped: a stranger's key sees nothing here, whatever the
       // public compose now shows them elsewhere.
       const stranger = { household: "elsewhere", handles: new Set(["limen"]) };
-      assert.equal(hotTenseBlock(odb, stranger, { handle: "wright" }), null);
-      assert.equal(hotTenseBlock(odb, null), null);
+      assert.equal((await hotTenseBlock(odb, stranger, { handle: "wright" })), null);
+      assert.equal((await hotTenseBlock(odb, null)), null);
     });
   } finally { odb.close(); }
 });
@@ -318,11 +318,11 @@ test("F4 · `your_pending_edits` is what it was: DISCLOSED to the owner, key-sco
 // F5 · THE BOUNDS THE LADDER MUST NOT CROSS
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("F5 · the ROSTER is not composed — a list read never touches the checkout", () => {
+test("F5 · the ROSTER is not composed — a list read never touches the checkout", async () => {
   const db = fixtureDb();
   const clone = townClone();
   try {
-    updateAddressBody({ handle: "wright", body: "fresh prose the roster must not go looking for" }, KEY, db, clone);
+    await updateAddressBody({ handle: "wright", body: "fresh prose the roster must not go looking for" }, KEY, db, clone);
     const page = residentPage(db, {});
     for (const r of page.residents) {
       assert.equal(r.freshness, undefined,
@@ -357,22 +357,22 @@ test("F5b · NO CHECKOUT is a real state and says so — every field settled, ne
 // `typeof file === "string"`, which could not have failed if every path in the
 // table were wrong. Comparing the table to the doors closes the class.
 
-test("F6 · PAPER_ACTS declares, for every act, the exact file that act's door writes", () => {
+test("F6 · PAPER_ACTS declares, for every act, the exact file that act's door writes", async () => {
   const db = fixtureDb();
   const clone = townClone();
   const html = '<!doctype html><html><body>pane</body></html>';
   const doors = {
-    "address-body": () => updateAddressBody({ handle: "wright", body: "prose" }, KEY, db, clone),
-    "address-fields": () => updateAddressFields({ handle: "wright", fields: { note: "a note" } }, KEY, db, clone),
-    home: () => updateHome({ handle: "wright", body: "a home" }, KEY, db, clone),
-    profile: () => updateProfile({ handle: "wright", bio: "a bio" }, KEY, db, clone),
-    window: () => updateWindow({ handle: "wright", html }, KEY, db, clone),
+    "address-body": async () => await updateAddressBody({ handle: "wright", body: "prose" }, KEY, db, clone),
+    "address-fields": async () => await updateAddressFields({ handle: "wright", fields: { note: "a note" } }, KEY, db, clone),
+    home: async () => await updateHome({ handle: "wright", title: "the Trueing-House", body: "a home" }, KEY, db, clone),
+    profile: async () => await updateProfile({ handle: "wright", bio: "a bio" }, KEY, db, clone),
+    window: async () => await updateWindow({ handle: "wright", html }, KEY, db, clone),
   };
   try {
     assert.deepEqual(Object.keys(doors).sort(), [...PAPER_ACT_NAMES].sort(),
       "every paper act is exercised here — a new act with no row in this test is the gap this test exists to refuse");
     for (const act of PAPER_ACT_NAMES) {
-      const out = doors[act]();
+      const out = await doors[act]();
       assert.equal(out.error, undefined, `${act} bounced: ${JSON.stringify(out)}`);
       assert.equal(PAPER_ACTS[act].file("wright"), out.file,
         `the ${act} act's declared file must be the one its door wrote`);

@@ -26,6 +26,8 @@ import { hotTenseBlock } from "./town-updates.mjs";
 import { hotMailBlock, outboxTense } from "./town-mail.mjs";
 import { votesAvailable, doorstepVotes } from "./votes.mjs";
 import { nextCrossingForDoorstep } from "./crossings.mjs";
+import { unreadFor, unreadBlock } from "./unread-store.mjs";
+import { freshFor } from "./paper-fresh.mjs"; // POS-271: the pending paper rows, read before a composed read
 
 /**
  * The finished doorstep for one resident, or null when there is no such
@@ -63,8 +65,11 @@ export async function doorstepBundle(handle, ctx = {}) {
   // The one behaviour delta on the live door, and it is a repair: a
   // composition that straddles a crossing could previously name boat N in
   // `rulings` and boat N+1 in `next_crossing`. It cannot now.
-  const { db, key, meta, asOf, clone, odb, canWrite, conversationsOffset = 0, slim = false, nowMs = Date.now() } = ctx;
-  const core = doorstep(db, handle, asOf, { conversationsOffset, slim, fresh: { odb, clone, asOf }, nowMs });
+  const { db, key, meta, asOf, clone, odb, canWrite, conversationsOffset = 0, slim = false, nowMs = Date.now(), ix = null } = ctx;
+  // `ix` is the index the door picked (POS-268): absent, office.db's, exactly as
+  // before; the store's (storeIndexPooled) when the door is switched.
+  const opts = { conversationsOffset, slim, fresh: await freshFor(handle, { odb, clone, asOf }), nowMs };
+  const core = ix ? await ix.doorstep(handle, asOf, opts) : doorstep(db, handle, asOf, opts);
   if (!core) return null;
 
   // ── THE HEADER'S CLOCK (postmark#2922) ─────────────────────────────────────
@@ -231,11 +236,35 @@ export async function doorstepBundle(handle, ctx = {}) {
       unavailable: `what stands behind your marks could not be read (${String(e?.message ?? e).slice(0, 160)}) — unknown, not zero`,
       count: 0, at_risk: null, rows: [] };
   }
+  // ── THE TENTH SEGMENT · the house's posts (POS-293) ────────────────────
+  //
+  // What the house put up and what it takes part in: events it hosts or
+  // RSVPed to, ideas it posted or backs, each with its latest act and how
+  // many have responded. POS-288's D4: the author hears every outcome here,
+  // including one someone else's act (an RSVP, a stake) made on their post.
+  //
+  // THE HOUSE'S, on a page about one person, and the pointer says so: the
+  // read answers for the handle's whole household, because a post is the
+  // house's work and a housemate's RSVP is the house taking part. Asked at
+  // the same `args`, `household { read: "posts" }` answers this object.
+  //
+  // ALWAYS PRESENT. A class the office cannot read is named in `unavailable`
+  // and its rows are left out, so "not read" never reads as "none". Both
+  // skins carry it whole: the rows are the report, and there is no teaching
+  // block to cut.
+  try {
+    const { householdPosts } = await import("./household-posts.mjs");
+    d.posts = { serves: "household.posts", args: { handle }, ...(await householdPosts(handle, { now: nowMs, clone })) };
+  } catch (e) {
+    d.posts = { serves: "household.posts", args: { handle },
+      unavailable: [`the house's posts could not be read (${String(e?.message ?? e).slice(0, 160)})`],
+      put_up: { total: null, shown: 0, rows: [] }, taking_part: { total: null, shown: 0, rows: [] } };
+  }
   // The manifest, republished now that every segment is on the page. A reader
-  // walks `segments` to find them, so it must name all nine or none.
+  // walks `segments` to find them, so it must name all ten or none.
   d.segments = [...DOORSTEP_SEGMENTS];
 
-  await ownerGate(d, handle, { db, clone, key, odb, meta });
+  await ownerGate(d, handle, { db, clone, key, odb, meta, ix });
 
   // ── the civic pointer (2026-09-01, the clarity round) ─────────────────────
   //
@@ -291,7 +320,11 @@ export async function doorstepBundle(handle, ctx = {}) {
 // gap-shaped half of next_steps. The house read (house-bundle.mjs) finishes
 // each of its residents with this same function, so the gate stays in ONE
 // place: `own = key.handles.has(handle)`, exactly as the 08-15 ruling set it.
-export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = null } = {}) {
+//
+// `unread` is the house read's prefetch (`{ rows: Map }` or `{ error }`, from
+// one unreadFor over the house); a doorstep passes none and asks for its one
+// resident.
+export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = null, unread = null, ix = null } = {}) {
   const own = key?.handles?.has?.(handle) === true;
   // THE COUNTER'S TENSE (Vex of the Drift, 2026-08-26). `pending_outbox` is a
   // COUNT(*) over the settled index, so under the town log it could read 0 for
@@ -314,7 +347,7 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
     // resident who edited through REST and read back through REST was told
     // nothing about their own pending edit.
     try {
-      const hot = hotTenseBlock(odb, key, { handle });
+      const hot = await hotTenseBlock(odb, key, { handle });
       if (hot) d.your_pending_edits = hot;
     } catch { /* garnish only — a log that will not read never blocks a read */ }
     // THE MAIL LAW (wave 3), the asymmetric half. A SENDER is told about the
@@ -323,7 +356,7 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
     // them. Both halves come from one scope: the block matches rows whose
     // sender the caller holds, and a recipient never appears on that axis.
     try {
-      const pending = hotMailBlock(odb, key, { handle });
+      const pending = await hotMailBlock(odb, key, { handle });
       if (pending) d.your_pending_letters = pending;
       // ONE SCOPE, ONE ANSWER. The count comes off the block that was just
       // composed rather than from a second query, so there is no second filter
@@ -332,11 +365,19 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
       // leaves `standing` withheld rather than asserting one.
       standing = pending ? pending.standing.length : 0;
     } catch { /* garnish only */ }
+    // UNREAD (POS-286): delivered letters this household has not opened. It
+    // is private to the household, so it rides this gate and nowhere else,
+    // and it is the only count on the page called new. An unreadable record
+    // is said, never a zero.
+    try {
+      const got = unread ?? await unreadFor(db, [handle], { ix }).then((rows) => ({ rows }), (error) => ({ error }));
+      d.unread = got.error ? unreadBlock(null, got.error) : unreadBlock(got.rows.get(handle) ?? []);
+    } catch { /* garnish only */ }
     // The settling-in block (Keemin's grouping, 2026-08-15): what your house
     // still lacks. It retires itself the day the list empties.
     try {
       const { paperGaps } = await import("./household-apex.mjs");
-      const gaps = await paperGaps(handle, { db, clone, key });
+      const gaps = await paperGaps(handle, { db, clone, key, ix });
       if (gaps.length) d.settling_in = {
         note: "your house is still settling in — this block disappears as the list empties",
         next: gaps,
@@ -356,7 +397,7 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
   // itself rides every read — it is what the public bundle already publishes —
   // but its gap-shaped half is gated on the same ownership test above.
   try {
-    const ns = await nextStepsFor(db, meta, handle, clone, { own, key });
+    const ns = await nextStepsFor(db, meta, handle, clone, { own, key, ix });
     if (ns?.steps?.length) d.next_steps = ns;
   } catch { /* garnish only */ }
   return d;

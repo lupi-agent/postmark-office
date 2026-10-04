@@ -116,7 +116,7 @@ export function paperActCommits(out) {
  * logged and replayed exactly as before. The absent-reads-as-falsy shortcut is
  * refused deliberately here and again in the drain's guard.
  */
-export function logPaperAct(odb, { act, handle, household, args, key, commits }) {
+export async function logPaperAct(odb, { act, handle, household, args, key, commits }) {
   if (!odb || !townLogEnabled()) return null;
   if (!PAPER_ACTS[act]) throw new Error(`"${act}" is not a paper act — the town log's update rows are ${PAPER_ACT_NAMES.join(", ")}`);
   if (Array.isArray(commits) && commits.length === 0) return null;
@@ -160,66 +160,101 @@ export function logPaperAct(odb, { act, handle, household, args, key, commits })
  * reader inventing one. `out` is in scope here and was already being spread
  * into the answer; the row now carries its shas too.
  */
+// THE DOOR IS ASYNC EXACTLY WHEN IT HAS A LOG TO CONSULT (POS-271). The town
+// log became a paper (paperwork.mjs), and a paper answers with a promise — the
+// store is a round trip. So with a log handle and TOWN_SINGLE_LOG on, the call
+// returns a promise; with neither (flag-off, and every REPLAY, which passes four
+// arguments and therefore no log) it returns the edit's answer as it always
+// did. Every live caller awaits it, which is right for both shapes; the replay
+// stays synchronous by the same structural guard that keeps it from logging.
+//
+// AND IT GAINED THE SEND'S IN-FLIGHT MAP. The paragraph below said none was
+// needed because nothing could yield between the nonce lookup and the row. The
+// lookup is an await now, so two calls carrying one nonce CAN interleave there,
+// and both would find no row and both would edit. The second waits for the
+// first and gets its receipt, exactly as town-mail.mjs § sendLetterAsRow does.
+const paperInFlight = new Map(); // "<household>|<act>|<handle>|<nonce>" -> the first call's promise
+
 export function paperDoor(act, impl) {
   return function paperDoorCall(args, key, db, clone, odb = null) {
-    // ── THE NONCE (POS-70 §5, ruled 2026-09-24) ─────────────────────────────
-    //
-    // The send's retry key, served here with the send's own lookup
-    // (town-journal.mjs § rowSpendingNonce) over rows this door already
-    // writes. A door field, never the act's: it is taken off before `impl`
-    // sees the args, and it stays in the row's args (verbatim, as a letter
-    // row keeps its own), which is where the lookup reads it back. The
-    // drain's replay reaches this function with FOUR arguments and no log, so
-    // it strips the nonce, looks nothing up and discloses nothing.
-    //
-    // NO IN-FLIGHT MAP, unlike the send's, and not by omission: `impl` is
-    // synchronous, so between the lookup and the row nothing can yield the
-    // turn to a second caller. The send's race lives in an `await`; this
-    // door has none.
+    if (!odb || !townLogEnabled()) return paperDoorLogless(act, impl, args, key, db, clone);
     const nonce = String(args?.nonce ?? "").trim() || null;
-    const logOn = townLogEnabled();
-    if (nonce && logOn && odb) {
-      if (Buffer.byteLength(nonce, "utf8") > NONCE_MAX) {
-        const e = new Error(`nonce must be under ${NONCE_MAX} bytes`);
-        Object.assign(e, { code: 422, defect: `nonce must be under ${NONCE_MAX} bytes`,
-          hint: "a nonce is a retry key, not a payload — anything you can repeat exactly will do. It is refused rather than trimmed, because two long nonces cut to the same prefix would become one key." });
-        throw e;
-      }
-      const spent = spentPaperNonce(odb, key, { act, handle: args?.handle, nonce });
-      if (spent) return paperDuplicateReceipt(spent, nonce);
-    }
-    const { nonce: _nonce, ...actArgs } = args ?? {};
-    const out = impl(args && Object.prototype.hasOwnProperty.call(args, "nonce") ? actArgs : args, key, db, clone);
-    // AFTER success only. A bounce throws out of `impl` and never reaches this
-    // line, so no row can ever claim an edit that did not happen — and so a
-    // bounced first call spends no key.
-    if (out?.error) return out;
-    // FLAG-OFF, DISCLOSED exactly as the send discloses it (send-at-door.mjs):
-    // an office with no town log cannot remember a key, and says so.
-    if (nonce && !logOn)
-      return { ...out, nonce, nonce_honoured: false, nonce_note: PAPER_NONCE_NOT_HONOURED };
-    if (!odb) return out;
-    let seq = null;
-    try {
-      seq = logPaperAct(odb, { act, handle: args?.handle, household: key?.household, args, key,
-        commits: paperActCommits(out) });
-    } catch (e) {
-      // THE EDIT LANDED — the pen commit is already in the town clone, so
-      // failing the call here would tell the caller a true thing about the log
-      // by telling them a false thing about their edit. But it does not vanish
-      // either, which is what the old seam did: flag-on, a log that will not
-      // write means the crossing will not settle this act and the hot tense is
-      // blind to it, and nobody would ever know. It is loud on stderr, in the
-      // office's own instrumentation grammar, and the answer still carries the
-      // edit.
-      console.error(`[town-log] paper act "${act}" for ${args?.handle ?? "(no handle)"} did NOT reach the log: ${String(e?.message ?? e)}`);
-      return out;
-    }
-    return seq == null ? out : { ...out, logged: { seq, settles_at: SETTLES_AT },
-      // Only when one was offered — a caller who passed no nonce is told
-      // nothing about nonces, and their receipt is byte-for-byte what it was.
-      ...(nonce ? { nonce, idempotent: "retry this exact call with the same nonce and you will get this receipt back rather than a second edit — until the crossing settles it" } : {}) };
+    if (!nonce) return paperDoorLogged(act, impl, args, key, db, clone, odb);
+    const slot = `${key?.household ?? ""}|${act}|${args?.handle ?? ""}|${nonce}`;
+    const running = paperInFlight.get(slot);
+    if (running) return running.catch(() => null).then((first) => first && !first.error
+      ? { ...first, duplicate: true, nonce, note: "this nonce was already in flight when your call arrived — an edit carrying it was mid-write, and this is that edit's receipt. NOTHING WAS WRITTEN A SECOND TIME." }
+      : paperDoorLogged(act, impl, args, key, db, clone, odb));
+    const p = paperDoorLogged(act, impl, args, key, db, clone, odb);
+    paperInFlight.set(slot, p);
+    return p.finally(() => paperInFlight.delete(slot));
   };
+}
+
+// No log: the replay, and every office with TOWN_SINGLE_LOG off. Synchronous.
+function paperDoorLogless(act, impl, args, key, db, clone) {
+  const nonce = String(args?.nonce ?? "").trim() || null;
+  const { nonce: _nonce, ...actArgs } = args ?? {};
+  const out = impl(args && Object.prototype.hasOwnProperty.call(args, "nonce") ? actArgs : args, key, db, clone);
+  if (out?.error) return out;
+  // FLAG-OFF, DISCLOSED exactly as the send discloses it (send-at-door.mjs):
+  // an office with no town log cannot remember a key, and says so.
+  if (nonce && !townLogEnabled())
+    return { ...out, nonce, nonce_honoured: false, nonce_note: PAPER_NONCE_NOT_HONOURED };
+  return out;
+}
+
+async function paperDoorLogged(act, impl, args, key, db, clone, odb) {
+  // ── THE NONCE (POS-70 §5, ruled 2026-09-24) ─────────────────────────────
+  //
+  // The send's retry key, served here with the send's own lookup
+  // (town-journal.mjs § rowSpendingNonce) over rows this door already
+  // writes. A door field, never the act's: it is taken off before `impl`
+  // sees the args, and it stays in the row's args (verbatim, as a letter
+  // row keeps its own), which is where the lookup reads it back. The
+  // drain's replay passes FOUR arguments and no log, so it never reaches this
+  // function: paperDoorLogless strips the nonce, looks nothing up and
+  // discloses nothing.
+  //
+  // THE IN-FLIGHT MAP is paperDoor's, above: the lookup below is an await, so
+  // a second call carrying the same nonce waits there for this one's receipt.
+  const nonce = String(args?.nonce ?? "").trim() || null;
+  if (nonce) {
+    if (Buffer.byteLength(nonce, "utf8") > NONCE_MAX) {
+      const e = new Error(`nonce must be under ${NONCE_MAX} bytes`);
+      Object.assign(e, { code: 422, defect: `nonce must be under ${NONCE_MAX} bytes`,
+        hint: "a nonce is a retry key, not a payload — anything you can repeat exactly will do. It is refused rather than trimmed, because two long nonces cut to the same prefix would become one key." });
+      throw e;
+    }
+    const spent = await spentPaperNonce(odb, key, { act, handle: args?.handle, nonce });
+    if (spent) return paperDuplicateReceipt(spent, nonce);
+  }
+  const { nonce: _nonce, ...actArgs } = args ?? {};
+  const out = impl(args && Object.prototype.hasOwnProperty.call(args, "nonce") ? actArgs : args, key, db, clone);
+  // AFTER success only. A bounce throws out of `impl` and never reaches this
+  // line, so no row can ever claim an edit that did not happen — and so a
+  // bounced first call spends no key.
+  if (out?.error) return out;
+  let seq = null;
+  try {
+    seq = await logPaperAct(odb, { act, handle: args?.handle, household: key?.household, args, key,
+      commits: paperActCommits(out) });
+  } catch (e) {
+    // THE EDIT LANDED — the pen commit is already in the town clone, so
+    // failing the call here would tell the caller a true thing about the log
+    // by telling them a false thing about their edit. But it does not vanish
+    // either, which is what the old seam did: flag-on, a log that will not
+    // write means the crossing will not settle this act and the hot tense is
+    // blind to it, and nobody would ever know. It is loud on stderr, in the
+    // office's own instrumentation grammar, and the answer still carries the
+    // edit.
+    console.error(`[town-log] paper act "${act}" for ${args?.handle ?? "(no handle)"} did NOT reach the log: ${String(e?.message ?? e)}`);
+    return out;
+  }
+  return seq == null ? out : { ...out, logged: { seq, settles_at: SETTLES_AT },
+    // Only when one was offered — a caller who passed no nonce is told
+    // nothing about nonces, and their receipt is byte-for-byte what it was.
+    ...(nonce ? { nonce, idempotent: "retry this exact call with the same nonce and you will get this receipt back rather than a second edit — until the crossing settles it" } : {}) };
 }
 
 /**
@@ -232,9 +267,9 @@ export function paperDoor(act, impl) {
  * edit and then on a window is two edits, and handing the home's receipt back
  * for the window would be the wrong receipt.
  */
-export function spentPaperNonce(odb, key, { act, handle, nonce }) {
+export async function spentPaperNonce(odb, key, { act, handle, nonce }) {
   if (!odb || !nonce || !handle) return null;
-  return rowSpendingNonce(hotPaperActs(odb, key, { handle }).filter((r) => r.act === act), nonce);
+  return rowSpendingNonce((await hotPaperActs(odb, key, { handle })).filter((r) => r.act === act), nonce);
 }
 
 /**
@@ -272,11 +307,11 @@ export const SETTLES_AT = "the next ferry crossing (00:00 / 12:00 UTC)";
  * Newest-last, so a caller who edited twice sees the second edit — the log is
  * append-only and the later row is the later truth.
  */
-export function hotPaperActs(odb, key, { handle = null } = {}) {
+export async function hotPaperActs(odb, key, { handle = null } = {}) {
   if (!odb || !townLogEnabled()) return [];
   const mine = new Set([...(key?.handles ?? [])].filter(Boolean));
   if (handle) { if (!mine.has(handle)) return []; }
-  return pendingRows(odb).filter((r) => r.cls === "update" && r.handle && mine.has(r.handle)
+  return (await pendingRows(odb)).filter((r) => r.cls === "update" && r.handle && mine.has(r.handle)
     && (!handle || r.handle === handle));
 }
 
@@ -298,9 +333,9 @@ export function hotPaperActs(odb, key, { handle = null } = {}) {
  * suspended handle gets no overlay — is standing's, and it lives at the
  * composer beside the reasoning for it.
  */
-export function pendingPaperRows(odb, handle) {
+export async function pendingPaperRows(odb, handle) {
   if (!odb || !townLogEnabled() || !handle) return [];
-  return pendingRows(odb).filter((r) => r.cls === "update" && r.handle === handle);
+  return (await pendingRows(odb)).filter((r) => r.cls === "update" && r.handle === handle);
 }
 
 /**
@@ -308,8 +343,8 @@ export function pendingPaperRows(odb, handle) {
  * the un-drained row if there is one, otherwise nothing (and the caller falls
  * back to the record, which is the settled truth).
  */
-export function hotestFor(odb, key, act, handle) {
-  const rows = hotPaperActs(odb, key, { handle });
+export async function hotestFor(odb, key, act, handle) {
+  const rows = await hotPaperActs(odb, key, { handle });
   for (let i = rows.length - 1; i >= 0; i--) if (rows[i].act === act) return rows[i];
   return null;
 }
@@ -323,8 +358,8 @@ export function hotestFor(odb, key, act, handle) {
  * disclosure guard the world reads keep (`unreadable: true` rather than a
  * substituted "no"), applied to a tense instead of a failure.
  */
-export function hotTenseBlock(odb, key, { handle = null } = {}) {
-  const rows = hotPaperActs(odb, key, { handle });
+export async function hotTenseBlock(odb, key, { handle = null } = {}) {
+  const rows = await hotPaperActs(odb, key, { handle });
   if (!rows.length) return null;
   const byPaper = new Map();
   for (const r of rows) byPaper.set(`${r.handle}:${r.act}`, r);
@@ -353,6 +388,11 @@ export function replayPaperAct(row, { doors, key, db, clone }) {
   // the key the act was performed with, reconstructed only as far as the doors'
   // own scope check needs: the handle it acted for, and the household it was
   // charged to. Anything more would be this module inventing a credential.
-  const asKey = { household: row.household, handles: new Set([row.handle]), ghId: row.ghId, ghLogin: row.ghLogin, ...key };
+  //
+  // `replay: true` tells the door this act was already judged — at the door,
+  // when the row was written — so a rule the door gained since (POS-224: a
+  // founding needs its title) is not applied to it retroactively. It is set
+  // after `key` so no caller's key can take it off a replay.
+  const asKey = { household: row.household, handles: new Set([row.handle]), ghId: row.ghId, ghLogin: row.ghLogin, ...key, replay: true };
   return { row, result: door(row.payload?.args ?? {}, asKey, db, clone) };
 }

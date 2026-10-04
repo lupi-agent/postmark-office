@@ -167,12 +167,18 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
       // The say's spent-nonce lookup (POS-265) asks by actor and nonce.
       const wantActor = /\bactor = \$(\d+)/i.exec(q);
       const wantNonce = /\bnonce = \$(\d+)/i.exec(q);
+      // A world act's spent-nonce lookup (POS-246) asks among the key's
+      // residents, and never among says (they keep their own key).
+      const wantActors = /\bactor = ANY\(\$(\d+)(?:::text\[\])?\)/i.exec(q);
+      const notSay = /\baction <> 'say'/i.test(q);
       const rows = state.acts
         .filter((r) => (wantClass ? r.class === params[Number(wantClass[1]) - 1] : true))
         .filter((r) => (wantAction ? r.action === params[Number(wantAction[1]) - 1] : true))
         .filter((r) => (wantObjects ? params[Number(wantObjects[1]) - 1].includes(r.object) : true))
         .filter((r) => (wantActor ? r.actor === params[Number(wantActor[1]) - 1] : true))
         .filter((r) => (wantNonce ? r.nonce === params[Number(wantNonce[1]) - 1] : true))
+        .filter((r) => (wantActors ? params[Number(wantActors[1]) - 1].includes(r.actor) : true))
+        .filter((r) => (notSay ? r.action !== "say" : true))
         .map((r) => ({
           ...r,
           at: r.at instanceof Date ? r.at : new Date(r.at),
@@ -355,4 +361,54 @@ export async function withRecordOn(fn) {
     if (was.pg == null) delete process.env.WORLD2_PG; else process.env.WORLD2_PG = was.pg;
     if (was.url == null) delete process.env.WORLD2_PG_URL; else process.env.WORLD2_PG_URL = was.url;
   }
+}
+
+/**
+ * THE GUARD READER, answered from a pen (POS-269). With the guards on, the
+ * hold door's holder check reads the holding acts through the guard reader, and
+ * that read orders by the holding's own instant, which the pen's acts handler
+ * (id order only) refuses to answer. So it is answered here, from the same
+ * `state.acts`, and every other guard query goes to the pen unchanged. Returns
+ * the reader's restore.
+ */
+export async function readHoldsFrom(pen) {
+  const { useGuardReader } = await import("../src/world2-guards.mjs");
+  const when = (r) => Date.parse(r.payload?.at ?? r.at) || 0;
+  return useGuardReader(async (fn) => fn({
+    query: async (sql, params = []) => {
+      if (!/^SELECT id, at, actor, action, payload FROM acts WHERE action = ANY\(\$1\)/i.test(norm(sql))) return pen.query(sql, params);
+      const want = new Set(params[0]);
+      const target = params[1];
+      const rows = pen.rows()
+        .filter((r) => want.has(r.action))
+        .map((r) => ({ ...r, at: r.at instanceof Date ? r.at : new Date(r.at), payload: typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload }))
+        .filter((r) => target == null || (r.payload?.payload?.target ?? r.payload?.thing) === target)
+        .sort((a, b) => (when(a) - when(b)) || (a.id - b.id));
+      return { rows, rowCount: rows.length };
+    },
+  }));
+}
+
+/**
+ * THE HOLD LANE ON A FRESH PEN, as prod runs it (POS-269). The holding edge is
+ * the hold acts or there is none — dynamic.db, which held it for an unflipped
+ * office, is retired and the hold door refuses there — so a suite that drives
+ * the door flips the hold lane under the guards, and the holder check reads
+ * back exactly what this pen filed. `restore` puts the env, the reader and both
+ * pools back.
+ */
+export async function installHoldRecord(opts = {}) {
+  const FLAGS = { ...RECORD_ON, W2_PEN: "hold", W2_GUARDS: "1" };
+  const was = Object.fromEntries(Object.keys(FLAGS).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, FLAGS);
+  const pen = installActsPen(opts);
+  const unread = await readHoldsFrom(pen);
+  return {
+    pen,
+    restore() {
+      unread();
+      uninstallActsPen();
+      for (const [k, v] of Object.entries(was)) { if (v == null) delete process.env[k]; else process.env[k] = v; }
+    },
+  };
 }
