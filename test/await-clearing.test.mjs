@@ -31,7 +31,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  clearingDidNotRunDetail, docketFor, newestClosedDocket, newestWindow, nothingUnfoldedDetail, toMs, unfoldedDocket,
+  clearingDidNotRunDetail, docketFor, newestClosedDocket, newestWindow, nothingUnblessedDetail, nothingUnfoldedDetail,
+  toMs, unblessedDocket, unfoldedDocket,
 } from "../world2/tools/await-clearing.mjs";
 
 const CROSSING_START = "2026-09-08T17:45:00Z";
@@ -283,4 +284,60 @@ test("--rehearse never takes the open window, nor a closed one with no cleared_a
   assert.equal(newestClosedDocket([{ id: 211, status: "open", cleared_at: "2026-09-25 13:00:00+00" }]), null);
   assert.equal(newestClosedDocket([{ id: 210, status: "closed", cleared_at: null }]), null);
   assert.equal(newestClosedDocket([]), null);
+});
+
+// ── THE OPERATOR DOOR SINCE THE STORE CUTOVER (Darko, 2026-10-04) ────────────
+//
+// THE INSTANCE: window 228 was cleared by hand at 12:13Z with 10 claims locked
+// AND materialized (the clearing materializes in the same transaction since the
+// cutover), the newest blessed settlement (S92) had folded window 224, and the
+// by-hand sweep refused `nothing-unfolded` because `unfoldedDocket` asks for a
+// locked claim with no mark row, which no longer exists after any clearing.
+const CUTOVER = [
+  { id: 229, status: "open", cleared_at: null, town_sha: null },
+  { id: 228, status: "closed", cleared_at: "2026-10-04 12:13:40.149382+00", town_sha: "fd711d67" },
+  { id: 227, status: "closed", cleared_at: "2026-10-03 18:00:21.076361+00", town_sha: "a71c3cfd" },
+  { id: 224, status: "closed", cleared_at: "2026-10-02 06:00:20.000000+00", town_sha: "c0c0c0c0" },
+];
+
+test("CUTOVER 1 · the instance: every claim materialized, so the old predicate answers null — and the new one takes 228", () => {
+  // The old door, against the store-era shape (no unmaterialized rows): null.
+  assert.equal(unfoldedDocket(CUTOVER, []), null, "the git-era predicate is dead after any successful clearing");
+  // The new door: the newest closed window newer than the newest blessed settlement's window.
+  const d = unblessedDocket(CUTOVER, 224);
+  assert.equal(d.window, 228);
+  assert.equal(d.by_hand, true, "a by-hand publication must never be mistaken for a scheduled one");
+});
+
+test("CUTOVER 2 · a window already folded into a blessed settlement is refused, with words naming both", () => {
+  assert.equal(unblessedDocket(CUTOVER, 228), null);
+  assert.equal(
+    nothingUnblessedDetail({ newest: newestWindow(CUTOVER), lastBlessedWindow: 228 }),
+    "every closed window is already folded into a blessed settlement (the newest blessed settlement folded window 228), "
+    + "so there is nothing for a by-hand sweep to publish. "
+    + "The newest window is 229 (open, cleared_at null). "
+    + "Claims filed since the last close belong to the OPEN window; close it with the candle first "
+    + "(postmark-world2-clearing.service), then run this again.");
+});
+
+test("CUTOVER 3 · it never takes the open window, nor a closed one mid-transition", () => {
+  assert.equal(unblessedDocket([{ id: 229, status: "open", cleared_at: null }], 224), null);
+  assert.equal(unblessedDocket([{ id: 228, status: "closed", cleared_at: null }], 224), null,
+    "a closed window with no cleared_at is mid-transition");
+});
+
+test("CUTOVER 4 · no settlement yet takes the newest closed window", () => {
+  assert.equal(unblessedDocket(CUTOVER, null).window, 228);
+});
+
+test("CUTOVER 5 · the CLI's by-hand branch asks the blessed record, not the unmaterialized one", async () => {
+  // The branch is DB-bound, so its wiring is held by its source: the by-hand door
+  // must call unblessedDocket over `settlements`, and must not fall back to the
+  // git-era predicate that left it dead from the cutover to 2026-10-04.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../world2/tools/await-clearing.mjs", import.meta.url), "utf8");
+  const branch = src.slice(src.indexOf("} else if (byHand) {"), src.indexOf("} else {", src.indexOf("} else if (byHand) {")));
+  assert.match(branch, /unblessedDocket\(rows, lastBlessedWindow\)/);
+  assert.match(branch, /FROM settlements/);
+  assert.doesNotMatch(branch, /UNMATERIALIZED_SELECT/);
 });
