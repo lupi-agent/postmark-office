@@ -294,36 +294,32 @@ export async function officeWrite(fn, { household = null, env = process.env } = 
  * KEY through world2-claims.mjs's one resolver and declares it inside `fn`, so
  * there is exactly one place the two spellings meet.
  */
-export async function officeRead(fn, { env = process.env } = {}) {
-  refuseNested("officeRead");
-  return officeReadOn(await pool(env), fn);
-}
-
-/**
- * officeRead on a given pool: the town index's test seam (town-index-store.mjs §
- * readTownIndex) runs its reads in exactly this shape, guard included.
- *
- * ── ONE PEN CONNECTION PER CALL CHAIN (POS-370) ─────────────────────────────
- * `fn` runs holding the connection, so `fn` must not ask the pen for another:
- * the pool is three, and on 2026-10-04 three quest boards per worker each held
- * one while the world read inside them waited on a fourth, and the office
- * stalled for an hour. That ask is now refused at once by name
- * (store-pool.mjs § NestedStoreError), and a connection that cannot be had in
- * WORLD2_PG_ACQUIRE_MS is a refusal too, never a wait.
- */
-export async function officeReadOn(p, fn, by = "officeRead") {
-  return onPenClient(p, by, async (client, discard) => {
+export async function officeRead(fn, { env = process.env, pool: given = null, by = "officeRead" } = {}) {
+  refuseNested(by);
+  return onPenClient(given ?? await pool(env), by, async (client, discard) => {
     try {
       await client.query("BEGIN READ ONLY");
       const out = await fn(client);
       await client.query("COMMIT");
       return out;
     } catch (err) {
+      // A ROLLBACK that fails may leave the connection inside the transaction:
+      // it is discarded, never handed back to the next caller (POS-370).
       try { await client.query("ROLLBACK"); } catch { discard(); }
       throw err;
     }
   });
 }
+// `pool` is the town index's test seam (town-index-store.mjs § readTownIndex):
+// its reads run in exactly this shape, the guard below included.
+//
+// ── ONE PEN CONNECTION PER CALL CHAIN (POS-370) ─────────────────────────────
+// `fn` runs holding the connection, so `fn` must not ask the pen for another:
+// the pool is three, and on 2026-10-04 three quest boards per worker each held
+// one while the world read inside them waited on a fourth, and the office
+// stalled for an hour. That ask is now refused at once by name
+// (store-pool.mjs § NestedStoreError), and a connection that cannot be had in
+// WORLD2_PG_ACQUIRE_MS is a refusal too, never a wait.
 
 export async function insertAct(client, rowIn, seq = null, { lateArrival = null } = {}) {
   // `lateArrival` is the caller's standing reason for a row whose crossing has

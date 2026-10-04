@@ -718,10 +718,10 @@ export async function home(q, handle, fresh = null) {
  */
 export async function readTownIndex(fn, { env = process.env } = {}) {
   const read = async (client) => ({ out: await fn(client), asOf: await townIndexAsOf(client) });
-  const { officeRead, officeReadOn } = await import("./world2-pen.mjs");
+  const { officeRead } = await import("./world2-pen.mjs");
   // the test seam's pool takes the pen's own shape, its one-connection-per-chain
   // guard included, so a suite on it sees what the office would
-  if (_indexPoolForTest) return officeReadOn(_indexPoolForTest, read, "readTownIndex");
+  if (_indexPoolForTest) return officeRead(read, { pool: _indexPoolForTest, by: "readTownIndex" });
   return officeRead(read, { env });
 }
 
