@@ -201,6 +201,49 @@ export function unfoldedDocket(windows, unmaterializedRows) {
 }
 
 /**
+ * THE OPERATOR'S PREDICATE SINCE THE STORE CUTOVER, PURE (Darko, 2026-10-04:
+ * "We have ruled before that you need to be able to manually run settlements
+ * when needed. What blocks that from being possible").
+ *
+ * `unfoldedDocket` above asks for a locked claim with no mark row. That was the
+ * git era's meaning of "not yet folded": claims became marks at the fold. Since
+ * the cutover the CLEARING materializes every claim it locks, in the same
+ * transaction, so after any successful clearing no locked claim lacks a mark and
+ * that predicate answers null forever. Measured 2026-10-04: window 228, cleared
+ * by hand at 12:13Z with 10 locked, and the by-hand sweep refused
+ * `nothing-unfolded` while the keeper held S93. The operator door had been dead
+ * since the cutover and nothing exercised it.
+ *
+ * So the door asks the store's own record of what is DONE: the newest closed
+ * window newer than the window the newest BLESSED settlement folded
+ * (`settlements.window_id`). Blessed, not published: a window published but
+ * refused by the keeper is exactly the one an operator re-runs. Re-folding a
+ * window already published is harmless (the write-down finds canon's bytes and
+ * writes nothing new), and the keeper judges whatever is published.
+ *
+ * `lastBlessedWindow` null (no settlement yet) takes the newest closed window.
+ */
+export function unblessedDocket(windows, lastBlessedWindow) {
+  const floor = Number.isFinite(Number(lastBlessedWindow)) && lastBlessedWindow !== null ? Number(lastBlessedWindow) : -Infinity;
+  const closed = (windows ?? [])
+    .filter((w) => w && w.status === "closed" && w.cleared_at && Number(w.id) > floor)
+    .sort((a, b) => Number(b.id) - Number(a.id));
+  const take = closed[0];
+  return take
+    ? { window: Number(take.id), cleared_at: take.cleared_at, town_sha: take.town_sha ?? null, by_hand: true }
+    : null;
+}
+
+/** The by-hand refusal since the cutover: every closed window is already blessed. */
+export function nothingUnblessedDetail({ newest, lastBlessedWindow }) {
+  return `every closed window is already folded into a blessed settlement (the newest blessed settlement folded window ${lastBlessedWindow ?? "none"}), `
+    + "so there is nothing for a by-hand sweep to publish. "
+    + `The newest window is ${newest ? `${newest.id} (${newest.status}, cleared_at ${newest.cleared_at ?? "null"})` : "unreadable"}. `
+    + "Claims filed since the last close belong to the OPEN window; close it with the candle first "
+    + "(postmark-world2-clearing.service), then run this again.";
+}
+
+/**
  * THE SHADOW'S PREDICATE, PURE. The newest closed window with a `cleared_at` —
  * the same locked-docket test the other two use — or null. Newest by id, as
  * `foldDelta`'s own `not-newest-closed-window` check orders it, so this can never
@@ -309,14 +352,13 @@ if (isMain) {
       // two rows a day.
       const { rows } = await client.query(
         "SELECT id, status, cleared_at, town_sha FROM windows ORDER BY id DESC");
-      // Imported HERE rather than at the top of the file so the module stays
-      // inert to import — `test/cli-guard.test.mjs` holds that property, and the
-      // pure half above must remain testable without dragging the notary's
-      // module graph in behind it.
-      const { UNMATERIALIZED_SELECT } = await import("./canon-locks.mjs");
-      const { rows: unmaterialized } = await client.query(UNMATERIALIZED_SELECT);
-      const found = unfoldedDocket(rows, unmaterialized);
-      if (!found) refuse("nothing-unfolded", nothingUnfoldedDetail({ newest: newestWindow(rows) }));
+      // SINCE THE CUTOVER the door asks what the newest BLESSED settlement
+      // folded, not whether a claim lacks a mark (§ unblessedDocket).
+      const { rows: [blessed] } = await client.query(
+        "SELECT max(window_id) AS window_id FROM settlements");
+      const lastBlessedWindow = blessed?.window_id ?? null;
+      const found = unblessedDocket(rows, lastBlessedWindow);
+      if (!found) refuse("nothing-unfolded", nothingUnblessedDetail({ newest: newestWindow(rows), lastBlessedWindow }));
       process.stdout.write(`${JSON.stringify(found, null, 1)}\n`);
     } else {
       for (;;) {
