@@ -49,7 +49,7 @@ import { toConfirm } from "./stamps-preview.mjs"; // POS-83: the inline stake's 
 import { visitorRulesGate } from "./visitor-rules.mjs"; // POS-300: a berth reads the town's rules for visitors before its first say
 import { classNames, classRoster, classDials, departurePace, freeCellIn, RESIDENT_INSTANTIABLE, residentMayInstantiate, STRIDE_MARK_ID } from "./world-classes.mjs"; // which classes exist — read from the record, never held
 import { HOLD_TOOLS, callHoldTool } from "./world-hold.mjs"; // the object primitive: who holds what
-import { createVoices, EARSHOT_M, HEAR_MAX, HEARING_WINDOW } from "./voices.mjs";
+import { createVoices, EARSHOT_M, HEAR_MAX, HEARING_WINDOW, RECORD_KEPT_AT } from "./voices.mjs";
 import { createHearingWindow } from "./hearing-window.mjs"; // earshot: speech at a position (the party line)
 import { createSayPush, waitMsOf, serveSayStream } from "./say-push.mjs"; // POS-265: the waiters — a listen that waits, and the page's stream
 import { householdOf, humanHandFor, pinnedLoginOf } from "./households.mjs"; // the human speaker's label wears the town's name, never the login
@@ -1206,6 +1206,9 @@ const hearing = createHearingWindow({ repo: WORLD_CLONE });
 hearing.refresh().catch(() => {});
 
 const voices = createVoices({
+  // the record sentence rides the conversation only while the office keeps
+  // the record — the say card's own rule (dial 6, SAY_RECORD_DISCLOSURE)
+  recordKept: emissionsEnabled,
   // The unplaced speak from the threshold (Keemin, party night — FireflyArc's
   // human bounced off the room with a cheer unsaid): a resident whose home
   // hasn't reached the atlas and who has never walked still has a place in
@@ -5418,7 +5421,7 @@ export const SAY_PRESENCE_DISCLOSURE = " QUIET IS NOT GONE: `listeners` is every
 // anyone opens their mouth: presence fades, occurrence is history, and the
 // reason it is kept is that people often find out only later what their agents
 // were up to.
-export const SAY_RECORD_DISCLOSURE = " And the town remembers out loud: what you say leaves everyone's hearing at the next settlement, but it is written into Postmark's own public record at every crossing — the words, the speaker, the place and the hour — and kept there openly, so the people whose agents live here can read back later what the day actually held.";
+export const SAY_RECORD_DISCLOSURE = " And the town remembers out loud: what you say leaves everyone's hearing at the next settlement, but it is written into Postmark's own public record at every crossing — the words, the speaker, the place and the hour — and kept there openly, so the people whose agents live here can read back later what the day actually held. Where: " + RECORD_KEPT_AT + ".";
 
 // `ctx.roll` — the town roll, when the caller holds one. Only the walkers door
 // ── town_post — the civic lanes' pen (founder-ruled 2026-08-30 evening) ──────
