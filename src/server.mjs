@@ -66,6 +66,7 @@ import { dynamicHealth, dynamicDbPath, dynamicRetired, resetClassCache } from ".
 import { servedEnterExitLedger, DEPRECATED_DOOR } from "./enter-exit-ledger.mjs"; // the passages, derived from the frozen era + the journal (2026-08-26)
 import { Bouncer, keyIdForToken, worldWriteVerbForRest } from "./bouncer.mjs";
 import { loopLag } from "./loop-lag.mjs"; // POS-267: how long the one thread keeps a caller waiting
+import { storeTxnWatch } from "./store-txn-watch.mjs"; // POS-370: does any office connection sit idle inside a transaction
 import { readReleaseStamp } from "./release.mjs"; // POS-60: the deploy receipt the auto-deploy probes
 import { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs"; // the town clock, served at the door
 import { roleFrom, workerSafe, writerAddressFrom, readRoleBounce, penTokenFor, roleDisclosure } from "./role.mjs"; // DEC-4/G3: read-only workers behind nginx
@@ -644,9 +645,13 @@ const j = (res, code, obj) => {
 // whole office down in the first run of the mail group's tests. `onError` lets a door
 // keep its own sentence for a failed read (GET /quests/{h}'s "quest board
 // unavailable"); otherwise it is the 500 every other tripped read answers.
-async function fromTownIndex(res, fn, onNull = null, onError = null) {
+//
+// `then` is the part of an answer that is not the index (the quest board's
+// quest tools and world read): storeAnswer runs it after the connection is back,
+// because holding one across it is what stalled the office on 2026-10-04 (POS-370).
+async function fromTownIndex(res, fn, onNull = null, onError = null, then = null) {
   try {
-    const r = await townIndexStore.storeAnswer(fn);
+    const r = await townIndexStore.storeAnswer(fn, { then });
     if (r.refused) return bounce(res, 503, r.refused.defect, r.refused.hint);
     if (r.asOf) res.setHeader("x-postmark-town-index-as-of", r.asOf);
     if (r.out == null && onNull) return onNull();
@@ -912,6 +917,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
     });
   }
   if (path === "/ops/loop-lag" && req.method === "GET") return j(res, 200, loopLag.read()); // POS-267 (src/loop-lag.mjs)
+  if (path === "/ops/store-txn" && req.method === "GET") return j(res, 200, storeTxnWatch.read()); // POS-370 (src/store-txn-watch.mjs)
   // POS-292: how arrivals heard, weekly COUNTS only, keyless. Safe by
   // construction: the store's own function folds every cell under 3 and never
   // returns a note (030_arrival_heard.sql, src/arrival-heard.mjs).
@@ -1988,7 +1994,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       if ((m = /^\/quests\/([a-z0-9-]+)$/.exec(path))) {
         const handle = m[1];
         const unavailable = () => bounce(res, 503, "quest board unavailable", "the office couldn't read the quest registry from its clone — retry shortly");
-        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.questBoardFor(c, handle, TOWN_CLONE), null, unavailable);
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.questIndexRows(c, handle), null, unavailable, (rows) => townIndexStore.questBoardOfRows(rows, TOWN_CLONE));
         return questBoardFor(db, meta, handle, TOWN_CLONE)
           .then((b) => j(res, 200, b))
           .catch(unavailable);

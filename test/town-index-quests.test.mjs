@@ -110,7 +110,7 @@ test("potBoard and standingFor answer as office.db does", async (t) => {
 test("questBoardFor answers as office.db does, for a resident and for the town", async (t) => {
   if (skip) return t.skip(skip);
   for (const h of ["wright", "limen", "nobody", null, ""])
-    await same(`questBoardFor ${JSON.stringify(h)}`, office.questBoardFor(db, meta, h, TOWN, { worldSited: null }), store.questBoardFor(api, h, TOWN, { worldSited: null }));
+    await same(`questBoardFor ${JSON.stringify(h)}`, office.questBoardFor(db, meta, h, TOWN, { worldSited: null }), (async () => store.questBoardOfRows(await store.questIndexRows(api, h), TOWN, { worldSited: null }))()); // POS-370: the rows in the transaction, the board after it
 });
 
 test("household-stamps' estate, quests and fund reads answer the same through either index", async (t) => {
