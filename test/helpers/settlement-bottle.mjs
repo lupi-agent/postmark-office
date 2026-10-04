@@ -44,26 +44,25 @@ const STUBS = {
 logArgs("await-clearing");
 process.stdout.write(JSON.stringify({ window: 213, cleared_at: "2026-10-01T05:45:44Z", waited_s: 0 }) + "\\n");
 `,
+  // The REAL writer, over a register that answers STATE_LOG_ACTS: the real
+  // writeJournalWindow merges by seq, and the real penCommit pushes when the
+  // env says TOWN_PUSH=1. Only the store is a stub.
   "world2/tools/state-log-write.mjs": `${LOGGER}
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 logArgs("state-log-write");
-const world = at("--world");
 if (flag("--check")) { process.stdout.write(JSON.stringify({ window: 213, crossings: [] }) + "\\n"); process.exit(0); }
-const windows = [{ crossing: 213, lines: 1 }];
-if (flag("--dry-run")) {
-  process.stdout.write(JSON.stringify({ window: 213, windows, state_commit: null, dry_run: true, state_note: "dry run — nothing written, nothing committed" }) + "\\n");
-  process.exit(0);
-}
-// penCommit's ceremony, as it runs on the box: commit, and push when TOWN_PUSH=1.
-mkdirSync(join(world, "STATE", "log"), { recursive: true });
-writeFileSync(join(world, "STATE", "log", "213.journal.jsonl"), JSON.stringify({ seq: 1, at: Date.now() }) + "\\n");
-const git = (...a) => execFileSync("git", ["-C", world, ...a], { encoding: "utf8" }).trim();
-git("add", "STATE");
-git("-c", "user.name=pen", "-c", "user.email=pen@x.invalid", "commit", "-qm", "photograph: windows 213 from the register");
-if (process.env.TOWN_PUSH === "1") git("push", "-q", "origin", "main:main");
-process.stdout.write(JSON.stringify({ window: 213, windows, state_commit: git("rev-parse", "HEAD") }) + "\\n");
+const acts = process.env.STATE_LOG_ACTS ? JSON.parse(process.env.STATE_LOG_ACTS) : [1];
+const rows = acts.map((id) => ({
+  id, at: new Date(Date.UTC(2026, 9, 1, 1, 0, id)).toISOString(), crossing: 213, actor: "alpha", action: "say", object: null,
+  at_anchor: null, at_dx: null, at_dy: null, witnesses: null,
+  class: "voice", payload: { text: "hello" }, effect: "spoken", household: "solo:alpha",
+}));
+// The real module runs its CLI when argv[1] names it, and so does this stub's.
+process.argv[1] = "the-bottle";
+const { writeStateLog } = await import(pathToFileURL(${JSON.stringify(join(OFFICE, "world2", "tools", "state-log-write.mjs"))}).href);
+const out = await writeStateLog({ async query() { return { rows }; } },
+  { world: at("--world"), windows: [213], dryRun: flag("--dry-run") });
+process.stdout.write(JSON.stringify({ window: 213, ...out }) + "\\n");
 `,
   "world2/tools/fold-input-cli.mjs": `${LOGGER}
 logArgs("fold-input-cli");
@@ -124,7 +123,9 @@ let seq = 0;
 /**
  * ONE STORE CROSSING, IN A BOTTLE. `quiet` makes the sweep publish nothing (the
  * registry-only crossing, whose push is publish_main's other caller); `harm`
- * makes the harm gate name a mark; `suiteRed` reddens the post-push checker.
+ * makes the harm gate name a mark (`"env"`: only under BOTTLE_HARM=1); `suiteRed`
+ * reddens the post-push checker. Origin's hook logs every push it receives to
+ * `pushes`, one line per ref, so a test can count them.
  */
 export function bottle({ quiet = false, harm = false, suiteRed = true } = {}) {
   const root = join(scratch, `b${++seq}`);
@@ -161,7 +162,11 @@ process.stdout.write(JSON.stringify({
   surveyed: { branches: 1, delta_rows: 1, escrow_backed_deltas: 1 },
 }) + "\\n");
 `);
-  writeFileSync(join(seed, "tools", "harm-gate.mjs"), harm
+  // `harm: "env"` names harm only on a crossing run with BOTTLE_HARM=1, so one
+  // bottle can be refused and then pass.
+  writeFileSync(join(seed, "tools", "harm-gate.mjs"), harm === "env"
+    ? 'if (process.env.BOTTLE_HARM === "1") { process.stdout.write(JSON.stringify({ ok: false, checks: [{ name: "moved", ok: false, count: 1, rows: ["alpha/one: moved with no act"] }] }) + "\\n"); process.exit(1); }\nprocess.stdout.write(JSON.stringify({ ok: true, checks: [] }) + "\\n");\n'
+    : harm
     ? 'process.stdout.write(JSON.stringify({ ok: false, checks: [{ name: "moved", ok: false, count: 1, rows: ["alpha/one: moved with no act"] }] }) + "\\n"); process.exit(1);\n'
     : 'process.stdout.write(JSON.stringify({ ok: true, checks: [] }) + "\\n");\n');
   writeFileSync(join(seed, "package.json"), JSON.stringify({ name: "world-fixture", scripts: {
@@ -173,6 +178,8 @@ process.stdout.write(JSON.stringify({
   const origin = join(root, "world.git");
   execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin], { stdio: "ignore" });
   g(seed, "push", "-q", origin, "main");
+  const pushes = join(root, "pushes");
+  writeFileSync(join(origin, "hooks", "post-receive"), `#!/bin/sh\ncat >> "${pushes.replace(/\\/g, "/")}"\n`, { mode: 0o755 });
   // The office's world clone is only where the crossing reads origin's URL.
   const worldClone = join(root, "world-clone");
   execFileSync("git", ["clone", "-q", origin, worldClone], { stdio: "ignore" });
@@ -190,7 +197,7 @@ process.stdout.write(JSON.stringify({
   const townClone = join(root, "town");
   execFileSync("git", ["clone", "-q", townOrigin, townClone], { stdio: "ignore" });
 
-  return { root, office, origin, worldClone, townClone };
+  return { root, office, origin, worldClone, townClone, pushes };
 }
 
 /** Every ref on the bare origin, tags included: what "nothing left the run" is measured on. */
@@ -217,8 +224,8 @@ export function cross(b, env = {}) {
       SETTLEMENT_REPORT: files.report,
       SETTLEMENT_SOURCE: "store",
       STATE_LOG_SOURCE: "store",
-      // As on the box: /etc/postmark-office.env carries TOWN_PUSH=1, which is
-      // what makes the photograph's penCommit a push.
+      // As on the box: /etc/postmark-office.env carries TOWN_PUSH=1, which
+      // makes the photograph's penCommit a push unless the crossing says not.
       TOWN_PUSH: "1",
       // The retire step runs only with a pen. Nothing listens on port 1.
       WORLD2_CLEARING_URL: "postgres://nobody@127.0.0.1:1/world2_rehearsal",

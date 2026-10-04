@@ -26,6 +26,7 @@ import { doorstepBundle } from "../src/doorstep-bundle.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { unreadFor, UNREAD_LISTED } from "../src/unread-store.mjs";
 import { installActsPen, uninstallActsPen, RECORD_ON } from "./acts-pen-stub.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 const AS_OF = "unreadfixture000000000000000000000000000";
 // Two households. House A keeps ann and amos; house B keeps bea. With an empty
@@ -51,12 +52,13 @@ function fixtureDb() {
   for (const h of ["ann", "amos", "bea"])
     insR.run(h, JSON.stringify({ handle: h, is_office: false, address: { data: { since: "2026-01-01", joined: "2026-06-01" } } }));
   const insL = db.prepare("INSERT INTO letters VALUES (?,?,?,?,?,?,?,?,?,?)");
-  const insD = db.prepare("INSERT INTO ledger (kind, date, id, from_h, to_h, json) VALUES ('delivery',?,?,?,?,NULL)");
+  // json is the event itself, as the hydrator writes every ledger line (town-index.mjs § ledgerLines); the store refuses a null
+  const insD = db.prepare("INSERT INTO ledger (kind, date, id, from_h, to_h, json) VALUES ('delivery',?,?,?,?,?)");
   for (const l of [...TO_ANN, ...TO_AMOS, ...FROM_ANN, UNDELIVERED]) {
     const at = `${l.date}T12:00:00.000Z`;
     insL.run(l.id, l.from, l.to, l.date, null, "inbox", l.to, `WHITE_PAGES/${l.to}/inbox/${l.id}.md`,
       JSON.stringify({ ...l, body: `# ${l.id}`, delivered_at: at }), at);
-    if (l !== UNDELIVERED) insD.run(l.date, l.id, l.from, l.to);
+    if (l !== UNDELIVERED) insD.run(l.date, l.id, l.from, l.to, JSON.stringify({ kind: "delivery", date: l.date, id: l.id, from: l.from, to: l.to }));
   }
   // The correspondence law's own row, as the town derives it: ann's newest
   // conversation is bea's, so the law calls it new_inbound.
@@ -104,6 +106,11 @@ function opensTable() {
 }
 
 let db, opens, pen;
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 beforeEach(() => {
   process.env.WORLD2_PG = RECORD_ON.WORLD2_PG;
   process.env.WORLD2_PG_URL = RECORD_ON.WORLD2_PG_URL;

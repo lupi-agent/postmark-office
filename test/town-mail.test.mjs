@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { fixtureDb, fixtureKey } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
 import {
   hotLetters, hotMailBlock, logLetter, MAIL_ACT, MAIL_DOOR,
@@ -30,6 +31,12 @@ import { appendJournal, CLASS_MARK } from "../src/world-journal.mjs";
 import { enqueueLetter, outboxRelPath, validateLetter } from "../src/write.mjs";
 import { DYNAMIC_SCHEMA } from "../src/dynamic-store.mjs";
 import { townClone } from "./fixture-paths.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 delete process.env.TOWN_PUSH; // belt and braces: nothing here may leave the machine
 
@@ -80,6 +87,11 @@ function mailClone() {
 }
 
 const db = fixtureDb();
+// The checks this file calls in-process read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX_IN = await indexStore(db);
+const IX_IN_RESTORE = await IX_IN.useInProcess();
+test.after(async () => { await IX_IN_RESTORE(); await IX_IN.stop(); });
 const ok = { from: "wright", to: "limen", title: "a fine hat", thread: "new", body: "Limen —\n\nA test letter." };
 const limenKey = { household: "limen-house", handles: new Set(["limen"]) };
 
@@ -132,6 +144,7 @@ async function office(clone, env, run) {
   const tmp = mkdtempSync(join(tmpdir(), "pm-mailsrv-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  const IX_ENV = await storeFor(dbPath);
   // --oauth-db is a FLAG, not an env var, and it is where the town journal
   // lives: without it every spawned office in this file would share the repo's
   // own oauth.db and read the previous test's pending letters as its own.
@@ -143,7 +156,7 @@ async function office(clone, env, run) {
     env: {
       // two households at the door: wright's, and the recipient's own — the
       // mail law's second half cannot be read without a key that holds limen
-      ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: `${KEY}=keemin:wright;${LIMEN_KEY}=limen-house:limen`, TOWN_CLONE: clone,
+      ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV, OFFICE_KEYS: `${KEY}=keemin:wright;${LIMEN_KEY}=limen-house:limen`, TOWN_CLONE: clone,
       WORLD_CLONE: join(tmp, "no-world-clone"), VOICES_LOG: join(tmp, "voices.jsonl"),
       TOWN_PUSH: "", OAUTH_DB: join(tmp, "oauth.db"), ...env,
     },
@@ -546,6 +559,7 @@ test("the disclosed path survives a hyphenated recipient — it is carried, neve
       handle: "jetto-walk", is_office: false, last_active: null,
       address: { data: { since: "2026-08-01" }, body: "# jetto-walk" },
     }));
+    await IX_IN.reseed(); // the store holds the new resident too
     mkdirSync(join(clone, "WHITE_PAGES", "jetto-walk"), { recursive: true });
 
     const shown = await flagOn(async () => {

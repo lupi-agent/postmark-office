@@ -98,7 +98,10 @@ export async function embeddedScan({ handles, db, clone, urls }) {
     // The whole record, not just its prose: a home carries a body and named
     // image assets, and which field a URL sits in is not this hint's business.
     try {
-      const h = db ? homeQ(db, handle) : null;
+      // with TOWN_INDEX_READS=store, the store's home (POS-268); a store that
+      // cannot answer is an unreadable home, disclosed below like any other
+      const tis = await import("./town-index-store.mjs");
+      const h = tis.townIndexReads() ? await tis.storeIndexPooled(clone).home(handle) : db ? homeQ(db, handle) : null;
       if (h) sweep(JSON.stringify(h));
     } catch (e) {
       unreadable.push(`home (${handle}) — ${String(e?.message ?? e).slice(0, 120)}`);

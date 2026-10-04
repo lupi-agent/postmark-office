@@ -29,6 +29,7 @@ import {
 import { REGISTRY_PATH, serializeRegistry, serializePins, buildJoinFiles, buildBoardingFiles, planRegistryJoin } from "../src/residency.mjs";
 import { arrivalPage } from "../src/arrival.mjs";
 import { withRecordFrom } from "./registry-pool-stub.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -140,6 +141,12 @@ function bouncesOn(args, ctx, field, code) {
 }
 
 // ── the bounce list: one test per compiled objection ────────────────────────
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("bounce 11: a credential with no verified account is refused (the anti-sybil anchor)", () => {
   const db = fixtureDb();

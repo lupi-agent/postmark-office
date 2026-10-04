@@ -1,0 +1,225 @@
+{
+  "repo": "postmark-town/postmark-world",
+  "captured_at": "2026-10-01T08:10:12-04:00",
+  "views": {
+    "count": 50,
+    "uniques": 5,
+    "views": [
+      {
+        "timestamp": "2026-09-17T00:00:00Z",
+        "count": 9,
+        "uniques": 2
+      },
+      {
+        "timestamp": "2026-09-18T00:00:00Z",
+        "count": 4,
+        "uniques": 2
+      },
+      {
+        "timestamp": "2026-09-19T00:00:00Z",
+        "count": 7,
+        "uniques": 2
+      },
+      {
+        "timestamp": "2026-09-20T00:00:00Z",
+        "count": 6,
+        "uniques": 2
+      },
+      {
+        "timestamp": "2026-09-21T00:00:00Z",
+        "count": 1,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-22T00:00:00Z",
+        "count": 2,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-23T00:00:00Z",
+        "count": 1,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-24T00:00:00Z",
+        "count": 1,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-25T00:00:00Z",
+        "count": 3,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-26T00:00:00Z",
+        "count": 1,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-27T00:00:00Z",
+        "count": 12,
+        "uniques": 3
+      },
+      {
+        "timestamp": "2026-09-28T00:00:00Z",
+        "count": 0,
+        "uniques": 0
+      },
+      {
+        "timestamp": "2026-09-29T00:00:00Z",
+        "count": 3,
+        "uniques": 1
+      },
+      {
+        "timestamp": "2026-09-30T00:00:00Z",
+        "count": 0,
+        "uniques": 0
+      }
+    ]
+  },
+  "clones": {
+    "count": 5366,
+    "uniques": 642,
+    "clones": [
+      {
+        "timestamp": "2026-09-17T00:00:00Z",
+        "count": 1039,
+        "uniques": 91
+      },
+      {
+        "timestamp": "2026-09-18T00:00:00Z",
+        "count": 748,
+        "uniques": 87
+      },
+      {
+        "timestamp": "2026-09-19T00:00:00Z",
+        "count": 413,
+        "uniques": 78
+      },
+      {
+        "timestamp": "2026-09-20T00:00:00Z",
+        "count": 353,
+        "uniques": 36
+      },
+      {
+        "timestamp": "2026-09-21T00:00:00Z",
+        "count": 412,
+        "uniques": 67
+      },
+      {
+        "timestamp": "2026-09-22T00:00:00Z",
+        "count": 167,
+        "uniques": 25
+      },
+      {
+        "timestamp": "2026-09-23T00:00:00Z",
+        "count": 368,
+        "uniques": 56
+      },
+      {
+        "timestamp": "2026-09-24T00:00:00Z",
+        "count": 360,
+        "uniques": 55
+      },
+      {
+        "timestamp": "2026-09-25T00:00:00Z",
+        "count": 231,
+        "uniques": 74
+      },
+      {
+        "timestamp": "2026-09-26T00:00:00Z",
+        "count": 289,
+        "uniques": 83
+      },
+      {
+        "timestamp": "2026-09-27T00:00:00Z",
+        "count": 310,
+        "uniques": 66
+      },
+      {
+        "timestamp": "2026-09-28T00:00:00Z",
+        "count": 165,
+        "uniques": 35
+      },
+      {
+        "timestamp": "2026-09-29T00:00:00Z",
+        "count": 180,
+        "uniques": 35
+      },
+      {
+        "timestamp": "2026-09-30T00:00:00Z",
+        "count": 331,
+        "uniques": 66
+      }
+    ]
+  },
+  "popular_paths": [
+    {
+      "path": "/postmark-town/postmark-world/tree/draft/foundoutanyway/WORLD/marks",
+      "title": "/tree/draft/foundoutanyway/WORLD/marks",
+      "count": 10,
+      "uniques": 1
+    },
+    {
+      "path": "/postmark-town/postmark-world",
+      "title": "Overview",
+      "count": 5,
+      "uniques": 2
+    },
+    {
+      "path": "/keeminlee/postmark-world/blob/draft/foundoutanyway/WORLD/marks/keith/waiting-room-stool-2026-09-10/mark.md",
+      "title": "/blob/draft/foundoutanyway/WORLD/marks/keith/waiting-room-stool-2026-09-10/mark.md",
+      "count": 4,
+      "uniques": 1
+    },
+    {
+      "path": "/keeminlee/postmark-world",
+      "title": "Overview",
+      "count": 3,
+      "uniques": 1
+    },
+    {
+      "path": "/keeminlee/postmark-world/pull/100",
+      "title": "/pull/100",
+      "count": 2,
+      "uniques": 1
+    },
+    {
+      "path": "/keeminlee/postmark-world/pull/100/changes",
+      "title": "/pull/100/changes",
+      "count": 2,
+      "uniques": 1
+    },
+    {
+      "path": "/keeminlee/postmark-world/pulls",
+      "title": "/pulls",
+      "count": 2,
+      "uniques": 1
+    },
+    {
+      "path": "/postmark-town/postmark-world/blob/bedd849edc9452189d494b12a89320bbc14ecbee/STATE/log/213.jsonl",
+      "title": "/blob/bedd849edc9452189d494b12a89320bbc14ecbee/STATE/log/213.jsonl",
+      "count": 2,
+      "uniques": 1
+    },
+    {
+      "path": "/postmark-town/postmark-world/blob/draft/heatherado/WORLD/marks/let-there-be-light/evermoon/the-violet-archive/mark.md",
+      "title": "/blob/draft/heatherado/WORLD/marks/let-there-be-light/evermoon/the-violet-archive/mark.md",
+      "count": 2,
+      "uniques": 1
+    },
+    {
+      "path": "/postmark-town/postmark-world/commits/main",
+      "title": "/commits/main",
+      "count": 2,
+      "uniques": 1
+    }
+  ],
+  "popular_referrers": [
+    {
+      "referrer": "github.com",
+      "count": 2,
+      "uniques": 2
+    }
+  ]
+}

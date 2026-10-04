@@ -112,6 +112,63 @@ export async function backfillHomeShelf({
   return { urls, skipped, dedup, minted };
 }
 
+// ── the ledger ───────────────────────────────────────────────────────────────
+
+/**
+ * The media ledger this run spends quota on, and how to put it away (POS-271).
+ * The office's own switch decides where it is:
+ *
+ *   unswitched   oauth.db, as always. A DRY run gets a throwaway COPY: every
+ *                read (what this household already holds, what its quota has
+ *                spent) is the real current state, and every write lands in a
+ *                file deleted at the end.
+ *   switched     the store's office_media (OFFICE_PAPERWORK_STORE=1), the paper
+ *                the office itself writes, with oauth.db as its rollback mirror
+ *                when the file is here. A DRY run is ONE store client inside a
+ *                transaction that `done()` rolls back: the same real reads, and
+ *                writes that are never committed. Copying the file instead
+ *                would read the mirror, which is the store's past.
+ *
+ * `where` says which, for the run's own header. `done()` closes the file,
+ * removes a dry copy, rolls a dry transaction back and closes the store pool.
+ */
+export async function openLedger({ path, dry = false, env = process.env }) {
+  const { openOauthDb, oauthSchema } = await import("../src/oauth.mjs");
+  const { openPaper, paperOnPool, paperworkStoreOn, closePaperworkPools } = await import("../src/paperwork.mjs");
+  if (!paperworkStoreOn(env)) {
+    if (!dry) {
+      const odb = openOauthDb(path);
+      return { odb, where: path, done: async () => { try { odb.close(); } catch { /* already closed */ } } };
+    }
+    const tmp = mkdtempSync(join(tmpdir(), "backfill-home-shelf-"));
+    const copy = join(tmp, "oauth.db");
+    const had = existsSync(path);
+    if (had) copyFileSync(path, copy);
+    const odb = openOauthDb(copy);
+    return {
+      odb, where: `${copy}  (throwaway copy of ${path}${had ? "" : " — which does not exist here, so the copy is empty"})`,
+      // close before removing: an open sqlite handle holds the throwaway file
+      // open on Windows, and the rm answers EPERM over a run that otherwise
+      // succeeded
+      done: async () => { try { odb.close(); } catch { /* already closed */ } rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); },
+    };
+  }
+  if (!dry) {
+    const odb = await openPaper(path, { schema: oauthSchema, env });
+    return { odb, where: `the store's office_media${odb.file ? `, mirrored to ${path}` : ""}`, done: async () => { odb.close(); await closePaperworkPools(); } };
+  }
+  const reader = await openPaper(path, { readOnly: true, env });
+  const client = await reader.pool.connect();
+  await client.query("BEGIN");
+  const odb = paperOnPool({ query: (sql, args) => client.query(sql, args) });
+  return {
+    odb, where: "the store's office_media, inside one transaction rolled back at the end — nothing is committed",
+    done: async () => {
+      try { await client.query("ROLLBACK"); } finally { client.release(); await closePaperworkPools(); }
+    },
+  };
+}
+
 // ── entry guard ──────────────────────────────────────────────────────────────
 // The junction lesson (2026-09-05, HQ memory `junctions-defeat-main-guards`):
 // `pathToFileURL(process.argv[1]).href === import.meta.url` is FALSE when the
@@ -153,7 +210,7 @@ if (isMain) {
       if (!process.env[k]) { process.env[k] = v; stubbed.push(k); }
   }
   const { uploadMedia, mediaConfigured, MEDIA_BASE } = await import("../src/media.mjs");
-  const { openOauthDb, householdFor } = await import("../src/oauth.mjs");
+  const { householdFor } = await import("../src/oauth.mjs");
   const { DatabaseSync } = await import("node:sqlite");
 
   // The door's resolver wants the arguments the door has: a verified GitHub id
@@ -198,16 +255,8 @@ if (isMain) {
   const manifest = JSON.parse(readFileSync(MANIFEST, "utf8"));
   const images = manifest.images ?? {};
 
-  // The dry ledger is a COPY: every read (what this household already holds,
-  // what its quota has spent) is the real current state, and every write lands
-  // in a file that is deleted at the end of the run.
-  let dbPath = OAUTH_DB, tmp = null;
-  if (DRY) {
-    tmp = mkdtempSync(join(tmpdir(), "backfill-home-shelf-"));
-    dbPath = join(tmp, "oauth.db");
-    if (existsSync(OAUTH_DB)) copyFileSync(OAUTH_DB, dbPath);
-  }
-  const odb = openOauthDb(dbPath);
+  const ledger = await openLedger({ path: OAUTH_DB, dry: DRY });
+  const { odb } = ledger;
 
   // The dry mock stands in for the R2 PUT and records what it was handed. Its
   // tally is a CROSS-CHECK, never the headline count — see the note in
@@ -220,7 +269,7 @@ if (isMain) {
   console.log(`  manifest ${MANIFEST}`);
   console.log(`  staging  ${STAGING}`);
   console.log(`  town     ${TOWN}`);
-  console.log(`  ledger   ${DRY ? `${dbPath}  (throwaway copy of ${OAUTH_DB}${existsSync(OAUTH_DB) ? "" : " — which does not exist here, so the copy is empty"})` : dbPath}`);
+  console.log(`  ledger   ${ledger.where}`);
   if (stubbed.length) console.log(`  note     R2 credentials absent; ${stubbed.join(", ")} stubbed for the dry run and the PUT is mocked`);
   console.log("");
 
@@ -261,9 +310,7 @@ if (isMain) {
     for (const r of rows) console.log(`    ✗ ${r.handle} — ${r.why}${r.file ? `  [${basename(r.file)}]` : ""}`);
   }
 
-  // close before removing: an open sqlite handle holds the throwaway file open
-  // on Windows, and the rm answers EPERM over a run that otherwise succeeded
-  if (tmp) { try { odb.close(); } catch { /* already closed */ } rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); }
+  await ledger.done();
   // A run that hands back no URL at all did not do its job, however it failed —
   // and the box's first real run is why this exits loudly: CR-tainted R2 env
   // made every PUT throw, and the honest answer is a non-zero exit with every

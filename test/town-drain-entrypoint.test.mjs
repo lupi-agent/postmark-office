@@ -52,6 +52,7 @@ import { fixtureDb } from "./fixture.mjs";
 import { appendTownJournal, ensureTownJournal } from "../src/town-journal.mjs";
 import { letterDate, outboxRelPath } from "../src/write.mjs";
 import { MAIL_ACT } from "../src/town-mail.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TOOL = join(ROOT, "tools", "town-drain-run.mjs");
@@ -99,13 +100,18 @@ async function seededDb(seed) {
 }
 
 /** Run the REAL entrypoint and read what an operator reads. */
-function runTool(clone, odbPath, { dbPath = null, args = [] } = {}) {
+function runTool(clone, odbPath, { dbPath = null, args = [], noRecord = false } = {}) {
+  // noRecord: the tool on office.db with no record at all, the old way. Only the
+  // deferral test below asks for it; that class is decided in office.db's
+  // deletion (POS-268, 5a), where an office with no record cannot boot.
+  const env = noRecord ? { ...process.env, TOWN_SINGLE_LOG: "1" } : { ...process.env, ...IX.env, TOWN_SINGLE_LOG: "1" };
+  if (noRecord) delete env.TOWN_INDEX_READS;
   const res = { status: 0, stdout: "", stderr: "" };
   try {
     res.stdout = execFileSync(process.execPath,
       [TOOL, "--clone", clone, "--oauth-db", odbPath, "--unlocked", "--json",
         ...(dbPath ? ["--db", dbPath] : []), ...args],
-      { encoding: "utf8", env: { ...process.env, TOWN_SINGLE_LOG: "1" } });
+      { encoding: "utf8", env });
   } catch (e) {
     res.status = e.status ?? 1;
     res.stdout = e.stdout ?? "";
@@ -120,6 +126,12 @@ const outbox = (clone, h) => {
 };
 
 test.after(() => { for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5 }); });
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("THE ENTRYPOINT SETTLES: a letter row becomes real files, and the tool exits 0", async () => {
   // CAN-FAIL, and it is the half that catches the exact defect: drop the
@@ -171,7 +183,7 @@ test("THE ENTRYPOINT REFUSES: a deferred row reaches `$?` as a 1, and stays pend
     });
   });
 
-  const r = runTool(clone, odbPath, { dbPath: indexDb() });
+  const r = runTool(clone, odbPath, { dbPath: indexDb(), noRecord: true });
   assert.equal(r.status, 1, "a refusal is an exit 1, or the ferry chain runs on past it");
   const report = JSON.parse(r.stdout);
   assert.equal(report.ran, false);

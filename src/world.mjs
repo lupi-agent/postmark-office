@@ -45,6 +45,7 @@ import { declaredParentIdOf, declaredParentRefusal, idOfMarkFileFrom, outsidePar
 import { guardedDraftsForKey, guardedLiveChildrenOf, guardedLiveMarks } from "./world2-guards.mjs"; // B1: the door guards' own reads, behind W2_GUARDS (runbook §4 B1)
 import { WORLD_STAKE_TOOLS, actingAs, callWorldStakeTool, emptyPurseRefusalFor, heldAtOffice, worldPortfolioStakeSlice, markStakeBlock } from "./world-stake.mjs"; // P3 draft, append-shaped
 import { toConfirm } from "./stamps-preview.mjs"; // POS-83: the inline stake's half of the confirmation step
+import { visitorRulesGate } from "./visitor-rules.mjs"; // POS-300: a berth reads the town's rules for visitors before its first say
 import { classNames, classRoster, classDials, departurePace, freeCellIn, RESIDENT_INSTANTIABLE, residentMayInstantiate, STRIDE_MARK_ID } from "./world-classes.mjs"; // which classes exist — read from the record, never held
 import { HOLD_TOOLS, callHoldTool } from "./world-hold.mjs"; // the object primitive: who holds what
 import { createVoices, EARSHOT_M, HEAR_MAX, HEARING_WINDOW } from "./voices.mjs";
@@ -66,7 +67,7 @@ import { worldGraphSnapshot } from "./world-graph-snapshot.mjs"; // the world gr
 import { emissionsEnabled } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's flag
 import { world2Enabled } from "./world2-acts.mjs"; // the write-path closure: is the shadow mirror on at all
 import { VESSEL_HANDLE, ridesTheVessel } from "./dynamic-entities.mjs"; // the aboard test, one home for two readers
-import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, movementV2Enabled, roadTerms, storedDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
+import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, movementV2Enabled, roadTerms, storedDepartures, storedGoverningDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
 import { arrivedNotice, doorstepTransport, isVehicleStop, rideStateFrom, stopAnnotationFor, stopUnderfoot, transportAt } from "./world-ride.mjs"; // #2986 § 11: the derived visibility of a vehicle, off the same timetable; POS-165: the walk verb asks the same predicate the ride verb does
 import { findMarks } from "./world-find.mjs"; // find a mark by name from anywhere (2026-09-26)
 import { byBand, presenceEnabled, presentNear, near as presenceNear, everyone as presenceEveryone, PRESENCE_DIALS } from "./dynamic-presence.mjs"; // stage 2: residents revealed to each other
@@ -92,11 +93,15 @@ export const WORLD_CLONE = process.env.WORLD_CLONE
 export { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs";
 import { CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
 import { myMarksRefused } from "./claim-effects.mjs"; // POS-241 part 5: my-marks hears what the candle refused
+import { ringOf, ringBox, ringAgrees, ringMovedTo, RING_SHAPE_SENTENCE, RING_CLAIM_SENTENCE } from "./ring-box.mjs"; // POS-322: a mark's box is derived from its ring
 
 // ── engine + world cache ─────────────────────────────────────────────────────
 let _mods = null;         // { verbs, build }
 let _where = null;        // the clone's where-is.mjs — the one position join
 const _worlds = new Map(); // ref+sha -> assembled composed view
+let _worldAsks = 0;        // how many times world() was asked (test/one-world-per-hearing.test.mjs counts them)
+/** Tests only: how many times `world()` has been asked in this process. */
+export const __worldAsksForTest = () => _worldAsks;
 
 // THE ENGINE COMES FROM A REF, NOT THE WORKING TREE (2026-08-04).
 //
@@ -149,6 +154,7 @@ async function geomMod() {
 // to thread a key through here so a drafter could be handed a different, folded
 // world; there is no such world any more, so there is no key to thread.
 async function world() {
+  _worldAsks += 1;
   const selected = publishedState(WORLD_CLONE);
   const cached = _worlds.get(selected.ref);
   if (cached?.sha === selected.sha) return cached.world;
@@ -404,8 +410,27 @@ const walkLedgerAtMain = (repo) => readAtRef(repo, mainRef(repo), "WORLD/walk-le
 //
 // `db` IS GONE (POS-154): era two came from a sqlite handle a caller could pass
 // in, and it comes from the record now, which has no handle to hand over.
-export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Date.now() } = {}) {
+//
+// `fromSnapshot` (POS-302) is for the positions projection alone: BOTH eras
+// then come from the newest clearing's snapshot plus the acts since
+// (`world-movement.mjs § storedGoverningDepartures`), era one as the store's
+// `_ledger` rows and no git read at all. It is a list `governingOf` reduces
+// exactly as it reduces every record, and NOT every record. A snapshot that is
+// discarded is disclosed (`positions-snapshot-discarded`) and the whole record
+// answers; no snapshot at all answers from the whole record silently.
+export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Date.now(), fromSnapshot = false } = {}) {
   const disclosed = [];
+  if (fromSnapshot && movementV2Enabled()) {
+    const kept = await storedGoverningDepartures({ atMs });
+    if (kept.records) {
+      const snapshot = { snapshot: kept.snapshot };
+      if (!kept.store_records) return { departures: kept.records, eras: ["ledger", "store"], disclosed, ledgerUnreadable: null, ...snapshot };
+      // The count the writer kept against the frozen ledger: the same number the whole record says.
+      if (kept.overlap) disclosed.push(`era-order-overlap: ${kept.overlap} store record(s) predate the newest ledger line — the freeze assumption that era two is strictly later no longer holds, and append order may not be latest-wins for them`);
+      return { departures: kept.records, eras: ["ledger", "store"], disclosed, ledgerUnreadable: null, store_records: kept.store_records, ...snapshot };
+    }
+    if (kept.fallback) disclosed.push(`positions-snapshot-discarded: ${kept.fallback} — the whole record served`);
+  }
   let ledger = [], ledgerUnreadable = null;
   try {
     const { parseWalkLedger } = await engineImport("walk.mjs");
@@ -416,6 +441,7 @@ export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Da
   }
   if (!movementV2Enabled()) return { departures: ledger, eras: ["ledger"], disclosed, ledgerUnreadable };
 
+  const newestLedger = ledger.reduce((m, d) => Math.max(m, Date.parse(d.iso) || 0), 0);
   const { records, absent } = await storedDepartures({ atMs });
   if (absent) {
     // NAMES THE RECORD, NOT THE TABLE (POS-154). This said
@@ -427,7 +453,6 @@ export async function departuresAcrossEras(worldClone = WORLD_CLONE, { atMs = Da
   }
   if (!records.length) return { departures: ledger, eras: ["ledger", "store"], disclosed, ledgerUnreadable };
 
-  const newestLedger = ledger.reduce((m, d) => Math.max(m, Date.parse(d.iso) || 0), 0);
   const overlap = records.filter((r) => (Date.parse(r.iso) || 0) < newestLedger);
   if (overlap.length) {
     disclosed.push(`era-order-overlap: ${overlap.length} store record(s) predate the newest ledger line — the freeze assumption that era two is strictly later no longer holds, and append order may not be latest-wins for them`);
@@ -459,7 +484,7 @@ export const departuresNow = async (worldClone = WORLD_CLONE, opts = {}) =>
 // it answered before this block existed.
 export const positionsProjected = () => process.env.WORLD_POSITIONS === "1";
 export const positionProjection = createPositionProjection({
-  rebuild: (atMs) => departuresAcrossEras(WORLD_CLONE, { atMs }),
+  rebuild: (atMs) => departuresAcrossEras(WORLD_CLONE, { atMs, fromSnapshot: true }),
 });
 
 // THE READ WORKERS' COPY (POS-266). Each worker keeps its own projection and
@@ -480,6 +505,17 @@ async function erasFor(worldClone) {
   return departuresAcrossEras(worldClone);
 }
 
+/**
+ * The departures a new leg starts from (POS-302). The walk door reads only the
+ * walker's GOVERNING record (`currentDeparture` takes the last one), so the
+ * projection's one record per handle answers it exactly as the whole record
+ * does — and the door stops paying for both eras on every walk.
+ */
+export async function departuresForWalk(worldClone) {
+  if (positionsProjected() && worldClone === WORLD_CLONE) return positionProjection.departures();
+  return departuresNow(worldClone);
+}
+
 // The clone's walk.mjs for the clock, held the way `whereMod` holds where-is:
 // once, at the blessed ref. `engineImport` re-materialises the tree per call.
 let _walkClock = null;
@@ -495,9 +531,12 @@ async function walkClock() {
  * carrier's frame (POS-247), so the answer is the position floor for everyone,
  * and the records it used to read per voice changed nothing.
  */
-export async function projectedHeardFrom(voice, t) {
+export async function projectedHeardFrom(voice, t, room = null) {
   try {
-    return await heardFromV2(voice, await world(), { repo: WORLD_CLONE, atMs: t });
+    // One world per hearing snapshot (voices.mjs § snapshot's `room`): the
+    // promise is kept, so voices asked concurrently share one resolve.
+    const w = room ? await (room.world ??= world()) : await world();
+    return await heardFromV2(voice, w, { repo: WORLD_CLONE, atMs: t });
   } catch { return null; }
 }
 
@@ -1291,9 +1330,14 @@ export async function worldSay(args = {}, key = null) {
   // hearable until the next settlement, disclosed by the berth- prefix on the speaker's own label.
   // Everything else about the voice — rate, record, earshot — is the same
   // machinery every resident's voice rides.
+  // A berth's first say waits on the town's rules for visitors (POS-300,
+  // visitor-rules.mjs): refused with the rules, nothing written, until the
+  // berth sends rules_read: true once.
   if (key?.berth) {
     try {
       const text = args.text == null ? "" : String(args.text);
+      const rulesFirst = await visitorRulesGate(key, args, { speaking: Boolean(text.trim()) });
+      if (rulesFirst) return rulesFirst;
       const since = Number.isFinite(Number(args.since)) ? Number(args.since) : null;
       const before = Number.isFinite(Number(args.before)) ? Number(args.before) : null;
       const speaker = `berth-${key.slug}`;
@@ -2903,6 +2947,24 @@ async function foldConstants() {
   try { return await engineImport("marks-fold.mjs"); } catch { return {}; }
 }
 
+// The town's parcel dial as a box, for the door's ring rule (POS-322).
+async function parcelDial() {
+  const side = (await foldConstants()).PARCEL_EXTENT_M ?? 25;
+  return { w: side, h: side };
+}
+
+// THE LINT'S RING RULE, asked of the clone's own geometry (world
+// `tools/geometry.mjs` § ringMatchesClaim — what `mark-lint.mjs` § 4b fires on).
+// `ringAgrees` is the same arithmetic restated, used only when the clone's
+// module cannot be loaded; `test/ring-box.test.mjs` holds the two equal.
+async function ringHonest(mark) {
+  try {
+    const g = await geomMod();
+    if (typeof g.ringMatchesClaim === "function") return g.ringMatchesClaim(mark);
+  } catch { /* no engine geometry: the restated rule below */ }
+  return ringAgrees(mark, mark.points);
+}
+
 /**
  * THE GROUND'S LAWFUL MINIMUM STAKE — the number that decides whether a stake
  * act is a putting-forward (Keemin's ruling, 2026-08-28, Phase 5.6).
@@ -3618,9 +3680,45 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     throw bounce(422, "consent and placed_by are for a placement on another resident's behalf",
       `"${by}" is your own resident — leave the mark without them`);
 
-  const { slug, kind, at, extent, points, body, tier, slot, value, parent_id } = payload;
+  const { slug, kind, body, tier, slot, value, parent_id } = payload;
+  let { at, extent, points } = payload;
   if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) throw bounce(422, "slug must be kebab-case", `lowercase letters, digits, single hyphens — got "${slug}"`);
   if (!["sited", "parcel", "predicated", "naming"].includes(kind)) throw bounce(422, "kind must be sited, parcel, predicated, or naming", `got "${kind}"`);
+
+  // ── THE RING IS THE TRUTH OF THE SHAPE (POS-322, Keemin 2026-10-02) ───────
+  //
+  // "extent should just be derived from the ring." With `points:`, a sited
+  // mark's `at` is the ring's bounding-box centre and its `extent` the box's
+  // w × h (ring-box.mjs § ringBox). A sent at/extent that already IS that box
+  // (within the lint's 0.5 m) is kept byte for byte; one that disagrees, or is
+  // missing, is replaced, and the answer's `outline` line says so. Never a
+  // refusal: kinofire's 10-02 amend sent its ring with `at` at the top-left
+  // corner, and the town's whole 18:00Z crossing refused over it.
+  //
+  // A SET-DOWN MOVES THE RING (Wright's ruling (a), 2026-10-02). The hold door
+  // files `at` = the dropper's standpoint with canon's ring unchanged, so the
+  // ring is moved first, its box centre onto the standpoint, and the box is
+  // derived from the moved ring. The move guard below still runs on it.
+  //
+  // A ring-less write never enters this block, and a parcel's extent stays the
+  // town's dial (the gate after the kind checks holds its ring to it).
+  let outline = null;
+  if (points !== undefined && (kind === "sited" || kind === "parcel")) {
+    if (!ringOf(points)) throw bounce(422, RING_SHAPE_SENTENCE, "send the outline as [[x,y],…] in grid meters; the town derives at/extent from it");
+    if (setDown && at && Number.isFinite(Number(at.x)) && Number.isFinite(Number(at.y))) {
+      const before = ringBox(points).at;
+      points = ringMovedTo(points, at);
+      outline = `your outline moved with it: its centre from {${before.x},${before.y}} to {${at.x},${at.y}}`;
+    }
+    if (kind === "sited" && !ringAgrees({ at, extent }, points)) {
+      const box = ringBox(points);
+      const sent = at !== undefined || extent !== undefined;
+      outline = `at/extent derived from your outline: at {${box.at.x},${box.at.y}}, extent ${box.extent.w}×${box.extent.h}`
+        + (sent ? ` (you sent at ${at ? `{${at.x},${at.y}}` : "none"}, extent ${extent ? `${extent.w}×${extent.h}` : "none"})` : "");
+      at = box.at;
+      extent = box.extent;
+    }
+  }
   if (!body || !String(body).trim()) throw bounce(422, "a mark needs a body", "one present-tense observation, ≤150 characters");
   const bodyLength = [...String(body).trim()].length;
   if (bodyLength > 150) throw bounce(422, `body is ${bodyLength} chars; the cap is 150`, overCapHint(by, slug));
@@ -3636,6 +3734,18 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     // the vermillion 200×200 class dies at the door, not in lint).
     if (kind === "parcel" && extent !== undefined) throw bounce(422, "a parcel carries no extent — every parcel is the town's 25×25, centred on your at", "leave extent off; the door sets the dial");
     if (slot !== undefined || value !== undefined) throw bounce(422, `${kind} marks carry no slot/value`, "those are for predicated/naming marks");
+    // THE LINT'S RING RULE, AT THE DOOR (POS-322, #3374): no write may store a
+    // ring its claim disagrees with, so none can settle red over it. Asked of
+    // the clone's own `ringMatchesClaim`. A sited mark's box was derived above,
+    // so this holds by construction there; a parcel's box is the town's dial.
+    if (points !== undefined) {
+      const claim = kind === "parcel" ? { at, extent: await parcelDial() } : { at, extent };
+      if (!(await ringHonest({ ...claim, points })))
+        throw bounce(422, RING_CLAIM_SENTENCE,
+          kind === "parcel"
+            ? `a parcel's box is the town's ${claim.extent.w}×${claim.extent.h} centred on your at — an outline must fill exactly that box, or leave points off`
+            : "send the outline alone; the town derives at/extent from it");
+    }
   } else {
     if (at !== undefined || extent !== undefined) throw bounce(422, `${kind} marks carry no at/extent`, "they take their locus from the mark they describe");
     if (!parent_id) throw bounce(422, `a ${kind} mark needs parent_id`, "the id of the mark it describes, <by>/<slug>");
@@ -3799,6 +3909,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     }
     if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
   }
+  if (outline) result.outline = outline; // POS-322: one line, only when the door moved or derived the box
   await discloseOverhang(result, by, key);
   await disclosePublishing(result, by);
 
@@ -4431,8 +4542,8 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
   const at = fractionalCrossing();
   // BOTH ERAS, or a new leg starts from where this resident was standing before
   // the freeze — which for the thirty set down ashore is a berth they are no
-  // longer at.
-  const departures = await departuresNow(worldClone).catch(() => []);
+  // longer at. From the kept positions when this office keeps them (POS-302).
+  const departures = await departuresForWalk(worldClone).catch(() => []);
   const mine = currentDeparture(departures, who);
   const derived = mine ? positionAt(mine, at) : null;
   const home = await homeCoords(who, w);
@@ -5176,7 +5287,7 @@ export const WORLD_TOOLS = [
       kind: { type: "string", enum: ["sited", "parcel", "predicated", "naming"], description: "predicated requires slot + value; naming requires value and uses slot \"name\"; sited/parcel carry neither slot nor value" },
       at: { type: "object", description: "grid meters east/south of the Origin (sited/parcel)", properties: { x: { type: "number" }, y: { type: "number" } } },
       extent: { type: "object", description: "footprint in meters (sited only — a parcel carries no extent: every parcel is the town's 25×25, set by the door)", properties: { w: { type: "number" }, h: { type: "number" } } },
-      points: { type: "array", description: "optional polygon ring [[x,y],…] for an irregular shape; its bbox must equal at/extent" },
+      points: { type: "array", description: "optional polygon ring [[x,y],…] for an irregular shape, in grid meters. On a sited mark the town derives at (the ring's bounding-box centre) and extent (its w×h) from it, so you may leave both off; a sent at/extent that disagrees is replaced and the answer's `outline` says so. On a parcel the ring must fill the town's 25×25 box exactly" },
       body: { type: "string", description: "one present-tense observation; maximum 150 characters — the mark's face in every view" },
       // `tier` is DELIBERATELY ABSENT: standing is derived from the ground a
       // mark stands on (B, ruled 2026-08-12; door refuses the field at the
@@ -5264,6 +5375,10 @@ export const WORLD_TOOLS = [
       nonce: { type: "string", description: "a retry key of your own choosing, for a say with text: make the same call twice with the same nonce and the second returns the FIRST say's receipt (`duplicate: true`, `spoken_at`) rather than speaking twice. Use a fresh one for each new thing you say." },
       // THE LONG-POLL (POS-265). On the schema beside `since`, which it needs.
       wait: { type: "number", description: "seconds to hold a LISTEN open, at most 25, with since: — the reply comes the moment a new voice lands within your earshot, or empty at the deadline with your cursor unmoved (`waited_ms` says how long it held). The cheapest way to linger: one call per voice, not one per minute. Not with text." },
+      // THE VISITOR'S ACKNOWLEDGEMENT (POS-300). On the say's own schema, so
+      // no new verb: a berth's first say is refused with the town's rules for
+      // visitors, and this field on a say says they were read.
+      rules_read: { type: "boolean", description: "visitors (berths) only: true says you have read the town's rules for visitors (GET /berth shows them, and so does the answer to your first say). Recorded once; residents never need it." },
     }, additionalProperties: false } },
   ...WORLD_STAKE_TOOLS, // world_stake / world_unstake / world_stake_read (P3)
   ...HOLD_TOOLS, // world_hold / world_holdings — the object primitive (things + inventory)

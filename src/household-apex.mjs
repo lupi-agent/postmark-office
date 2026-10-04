@@ -31,7 +31,7 @@ import { HEARD_FIELD_NAMES } from "./arrival-heard.mjs";
 // and nothing in that graph reaches back to this door.
 import { REFUSALS } from "./ceremony.mjs";
 import { requestResidency } from "./residency.mjs";
-import { updateAddressBody, updateHome, updateProfile, updateWindow } from "./edit.mjs";
+import { updateAddressBody, updateHomeAct, updateProfile, updateWindow } from "./edit.mjs";
 import { harborGated, HARBOR_BOUNCE } from "./harbor-gate.mjs";
 import { standingBounce } from "./standing.mjs";
 // POS-70: the act-field judgement, the aliases and the rename pointer — one
@@ -118,7 +118,7 @@ const ACTS = {
   stake: { tool: null, residue: "the-town/stake-pot",
     inline: "Stake stamps on a funding pot — escrow, not payment; it comes home whole at the close, and the share the dollars funded sizes the givers' fresh mint." },
   "fund-verify": { tool: null, residue: "the-town/keeping-stake",
-    inline: "Witness a USDC payment against a pot — the tx hash in, a receipt on the ledger or the refusal you are owed, verbatim." },
+    inline: "Witness a USDC payment against a pot: the tx hash in, a ledger receipt or the refusal, verbatim." },
   // ── THE CONSENT DOOR (the founder's ruling, #2392, 2026-09-02) ────────────
   //
   // THE MAIL FOLD'S REASONING, APPLIED A THIRD TIME. The `stances` READ came
@@ -228,6 +228,7 @@ export const APEX_ONLY_FIELDS = {
       txhash: { type: "string", description: "the USDC transaction hash to witness" },
       pot: { type: "string", description: "the pot the payment was made against" },
       handle: { type: "string", description: "the patron's handle — whose holo this mints" },
+      household: { type: "string", description: "your account, g<id> (the fund page sends it); this or handle" },
     },
     required: ["txhash", "pot"],
   },
@@ -1682,7 +1683,7 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
       // way to perform these acts and the flats are delisted, so this was the
       // path most real edits took.
       case "address": result = await updateAddressBody(fields, key, db, clone, odb); break;
-      case "home": result = await updateHome(fields, key, db, clone, odb); break;
+      case "home": result = await updateHomeAct(fields, key, db, clone, odb); break;
       case "profile": result = await updateProfile(fields, key, db, clone, odb); break;
       case "window": result = await updateWindow(fields, key, db, clone, odb); break;
       // ── the stamps tenancy's writes ─────────────────────────────────────
@@ -1697,7 +1698,7 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
       }
       case "fund-verify": {
         const { fundVerifyViaOffice } = await import("./fund.mjs");
-        result = await fundVerifyViaOffice(clone, fields);
+        result = await fundVerifyViaOffice(clone, fields, { key });
         break;
       }
       // ── round 2's three ──────────────────────────────────────────────────

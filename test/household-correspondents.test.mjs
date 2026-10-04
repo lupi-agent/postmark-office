@@ -26,6 +26,7 @@ import { DatabaseSync } from "node:sqlite";
 import { SCHEMA } from "../src/schema.mjs";
 import { mailCorrespondents } from "../src/queries.mjs";
 import { householdApex } from "../src/household-apex.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 const db = new DatabaseSync(":memory:");
 db.exec(SCHEMA);
@@ -55,6 +56,12 @@ L("cipher-2026-08-11-to-argos-f", "cipher", "argos", "2026-08-11");
 
 const of = (h, opts) => mailCorrespondents(db, h, opts);
 const row = (ans, h) => ans.correspondents.find((c) => c.handle === h);
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(db);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("both directions count, and the list is the people you have exchanged letters with", () => {
   const a = of("wright");

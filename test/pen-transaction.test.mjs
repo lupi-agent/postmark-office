@@ -29,10 +29,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 
 import { penCommit, penTransaction, enqueueLetter, NOT_LANDED } from "../src/write.mjs";
+import { withRecordFrom } from "./registry-pool-stub.mjs";
 import {
   updateAddressBody, updateAddressFields, updateHome, updateProfile, updateWindow,
   updateProfileAvatar, updateHomeImage,
 } from "../src/edit.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sh = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -58,6 +60,10 @@ function town(files = {}) {
     "WHITE_PAGES/wright/PROFILE.md": "---\nbio: a keeper of the pen\n---\n",
     "WHITE_PAGES/wright/HOME/HOME.md": "---\ntitle: the fig house\n---\n\nA house with a fig tree.\n",
     "WHITE_PAGES/limen/ADDRESS.md": "---\nhandle: limen\ngithub: limen\nsince: 2026-01-01\n---\n\n# limen\n",
+    // The household registry (POS-219): the home image door keeps its picture
+    // on the household's record, and the drain renders these two files.
+    "tools/households.json": `${JSON.stringify({ schema_version: 1, households: { keemin: { residents: ["wright"] } } }, null, 2)}\n`,
+    "tools/github-ids.json": "{}\n",
     ...files,
   };
   for (const [rel, text] of Object.entries(seed)) {
@@ -104,6 +110,12 @@ test.after(() => { for (const d of homes) rmSync(d, { recursive: true, force: tr
 // ═══════════════════════════════════════════════════════════════════════════
 // penCommit — whole or nothing over its own paths
 // ═══════════════════════════════════════════════════════════════════════════
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore((await import("./fixture.mjs")).fixtureDb()); // the fixture town holds wright and limen, as mailDb() does
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
+
 test("P1 · A PUSH THAT CANNOT LAND leaves HEAD at the recorded sha and the tree exactly as it was", async () => {
   const t = town();
   const before = snapshot(t.clone);
@@ -235,7 +247,12 @@ const DOORS = [
   ["profile with a display name (two files, one commit)", () => updateProfile],
   ["window", () => updateWindow],
   ["profile avatar", () => updateProfileAvatar],
-  ["home image", () => updateHomeImage],
+  // POS-219: the home image door writes no page; its clone write is the
+  // registry file the drain renders after the store keeps the picture. So it
+  // runs with the record on (the pool stub) and a stub mint (no bucket), and
+  // the push that cannot land is the drain's.
+  ["home image", () => (args, k, db, clone) => withRecordFrom(clone, () =>
+    updateHomeImage(args, k, db, clone, null, { upload: async () => ({ url: "https://media.postmark.town/media/keemin/0f3c.png" }) }))],
 ];
 const DOOR_ARGS = {
   "address body": { handle: "wright", body: "A new card body." },
@@ -361,7 +378,7 @@ function execTown() {
 function runExec(t, exec, payload, { push = true } = {}) {
   const r = spawnSync(process.execPath, [join(ROOT, "src", exec), JSON.stringify(payload)], {
     encoding: "utf8",
-    env: { ...process.env, TOWN_CLONE: t.clone, STAMP_KEY: t.keyPath, TOWN_PUSH: push ? "1" : "", BOT_NAME: "fixture", BOT_EMAIL: "fixture@test.invalid" },
+    env: { ...process.env, ...IX.env, TOWN_CLONE: t.clone, STAMP_KEY: t.keyPath, TOWN_PUSH: push ? "1" : "", BOT_NAME: "fixture", BOT_EMAIL: "fixture@test.invalid" },
   });
   assert.equal(r.status, 0, `${exec} answers rather than trips: ${r.stderr}`);
   return JSON.parse(r.stdout.trim().split("\n").at(-1));
@@ -486,7 +503,7 @@ function stubbedTown() {
 function runStubbed(t, exec, payload) {
   const r = spawnSync(process.execPath, ["--import", pathToFileURL(t.register).href, join(ROOT, "src", exec), JSON.stringify(payload)], {
     encoding: "utf8",
-    env: { ...process.env, TOWN_CLONE: t.clone, TOWN_PUSH: "1", BOT_NAME: "fixture", BOT_EMAIL: "fixture@test.invalid",
+    env: { ...process.env, ...IX.env, TOWN_CLONE: t.clone, TOWN_PUSH: "1", BOT_NAME: "fixture", BOT_EMAIL: "fixture@test.invalid",
       PEN_TX_STUBS: JSON.stringify(t.stubs[exec]), PEN_TX_PARENT: `/src/${exec}` },
   });
   assert.equal(r.status, 0, `${exec} answers rather than trips: ${r.stderr}`);

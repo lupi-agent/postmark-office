@@ -28,12 +28,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { indexStoreFromTown } from "./helpers/office-under-test.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tmp = mkdtempSync(join(tmpdir(), "postmark-region-door-"));
 const town = join(tmp, "town");
 const dbPath = join(tmp, "office.db");
-let child, BASE;
+let child, BASE, IX;
 
 const put = (path, text) => {
   const full = join(town, path);
@@ -80,6 +81,8 @@ before(async () => {
   git("-c", "user.name=fixture", "-c", "user.email=fixture@test.invalid", "commit", "-q", "-m", "fixture town");
   execFileSync("node", [join(ROOT, "src", "hydrate.mjs"), "--town", town, "--db", dbPath],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // the store, seeded from the same town by the box's own ingest (POS-268)
+  IX = await indexStoreFromTown(town);
 
   // PORT 0 and per-run oauth/roles dbs, the idiom server.test.mjs settled on:
   // a fixed port and root-relative sqlite files are how two lanes on one box
@@ -87,7 +90,7 @@ before(async () => {
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", "0", "--db", dbPath,
     "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db")], {
     env: { ...process.env, WORLD_GRAPH_NONE: "1", TOWN_CLONE: join(tmp, "no-clone-here"), WORLD_CLONE: join(tmp, "no-world-clone"),
-      VOICES_LOG: join(tmp, "voices-log.jsonl"), TOWN_PUSH: "", WORLD_STORE_DB: join(tmp, "no-world.db") },
+      VOICES_LOG: join(tmp, "voices-log.jsonl"), TOWN_PUSH: "", WORLD_STORE_DB: join(tmp, "no-world.db"), ...IX.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   await new Promise((ok, no) => {
@@ -106,6 +109,7 @@ after(async () => {
     child.kill();
     await gone; // Windows keeps the db locked until the child is truly down
   }
+  await IX?.stop();
   rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 

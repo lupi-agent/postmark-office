@@ -19,8 +19,8 @@
 // office: the receipt, the history, the surveyed reading and the retry are the
 // REAL files, copied; the store tools, the registry pair and the escalation are
 // stubs that log their argv and, when not told to be dry, WRITE the way the
-// real tool writes — the photograph commits and pushes (penCommit under
-// TOWN_PUSH=1), the retirement writes a store row, the escalation files.
+// real tool writes — the photograph is the REAL writer and commits through the
+// real penCommit, the retirement writes a store row, the escalation files.
 //
 // The two tools whose own dry runs are trusted here are pinned on their own
 // ground: state-log-write's `dryRun` by test/state-log-write.test.mjs W6, and
@@ -112,8 +112,8 @@ test("D4b · a harm refusal under DRY is a full refusal receipt whose escalation
   const control = cross(b, { REGISTRY_N: "2" });
   assert.equal(control.res.status, 1);
   assert.match(control.escalations ?? "", /FILED harm/, "control: harm reaches a person");
-  // Its own registry content: the refused control above has already put its
-  // registry commit on origin (the photograph pushes main before the gate).
+  // Its own registry content, so the dry crossing has a registry commit of its
+  // own to withhold whatever the control left on origin.
   const run = cross(b, { SETTLEMENT_DRY: "1", REGISTRY_N: "3" });
   assert.equal(run.res.status, 1, why(run));
   assert.equal(run.receipt.status, "refused");

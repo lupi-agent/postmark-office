@@ -348,6 +348,41 @@ export function planStoreWriteDown(marks, { publishedPathOf = null, canonBytesAt
     return byHousehold.get(h);
   };
 
+  // ── A NESTED MARK FILES UNDER ITS PARENT (S93, 2026-10-03) ──────────────────
+  //
+  // `pathFor` files a mark that is neither sited nor a parcel (a naming mark, a
+  // predicate) at its parent's directory, but only when it is asked where the
+  // parent is. This plan never asked, so every such mark with a `parent_id` fell
+  // through to the root prefix: Jiang Haijing's naming mark
+  // (call-it-fengtian-lou) filed at WORLD/marks/let-there-be-light/ instead of
+  // under her parcel, and the keeper refused S93 on it. `planDrain` has always
+  // asked (world-drain.mjs § pathOf), and this is its answer in the store's
+  // terms: a parent in this same crossing files where THIS plan files it (a
+  // parcel and its name can arrive together); otherwise canon's filing; with
+  // neither, the root fallback, as before.
+  const byId = new Map(marks.map((m) => [m.id, m]));
+  const plannedPathOf = new Map();
+  const planPath = (m, seen) => {
+    if (plannedPathOf.has(m.id)) return plannedPathOf.get(m.id);
+    const kind = m.fileRec?.kind ?? m.kind ?? null;
+    const path = m.plannedPath ?? (kind ? pathFor(
+      { ...(m.fileRec ?? {}), kind, id: m.id, by: m.by, slug: m.slug },
+      {
+        publishedPathOf,
+        parentPathOf: (pid) => {
+          // a cycle in parent_id answers the root fallback rather than looping
+          if (seen.has(pid)) return null;
+          const parent = byId.get(pid);
+          const pp = parent ? planPath(parent, new Set([...seen, m.id]))
+            : (typeof publishedPathOf === "function" ? publishedPathOf(pid) : null);
+          return pp ? pp.replace(/\/mark\.md$/, "") : null;
+        },
+      },
+    ) : null);
+    plannedPathOf.set(m.id, path);
+    return path;
+  };
+
   const unchanged = [];
   const framed = [];
   for (const m of marks) {
@@ -377,10 +412,7 @@ export function planStoreWriteDown(marks, { publishedPathOf = null, canonBytesAt
         + "the root prefix instead of at its identity: a plausible path, silently wrong, that the sweep would publish.",
       );
     }
-    const path = m.plannedPath ?? pathFor(
-      { ...(m.fileRec ?? {}), kind, id: m.id, by: m.by, slug: m.slug },
-      { publishedPathOf },
-    );
+    const path = planPath(m, new Set());
     if (!path) {
       throw new FoldInputRefusal(
         "mark-without-path",

@@ -46,6 +46,7 @@
 // change" — but R1 rules stamps, not dollars, so this leans on it by analogy
 // and wants the founder's word before it is called law.
 
+import { parseAccountRef, readFundRegistry, fundHolder, meepLawOf } from "./fund-holder.mjs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
@@ -168,19 +169,51 @@ export async function fundVerify(clone, body, {
   // with per-pot addresses the shipped deploy/intake-addresses.json does not
   // have. Null reads the shipped file, which is what production does.
   potMap = null,
+  // the caller's key, when there is one: its GitHub account is the payer's (see THE KEY, below)
+  key = null,
 } = {}) {
-  const { txhash, pot, handle } = body ?? {};
+  const { txhash, pot } = body ?? {};
+  let handle = body?.handle;
+  // POS-317 (Keemin, 2026-10-02): a signed-in payer's form carries their account,
+  // `household: "g<id>"`, minted by the fund page, and types nothing. It resolves
+  // through src/fund-holder.mjs to the household's one holder, whose handle the
+  // receipt's `from:` names, exactly as the card and PayPal rails resolve it.
+  // A form that sends `handle` (older pages, a hand-built call) keeps that path.
+  //
+  // THE KEY, NOT THE BODY, SAYS WHOSE ACCOUNT IT IS (Wright's review of #331,
+  // 2026-10-02). The body's `household` is a claim anyone can type. When the
+  // call carries a signed-in key with a GitHub account, the account is the
+  // KEY's: a body that names no account takes it, and a body that names a
+  // DIFFERENT account is refused by name. A call with no such key (signed out,
+  // or a static household key with no account) keeps the body's word, as before.
+  const keyAccount = key?.ghId != null ? String(key.ghId) : null;
+  if (keyAccount && body?.household != null && parseAccountRef(body.household) !== keyAccount)
+    throw bounce(403, `household ${body.household} is not the account you are signed in as (g${keyAccount})`,
+      "a payment goes in the name of the household your own sign-in holds; send no household and the door takes yours");
+  // AND A HANDLE IS HELD TO THE SAME KEY (Plumb's review of #333, 2026-10-04):
+  // a signed-in caller who names a handle instead of an account may name only a
+  // resident its key acts for. Without this the 403 above was a door with a wall
+  // beside it — `{ handle: "carol" }` from someone else's key credited carol.
+  if (keyAccount && handle && key?.handles instanceof Set && !key.handles.has(String(handle)))
+    throw bounce(403, `"${handle}" is not one of the residents you are signed in as`,
+      `your key acts for ${[...key.handles].join(", ") || "no resident"} — name one of them, or send nothing and the payment goes to your own household`);
+  const account = keyAccount && !handle ? `g${keyAccount}` : body?.household;
+  let holder = null;
 
   // 1 · shape
-  if (!txhash || !pot || !handle)
-    throw bounce(422, "incomplete", 'required: { "txhash", "pot", "handle" } — the transaction you sent, the pot you meant, and who you are in town');
+  if (!txhash || !pot || (!handle && !account))
+    throw bounce(422, "incomplete", 'required: { "txhash", "pot", and "household" (your account, g<id>, which the fund page fills in when you are signed in) or "handle" } — the transaction you sent, the pot you meant, and whose name it goes in');
+  if (account && handle)
+    throw bounce(422, "household and handle are two answers to one question", "send one: the fund page sends household when you are signed in");
+  if (account && !parseAccountRef(account))
+    throw bounce(422, "that is not an account reference", 'household is "g" followed by your GitHub account id, as the fund page fills it in');
   if (!TXHASH_RE.test(String(txhash)))
     throw bounce(422, "that is not a transaction hash", "a Base tx hash is 0x followed by 64 hex characters — copy it from your wallet or from basescan");
   if (!POT_RE.test(String(pot)))
     throw bounce(422, "that is not a pot name", "pot names are lowercase letters, digits and single hyphens — e.g. keeping-ec2");
   if (String(pot) === TREASURY_POT)
     throw bounce(422, `"${TREASURY_POT}" is the town's own direct line, not a pot`, "it takes direct-to-town receipts recorded by the founder's hand, never a funding page — pick a posted need from /board/");
-  if (!isResidentHandle(String(handle)))
+  if (handle && !isResidentHandle(String(handle)))
     throw bounce(422, "that is not a handle", "lowercase letters, digits and single hyphens — the name you keep house under in town");
 
   const eng = engine ?? await townEngine(clone);
@@ -194,6 +227,16 @@ export async function fundVerify(clone, body, {
   // 2 · the pot, BEFORE the chain (see potGate — the order is load-bearing)
   const gate = potGate({ engine: eng, clone, pot: String(pot) });
   if (!gate.ok) throw bounce(gate.code, gate.defect, gate.hint);
+
+  // 3a · the household's holder, when the form named the account (POS-317).
+  if (account) {
+    const registry = readFundRegistry(clone);
+    if (!registry) throw bounce(503, "the town's household registry could not be read", "nothing was recorded — try again shortly");
+    holder = fundHolder(parseAccountRef(account), { registry, isMeep: meepLawOf(eng, entries, new Date().toISOString().slice(0, 10)) });
+    if (!holder)
+      throw bounce(404, `no household holds account ${account}`, "holo mints to a town household, so this door needs a household the town knows. Not in town yet? Join first — or write to the postmaster and your dollars will be recorded by hand.");
+    handle = holder.handle;
+  }
 
   // 3 · the resident. § 8's holo law is household-shaped: a payer earns holo
   // only as a town household. An outsider's dollars are still welcome and are
@@ -267,6 +310,8 @@ export async function fundVerify(clone, body, {
     recorded: true,
     pot: String(pot),
     handle: String(handle),
+    // POS-317: the household the payment is in the name of, when the form named it
+    ...(holder ? { household: holder.household, household_name: holder.name } : {}),
     txhash: w.txhash,
     usd_witnessed: w.usd,
     usd_recorded: whole,
@@ -319,7 +364,7 @@ export function penRecorder(clone, { execUnderTownLock, lockTimedOut, LOCK_BUSY,
 }
 
 /** The wired door the server calls. */
-export async function fundVerifyViaOffice(clone, body) {
+export async function fundVerifyViaOffice(clone, body, { key = null } = {}) {
   const { execUnderTownLock, lockTimedOut, LOCK_BUSY } = await import("./town-lock.mjs");
   const { townDay } = await import("./ops.mjs");
   const { dirname, join: pjoin } = await import("node:path");
@@ -329,7 +374,7 @@ export async function fundVerifyViaOffice(clone, body) {
     execUnderTownLock, lockTimedOut, LOCK_BUSY, townDay,
     execPath: pjoin(here, "fund-exec.mjs"),
   });
-  return fundVerify(clone, body, { record });
+  return fundVerify(clone, body, { record, key });
 }
 
 // ── THE PUBLISHED DISCLOSURE ────────────────────────────────────────────────

@@ -26,6 +26,7 @@ import { resolveHouse } from "../src/household-deriver.mjs";
 import { conformance, isHouseholdName } from "../src/declare.mjs";
 import { REFUSALS } from "../src/ceremony.mjs";
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 // ── the town, as Emmett's house stood on 2026-09-29 ─────────────────────────
 
@@ -97,6 +98,12 @@ async function rekey(clone, opts = {}) {
 }
 
 // ── the re-key ──────────────────────────────────────────────────────────────
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("the household is re-keyed; its resident, pin and membership are unchanged; nothing outside it moves", async () => {
   assert.ok(LONG.length > 600, `the fixture key is paragraph-long (${LONG.length})`);

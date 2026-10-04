@@ -20,8 +20,15 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
 import { openRolesDb, grantRole, revokeRole } from "../src/roles.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const KEY = "roles-door-test-key";
@@ -36,6 +43,7 @@ async function office({ gates }) {
   const tmp = mkdtempSync(join(tmpdir(), "postmark-office-roles-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  const IX_ENV = await storeFor(dbPath);
   const rolesPath = join(tmp, "roles.db");
   openRolesDb(rolesPath).close(); // exists and empty — nobody holds anything yet
 
@@ -46,7 +54,7 @@ async function office({ gates }) {
     "--roles-db", rolesPath,
   ], {
     env: {
-      ...process.env, WORLD_GRAPH_NONE: "1",
+      ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV,
       // #<gh_id> pins the static key to an immutable account id — required to
       // hold a role, ignored by everything else.
       OFFICE_KEYS: `${KEY}=${HOUSEHOLD}#${GH_ID}:wright`,
@@ -171,6 +179,7 @@ test('AMBIGUITY #4, RULED: "a household that exists only as an env string cannot
   const tmp = mkdtempSync(join(tmpdir(), "postmark-office-unpinned-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  const IX_ENV = await storeFor(dbPath);
   const rolesPath = join(tmp, "roles.db");
   // Grant to the household NAME, the way a pre-rekey operator might have.
   // Nothing about that row can ever be reached, because names are not subjects.
@@ -182,7 +191,7 @@ test('AMBIGUITY #4, RULED: "a household that exists only as an env string cannot
     "--port", "43875", "--db", dbPath, "--roles-db", rolesPath,
   ], {
     env: {
-      ...process.env, WORLD_GRAPH_NONE: "1",
+      ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV,
       // NO #<gh_id> — a static key with no verified identity behind it.
       OFFICE_KEYS: `${KEY}=${HOUSEHOLD}:wright`,
       OFFICE_ROLE_GATES: "1",
@@ -215,6 +224,7 @@ test("FLAG ON but registry missing — the door says so, and does not pretend it
   const tmp = mkdtempSync(join(tmpdir(), "postmark-office-noroles-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  const IX_ENV = await storeFor(dbPath);
   // Point --roles-db at a path inside a directory that does not exist, so the
   // open throws and the office boots with rdb = null.
   const child = spawn(process.execPath, [
@@ -223,7 +233,7 @@ test("FLAG ON but registry missing — the door says so, and does not pretend it
     "--roles-db", join(tmp, "nope", "roles.db"),
   ], {
     env: {
-      ...process.env, WORLD_GRAPH_NONE: "1",
+      ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV,
       // Pinned, so the caller HAS a subject — otherwise the no-subject 401
       // would fire first and this test would never reach the 503 it exists for.
       OFFICE_KEYS: `${KEY}=${HOUSEHOLD}#${GH_ID}:wright`,

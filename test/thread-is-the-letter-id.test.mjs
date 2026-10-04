@@ -61,6 +61,10 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
+// F8-F11 test the reply hint's logic over a mail_state row they write themselves, so
+// they hand the hint that row through an explicit probe; the switch is not theirs.
+import { officeProbe } from "../src/index-probe.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { callTool, TOOLS } from "../src/mcp.mjs";
@@ -69,6 +73,12 @@ import {
   CONVERSATION_IS_THE_ROOT, THREAD_FIELD_IS_A_PARENT, THREAD_IS_THE_LETTER_ID,
   THREE_STRINGS, threadlessReplyHint, unansweredFrom,
 } from "../src/mail-thread.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -87,6 +97,11 @@ const dir = mkdtempSync(join(tmpdir(), "pm-thread-"));
 const dbPath = join(dir, "fixture.db");
 fixtureDb(dbPath).close();
 const db = new DatabaseSync(dbPath, { readOnly: true });
+// The checks this file calls in-process read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX_IN = await indexStore(dbPath);
+const IX_IN_RESTORE = await IX_IN.useInProcess();
+test.after(async () => { await IX_IN_RESTORE(); await IX_IN.stop(); });
 after(() => { db.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
 const KEY = { household: "keemin", handles: new Set(["wright"]), ghId: "42", ghLogin: "keeminlee" };
@@ -308,11 +323,11 @@ test("F8 · several unanswered letters → the NEWEST by the ledger's own ordina
         latest_event: { ordinal: 2, date: "2026-07-02" }, next_actor: "you" },
     ],
   }));
-  const open = unansweredFrom(d, { handle: "wright", sender: "limen" });
+  const open = unansweredFrom(officeProbe(d), { handle: "wright", sender: "limen" });
   assert.deepEqual(open.map((o) => o.id),
     ["limen-2026-07-09-to-wright-the-newest", "limen-2026-07-02-to-wright-the-older"],
     "newest first, by the ledger ordinal the law publishes — not by the order the rows happened to arrive in");
-  const hint = threadlessReplyHint(d, { from: "wright", to: "limen" });
+  const hint = threadlessReplyHint(officeProbe(d), { from: "wright", to: "limen" });
   assert.match(hint, /2 unanswered letters from limen/, "several → say how many");
   assert.ok(hint.includes("limen-2026-07-09-to-wright-the-newest"), "and name the newest");
   assert.equal(hint.includes("limen-2026-07-02-to-wright-the-older"), false, "one id, so there is one thing to copy");
@@ -337,8 +352,8 @@ test("F9 · the states the law calls NOT-yours draw nothing — a queued reply a
         latest_event: { ordinal: 7 }, next_actor: "them" },
     ],
   }));
-  assert.deepEqual(unansweredFrom(d, { handle: "wright", sender: "limen" }), []);
-  assert.equal(threadlessReplyHint(d, { from: "wright", to: "limen" }), null);
+  assert.deepEqual(unansweredFrom(officeProbe(d), { handle: "wright", sender: "limen" }), []);
+  assert.equal(threadlessReplyHint(officeProbe(d), { from: "wright", to: "limen" }), null);
   d.close();
 });
 
@@ -351,9 +366,9 @@ test("F10 · an index built before the seam says nothing rather than guessing �
 });
 
 test("F11 · an explicit `thread: \"new\"` reads the same as leaving it off — both are the resident saying 'this is a root'", () => {
-  assert.equal(threadlessReplyHint(db, { from: "wright", to: "limen", thread: "new" })?.includes(THE_ID_TO_WRITE), true);
-  assert.equal(threadlessReplyHint(db, { from: "wright", to: "limen", thread: "  " })?.includes(THE_ID_TO_WRITE), true);
-  assert.equal(threadlessReplyHint(db, { from: "wright", to: "limen", thread: THE_ID_TO_WRITE }), null);
+  assert.equal(threadlessReplyHint(officeProbe(db), { from: "wright", to: "limen", thread: "new" })?.includes(THE_ID_TO_WRITE), true);
+  assert.equal(threadlessReplyHint(officeProbe(db), { from: "wright", to: "limen", thread: "  " })?.includes(THE_ID_TO_WRITE), true);
+  assert.equal(threadlessReplyHint(officeProbe(db), { from: "wright", to: "limen", thread: THE_ID_TO_WRITE }), null);
 });
 
 test("F12 · the sentences are the resident's terms, and each names its own string", () => {
@@ -381,8 +396,9 @@ before(async () => {
   restTmp = mkdtempSync(join(tmpdir(), "pm-thread-rest-"));
   const p = join(restTmp, "fixture.db");
   fixtureDb(p).close();
+  const IX_ENV = await storeFor(p);
   ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", p], {
-    env: { ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: `${REST_KEY}=keemin:wright`, TOWN_CLONE: mailClone(),
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV, OFFICE_KEYS: `${REST_KEY}=keemin:wright`, TOWN_CLONE: mailClone(),
       WORLD_CLONE: join(restTmp, "no-world-clone") },
     stdio: ["ignore", "pipe", "pipe"],
   })));

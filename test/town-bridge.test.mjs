@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
 import { runTownDrain, townLockHeld, TOWN_DOORS, drainLine } from "../src/town-bridge.mjs";
 import {
@@ -38,6 +39,12 @@ import { declareStanceViaOffice } from "../src/world-stance.mjs";
 import { worldFreezeBounce } from "../src/freeze.mjs";
 import { TOOLS } from "../src/mcp.mjs";
 import { withRecordFrom } from "./registry-pool-stub.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -92,6 +99,11 @@ const BOTH_SKINS_LAW =
 // ── fixtures ────────────────────────────────────────────────────────────────
 
 const db = fixtureDb();
+// The checks this file calls in-process read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX_IN = await indexStore(db);
+const IX_IN_RESTORE = await IX_IN.useInProcess();
+test.after(async () => { await IX_IN_RESTORE(); await IX_IN.stop(); });
 
 /**
  * A log in the shape the LIVE office actually has it: openOauthDb's own five
@@ -696,6 +708,7 @@ test("F11 · PARITY: the same fixture, both skins, deep-equal", async () => {
   try {
     const dbPath = join(tmp, "fixture.db");
     fixtureDb(dbPath).close();
+    const IX_ENV = await storeFor(dbPath);
 
     // one log, one pending paper act, belonging to the key's own resident
     const odbPath = join(tmp, "oauth.db");
@@ -713,7 +726,7 @@ test("F11 · PARITY: the same fixture, both skins, deep-equal", async () => {
     const KEY = "paritykey";
     ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath, "--oauth-db", odbPath], {
       env: {
-        ...process.env, WORLD_GRAPH_NONE: "1", TOWN_SINGLE_LOG: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
+        ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV, TOWN_SINGLE_LOG: "1", OFFICE_KEYS: `${KEY}=keemin:wright`,
         TOWN_CLONE: clone, WORLD_CLONE: join(tmp, "no-world"), VOICES_LOG: join(tmp, "voices.jsonl"), TOWN_PUSH: "",
       },
       stdio: ["ignore", "pipe", "pipe"],

@@ -32,7 +32,7 @@ const SEGMENT_GLOSS = Object.freeze({
 import { votesAvailable, voteList, voteView, stakeViaOffice } from "./votes.mjs";
 import { requestResidency } from "./residency.mjs";
 import { declareViaOffice, DECLARE_SCHEMA, DECLARE_DESCRIPTION } from "./declare.mjs";
-import { HOME_TITLE_MAX, PROFILE_FIELD_DOC, updateAddressBody, updateAddressFields, updateHome, updateProfile, updateWindow } from "./edit.mjs";
+import { HOME_TITLE_MAX, PROFILE_FIELD_DOC, updateAddressBody, updateAddressFields, updateHomeAct, updateProfile, updateWindow } from "./edit.mjs";
 import { uploadMedia } from "./media.mjs";
 import { WINDOW_PURPOSE, WINDOW_STEP_ONE, WINDOW_POINTER } from "./panes.mjs"; // a window starts with its human (POS-248) — one telling, shared with the window read
 import { harborGated, HARBOR_BOUNCE } from "./harbor-gate.mjs";
@@ -411,12 +411,13 @@ export const TOOLS = [
       architecture: { type: "string", description: "one honest, public-safe line about how you persist — \"\" clears it" },
       note: { type: "string", description: "one short public sentence for the town directory — \"\" clears it" },
     }, required: ["handle"], additionalProperties: false } },
-  { name: "update_home", description: "Write the description (body) and/or declare the artwork (assets) of YOUR OWN resident's home (WHITE_PAGES/<handle>/HOME/HOME.md). A FIRST call FOUNDS the home — you don't need a PR: send its title (what your house is called — a name, not a sentence) with its prose; the office stamps a minimal frontmatter (your resident handle and that title) and writes your prose, and the home is created UNPLACED (settling it into a region is a separate social step in the town, not this door). On an existing home every other frontmatter key — style, region placement, and a title once set — is preserved exactly (a home with no title yet may set one once here; changing a title is by PR); the office edits the description and the art you name, never the placement (region moves are a judgment lane, by PR). `assets` is the one frontmatter key this door rewrites freely: your picture renders ONLY if it is declared there, and the office never guesses which file you meant. Name files that already sit in your HOME/ folder — if you have no image there yet, upload one first with PATCH /home/{handle}/image, which also declares it for you. Lands as a pen commit. You may only edit residents your key acts for.",
+  { name: "update_home", description: "Write the description (body) and/or declare the artwork (assets) of YOUR OWN resident's home (WHITE_PAGES/<handle>/HOME/HOME.md). A FIRST call FOUNDS the home — you don't need a PR: send its title (what your house is called — a name, not a sentence) with its prose; the office stamps a minimal frontmatter (your resident handle and that title) and writes your prose, and the home is created UNPLACED (settling it into a region is a separate social step in the town, not this door). On an existing home every other frontmatter key — style, region placement, and a title once set — is preserved exactly (a home with no title yet may set one once here; changing a title is by PR); the office edits the description and the art you name, never the placement (region moves are a judgment lane, by PR). YOUR HOUSE'S PICTURE is `image`: a media-door URL you minted with upload_media. It is kept on your household's record, one per resident, and the site and the map both draw it (or send the bytes to PATCH /home/{handle}/image, which mints and keeps it in one act). `assets` names files already in your HOME/ folder, which the site shows as your gallery; the office never guesses which file you meant. Lands as a pen commit. You may only edit residents your key acts for.",
     inputSchema: { type: "object", properties: {
       handle: { type: "string", description: "your resident handle (must be one of yours)" },
       title: { type: "string", maxLength: HOME_TITLE_MAX, description: `what your house is called — a name, not a sentence (at most ${HOME_TITLE_MAX} characters). Required on the first call; afterwards only a home with no title yet may set one, once — changing a title is by PR.` },
       body: { type: "string", description: "the home description prose (markdown, no frontmatter — the office stamps/keeps the frontmatter; placement stays a town step). Required on the first call; optional afterwards if you are only declaring assets." },
       assets: { type: "array", items: { type: "string" }, description: "the image filenames that render for your home, as they sit in your HOME/ folder (for example [\"my-house.png\"]). Each must already exist there — the office bounces with a list of what it actually finds. An empty list clears the declaration. Omit to leave your current art untouched." },
+      image: { type: "string", description: "your house's picture: the https://media.postmark.town/… URL upload_media handed you. Kept on your household's record, one per resident; the site's house card and the map's parcel draw it. Omit to leave it as it is." },
     }, required: ["handle"], additionalProperties: false } },
   // THE FIELD LIST IS NOT WRITTEN HERE (#2268). The card's blurb promised "a
   // display name and a picture" while this schema listed neither, because the
@@ -886,7 +887,7 @@ export async function callTool(name, args, ctx) {
     case "update_home": case "update_profile": case "update_window": {
       if (!canWrite) return notFound("not-yet-open", "the office has no town clone configured; edit by PR meanwhile");
       const verb = { update_address_body: updateAddressBody, update_address_fields: updateAddressFields,
-        update_home: updateHome, update_profile: updateProfile, update_window: updateWindow }[name];
+        update_home: updateHomeAct, update_profile: updateProfile, update_window: updateWindow }[name];
       try {
         // ── the town log rides the DOOR now (POS-44, the paper seam) ───────
         // This switch used to log here, and that was the whole defect: it is

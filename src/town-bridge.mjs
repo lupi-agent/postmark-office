@@ -143,7 +143,10 @@ import {
 import {
   pendingRows, townDrainCursor, townJournalHead, townLogEnabled, TOWN_CLASSES,
 } from "./town-journal.mjs";
-import { advanceTownCursor, drainPenReady, planTownDrain, writeTownDrain } from "./town-drain.mjs";
+import {
+  advanceTownCursor, drainPenReady, planTownDrain, writeTownDrain,
+  currentKeysOf, plannedRegistryLines, householdKeySplits,
+} from "./town-drain.mjs";
 import { planFirstIdeaSweep, writeFirstIdeaSweep } from "./first-idea-sweep.mjs";
 import { replayPaperAct } from "./town-updates.mjs";
 import { replayLetter } from "./town-mail.mjs";
@@ -260,6 +263,7 @@ export async function runTownDrain(odb, {
   // test that could only observe the linux answer would be asserting the
   // platform rather than the guard.
   requireLock = true, lockHeld = townLockHeld, dryRun = false, log = console.error,
+  planLines = plannedRegistryLines,
 } = {}) {
   const t0 = Date.now();
   const done = (r) => { const out = { ...r, took_ms: Date.now() - t0 }; log?.(drainLine(out)); return out; };
@@ -445,6 +449,26 @@ export async function runTownDrain(odb, {
           + `Nothing was written and the cursor did not move: every row is still here. (#2040)`,
         settled: [], waiting: plan.settle.map((r) => ({ handle: r.handle, why: "pen not ready" })),
         updates: [], letters: [], remaining: rows.length });
+  }
+
+  // ONE HOUSEHOLD, ONE MINT KEY (Darko, 2026-10-04): the refusal at write time.
+  // The lines this crossing would sign are planned once, here, and judged by
+  // the town's own predicate (tools/household-keys.mjs, through the clone)
+  // before a byte lands. A crossing that would leave a house it touches minting
+  // under two keys REFUSES, it does not fix silently: nothing is written, the
+  // cursor does not move, every row is still here, and this sentence names the
+  // house. Refusing holds the ferry's chain the way the pen gate above does.
+  // `planLines` is injectable so the refusal is a branch a falsifier can reach.
+  if (plan.plans.length && existsSync(join(clone, "WHITE_PAGES", "stamp-ledger.md"))) {
+    plan.ledger = planLines(plan.plans, { date: stamp, keys: currentKeysOf(clone) });
+    const splits = householdKeySplits(clone, plan.ledger.lines, plan.registry);
+    if (splits.length)
+      return done({ ran: false, refused: "household-split", drained: 0, counts, head,
+        cursor: (await townDrainCursor(odb)), ...gangwayFields,
+        skipped: `the crossing would leave a household minting under more than one key — ${splits.join(" · ")}. `
+          + `Nothing was written and the cursor did not move: every row is still here. (one household, one key: Darko, 2026-10-04)`,
+        settled: [], waiting: plan.settle.map((r) => ({ handle: r.handle, why: "household split" })),
+        splits, updates: [], letters: [], remaining: rows.length });
   }
 
   const touched = await writeTownDrain(clone, plan, { date: stamp });

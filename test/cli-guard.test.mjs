@@ -124,6 +124,8 @@ const ROSTER = {
   "src/world-store.mjs": { args: [], env: NO_PG, code: 1, needle: "no world graph" },
   // tools/
   "tools/backfill-home-shelf.mjs": { args: ["--manifest", NOWHERE], code: 2, needle: "no manifest at" },
+  // POS-219: refuses with neither --dry-run nor --apply before it imports a door or reads anything
+  "tools/home-picture-carry.mjs": { args: [], code: 2, needle: "pass exactly one of --dry-run or --apply" },
   "tools/media-thumbnails-backfill.mjs": { args: ["--from-record", NOWHERE], code: 2, needle: "no record at" },
   "tools/box-rollcall.mjs": { args: ["--manifest", NOWHERE], code: 2, needle: "the roll-call itself could not run" },
   // POS-216: refuses on a missing town clone before reading or writing anything
@@ -216,6 +218,8 @@ const ROSTER = {
   // No --world-repo: stops on usage before any git or Postgres (POS-142).
   "world2/tools/marks-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: marks-ingest.mjs" },
   "world2/tools/pointer-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: pointer-ingest.mjs --world-repo" },
+  // No connection named: stops before any Postgres (POS-302).
+  "world2/tools/position-snapshot.mjs": { args: [], env: NO_PG, code: 2, needle: "no --pg-url, no PG* environment, and no WORLD2_PG_URL" },
   "world2/tools/replay-ingest.mjs": { args: ["--help"], env: NO_PG, code: 0, needle: "usage: replay-ingest.mjs" },
   // No --tree: stops on usage before any git read or Postgres connect (POS-242).
   "world2/tools/rehearse.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: rehearse.mjs" },
@@ -229,6 +233,8 @@ const ROSTER = {
   // The earpiece's deliverer (POS-209): bare, it is usage and opens nothing —
   // the timer passes --run, and even then W2_EARPIECE=1 gates every read.
   "world2/tools/earpiece-deliver.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: earpiece-deliver.mjs --run" },
+  // No --world-repo: stops on usage before any git or Postgres (POS-142 Proposal B).
+  "world2/tools/mark-carried-backfill.mjs": { args: [], env: NO_PG, code: 2, needle: "--world-repo <checkout> is required" },
   "world2/tools/review-rule.mjs": { args: [], env: NO_PG, code: 2, needle: "review-rule.mjs: which claim?" },
   "world2/tools/roll-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: roll-ingest.mjs" },
   "world2/tools/seed-import.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: seed-import.mjs" },

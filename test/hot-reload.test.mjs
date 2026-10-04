@@ -6,10 +6,12 @@
 // out: a spawned office, a real file swapped underneath it, and the door
 // answering the new sha with nobody having reconnected.
 //
-// The swap is done with `copyFile`, NOT `rename`, on purpose. The box renames
-// (new inode); Windows cannot rename over an open handle at all (EPERM), so the
-// test overwrites the same inode's bytes instead. The watcher has to notice
-// BOTH, which is why its stamp is (ino, mtime, size) and not the inode alone.
+// The box renames (deploy/office-rehydrate.sh: `mv -f office.db.new office.db`,
+// a new inode); Windows cannot rename over an open handle at all (EPERM), so
+// there a swap overwrites the same inode's bytes instead. The watcher has to
+// notice BOTH, which is why its stamp is (ino, mtime, size) and not the inode
+// alone. The rebuilt-index swap renames wherever the platform allows it, as the
+// box does; the recovery swap below always overwrites in place.
 //
 //   node --test test/hot-reload.test.mjs
 
@@ -127,12 +129,27 @@ test("a rebuilt index is picked up in place — header, meta and handle all flip
   const hammer = (async () => {
     while (hammering) {
       const res = await get("/town");
-      seen.push({ status: res.status, asOf: res.headers.get("x-postmark-as-of") });
-      await res.json();
+      const body = await res.json();
+      seen.push({ status: res.status, asOf: res.headers.get("x-postmark-as-of"), hint: body?.hint });
     }
   })();
 
-  copyFileSync(bPath, dbPath);
+  // B arrives the way the box delivers it: written beside, renamed over. A
+  // rename leaves every handle still on A reading A's own inode, whole, until
+  // it is retired, so a request across the swap has no torn page to read.
+  // Only where the platform refuses the rename (Windows, EPERM: the office
+  // holds the file open) is B copied over A's bytes in place, and then a
+  // request can read a page half A, half B. That is the copy's tear, not a
+  // swap the box ever makes (the corrupt-index test below draws the same line).
+  const arriving = join(tmp, "arriving-b.db");
+  copyFileSync(bPath, arriving);
+  let renamed = true;
+  try { renameSync(arriving, dbPath); }
+  catch (e) {
+    if (process.platform !== "win32" || e.code !== "EPERM") throw e;
+    renamed = false;
+    copyFileSync(arriving, dbPath);
+  }
   const flipped = await until(async () => (await asOfOf()) === B_SHA);
   hammering = false;
   await hammer;
@@ -140,7 +157,10 @@ test("a rebuilt index is picked up in place — header, meta and handle all flip
   assert.ok(flipped, `door never reached ${B_SHA}; stderr: ${out.stderr.slice(-400)}`);
   assert.ok(seen.length > 0, "the hammer made no requests");
   for (const r of seen) {
-    assert.equal(r.status, 200, "a request across the swap window was not answered 200");
+    // Overwritten in place, a request that read the torn page is answered by
+    // the office's bounce in SQLite's own words for it, and by nothing else.
+    if (!renamed && r.status === 500 && r.hint === "database disk image is malformed") continue;
+    assert.equal(r.status, 200, `a request across the swap window was not answered 200 (${renamed ? "renamed" : "overwritten in place"}; hint: ${r.hint})`);
     assert.ok(r.asOf === A_SHA || r.asOf === B_SHA, `a request across the swap saw a third as-of: ${r.asOf}`);
   }
 

@@ -498,7 +498,7 @@ Leave one mark in your household's private draft branch. One mark = one claim: s
 | `kind` | `sited` \\| `parcel` \\| `predicated` \\| `naming` | **required** — predicated requires slot + value; naming requires value and uses slot "name"; sited/parcel carry neither slot nor value |
 | `at` | object | grid meters east/south of the Origin (sited/parcel) |
 | `extent` | object | footprint in meters (sited only — a parcel carries no extent: every parcel is the town's 25×25, set by the door) |
-| `points` | array | optional polygon ring [[x,y],…] for an irregular shape; its bbox must equal at/extent |
+| `points` | array | optional polygon ring [[x,y],…] for an irregular shape, in grid meters. On a sited mark the town derives at (the ring's bounding-box centre) and extent (its w×h) from it, so you may leave both off; a sent at/extent that disagrees is replaced and the answer's `outline` says so. On a parcel the ring must fill the town's 25×25 box exactly |
 | `body` | string | **required** — one present-tense observation; maximum 150 characters — the mark's face in every view |
 | `slot` | string | REQUIRED for predicated: the freeform rivalry key; naming omits it or uses "name"; forbidden on sited/parcel |
 | `value` | string | REQUIRED for predicated and naming; forbidden on sited/parcel |

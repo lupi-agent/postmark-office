@@ -109,7 +109,22 @@
     "kind": "unit_trigger",
     "stale_after_minutes": 45
    },
-   "stale_means": "The office serves a frozen X-Postmark-As-Of: every door answers 200 with yesterday's town. This is the exact failure found BY HAND on 2026-08-25 (one distinct as-of across 40 minutes and three tick slots). The allowance is three ticks — one missed tick is noise, three is a stuck rehydrate. site-sentinel's office_as_of probe watches the OUTCOME of this from outside; this row watches the runner."
+   "stale_means": "The office serves a frozen X-Postmark-As-Of: every door answers 200 with yesterday's town. This is the exact failure found BY HAND on 2026-08-25 (one distinct as-of across 40 minutes and three tick slots). The allowance is three ticks — one missed tick is noise, three is a stuck rehydrate. site-sentinel's office_as_of probe watches the OUTCOME of this from outside; this row watches the runner.",
+   "outcome": {
+    "history_path": "/srv/postmark-harbor/household-keys.jsonl",
+    "alarm_on_nonempty": [
+     "split_households",
+     "shared_keys"
+    ],
+    "alarm_on_false": [
+     "checked"
+    ],
+    "unsettled_runs": 0,
+    "why": "ONE HOUSEHOLD, ONE MINT KEY (Darko, 2026-10-04: \"make sure this cannot happen again without tests failing and alarms\"). The mint caps a household by the key the town's currentHouseholds gives each handle; a join that re-keyed only the joiner left nine houses minting as two households with two daily caps (Kev's minted 10 sends on 10-03), and nothing was looking. deploy/office-keep.sh runs the town's own predicate (tools/household-keys.mjs) over each tick's frozen town snapshot and appends one line here. The drain refuses a crossing that would split a house it touches, and the town's PR check reds a split on the PR that brings it; this row is the third lock, for a split that arrives by any other road (a hand-declared registry line, a records edit). This row sits on the rehydrate timer because the box still runs the pre-split unit, whose deploy/office-tick.sh calls office-keep.sh; it moves to the postmark-office-keep.timer row when that row goes live. unsettled_runs is 0 on purpose: these lines carry no status, so a threshold on it could never fire. Judged on the LATEST line only, because a split is a fact about the town right now.",
+    "means": "The household-keys line is not being written. INSTALL-DAY NOTE: this row is EXPECTED to read ALARM-outcome until the first tick after deploy appends to /srv/postmark-harbor/household-keys.jsonl, and it clears itself then.",
+    "list_means": "A declared household mints under more than one key (split_households), or one key mints for two households (shared_keys): the house gets two daily caps, or two houses share one. THIS ALARM HAS NO INSTALL DAY. The line's `detail` names each house and its keys. The repair is signed `registry: <handle> = hh:<slug>` lines for the residents off the house key, written with the drain's signedRegistryLines (the 07fa74d6a precedent), then stamp-verify. There are no exceptions: two people under one roof are one household (Darko, 2026-10-04).",
+    "unchecked_means": "The town's predicate did not run (the line carries `checked: false` and the error text): the snapshot's tools/household-keys.mjs is absent (a town clone older than d95e81c1c) or it crashed. A check that did not run is not a clean town."
+   }
   },
   {
    "unit": "postmark-office-keep.timer",

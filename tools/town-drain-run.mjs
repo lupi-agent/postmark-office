@@ -39,6 +39,7 @@ import { DatabaseSync } from "node:sqlite";
 import { oauthSchema } from "../src/oauth.mjs";
 import { openPaper } from "../src/paperwork.mjs";
 import { runTownDrain } from "../src/town-bridge.mjs";
+import { indexSwitched, UNREACHABLE_DEFECT } from "../src/index-probe.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const argOf = (n, d = null) => { const i = process.argv.indexOf(n); return i !== -1 ? process.argv[i + 1] : d; };
@@ -59,7 +60,16 @@ if (DATE && !/^\d{4}-\d{2}-\d{2}$/.test(DATE)) {
 // door that writes fail here and nowhere else, which is a trap rather than a
 // safeguard. Missing is fine and common on a fresh box: the doors that need it
 // bounce in their own vocabulary.
-const db = existsSync(DB_PATH) ? new DatabaseSync(DB_PATH) : null;
+//
+// With TOWN_INDEX_READS=store (POS-268) the doors' index is the store's: its
+// resident handles and letter ids, loaded once here, and office.db is not
+// opened. A store that cannot answer stops the run before a row is replayed,
+// cursor unmoved: replaying against no index would bounce every letter past it.
+let db = null;
+if (indexSwitched()) {
+  const { refreshStoreProbe } = await import("../src/town-index-store.mjs");
+  if (!(await refreshStoreProbe({ logins: false }))) { console.error(`[town-drain] ${UNREACHABLE_DEFECT}`); process.exit(1); }
+} else db = existsSync(DB_PATH) ? new DatabaseSync(DB_PATH) : null;
 // THE TOWN LOG'S PAPER (POS-271), opened the way the office opens its own:
 // oauth.db by default, the store's office_town_journal + office_meta with
 // OFFICE_PAPERWORK_STORE=1. The drain must read the log the office writes and

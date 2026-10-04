@@ -36,6 +36,15 @@ lawful AS (
     -- under the office's own connection, after the keeper's tag lands there;
     -- the pen is named in 018's header and is one word to move if ruled otherwise.
     ('office_api',   'settlements',      'INSERT'),
+    -- 049_mark_carried.sql (POS-142 Proposal B). Which settlement first carried
+    -- each mark, written once from the same clone and connection as the
+    -- settlement row above; INSERT only, because that fact never moves.
+    ('office_api',   'mark_carried',     'INSERT'),
+    -- 053_position_snapshots.sql (POS-302). Each resident's governing departure,
+    -- kept once per clearing from the keep tick's own connection; INSERT only,
+    -- because a snapshot is written once and never moves.
+    ('office_api',   'position_snapshots',     'INSERT'),
+    ('office_api',   'position_snapshot_rows', 'INSERT'),
     -- 019_households.sql. The household registry as store-of-record: the two
     -- town JSON files become a rendering of these tables. `office_api` because
     -- it is the role the door that DECLARES a household already connects as

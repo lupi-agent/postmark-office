@@ -28,6 +28,7 @@ import { appendJournal, CLASS_MARK } from "../src/world-journal.mjs";
 // by this file, in the office's own row shape. See test/journal-seed.mjs.
 import { seedJournalRow } from "./journal-seed.mjs";
 import { DYNAMIC_SCHEMA } from "../src/dynamic-store.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 // The world journal's own DDL, lifted from the store's schema rather than
 // retyped — a hand-copied table in a test is a second definition of the shape
@@ -84,6 +85,12 @@ function townClone() {
 // with head = MAX(seq) over the WHOLE table — it reads its own class and
 // deletes everything. Two tables is what makes the collision structurally
 // impossible rather than a filter discipline every future class re-litigates.
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(null);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
+
 test("TWO LOGS: the town's rows live in their own table, untouched by the world's head", async () => {
   const db = odb();
   const seq = await appendTownJournal(db, row());

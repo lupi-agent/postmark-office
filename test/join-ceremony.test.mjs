@@ -34,6 +34,7 @@ import {
 } from "../src/ceremony.mjs";
 import { drainRegistry, checkRegistry, ingestMissing, missingFromStore } from "../tools/registry-drain.mjs";
 import { conformance } from "../src/declare.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, "fixtures", "registry-2026-09-22");
@@ -147,6 +148,12 @@ const withPool = async (fn, pool = stubPool()) => {
 };
 
 // ── THE ALPHABET, AND WHO IT BINDS ──────────────────────────────────────────
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore((await import("./fixture.mjs")).fixtureDb());
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("the household alphabet IS the handle's, and the two cannot drift apart", () => {
   // `src/ceremony.mjs` restates the rule rather than importing it, so it reads
@@ -380,8 +387,9 @@ test("`formerly` sits in the template and an EMPTY one renders byte-equal to tod
   // one optional tail column and the wrong words for a template with two.
   assert.equal(HOUSEHOLD_KEYS.indexOf("formerly"), HOUSEHOLD_KEYS.indexOf("declared_by") + 1,
     "formerly sits immediately after declared_by");
-  assert.deepEqual(HOUSEHOLD_KEYS.slice(-2), ["formerly", "provisional"],
-    "the tail is the two optional columns, in the order their migrations landed");
+  // …and POS-219's `home_images` (migration 050) after that, by the same law.
+  assert.deepEqual(HOUSEHOLD_KEYS.slice(-3), ["formerly", "provisional", "home_images"],
+    "the tail is the optional columns, in the order their migrations landed");
   const rows = rowsFromRegistry(JSON.parse(HOUSEHOLDS_RAW), JSON.parse(PINS_RAW));
   assert.ok(rows.households.every((r) => Array.isArray(r.formerly) && r.formerly.length === 0));
   assert.equal(renderRegistry(rows).households, HOUSEHOLDS_RAW, "118 rows, not one `formerly` key");

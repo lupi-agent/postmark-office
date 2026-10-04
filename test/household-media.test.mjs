@@ -22,6 +22,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFi
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { indexStore } from "./helpers/office-under-test.mjs";
+
+// The doors below run in this process. They never had a town index, and the
+// office will not run without one (POS-268): this file's is an empty store.
+const IX = await indexStore(null);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 process.env.R2_ACCOUNT_ID = "test-account";
 process.env.R2_ACCESS_KEY_ID = "test-key";

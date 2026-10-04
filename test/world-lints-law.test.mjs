@@ -414,7 +414,7 @@ test("L3 and L4 disclose that their watch lists are CLOSED", async () => {
   // and each names what it is closed AROUND, so "closed" is a fact and not a mood
   const l3 = lints.find((x) => x.id === "L3");
   assert.match(l3.limits, /three constants long/);
-  for (const c of ["405", "25", "15"]) assert.ok(l3.limits.includes(c), `L3 must name the constant ${c} it watches`);
+  for (const c of ["405", "25", "60"]) assert.ok(l3.limits.includes(c), `L3 must name the constant ${c} it watches`);
   assert.match(lints.find((x) => x.id === "L4").limits, /CLOSED, and it is one class: the parcel/);
 });
 

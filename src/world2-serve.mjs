@@ -42,7 +42,7 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { readDraftClaims, householdKeyForKey, withHousehold, claimRowsForSlug } from "./world2-claims.mjs";
+import { readDraftClaims, keyHouseholdOf, withHousehold, claimRowsForSlug } from "./world2-claims.mjs";
 import { receiptFrom } from "./mark-receipt.mjs";
 import { sessionKeysVia, resolveHouse, houseRowsVia } from "./household-deriver.mjs";
 
@@ -73,6 +73,7 @@ export function housesKnown(idRows, rows) {
   return houses.size;
 }
 import * as live from "../world2/tools/live-reads.mjs";
+import { snapshotRead, composeSnapshot } from "./position-snapshot.mjs";
 // ── THE GROUNDLESS STANDPOINT, AT THE 2.0 DOOR (#2900, ruled 2026-09-17) ─────
 //
 // `live-reads.mjs` is a VERBATIM port of the world engine's tools/where-is.mjs
@@ -184,10 +185,10 @@ async function engine() {
  * WHERE clause is belt to the policy's braces rather than the only strap.
  */
 export async function world2MyDrafts(key) {
-  const { household, drafts } = await readDraftClaims(key);
+  const { household, drafts, disclosure } = await readDraftClaims(key);
   return {
     what: "your household's private compose space — every draft you hold, and nobody else can ask this question about you",
-    household, count: drafts.length, drafts,
+    household, ...(disclosure ? { household_disclosure: disclosure } : {}), count: drafts.length, drafts,
     privacy: "these stand on no docket, in no export, in no archive, and in no public answer. Submitting one is the act that makes it public, and it crosses once.",
   };
 }
@@ -211,7 +212,7 @@ export async function world2MyDrafts(key) {
  */
 export async function world2MyMarks(key, { offset = 0, p: injected = null, refusedReader = myMarksRefused } = {}) {
   const p = injected ?? await pool();
-  const household = await householdKeyForKey(p, key);
+  const { household, disclosure } = await keyHouseholdOf(p, key);
 
   // The household's roster, from the store's own `identities` projection — the
   // registry `roll-ingest.mjs` writes ("census decision 1: roster is
@@ -284,6 +285,11 @@ export async function world2MyMarks(key, { offset = 0, p: injected = null, refus
 
   return {
     ...body,
+    // 1.0's `household` is the key's own name, echoed for display
+    // (`world-stake.mjs § worldPortfolioStakeSlice`), and the twin answers what
+    // 1.0 answers. The house the rows were read under is `household_key`.
+    household: String(key?.household ?? "").trim(),
+    household_key: household,
     // 1.0's own `refused`, from the same one derivation (claim-effects.mjs §
     // myMarksRefused), handed this door's roster as 1.0 is handed its own.
     refused: await refusedReader(residents, { key }),
@@ -292,6 +298,7 @@ export async function world2MyMarks(key, { offset = 0, p: injected = null, refus
     ...(stakeRows == null ? { backed_unavailable:
       "the escrow projection could not be read at the ingested town head, so what you have staked is UNKNOWN — not nothing. `backed` and `counts.backed` are empty for that reason and not because you back nothing." } : {}),
     ...(townHead?.sha ? { escrow_at_town_sha: townHead.sha } : {}),
+    ...(disclosure ? { household_disclosure: disclosure } : {}),
     tree_only: portfolio.PORTFOLIO_TREE_ONLY,
   };
 }
@@ -499,15 +506,20 @@ export function docketRow(row = {}, { byMark = null } = {}) {
 //   settlement  the newest row of `settlements`, through 1.0's settlementsFrom
 //   read_at     the world-marks head, named by the settlement whose tag_sha it is
 //
-// ONE FACT IS NOT IN THE STORE: which settlement CARRIED a published mark. 1.0
-// derives it from git (the oldest add of the mark's file, the lowest tag that
-// contains it). The only row-side stand-in, the lowest settlement whose window
-// is at or after `marks.locked_window`, was measured on dev on 2026-10-01 over
-// 22 marks: 3 agree, 5 differ, 14 cannot be derived. 725 of 1,117 rows carry
-// the seed's locked_window 150 whatever settlement S1–S47 carried them, and the
-// 09-25 marks-ingest rewrote locked_window to 209 on every mark it amended
-// (aion-solare/aelyria: S1 on 1.0, window 209 here). So a published receipt's
-// `crossing`, `settlement_sha` and `says` are declared, never derived.
+//   published_at  `mark_carried` (049) joined to `settlements`: which settlement
+//               first carried the mark, recorded once from 1.0's own git
+//               derivation (mark-receipt.mjs § settlementThatCarried) and checked
+//               against 1.0's receipt as it was written
+//               (world2/tools/mark-carried-backfill.mjs). Its `at` follows 1.0's
+//               rule: a date only for the 20 newest settlements (settlements.mjs
+//               RECENT_MAX), because 1.0 looks the date up in that list.
+//
+// A published mark with NO row (git could not answer for it, the backfill has
+// not reached it, or the table cannot be read) keeps `crossing`,
+// `settlement_sha` and `says` declared, never derived from anything else. The
+// only row-side stand-in, the lowest settlement whose window is at or after
+// `marks.locked_window`, measured 3 agree / 5 differ / 14 underivable over 22
+// marks on dev (2026-10-01).
 //
 // CARRIED, NOT MERELY STANDING. The clearing materializes a locked claim into
 // `marks` before any settlement carries it, so "stands in marks" alone would
@@ -527,7 +539,7 @@ async function storeSettlements(p) {
   return { rows, ...settlementsFrom(lines), settledWindow };
 }
 
-export const RECEIPT_NOT_IN_STORE = "which settlement CARRIED a published mark is recorded nowhere in the store. 1.0 derives it from git (mark-receipt.mjs § settlementThatCarried: the oldest add of the mark's file and the lowest settlement tag containing it). The `settlements` table (018) holds the settlements, not which mark each carried, and the only row-side stand-in, the lowest settlement whose window is at or after marks.locked_window, measured 3 agree / 5 differ / 14 underivable over 22 marks on dev (2026-10-01): the seed's 725 rows all carry locked_window 150, and amend and the marks-ingest rewrite locked_window (aion-solare/aelyria is S1 on 1.0 and window 209 in the store). So `crossing`, `settlement_sha`, and the `says` sentence built from them, are not answered for a published mark.";
+export const RECEIPT_NOT_IN_STORE = "this published mark has no row in `mark_carried` (049), the store's record of which settlement first carried each mark. A row is written only from 1.0's own git derivation (mark-receipt.mjs § settlementThatCarried: the oldest add of the mark's file and the lowest settlement tag containing it), checked against 1.0's receipt as it is written; a mark git cannot answer for, or one the backfill has not reached, has none, and the table may not be readable. So `crossing`, `settlement_sha`, and the `says` sentence built from them, are not answered for this mark. The only row-side stand-in, marks.locked_window, measured 3 agree / 5 differ / 14 underivable over 22 marks on dev (2026-10-01), and is not used.";
 export const RECEIPT_GIT_SPELLING = "git's spelling of the newest settlement: `sha` is `%(objectname:short)`, whose length git chooses per repository, and `date` is `iso-strict` in the committer's own zone. The store holds the full commit and the instant, so `crossing.n` is compared and these two spellings are not.";
 export const RECEIPT_DISCLOSURE = "1.0's disclosure is about its OWN class layer: it fires when the office's world.db was hydrated at a different world than the fold the answer was read from (world.mjs § markReceipt). This door reads no world.db, so it has nothing of that kind to disclose. When 1.0 does disclose, its `says` carries the qualification and the two sentences differ, and that difference is a finding.";
 
@@ -551,8 +563,23 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
   const windowKnown = Boolean(settled) && Number.isFinite(settled.settledWindow);
   const notYetCarried = lockedNewest && windowKnown && Number(newest.window_id) > settled.settledWindow;
   const carriedUndecidable = standing && lockedNewest && !windowKnown;
+  const published = standing && !notYetCarried && !carriedUndecidable;
+  // WHICH SETTLEMENT CARRIED IT: the recorded row, in 1.0's `{ s, sha, at }`.
+  // `at` is looked up in the 20 newest settlements, as 1.0 looks it up in its
+  // 20 newest tags; an older settlement's receipt names no date on either door.
+  let carried = null;
+  if (published) {
+    try {
+      const { rows: [c] } = await p.query(
+        `SELECT c.settlement, s.tag_sha FROM mark_carried c JOIN settlements s ON s.number = c.settlement WHERE c.mark = $1`, [id]);
+      if (c) {
+        const s = Number(c.settlement);
+        carried = { s, sha: c.tag_sha, at: (settled?.recent ?? []).find((t) => t.n === s)?.date ?? null };
+      }
+    } catch { carried = null; }
+  }
   const receipt = receiptFrom({
-    id, canon: standing && !notYetCarried && !carriedUndecidable ? { id } : null, published_at: null,
+    id, canon: published ? { id } : null, published_at: carried,
     claims, settlement: settled?.current ?? null, site_pin: null,
   });
   if (carriedUndecidable) {
@@ -562,7 +589,7 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
       says: `standing in the store, its newest claim locked at window ${newest.window_id}; whether a settlement has carried it cannot be told: ${reason}`,
     });
   }
-  if (receipt.status === "published") {
+  if (receipt.status === "published" && !carried) {
     Object.assign(receipt, { crossing: null, settlement_sha: null,
       says: "published — the store holds this mark standing; which settlement carried it is not recorded in the store (see tree_only)" });
   }
@@ -580,7 +607,7 @@ export function receiptTreeOnly(receipt) {
   return {
     "receipt.disclosed · receipt.qualified": RECEIPT_DISCLOSURE,
     ...(receipt?.status === "published"
-      ? { "receipt.crossing · receipt.settlement_sha · receipt.says": RECEIPT_NOT_IN_STORE }
+      ? (receipt.crossing == null ? { "receipt.crossing · receipt.settlement_sha · receipt.says": RECEIPT_NOT_IN_STORE } : {})
       : { "receipt.crossing.sha · receipt.crossing.date · receipt.settlement_sha": RECEIPT_GIT_SPELLING }),
   };
 }
@@ -974,17 +1001,17 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
   }
 
   if (path === "/world2/positions") {
+    // From the newest clearing's snapshot plus the acts since (POS-302 PR 3),
+    // or every departure act when there is none: `departuresForEndpoints`.
     // Every resident WITH A RECORD, at one instant. 1.0's `positionsAt`: "Placed
     // residents with no departure are not here: they have no record, so their
     // position is their home" — which is /world2/present's question, not this
     // one. Two doors because they are two questions, exactly as 1.0 has them.
     const at = clockOf(searchParams);
     if (at.error) return at.error;
-    const { rows } = await p.query(
-      `SELECT id, at, crossing, actor, action, payload FROM acts
-        WHERE action = ANY($1) ${live.DEPARTURE_ORDER_SQL}`, [live.DEPARTURE_ACTIONS]);
+    const dep = await departuresForEndpoints(p);
     let derived;
-    try { derived = live.departureRecords(rows); }
+    try { derived = dep.records ? dep : live.departureRecords(dep.rows); }
     catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: String(e.message).slice(0, 400) } }; }
     const fc = live.fractionalCrossing(at.ms);
     return { code: 200, body: {
@@ -993,7 +1020,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
       count: Object.keys(derived.records.length ? live.positionsAt(derived.records, fc) : {}).length,
       walkers: live.publicWalkers(derived.records, fc),
       eras: derived.eras,
-      disclosed: [live.DISCLOSURES.frames],
+      disclosed: [live.DISCLOSURES.frames, ...discardedOf(dep)],
     } };
   }
 
@@ -1019,9 +1046,8 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     // HOUSEHOLD KEY comes from (`worldFromRows` → `world.households` →
     // `householdOf` → `parcelsFor`). Two rosters, two questions — the roll says
     // who to ask about, the identities say whose ground counts as yours.
-    const [{ rows: depRows }, { rows: markRows }, { rows: idRows }, { rows: rollRows }] = await Promise.all([
-      p.query(`SELECT id, at, crossing, actor, action, payload FROM acts
-                WHERE action = ANY($1) ${live.DEPARTURE_ORDER_SQL}`, [live.DEPARTURE_ACTIONS]),
+    const [dep, { rows: markRows }, { rows: idRows }, { rows: rollRows }] = await Promise.all([
+      departuresForEndpoints(p),
       p.query("SELECT slug, kind, owner, household, geometry, status, data FROM marks WHERE status = 'standing'"),
       p.query("SELECT handle, household FROM identities"),
       p.query(`SELECT r.handle FROM town_roll r
@@ -1029,7 +1055,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
                 ORDER BY r.handle`),
     ]);
     let derived;
-    try { derived = live.departureRecords(depRows); }
+    try { derived = dep.records ? dep : live.departureRecords(dep.rows); }
     catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: String(e.message).slice(0, 400) } }; }
     const world = live.worldFromRows({ marks: markRows, identities: idRows });
     const fc = live.fractionalCrossing(at.ms);
@@ -1042,7 +1068,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     // nothing downstream sees the porch.
     const residents = live.everyonePlaced({ world, departures: derived.records, at: fc, roll })
       .map((r) => (isGroundlessDefault(r) ? atOrigin(r) : r));
-    const notes = live.admissionNotes({ marks: markRows, identities: idRows, roll, departureRecords: derived.records, world });
+    const notes = live.admissionNotes({ marks: markRows, identities: idRows, roll, departureRecords: derived.records, eras: derived.eras, world });
     // THE FOLD FOR `households_known`, and it MAY NOT TAKE THIS ROUTE DOWN.
     // This is a public read that has never touched the registry, so a store
     // where 019 is unapplied must still answer the walk. Unfolded, the count is
@@ -1060,7 +1086,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
                 households_known: housesKnown(idRows, houseRows) },
       count: residents.length,
       residents,
-      disclosed: [live.DISCLOSURES.frames, live.DISCLOSURES.no_staleness, live.DISCLOSURES.roll_source, ...notes],
+      disclosed: [live.DISCLOSURES.frames, live.DISCLOSURES.no_staleness, live.DISCLOSURES.roll_source, ...notes, ...discardedOf(dep)],
     };
     if (near) {
       // The RENDER gets the radius, never the roll (world.mjs § walkersAround).
@@ -1452,16 +1478,47 @@ export async function world2Apex(searchParams, { p: injected = null } = {}) {
 // apex route refuses without a law projection, which is correct and is not what
 // #2900's cross-tier equality is about; a law fixture built only to reach this
 // block would be scaffolding the check could pass against instead of the thing.
+/**
+ * THE DEPARTURE RECORD FOR THE 2.0 ENDPOINTS (POS-302 PR 3): the newest
+ * clearing's snapshot plus every act since, as `{ records, eras, snapshot }` in
+ * `departureRecords`' shape — each handle's governing record, then the delta,
+ * which every reader here reduces with latest-wins exactly as it reduces the
+ * whole record, and the census the whole record would give. When there is no
+ * snapshot, or it is DISCARDED, the whole record as `{ rows, discarded? }` for
+ * the caller's own `departureRecords` (and its own refusal). No instant cut:
+ * these endpoints evaluate every record at the instant asked.
+ * `POSITIONS_SNAPSHOT=off` reads the whole record.
+ */
+export async function departuresForEndpoints(p) {
+  let discarded = null;
+  if (process.env.POSITIONS_SNAPSHOT !== "off") {
+    try {
+      const snap = await snapshotRead(p);
+      if (snap) {
+        const got = composeSnapshot(snap);
+        if (!got.discard) return { records: got.records, eras: got.eras, snapshot: got.snapshot };
+        discarded = got.discard;
+      }
+    } catch (e) { discarded = `the snapshot could not be read (${String(e?.message ?? e).slice(0, 160)})`; }
+  }
+  const { rows } = await p.query(
+    `SELECT id, at, crossing, actor, action, payload FROM acts
+      WHERE action = ANY($1) ${live.DEPARTURE_ORDER_SQL}`, [live.DEPARTURE_ACTIONS]);
+  return discarded ? { rows, discarded } : { rows };
+}
+
+/** The discard, said the way the projection says it. */
+const discardedOf = (dep) => (dep.discarded ? [`positions-snapshot-discarded: ${dep.discarded} — the whole record served`] : []);
+
 export async function apexPresent(p, { world, at, engine: eng, roster = "roll" }) {
   const { bearingDeg, quantizeBearing, distanceBand } = eng.engine;
-  const [{ rows: depRows }, { rows: rollRows }] = await Promise.all([
-    p.query(`SELECT id, at, crossing, actor, action, payload FROM acts
-              WHERE action = ANY($1) ${live.DEPARTURE_ORDER_SQL}`, [live.DEPARTURE_ACTIONS]),
+  const [dep, { rows: rollRows }] = await Promise.all([
+    departuresForEndpoints(p),
     p.query(`SELECT r.handle FROM town_roll r
                JOIN projection_heads h ON h.repo = 'town' AND h.sha = r.town_sha ORDER BY r.handle`),
   ]);
   let derived;
-  try { derived = live.departureRecords(depRows); }
+  try { derived = dep.records ? dep : live.departureRecords(dep.rows); }
   catch (e) { return { unavailable: "a departure act matches no known era", detail: String(e?.message ?? e).slice(0, 200) }; }
   const fc = live.fractionalCrossing(Date.now());
   const roll = roster === "roll" ? rollRows.map((r) => r.handle) : [];

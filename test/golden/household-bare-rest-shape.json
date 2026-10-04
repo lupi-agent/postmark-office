@@ -157,6 +157,10 @@
      "description": "string",
      "type": "string"
     },
+    "image": {
+     "description": "string",
+     "type": "string"
+    },
     "title": {
      "description": "string",
      "maxLength": "number",
@@ -346,6 +350,10 @@
    "dispatches_to": "null",
    "fields": {
     "handle": {
+     "description": "string",
+     "type": "string"
+    },
+    "household": {
      "description": "string",
      "type": "string"
     },

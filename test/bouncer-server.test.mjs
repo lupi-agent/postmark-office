@@ -8,7 +8,14 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
@@ -23,6 +30,7 @@ before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-office-bouncer-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  const IX_ENV = await storeFor(dbPath);
   ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"),
     "--port", String(port),
@@ -30,7 +38,7 @@ before(async () => {
     "--bouncer-now-ms", FROZEN_BOUNCER_NOW_MS,
   ], {
     env: {
-      ...process.env, WORLD_GRAPH_NONE: "1",
+      ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV,
       OFFICE_KEYS: `${KEY}=keemin:wright`,
       OFFICE_BOUNCER_KEY_READ_PER_MINUTE: "2",
       OFFICE_BOUNCER_KEY_WRITE_PER_MINUTE: "3",
@@ -140,6 +148,7 @@ test("with no --bouncer-now-ms the office keeps Date.now — the seam is a test 
   const dir = mkdtempSync(join(tmpdir(), "postmark-office-liveclock-"));
   const dbPath = join(dir, "fixture.db");
   fixtureDb(dbPath).close();
+  const IX_ENV = await storeFor(dbPath);
   const { child: live, port: LIVE_PORT } = await bootOnFreePort((port) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"),
     "--port", String(port),
@@ -147,7 +156,7 @@ test("with no --bouncer-now-ms the office keeps Date.now — the seam is a test 
     // no --bouncer-now-ms: this is the production composition
   ], {
     env: {
-      ...process.env, WORLD_GRAPH_NONE: "1",
+      ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV,
       OFFICE_KEYS: `${KEY}=keemin:wright`,
       OFFICE_BOUNCER_KEY_READ_PER_MINUTE: "2",
       OFFICE_BOUNCER_KEY_WRITE_PER_MINUTE: "3",

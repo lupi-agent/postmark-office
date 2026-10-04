@@ -14,9 +14,19 @@ import { DatabaseSync } from "node:sqlite";
 import { harborGated, HARBOR_ALLOWED, HARBOR_BOUNCE, harborWritesOpen } from "../src/harbor-gate.mjs";
 import { SETTLING_ASHORE } from "../src/declare.mjs";
 import { householdFor } from "../src/oauth.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
+// The stamp test below writes its residents mid-test and asks householdFor's logic
+// over exactly those rows, so it hands them through an explicit probe.
+import { officeProbe } from "../src/index-probe.mjs";
 
 const harborKey = { household: "newhuman", handles: new Set(["newcomer"]), harbor: true };
 const settledKey = { household: "keeminlee", handles: new Set(["wright"]) };
+
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(null);
+const IX_RESTORE = await IX.useInProcess();
+test.after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 test("the gate: a harbor household is refused every durable verb, allowed the ephemeral + arrival ones", () => {
   for (const verb of ["send_letter", "world_leave_mark", "world_walk", "world_note", "world_stake",
@@ -69,14 +79,14 @@ test("householdFor stamps the tier from the residents index — and the stamp fa
     db.exec("CREATE TABLE residents (handle TEXT PRIMARY KEY, json TEXT)");
     db.prepare("INSERT INTO residents VALUES (?, ?)").run("wright", "{}");
 
-    const atHarbor = householdFor(clone, db, 555, "newhuman");
+    const atHarbor = householdFor(clone, officeProbe(db), 555, "newhuman");
     assert.equal(atHarbor.harbor, true, "no handle in the index → the harbor stamp");
-    const ashore = householdFor(clone, db, 111, "keeminlee");
+    const ashore = householdFor(clone, officeProbe(db), 111, "keeminlee");
     assert.equal(ashore.harbor, undefined, "a settled handle → no stamp, no gate");
 
     // settlement lands the newcomer ashore; the same lookup sheds the stamp
     db.prepare("INSERT INTO residents VALUES (?, ?)").run("newcomer", "{}");
-    assert.equal(householdFor(clone, db, 555, "newhuman").harbor, undefined);
+    assert.equal(householdFor(clone, officeProbe(db), 555, "newhuman").harbor, undefined);
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }

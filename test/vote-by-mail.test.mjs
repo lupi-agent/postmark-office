@@ -13,7 +13,14 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb, tempClone } from "./fixture.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
+
+// The town index this file's offices read: a store seeded from each fixture
+// office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
+const STORES = [];
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // The port is asked of the OS, never chosen (spawn-office.mjs § the port,
@@ -28,9 +35,10 @@ before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-vbm-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  const IX_ENV = await storeFor(dbPath);
   clone = tempClone(); // WHITE_PAGES/wright/outbox + git init → canWrite is true
   ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath], {
-    env: { ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: clone, TOWN_PUSH: "" },
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: clone, TOWN_PUSH: "" },
     stdio: ["ignore", "pipe", "pipe"],
   })));
   BASE = `http://127.0.0.1:${PORT}`;

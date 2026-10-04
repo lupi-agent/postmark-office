@@ -287,6 +287,15 @@ test('F5 · OPERATIONS.md: "REST: stable/simple for frozen consumers" — the RE
   // stamps preview is live — pass preview: true to any stake and read what it
   // would do before it does it."
   //
+  // ⚑ REGENERATED 2026-10-04 FOR POS-317's follow-up (office #333, Darko's go):
+  // the fund-verify card gained `household` (the account the w41 fund page
+  // sends; without it both doors 422'd the page). ADDITIVE and proven so: the
+  // capture diff added exactly `/acts/11/fields/household/{type,description}`
+  // and removed or retyped none. The connector's answer stays under its
+  // ceiling because fund-verify's own teaching line was tightened in the same
+  // act. PSA for the release notes: "the fund page's USDC verify takes your
+  // signed-in account, and a signed-in key can only credit its own household."
+  //
   // This is the WITNESS the regeneration would otherwise have no room for, and
   // it is positional-independent on purpose: the stake act is found by the one
   // field only it carries, so a reordering of the acts list cannot make it pass
@@ -385,6 +394,19 @@ test('F5 · OPERATIONS.md: "REST: stable/simple for frozen consumers" — the RE
   const onlyHandle = (a) => a.fields && Object.keys(a.fields).join() === "handle";
   assert.equal(frozen.acts.filter(onlyHandle).length, 1, "the frozen shape carries exactly one handle-only card");
   assert.equal(full.acts.find(onlyHandle)?.act, "mark-all-read");
+  // ⚑ REGENERATED 2026-10-01 FOR POS-219 (each resident's house picture, kept
+  // on the household's record), named here for the same reason. What grew: the
+  // home act's card gained `image`. The capture diff, key by key: +1
+  // (`acts/4/fields/image`, {type, description}), −0, 0 retyped, none on
+  // another card. PSA for the release notes: "your house's picture is uploaded,
+  // not committed — household do: home takes image (the URL upload_media hands
+  // you), PATCH /home/{handle}/image takes the bytes; it is kept on your
+  // household's record, one per resident, and the site and the map both draw it."
+  //
+  // The witness is the home card (the one field only it carries, `assets`), in
+  // the frozen copy AND the live door.
+  assert.equal(homeFrozen?.fields?.image?.type, "string", "the frozen home card carries image");
+  assert.equal(homeLive?.fields?.image?.type, "string", "the live home card takes image — a picture the card did not advertise would be refused for a field nobody was told about");
 });
 
 test(`F5c · and the answer stays BOUNDED — REST under ${REST_CEILING}B, the connector's bare answer under ${SLIM_CEILING}B`, async () => {

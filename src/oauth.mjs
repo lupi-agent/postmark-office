@@ -30,6 +30,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { asPaper } from "./paperwork.mjs";
+import { probeOf } from "./index-probe.mjs";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -86,7 +87,7 @@ export function oauthSchema(db) {
     CREATE TABLE IF NOT EXISTS berths  (slug TEXT PRIMARY KEY, token_hash TEXT UNIQUE,
       created INTEGER, expires INTEGER, card TEXT,
       cosigned_gh_id INTEGER, cosigned_gh_login TEXT, cosigned_at INTEGER,
-      from_town TEXT);
+      from_town TEXT, rules_read_at INTEGER);
     CREATE TABLE IF NOT EXISTS key_claims (
       ask_hash TEXT PRIMARY KEY,          -- the capability: sha256 of the link's secret
       handle TEXT, token_hash TEXT UNIQUE,
@@ -106,6 +107,9 @@ export function oauthSchema(db) {
   // (2026-08-16): a berth may DECLARE the town it sailed from. A claim, not a
   // paper — attestation is the deferred half of the portal.
   try { db.exec("ALTER TABLE berths ADD COLUMN from_town TEXT"); } catch { /* already there */ }
+  // When the berth acknowledged the town's rules for visitors (POS-300,
+  // visitor-rules.mjs). Null until then; the store's column is 051.
+  try { db.exec("ALTER TABLE berths ADD COLUMN rules_read_at INTEGER"); } catch { /* already there */ }
 }
 
 const sweep = async (odb) => {
@@ -134,25 +138,26 @@ export const sweepClaims = (odb) =>
 // every resident's row on every authenticated request, ~10% of the office's
 // thread in the live profile. The login -> handles map is built once per change
 // of the residents table (a cheap count-and-length stamp, no JSON parsed) and of
-// the pins, per db handle. Everything else below, the harbor stamp included,
+// the pins, per index. Everything else below, the harbor stamp included,
 // is still recomputed on every lookup, so it falls off the moment the
 // Registrar lands a handle ashore, exactly as before.
-const loginIndexes = new WeakMap(); // db -> { stamp, map }
+// The index is office.db's or, with TOWN_INDEX_READS=store, the store's probe
+// (index-probe.mjs; its stamp is the store's head).
+const loginIndexes = new WeakMap(); // probe -> { stamp, map }
 function loginIndex(db, pinnedHandles) {
-  const st = db.prepare("SELECT count(*) AS n, total(length(json)) AS l, max(rowid) AS r FROM residents").get();
-  const stamp = `${st.n}:${st.l}:${st.r}:${[...pinnedHandles].sort().join(",")}`;
-  const hit = loginIndexes.get(db);
+  const ix = probeOf(db);
+  const stamp = `${ix.loginStamp()}:${[...pinnedHandles].sort().join(",")}`;
+  const hit = loginIndexes.get(ix);
   if (hit && hit.stamp === stamp) return hit.map;
   const map = new Map();
-  for (const r of db.prepare("SELECT handle, json FROM residents").all()) {
+  for (const r of ix.loginRows()) {
     if (pinnedHandles.has(r.handle)) continue; // pins are authoritative
-    const d = JSON.parse(r.json);
-    const bound = (d.github ?? d.address?.data?.github ?? "").toLowerCase();
+    const bound = r.github.toLowerCase();
     if (!bound) continue;
     if (!map.has(bound)) map.set(bound, []);
     map.get(bound).push(r.handle);
   }
-  loginIndexes.set(db, { stamp, map });
+  loginIndexes.set(ix, { stamp, map });
   return map;
 }
 
@@ -179,8 +184,8 @@ export function householdFor(clone, db, ghId, ghLogin) {
   // Registrar lands a handle ashore.
   let settled = false;
   try {
-    const q = db.prepare("SELECT 1 FROM residents WHERE handle = ?");
-    for (const h of handles) if (q.get(h)) { settled = true; break; }
+    const ix = probeOf(db);
+    for (const h of handles) if (ix.hasResident(h)) { settled = true; break; }
   } catch { settled = true; /* an unreadable index must never widen the gate */ }
   return { household: ghLogin ?? String(ghId), handles, ...(settled ? {} : { harbor: true }) };
 }
@@ -356,13 +361,20 @@ export async function berthLookup(odb, db, clone, token) {
       // cosigned rides the upgraded shape too — /api/me was answering false
       // beside /api/household's berth-cosigned tier (#1817, defect 2).
       cosigned: true,
-      ...(hh.harbor ? { berth: row.slug, slug: row.slug } : {}) };
+      ...(hh.harbor ? { berth: row.slug, slug: row.slug, rulesRead: Boolean(row.rules_read_at) } : {}) };
   }
   return {
     berth: true, slug: row.slug,
     household: null, handles: new Set(),
     cosigned: Boolean(row.cosigned_gh_id),
+    rulesRead: Boolean(row.rules_read_at),
   };
+}
+
+/** The berth read the town's rules for visitors (POS-300). Once per berth: a
+ *  second acknowledgement keeps the first one's time. */
+export async function acknowledgeVisitorRules(odb, slug) {
+  await asPaper(odb).run("UPDATE berths SET rules_read_at = ? WHERE slug = ? AND rules_read_at IS NULL", now(), slug);
 }
 
 // ── claims (a rolled resident's own key — the self-serve lane, 2026-09-08) ───
