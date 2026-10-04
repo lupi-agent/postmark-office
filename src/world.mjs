@@ -2732,7 +2732,7 @@ export async function worldBlockForHandle(handle, key = null) {
   // world clone older than the law answers none of these, and they are absent.
   return { mark_id: home.mark_id, x: home.x, y: home.y, sited: true,
     ...(home.via ? { via: home.via } : {}),
-    ...(home.parcel_id ?? home.parcel?.id ? { parcel_id: home.parcel_id ?? home.parcel.id } : {}),
+    ...(home.parcel_id ? { parcel_id: home.parcel_id } : {}),
     ...(home.home_mark ? { home_mark: home.home_mark } : {}),
     ...(home.declaration ? { declaration: home.declaration } : {}),
     ...(home.declaration_refused ? { declaration_refused: home.declaration_refused } : {}),

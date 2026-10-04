@@ -70,7 +70,7 @@ test("[pin] both doors refuse a second parcel per resident, after the cap, spari
 
 test("[pin] the home block answers per resident: via, parcel_id, home_mark ride beside the four keys", () => {
   const world = readFileSync(new URL("../src/world.mjs", import.meta.url), "utf8");
-  for (const field of ["via: home.via", "parcel_id: home.parcel_id ?? home.parcel.id", "home_mark: home.home_mark", "declaration: home.declaration"])
+  for (const field of ["via: home.via", "parcel_id: home.parcel_id", "home_mark: home.home_mark", "declaration: home.declaration"])
     assert.ok(world.includes(field), `worldBlockForHandle carries ${field}`);
   assert.match(world, /return \{ mark_id: home\.mark_id, x: home\.x, y: home\.y, sited: true,/, "the four keys are unchanged");
 });
