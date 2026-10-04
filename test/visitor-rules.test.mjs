@@ -40,7 +40,7 @@ let child = null;
 async function startOffice() {
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", "0", "--db", dbPath,
     "--oauth-db", OAUTH, "--roles-db", join(dir, "roles.db")], {
-    env: { ...process.env, OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: join(dir, "no-clone"), WORLD_CLONE: join(dir, "no-world-clone"), VOICES_LOG: VOICES, TOWN_PUSH: "" },
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", OFFICE_KEYS: `${KEY}=keemin:wright`, TOWN_CLONE: join(dir, "no-clone"), WORLD_CLONE: join(dir, "no-world-clone"), VOICES_LOG: VOICES, TOWN_PUSH: "" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const port = await new Promise((ok, no) => {
