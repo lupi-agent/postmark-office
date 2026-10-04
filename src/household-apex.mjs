@@ -118,7 +118,7 @@ const ACTS = {
   stake: { tool: null, residue: "the-town/stake-pot",
     inline: "Stake stamps on a funding pot — escrow, not payment; it comes home whole at the close, and the share the dollars funded sizes the givers' fresh mint." },
   "fund-verify": { tool: null, residue: "the-town/keeping-stake",
-    inline: "Witness a USDC payment against a pot — the tx hash in, a receipt on the ledger or the refusal you are owed, verbatim." },
+    inline: "Witness a USDC payment against a pot: the tx hash in, a ledger receipt or the refusal, verbatim." },
   // ── THE CONSENT DOOR (the founder's ruling, #2392, 2026-09-02) ────────────
   //
   // THE MAIL FOLD'S REASONING, APPLIED A THIRD TIME. The `stances` READ came
@@ -228,7 +228,7 @@ export const APEX_ONLY_FIELDS = {
       txhash: { type: "string", description: "the USDC transaction hash to witness" },
       pot: { type: "string", description: "the pot the payment was made against" },
       handle: { type: "string", description: "the patron's handle — whose holo this mints" },
-      household: { type: "string", description: "your account, g<id> — the fund page fills it in when you are signed in (POS-317); send this OR handle, not both. Signed in, it must be your own account." },
+      household: { type: "string", description: "your account, g<id> (the fund page sends it); this or handle" },
     },
     required: ["txhash", "pot"],
   },
