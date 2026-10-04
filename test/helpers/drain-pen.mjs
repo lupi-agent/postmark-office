@@ -58,5 +58,84 @@ export function sealChain(canonicals) {
 }
 `);
 
+// ONE HOUSEHOLD, ONE MINT KEY (2026-10-04): the drain now also reads the
+// town's current keys (`currentHouseholds`) and judges its planned lines with
+// the town's tools/household-keys.mjs, both through this same directory. The
+// fold below is the town's base registry (pins → gh:<id>, ADDRESS github →
+// login:, else solo:) with the ledger's `registry:` lines folded over it. The
+// one rule it leaves out, the pin made inert by an earlier sealed line, cannot
+// change the folded answer: a pin is inert only where a sealed line exists, and
+// that line is folded last either way. drain-pen-fixture.test.mjs reads both
+// copies back against the town's own on the live town clone.
+writeFileSync(engineFile, `
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+const REGISTRY_RE = /^- (\\d{4}-\\d{2}-\\d{2}) · registry: (\\S+) = (\\S+)$/;
+export function registryRevisions(entries) {
+  const out = [];
+  for (const e of entries) { const m = REGISTRY_RE.exec(e.canonical); if (m) out.push({ date: m[1], handle: m[2], key: m[3] }); }
+  return out;
+}
+export function currentHouseholds(repo) {
+  const map = new Map();
+  let pins = {};
+  try { pins = JSON.parse(readFileSync(join(repo, "tools", "github-ids.json"), "utf8")); } catch {}
+  for (const [h, rec] of Object.entries(pins)) if (rec && rec.id) map.set(h, { key: "gh:" + rec.id, provisional: false });
+  const pages = join(repo, "WHITE_PAGES");
+  if (existsSync(pages)) {
+    const rooms = readdirSync(pages, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name !== "TEMPLATE" && !e.name.startsWith("_")).map((e) => e.name).sort();
+    for (const room of rooms) {
+      if (map.has(room)) continue;
+      const addr = join(pages, room, "ADDRESS.md");
+      const m = existsSync(addr) ? /^github:\\s*(\\S+)/m.exec(readFileSync(addr, "utf8")) : null;
+      map.set(room, m ? { key: "login:" + m[1].toLowerCase(), provisional: false } : { key: "solo:" + room, provisional: true });
+    }
+  }
+  const ledger = join(pages, "stamp-ledger.md");
+  const entries = existsSync(ledger) ? parseStampLedger(readFileSync(ledger, "utf8")) : [];
+  for (const r of registryRevisions(entries)) map.set(r.handle, { key: r.key, provisional: false });
+  return map;
+}
+`, { flag: "a" });
+writeFileSync(join(engineDir, "household-keys.mjs"), `
+// Transcribed from the town's tools/household-keys.mjs (town d95e81c1c).
+import { currentHouseholds, parseStampLedger, registryRevisions } from "./stamp-mint.mjs";
+export function rollWith(roll, extraLines = []) {
+  const out = new Map(roll);
+  for (const r of registryRevisions(parseStampLedger(extraLines.join("\\n") + "\\n"))) out.set(r.handle, { key: r.key, provisional: false });
+  return out;
+}
+export function householdKeySplits({ roll, houses }) {
+  const split = [];
+  const houseOf = new Map();
+  for (const [slug, rec] of Object.entries(houses)) {
+    const keys = new Map();
+    for (const h of rec?.residents ?? []) {
+      houseOf.set(h, slug);
+      const k = roll.get(h)?.key;
+      if (!k) continue;
+      keys.set(k, [...(keys.get(k) ?? []), h]);
+    }
+    const entry = { house: slug, keys: Object.fromEntries([...keys].sort(([a], [b]) => a.localeCompare(b))) };
+    if (keys.size > 1) split.push(entry);
+  }
+  const byKey = new Map();
+  for (const [h, v] of roll) {
+    const slug = houseOf.get(h);
+    if (!slug) continue;
+    byKey.set(v.key, new Set([...(byKey.get(v.key) ?? []), slug]));
+  }
+  const shared = [...byKey].filter(([, s]) => s.size > 1).map(([key, s]) => ({ key, houses: [...s].sort() }));
+  return { split, shared };
+}
+export function describe({ split, shared }) {
+  return [
+    ...split.map((s) => s.house + " mints under " + Object.keys(s.keys).length + " keys: " + Object.entries(s.keys).map(([k, hs]) => k + " (" + hs.join(", ") + ")").join(" · ")),
+    ...shared.map((s) => "key " + s.key + " mints for two households: " + s.houses.join(", ")),
+  ];
+}
+`);
+
 process.env.STAMP_KEY = keyFile;
 process.env.STAMP_ENGINE_DIR = engineDir;

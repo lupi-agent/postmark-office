@@ -2118,3 +2118,40 @@ test("§2e THE ROW IS STRICT: a blessing row with no allowance or no why is refu
     assert.throws(() => loadManifest(p), want);
   }
 });
+
+// ── one household, one mint key (Darko, 2026-10-04) ─────────────────────────
+//
+// deploy/office-keep.sh appends the town's tools/household-keys.mjs --json line
+// each tick. The SHIPPED row is judged here, against lines in the exact shape
+// that step writes (exercised on the town at d95e81c1c: clean, tool absent, and
+// a ledger with one 07fa74d6a line dropped).
+//
+// THE CAN-FAIL FLIP: drop the outcome block from the rehydrate row; the split
+// and unchecked tests red, the clean one stays green as the control.
+const HK_ROW = manifest().units.find((u) => u.unit === "postmark-office-rehydrate.timer");
+const hkLog = (...lines) => ({ files: { [HK_ROW.outcome?.history_path]: { exists: true, text: lines.map((l) => JSON.stringify(l)).join("\n") + "\n" } } });
+const HK_CLEAN = { at: "2026-10-04T04:44:20Z", split_households: [], shared_keys: [], detail: [], checked: true };
+
+test("household keys: a split house on the latest line alarms, naming the house", () => {
+  const said = judgeOutcome(HK_ROW, hkLog(HK_CLEAN, { at: "2026-10-04T05:00:00Z", split_households: ["house-of-many-doors"], shared_keys: [],
+    detail: ["house-of-many-doors mints under 2 keys: gh:334016343 (seasiren) · hh:house-of-many-doors (kinofire, wayward-archivist, wildcat)"], checked: true }));
+  assert.ok(said, "a house minting under two keys must not read green");
+  assert.match(said, /house-of-many-doors/);
+  assert.match(said, /two daily caps/, "the row's own list_means prints");
+});
+
+test("household keys: a key across two houses alarms too", () => {
+  const said = judgeOutcome(HK_ROW, hkLog({ ...HK_CLEAN, shared_keys: ["gh:9"] }));
+  assert.match(said ?? "", /gh:9/);
+});
+
+test("household keys: a clean line is silent", () => {
+  assert.equal(judgeOutcome(HK_ROW, hkLog(HK_CLEAN)), null);
+});
+
+test("household keys: a line that says the check did not run alarms, and an empty log alarms", () => {
+  const said = judgeOutcome(HK_ROW, hkLog({ at: "x", checked: false, split_households: [], shared_keys: [], error: "Cannot find module" }));
+  assert.match(said ?? "", /checked/);
+  assert.match(said ?? "", /older than d95e81c1c/);
+  assert.match(judgeOutcome(HK_ROW, { files: {} }) ?? "", /empty or unreadable/);
+});
