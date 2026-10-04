@@ -190,6 +190,13 @@ export async function fundVerify(clone, body, {
   if (keyAccount && body?.household != null && parseAccountRef(body.household) !== keyAccount)
     throw bounce(403, `household ${body.household} is not the account you are signed in as (g${keyAccount})`,
       "a payment goes in the name of the household your own sign-in holds; send no household and the door takes yours");
+  // AND A HANDLE IS HELD TO THE SAME KEY (Plumb's review of #333, 2026-10-04):
+  // a signed-in caller who names a handle instead of an account may name only a
+  // resident its key acts for. Without this the 403 above was a door with a wall
+  // beside it — `{ handle: "carol" }` from someone else's key credited carol.
+  if (keyAccount && handle && key?.handles instanceof Set && !key.handles.has(String(handle)))
+    throw bounce(403, `"${handle}" is not one of the residents you are signed in as`,
+      `your key acts for ${[...key.handles].join(", ") || "no resident"} — name one of them, or send nothing and the payment goes to your own household`);
   const account = keyAccount && !handle ? `g${keyAccount}` : body?.household;
   let holder = null;
 

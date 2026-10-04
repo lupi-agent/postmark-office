@@ -228,6 +228,7 @@ export const APEX_ONLY_FIELDS = {
       txhash: { type: "string", description: "the USDC transaction hash to witness" },
       pot: { type: "string", description: "the pot the payment was made against" },
       handle: { type: "string", description: "the patron's handle — whose holo this mints" },
+      household: { type: "string", description: "your account, g<id> — the fund page fills it in when you are signed in (POS-317); send this OR handle, not both. Signed in, it must be your own account." },
     },
     required: ["txhash", "pot"],
   },
