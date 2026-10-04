@@ -307,7 +307,9 @@ export async function doorstepBundle(handle, ctx = {}) {
 
   // The votes garnish is a read: it asks for the engine, never the pen (#3383 —
   // a read worker is never canWrite, so `canWrite &&` dropped it there).
-  if (votesAvailable(clone)) {
+  // A caller with no clone (the in-process bundle tests, the MCP twin before
+  // boot) gets no garnish: `canWrite` used to short-circuit that for us.
+  if (clone && votesAvailable(clone)) {
     try { const v = await doorstepVotes(clone, handle); if (v) d.votes = v; }
     catch { /* the doorstep never fails on the votes garnish */ }
   }
