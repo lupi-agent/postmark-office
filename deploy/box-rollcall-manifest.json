@@ -280,6 +280,21 @@
    "stale_means": "For ten minutes or more, no minute passed in which every caller got the office's one thread within 5 s (LAG_ALARM_MS, judged on the minute's MAX lag, because one 48 s synchronous read is a single late sample that p99 hides). That is the brownout itself: requests queue behind the thread, nginx's cached reads keep answering, and everything else waits. The same alarm reads when the office stops writing the file at all. Read the file's worst_24h and minutes for the shape, and GET /api/ops/loop-lag for the live numbers. THE LIMIT, said once: this is a point-in-time reader like the rest of the board, so a brownout that ended before the roll-call ran is not an alarm here; it is in worst_24h."
   },
   {
+   "unit": "postmark-office.service",
+   "label": "the office's store transactions",
+   "stage": "live",
+   "activation_owner": "Darko — POS-370 (2026-10-04, \"let's add the durable fix for switch two so that we can roll it back out\"), after switch 2 (TOWN_INDEX_READS=store) stalled the office for an hour behind nine office_api sessions idle in transaction and nothing on the box said so. Built by the lane plumb-pos370-index-leak. The office writes the file itself from src/store-txn-watch.mjs, so it goes live with the first release that carries that module; until then this row reads ALARM-noheartbeat (the file does not exist), which is correct",
+   "cadence": "read as: last CALM — calm_at is the last minute the office could ask the store and no office_api session had been idle inside a transaction for 5 s or more; the office rewrites the file every minute",
+   "cadence_source": "src/store-txn-watch.mjs (MINUTE_MS, STUCK_AFTER_S); the office API row says whether the process is up",
+   "heartbeat": {
+    "kind": "state_file",
+    "path": "/srv/postmark-office/telemetry/store-txn-4380.json",
+    "stamp_field": "calm_at",
+    "stale_after_minutes": 5
+   },
+   "stale_means": "For five minutes or more, every minute either found an office_api session idle inside a transaction for 5 s or more, or could not ask the store at all. That is the 2026-10-04 stall's signature (POS-370): a connection held open while its holder waits on something else, the pool drains, and every later store read waits behind it while the CPU sits idle. Read last_minute.stuck_sessions for which pool and worker hold them (application_name postmark-office:<pool>:t<thread>) and the statement each last ran; GET /api/ops/store-txn gives the live numbers. With idle_in_transaction_session_timeout on (the office's own pools ask for 30 s, and DEPLOY.md § POS-370 sets it on the roles) such a session should not outlive 30 s, so this alarm also means the timeout is not in force. If switch 2 is on, its rollback is the documented one (the env line out, the office restarted). THE LIMIT, said once: a point-in-time reader like the rest of the board; a stall that cleared before the roll-call ran is in worst_24h."
+  },
+  {
    "unit": "postmark-office-dev.service",
    "label": "the dev office",
    "stage": "live",

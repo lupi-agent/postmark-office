@@ -51,6 +51,8 @@ Every table states three things: what writes the **snapshot** (at the crossing's
 
 ## Moving the readers
 
+**A store reader only reads (POS-370).** A reader runs inside the pen's READ ONLY transaction on one of the pen's three connections, so it reads its rows and nothing else: no world read, no quest tools, nothing that might ask the pen for another connection. Whatever an answer needs beyond the index runs after the connection is back (`storeAnswer`'s `then`; the quest board is `questIndexRows` in the transaction, then `questBoardOfRows`). On 2026-10-04 the quest board composed inside its transaction, its world read waited on a second pen connection, and three boards per worker stalled the office for an hour. The pen now refuses a nested ask by name (`NestedStoreError`), every pool refuses a connection it cannot give within `WORLD2_PG_ACQUIRE_MS`, and the server ends a transaction left idle for 30 s.
+
 Behind `TOWN_INDEX_READS=store` (unset means office.db, as today). Rolling back means unsetting it; office.db and the rehydrate stay until the last reader has moved and a clean week has passed. Every store read is async, so each moved reader changes its signature at its callers, and those callers are named in the commit. The order goes from least entangled to most:
 
 1. **Moved (2026-09-30), at their own doors:**

@@ -53,6 +53,7 @@ import { world2Enabled } from "./world2-acts.mjs";
 import { currentCrossing } from "./crossings.mjs";
 import { sessionKeysVia, sessionKeyString } from "./household-deriver.mjs";
 import { nonceForActRow } from "./act-nonce.mjs";
+import { storePoolOptions, watchPoolErrors, onPenClient, refuseNested } from "./store-pool.mjs"; // POS-370: the acquire timeout, the server's idle-transaction limit, one pen connection per call chain
 
 // ── A LATE ROW MAY NOT ENTER A CERTIFIED WINDOW (the act-4171 class, 2026-09-04) ─
 //
@@ -179,7 +180,10 @@ async function pool(env = process.env) {
   // against a port the operator never chose.
   if (!world2Enabled(env)) throw new NoRecordError();
   const { default: pg } = await import("pg");
-  state.pool = new pg.Pool({ connectionString: env.WORLD2_PG_URL, max: 3 });
+  // POS-370: the acquire timeout and the server's idle-transaction limit ride
+  // every connection (store-pool.mjs § storePoolOptions), and an idle
+  // connection's failure is logged, never an unheard 'error' event.
+  state.pool = watchPoolErrors(new pg.Pool(storePoolOptions(env, { name: "pen", max: 3 })), "pen");
   return state.pool;
 }
 
@@ -228,25 +232,28 @@ export function laneFlipped(lane, env = process.env) {
  * open." `sessionKeysVia` reads the registry, so it runs here.
  */
 export async function officeWrite(fn, { household = null, env = process.env } = {}) {
+  // Refused before the resolver too: it asks the same pool (POS-370).
+  refuseNested("officeWrite");
   const p = await pool(env);
   const keys = household == null ? [] : await sessionKeysVia(p, household);
-  const client = await p.connect();
-  try {
-    await client.query("BEGIN");
-    if (household != null) {
-      await client.query("SELECT set_config('app.household', $1, true)", [household]);
-      await client.query("SELECT set_config('app.household_keys', $1, true)",
-        [sessionKeyString(keys) ?? ""]);
+  return onPenClient(p, "officeWrite", async (client, discard) => {
+    try {
+      await client.query("BEGIN");
+      if (household != null) {
+        await client.query("SELECT set_config('app.household', $1, true)", [household]);
+        await client.query("SELECT set_config('app.household_keys', $1, true)",
+          [sessionKeyString(keys) ?? ""]);
+      }
+      const out = await fn(client);
+      await client.query("COMMIT");
+      return out;
+    } catch (err) {
+      // A ROLLBACK that fails may leave the connection inside the transaction:
+      // it is discarded, never handed back to the next caller (POS-370).
+      try { await client.query("ROLLBACK"); } catch { discard(); }
+      throw err;
     }
-    const out = await fn(client);
-    await client.query("COMMIT");
-    return out;
-  } catch (err) {
-    try { await client.query("ROLLBACK"); } catch { /* connection already gone */ }
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 /** The one acts INSERT, both eras. `seq` is null for a flipped or lane act —
@@ -288,19 +295,34 @@ export async function officeWrite(fn, { household = null, env = process.env } = 
  * there is exactly one place the two spellings meet.
  */
 export async function officeRead(fn, { env = process.env } = {}) {
-  const p = await pool(env);
-  const client = await p.connect();
-  try {
-    await client.query("BEGIN READ ONLY");
-    const out = await fn(client);
-    await client.query("COMMIT");
-    return out;
-  } catch (err) {
-    try { await client.query("ROLLBACK"); } catch { /* connection already gone */ }
-    throw err;
-  } finally {
-    client.release();
-  }
+  refuseNested("officeRead");
+  return officeReadOn(await pool(env), fn);
+}
+
+/**
+ * officeRead on a given pool: the town index's test seam (town-index-store.mjs §
+ * readTownIndex) runs its reads in exactly this shape, guard included.
+ *
+ * ── ONE PEN CONNECTION PER CALL CHAIN (POS-370) ─────────────────────────────
+ * `fn` runs holding the connection, so `fn` must not ask the pen for another:
+ * the pool is three, and on 2026-10-04 three quest boards per worker each held
+ * one while the world read inside them waited on a fourth, and the office
+ * stalled for an hour. That ask is now refused at once by name
+ * (store-pool.mjs § NestedStoreError), and a connection that cannot be had in
+ * WORLD2_PG_ACQUIRE_MS is a refusal too, never a wait.
+ */
+export async function officeReadOn(p, fn, by = "officeRead") {
+  return onPenClient(p, by, async (client, discard) => {
+    try {
+      await client.query("BEGIN READ ONLY");
+      const out = await fn(client);
+      await client.query("COMMIT");
+      return out;
+    } catch (err) {
+      try { await client.query("ROLLBACK"); } catch { discard(); }
+      throw err;
+    }
+  });
 }
 
 export async function insertAct(client, rowIn, seq = null, { lateArrival = null } = {}) {

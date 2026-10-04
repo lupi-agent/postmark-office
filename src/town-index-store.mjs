@@ -197,27 +197,74 @@ async function questMeta(q) {
   return Object.fromEntries(rows.map((r) => [r.key, r.value]));
 }
 
-/** questBoardWith's reads, from the store. */
-const storeQuestSource = (q) => ({
-  progressRow: async (handle) => (await q.query(
-    "SELECT handle, send, receive, house_size, house_send, house_receive, sent_to, heard_from FROM town_quest_progress WHERE handle = $1", [handle])).rows[0],
-  standing: (handle) => standingFor(q, handle),
-  pots: (extraInvalid) => potBoard(q, extraInvalid),
-  potIds: async () => (await q.query("SELECT id FROM town_pots")).rows.map((r) => r.id),
-});
+// ── THE QUEST BOARD: ITS ROWS IN THE TRANSACTION, THE BOARD AFTER IT (POS-370) ──
+//
+// The board is more than its index rows. Between reading the resident's
+// progress and their standing, questBoardWith loads the town's quest tools from
+// the clone and asks the WORLD whether their home stands (worldSitedFor), and
+// with the kept positions on that world read rebuilds the positions projection
+// through the pen. Composed inside the transaction, the board held one pen
+// connection while that rebuild waited for another from the same pool of three:
+// on 2026-10-04 three boards per worker held all three, the rebuild waited for a
+// fourth forever, and the office stalled for an hour (nine sessions idle in
+// transaction, every one last running the progress read below).
+//
+// So the store half is ONLY reads: every row the board can ask for, read in the
+// caller's transaction (questIndexRows), and the board is composed from those
+// rows once the connection is back (questBoardOfRows). questBoardAnswer is the
+// two together, for a door.
+
+const PROGRESS_SQL = "SELECT handle, send, receive, house_size, house_send, house_receive, sent_to, heard_from FROM town_quest_progress WHERE handle = $1";
 
 /**
- * queries.questBoardFor, from the store. Its meta (the registry and the day the
- * progress was folded on) is the store's own, never a caller's office.db meta:
- * the progress rows and the day they are good for come from one index.
+ * Every index row a quest board can read, from one client, and nothing else.
+ *
+ * Each read's failure is KEPT and handed back where the board asks for that row,
+ * so the board fails exactly where it failed when it read the store itself (a
+ * pot table it cannot read is the pots section's own degrade, not the whole
+ * board's). The progress row is read whatever its day: the board decides
+ * freshness from the town's own clock, and one row it does not use costs nothing.
  */
-export async function questBoardFor(q, handle, clone, opts = {}) {
-  return questBoardWith(storeQuestSource(q), await questMeta(q), handle, clone, opts);
+export async function questIndexRows(q, handle) {
+  const named = !(handle == null || String(handle).trim() === "");
+  const kept = async (fn) => { try { return { v: await fn() }; } catch (e) { return { e }; } };
+  const rows = { handle, meta: await questMeta(q) };
+  if (named) {
+    rows.progress = await kept(async () => (await q.query(PROGRESS_SQL, [handle])).rows[0]);
+    rows.standing = await kept(() => standingFor(q, handle));
+  }
+  rows.potIds = await kept(async () => (await q.query("SELECT id FROM town_pots")).rows.map((r) => r.id));
+  rows.potRows = await kept(() => potBoardRows(q));
+  return rows;
 }
 
-/** queries.townQuestBoard's answer, from the store: the board with no resident named. */
-export async function townQuestBoard(q, clone) {
-  return questBoardFor(q, null, clone);
+/** questBoardWith's reads, answered from rows already read. A handle the rows were not read for is a programming error, named. */
+function heldQuestSource(rows) {
+  const take = (r) => { if (r.e) throw r.e; return r.v; };
+  const ours = (h, what) => {
+    if (h !== rows.handle) throw new Error(`the quest board's ${what} was read for ${JSON.stringify(rows.handle)}, not ${JSON.stringify(h)}`);
+  };
+  return {
+    progressRow: async (h) => { ours(h, "progress"); return take(rows.progress); },
+    standing: async (h) => { ours(h, "standing"); return take(rows.standing); },
+    pots: async (extraInvalid) => potBoardOf(take(rows.potRows), extraInvalid),
+    potIds: async () => take(rows.potIds),
+  };
+}
+
+/**
+ * queries.questBoardFor, from rows the store answered. Its meta (the registry and
+ * the day the progress was folded on) is the store's own, never a caller's
+ * office.db meta: the progress rows and the day they are good for come from one
+ * index. Holds no connection: call it after the transaction has ended.
+ */
+export async function questBoardOfRows(rows, clone, opts = {}) {
+  return questBoardWith(heldQuestSource(rows), rows.meta, rows.handle, clone, opts);
+}
+
+/** A door's quest board from the store: storeAnswer's `{ out, asOf }` or `{ refused }`, the board composed after the connection is back. */
+export function questBoardAnswer(handle, clone, opts = {}, { env = process.env } = {}) {
+  return storeAnswer((c) => questIndexRows(c, handle), { env, then: (rows) => questBoardOfRows(rows, clone, opts) });
 }
 
 /**
@@ -226,7 +273,10 @@ export async function townQuestBoard(q, clone) {
  */
 export const storeIndex = (q, clone) => ({
   stampsDetail: (handle) => stampsDetail(q, handle),
-  questBoard: (handle, opts) => questBoardFor(q, handle, clone, opts),
+  // rows first, then the board: a caller holding `q` inside a pen transaction
+  // would still be holding it while the board asks the world (see above), and
+  // the pen refuses that by name (store-pool.mjs § NestedStoreError)
+  questBoard: async (handle, opts) => questBoardOfRows(await questIndexRows(q, handle), clone, opts),
   potBoard: (extraInvalid) => potBoard(q, extraInvalid),
 });
 
@@ -247,14 +297,16 @@ export class TownIndexUnreachable extends Error {
  * that cannot be reached throws TownIndexUnreachable, never an empty answer.
  */
 export function storeIndexPooled(clone, { env = process.env } = {}) {
-  const via = (fn) => async (...args) => {
-    const r = await storeAnswer((c) => fn(c, ...args), { env });
+  // `then` is the half of a read that is not the index: it runs after the
+  // connection is back (storeAnswer § then), with the same arguments.
+  const via = (fn, then = null) => async (...args) => {
+    const r = await storeAnswer((c) => fn(c, ...args), { env, then: then && ((out) => then(out, ...args)) });
     if (r.refused) throw new TownIndexUnreachable(r.refused);
     return r.out;
   };
   return {
     stampsDetail: via((c, handle) => stampsDetail(c, handle)),
-    questBoard: via((c, handle, opts) => questBoardFor(c, handle, clone, opts)),
+    questBoard: via((c, handle) => questIndexRows(c, handle), (rows, _handle, opts) => questBoardOfRows(rows, clone, opts)),
     potBoard: via((c, extraInvalid) => potBoard(c, extraInvalid)),
     // the doorstep's and the house's reads (group 3)
     asOf: via((c) => townIndexAsOf(c)),
@@ -666,13 +718,10 @@ export async function home(q, handle, fresh = null) {
  */
 export async function readTownIndex(fn, { env = process.env } = {}) {
   const read = async (client) => ({ out: await fn(client), asOf: await townIndexAsOf(client) });
-  if (_indexPoolForTest) {
-    const client = await _indexPoolForTest.connect();
-    try { await client.query("BEGIN READ ONLY"); const out = await read(client); await client.query("COMMIT"); return out; }
-    catch (e) { await client.query("ROLLBACK").catch(() => {}); throw e; }
-    finally { client.release(); }
-  }
-  const { officeRead } = await import("./world2-pen.mjs");
+  const { officeRead, officeReadOn } = await import("./world2-pen.mjs");
+  // the test seam's pool takes the pen's own shape, its one-connection-per-chain
+  // guard included, so a suite on it sees what the office would
+  if (_indexPoolForTest) return officeReadOn(_indexPoolForTest, read, "readTownIndex");
   return officeRead(read, { env });
 }
 
@@ -690,12 +739,17 @@ export const UNREACHABLE = Object.freeze({ error: "bounce", defect: UNREACHABLE_
  * A switched door's answer: `{ out, asOf }` from the store, or `{ refused }`
  * (UNREACHABLE) when it cannot be read. Doors turn the refusal into their 503.
  */
-export async function storeAnswer(fn, { env = process.env } = {}) {
+export async function storeAnswer(fn, { env = process.env, then = null } = {}) {
   // Only a store that cannot be reached is the refusal. An error the reader
   // itself throws (a clone with no quest tools, say) is that reader's own, and
   // goes to the door's own catch exactly as it does on office.db's path: calling
   // it "the store cannot be reached" would name the wrong thing.
-  let own = null;
-  try { return await readTownIndex(async (c) => { try { return await fn(c); } catch (e) { own = e; throw e; } }, { env }); }
+  let own = null, r;
+  try { r = await readTownIndex(async (c) => { try { return await fn(c); } catch (e) { own = e; throw e; } }, { env }); }
   catch (e) { if (own && e === own) throw e; return { refused: UNREACHABLE }; }
+  // THE REST OF THE ANSWER, AFTER THE CONNECTION IS BACK (POS-370). `then` is
+  // whatever the read needs that is not the index (the quest board's quest tools
+  // and its world read): it runs here, holding nothing, and its errors are the
+  // reader's own, never the store's absence.
+  return then ? { ...r, out: await then(r.out) } : r;
 }
