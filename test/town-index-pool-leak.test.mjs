@@ -84,6 +84,11 @@ after(async () => {
   rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
+/** End every office_api session (a drained pool's, from a test that failed before this one). */
+async function endStuck() {
+  await su.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'office_api' AND state LIKE 'idle in transaction%'");
+}
+
 /** office_api's sessions idle inside a transaction, as the store sees them. */
 async function idleInTransaction() {
   const { rows } = await su.query(
@@ -91,8 +96,9 @@ async function idleInTransaction() {
   return rows;
 }
 
-/** A pen pool of prod's size, handed to the pen, and what it holds. */
+/** A pen pool of prod's size, handed to the pen, and what it holds. A failed test's stuck sessions are ended first, so each test's count is its own. */
 async function prodSizedPen() {
+  await endStuck();
   const { default: pg } = await import("pg");
   const pool = new pg.Pool({ connectionString: s.url("office_api"), max: 3 });
   pool.on("error", () => {});
@@ -189,6 +195,7 @@ test("the REAL world read (kept positions on): the household board and read_ques
 test("a spawned office with switch 2 and the kept positions on answers GET /quests/{h} many at once, and leaves no session idle in transaction", async (t) => {
   if (skip) return t.skip(skip);
   if (!WORLD) return t.skip(NO_WORLD);
+  await endStuck();
   child = spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", "0", "--db", dbPath,
     "--oauth-db", join(tmp, "oauth.db"), "--roles-db", join(tmp, "roles.db")], {
     env: { ...process.env, TOWN_CLONE: TOWN, WORLD_CLONE: WORLD, VOICES_LOG: join(tmp, "voices.jsonl"),
