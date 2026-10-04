@@ -73,7 +73,8 @@ export function storePoolOptions(env = process.env, { name, max, connectionStrin
 
 /** A pool that names its idle-client errors instead of taking the process down with them. */
 export function watchPoolErrors(pool, name) {
-  pool.on("error", (e) => console.error(`[store-pool ${name}] an idle connection failed: ${String(e?.message ?? e).slice(0, 200)}`));
+  // a test's stand-in pg (test/helpers/fake-pen.mjs) may build a pool with no events
+  pool.on?.("error", (e) => console.error(`[store-pool ${name}] an idle connection failed: ${String(e?.message ?? e).slice(0, 200)}`));
   return pool;
 }
 
@@ -151,12 +152,12 @@ export async function onPenClient(pool, by, fn) {
     discard = true;
     console.error(`[store-pool pen] a held connection failed (${by}): ${String(e?.message ?? e).slice(0, 200)}`);
   };
-  client.on("error", heard);
+  client.on?.("error", heard); // a test's stub client may be a plain object with query and release
   try {
     return await holding.run(mark, () => fn(client, () => { discard = true; }));
   } finally {
     mark.open = false;
-    client.removeListener("error", heard);
+    client.removeListener?.("error", heard);
     client.release(discard ? true : undefined);
   }
 }

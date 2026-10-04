@@ -115,18 +115,21 @@ test("a call that holds a pen connection and asks for another is refused at once
 
 test("a pool with nothing to give refuses within the acquire timeout, naming the pool, instead of waiting", async (t) => {
   if (skip) return t.skip(skip);
-  const pen = await penFrom({ WORLD2_PG_ACQUIRE_MS: "400" });
+  // 2 s, not less: the timeout also bounds the dial, and under a full suite a
+  // fresh embedded-Postgres connection on Windows can take most of a second
+  const pen = await penFrom({ WORLD2_PG_ACQUIRE_MS: "2000" });
   try {
     let open;
     const gate = new Promise((ok) => { open = ok; });
     const holders = [1, 2, 3].map(() => pen.pen.officeRead(async (c) => { await c.query("SELECT 1"); await gate; return "held"; }));
-    await sleep(200);
+    holders.forEach((h) => h.catch(() => {})); // judged below; never an unhandled rejection meanwhile
+    for (let i = 0; i < 40 && pen.held() < 3; i++) await sleep(100);
     assert.equal(pen.held(), 3);
     const started = Date.now();
     await assert.rejects(pen.pen.officeRead(async (c) => c.query("SELECT 1")),
-      (e) => e instanceof StoreAcquireTimeout && /the store's pen pool had no free connection within 400 ms \(it holds 3\)/.test(e.message));
+      (e) => e instanceof StoreAcquireTimeout && /the store's pen pool had no free connection within 2000 ms \(it holds 3\)/.test(e.message));
     const waited = Date.now() - started;
-    assert.ok(waited >= 300 && waited < 3000, `refused after ${waited} ms`);
+    assert.ok(waited >= 1800 && waited < 8000, `refused after ${waited} ms`);
     open();
     assert.deepEqual(await Promise.all(holders), ["held", "held", "held"]);
     assert.equal(pen.held(), 0);
