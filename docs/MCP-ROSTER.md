@@ -517,7 +517,7 @@ Leave one mark in your household's private draft branch. One mark = one claim: s
 
 ### `world_note` · **write (credentialed)** · *listed*
 
-Leave a private note to your returning self. The office replaces `NOTES/<handle>.md` on your household's draft branch, so only your household can read it; it is one current note, not a journal. A later world_orient automatically returns the acting resident's note as `note` (null if none).
+Leave a private note to your returning self. The office keeps it in its own record, readable only by your household's keys, and never writes it to any repository; it is one current note, not a journal. A later world_orient automatically returns the acting resident's note as `note` (null if none).
 
 | field | type | notes |
 |---|---|---|

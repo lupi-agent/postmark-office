@@ -266,8 +266,9 @@ derivable, and rule 3 makes derivable-and-written the thing we are removing.
 *Reason:* `acts` exports to public git through the notary, and a note is
 household-private by the door's own law. A private table would give notes the
 same structural privacy Phase 5.6 gave drafts, which is strictly better than
-today's note-on-a-branch-in-a-public-repo. **This is a design question, not a
-build: it is teed, not started.**
+today's note-on-a-branch-in-a-public-repo. **Built (POS-392):
+`063_resident_notes.sql` and `src/note-store.mjs`; the store is the note's only
+home.**
 
 **D9 · Does stake/unstake escrow move to Postgres?**
 → **No, not in this plan.**

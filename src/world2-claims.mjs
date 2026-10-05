@@ -39,7 +39,8 @@ export function candleEnabled(env = process.env) {
 async function pool(env = process.env) {
   if (state.pool) return state.pool;
   const { default: pg } = await import("pg");
-  state.pool = new pg.Pool({ connectionString: env.WORLD2_PG_URL, max: 2 });
+  const { storePoolOptions, watchPoolErrors } = await import("./store-pool.mjs"); // POS-370
+  state.pool = watchPoolErrors(new pg.Pool(storePoolOptions(env, { name: "claims", max: 2 })), "claims");
   return state.pool;
 }
 

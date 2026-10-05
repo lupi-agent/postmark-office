@@ -19,38 +19,38 @@
 // only where a call is already known to be write-shaped, and it is a property
 // of the placement rather than a flag anyone can get wrong.
 //
-// ── WHERE THE LEDGER LIVES ─────────────────────────────────────────────────
+// ── WHERE THE LEDGER LIVES (POS-347, Darko 2026-10-04) ──────────────────────
 //
-// `TOWN_CLONE/tools/standing-ledger.md`. NOT `WHITE_PAGES/` — that is a
-// correctness constraint, not a filing preference, and the reasoning is written
-// out at length in the town's own `tools/registrar-audit.mjs § where the ledger
-// lives`: the witness workflow overlays `WHITE_PAGES/` with the PR's own copy
-// at merge time, so a certification input kept there would be supplied by the
-// thing being certified. Do not "tidy" this path.
+// IN THE STORE: `standing_acts` (migration 060), one row per act in the order
+// the acts were written. The store is the record and every reader reads it:
+// the write doors ask it per call (one indexed read over the key's handles), so
+// a Registrar's lift lands at the next call, never at a pull or a restart.
 //
-// Read live from the clone per call, uncached, which is the same road
-// `residency.mjs § gangwayState` takes to `HARBOR/GANGWAY.md`: a Registrar
-// commit lifting a quarantine needs a pull, not an office restart. Standing is
-// the same shape of fact as the gangway and wants the same road.
+// The Registrar writes through ONE office act, `household { do: "standing" }`
+// (src/standing-door.mjs), which appends the row and renders the town's
+// `tools/standing-ledger.md` from the store in the same pen commit. The file is
+// an EXPORT (tools/standing-drain.mjs). It stays where it is, in `tools/` and
+// not `WHITE_PAGES/`, because the town's PR witness still reads it until
+// POS-348 moves that reader too, and the reason it lives outside the overlay
+// (town `tools/registrar-audit.mjs § where the ledger lives`) still holds for
+// the witness. Git stays an entrance: a line committed to the file by hand is
+// adopted into the store (source `git`) at the next drain.
 //
-// ABSENT IS THE ORDINARY CASE. No ledger means nobody has ever been suspended,
-// which is a fine state for a town to be in — and it must be byte-identical to
-// the office that has no idea this file exists.
+// ABSENT IS THE ORDINARY CASE. No rows means nobody has ever been suspended,
+// and an office not pointed at the record at all (a test, a dev box) has no
+// record in which anyone could be. A record that is pointed at and cannot be
+// read is not that case, and the gate says so rather than answer "clear".
 //
-// ── THIS IS A VENDORED COPY, AND IT MUST MOVE IN LOCKSTEP ──────────────────
+// ── THE GRAMMAR IS STILL THE TOWN'S, AND MOVES IN LOCKSTEP ─────────────────
 //
-// `foldStanding`, `isSuspended` and `bounceSentence` below are the town's own
-// functions, carried across rather than imported. That is the Registrar's own
-// instruction (`registrar-audit.mjs § OFFICE_SEAM.doors`: "Vendor the fold —
-// pure, dependency-free, and about sixty lines"), and the trade is deliberate:
-// a dynamic import out of the clone would make an office pointed at a stale or
-// bare checkout fail OPEN, and a gate that silently stops gating is worse than
-// one that is a copy. The cost is real and named: the GRAMMAR now has two
-// homes. If the ledger's line shape changes town-side, it changes here in the
-// same commit — and `parseStandingLine` is the only place that knows it.
+// `parseStandingLine`, `formatStandingLine`, `foldStanding` and `bounceSentence`
+// below are the town's own (tools/registrar-audit.mjs), carried across rather
+// than imported. Every row carries its ledger `line`, the export is those lines,
+// and the witness parses them with the town's copy, so the GRAMMAR still has two
+// homes. If the line shape changes town-side, it changes here in the same
+// commit — and `parseStandingLine` is the only place that knows it.
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { standingForHandles } from "./standing-store.mjs";
 
 export const STANDING_LEDGER_PATH = "tools/standing-ledger.md";
 
@@ -63,7 +63,10 @@ export const STANDING_LEDGER_PATH = "tools/standing-ledger.md";
 const LINE_RE =
   /^- (\d{4}-\d{2}-\d{2}) · (quarantine|lift|revoke) · ([a-z0-9][a-z0-9-]*) · by: ([^·\n]+?)(?: · founder-word: ([^·\n]+?))? · reason: ([^·\n]+)$/;
 
-const looksLikeAct = (line) => /^- \d{4}-\d{2}-\d{2} · (quarantine|lift|revoke) /.test(line.replace(/\r$/, ""));
+export const ACTS = Object.freeze(["quarantine", "lift", "revoke"]);
+export const STANDING_HANDLE_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+export const looksLikeAct = (line) => /^- \d{4}-\d{2}-\d{2} · (quarantine|lift|revoke) /.test(line.replace(/\r$/, ""));
 
 /** One ledger line → a record, or null if it is not an act line at all. */
 export function parseStandingLine(line) {
@@ -76,6 +79,12 @@ export function parseStandingLine(line) {
     reason: m[6].trim(),
     line: String(line).replace(/\r$/, ""),
   };
+}
+
+/** A record → its ledger line (the town's formatStandingLine, verbatim). */
+export function formatStandingLine({ date, act, handle, by, founderWord = null, reason }) {
+  const fw = founderWord ? ` · founder-word: ${founderWord}` : "";
+  return `- ${date} · ${act} · ${handle} · by: ${by}${fw} · reason: ${reason}`;
 }
 
 /**
@@ -114,19 +123,19 @@ export function foldStanding(text) {
   return { standing, unparsed };
 }
 
-export const standingLedgerText = (clone) => {
-  if (!clone) return "";
-  try { return readFileSync(join(clone, STANDING_LEDGER_PATH), "utf8"); }
-  catch { return ""; } // no ledger yet — nobody has ever been suspended
-};
-
-export const readStanding = (clone) => foldStanding(standingLedgerText(clone));
-
 /** Suspended = the write doors are shut. `clear` and "never mentioned" are both open. */
 export const isSuspended = (rec) => Boolean(rec) && (rec.state === "quarantined" || rec.state === "revoked");
 
-/** The current standing of one handle: a record, or null when nothing was ever said. */
-export const standingOf = (handle, clone) => readStanding(clone).standing.get(handle) ?? null;
+/**
+ * The current standing of one handle, from the store: a record, or null when
+ * nothing was ever said (or the office is not pointed at a record). THROWS
+ * when the record is pointed at and cannot be read: the caller decides what an
+ * unreadable standing means at its door, and it is never "clear".
+ */
+export async function standingOf(handle, env = process.env) {
+  const m = await standingForHandles([handle], env);
+  return m?.get(handle) ?? null;
+}
 
 // ── the honest sentence ─────────────────────────────────────────────────────
 //
@@ -169,15 +178,33 @@ export function bounceSentence(rec, { handle = rec?.handle } = {}) {
 
 export const STANDING_BOUNCE_CODE = 403;
 
+// AN UNREADABLE RECORD IS NOT GOOD STANDING. When the office is pointed at the
+// store and the read throws, the write is refused with a 503 that says nothing
+// was written. That is the opposite of the old file road, where a missing file
+// read as "nobody suspended", and it is deliberate: a store that cannot answer
+// this read cannot take the write behind it either, so the refusal costs the
+// resident nothing the write would have given them, and a quarantine is never
+// skipped because a connection dropped.
+export const STANDING_UNREADABLE = Object.freeze({
+  code: 503,
+  defect: "the office cannot read the town's standing record right now",
+  hint: "nothing was written. Standing is read from the office's record before every write; try again shortly.",
+});
+
 /**
  * The bounce a write-shaped call gets, or null when every handle is in good
  * standing. `{ code, defect, hint }` — the shape `HARBOR_BOUNCE` already
  * speaks, so each door dresses it the way that door dresses that one.
+ *
+ * ASYNC since POS-347: the record is the store. Every caller awaits it.
  */
-export function standingBounce(key, clone) {
+export async function standingBounce(key, env = process.env) {
   const handles = [...(key?.handles ?? [])];
   if (!handles.length) return null;
-  const { standing } = readStanding(clone);
+  let standing;
+  try { standing = await standingForHandles(handles, env); }
+  catch { return { ...STANDING_UNREADABLE }; }
+  if (!standing) return null; // not pointed at a record: nobody can be suspended in it
   for (const h of handles) {
     const rec = standing.get(h);
     if (!isSuspended(rec)) continue;

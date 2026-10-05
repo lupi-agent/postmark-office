@@ -28,12 +28,13 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { fixtureDb } from "./fixture.mjs";
 import { indexStore } from "./helpers/office-under-test.mjs";
+import { plantStanding, standingStoreFor } from "./helpers/standing-rows.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
 
 // The town index this file's offices read: a store seeded from each fixture
 // office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
 const STORES = [];
-const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x; };
 test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -104,16 +105,19 @@ before(async () => {
     address: { data: { since: "2026-08-01", github: "third-keeper" }, body: `# ${HANDLE3}` },
   }));
   seed.close();
-  const IX_ENV = await storeFor(dbPath);
+  const IX = await storeFor(dbPath);
+  const IX_ENV = IX.env;
+  const LEDGER = await standingStoreFor(IX);
+  STORES.push(LEDGER);
   const clone = join(tmp, "town-clone");
   CLONE.path = clone;
   mkdirSync(join(clone, "tools"), { recursive: true });
   // A THIRD RESIDENT, QUARANTINED. The desk is keyless and so runs before the
   // credentialed standing gate; this is the fixture that proves it applies the
-  // ledger itself rather than minting first and refusing later.
-  writeFileSync(join(clone, "tools", "standing-ledger.md"),
-    `- 2026-09-01 · quarantine · ${HANDLE3} · by: registrar · reason: an open question about who is writing
-`);
+  // ledger itself rather than minting first and refusing later. The ledger is
+  // the store's (POS-347): the act is a row the spawned office reads.
+  await plantStanding(LEDGER.store,
+    `- 2026-09-01 · quarantine · ${HANDLE3} · by: registrar · reason: an open question about who is writing`);
   mkdirSync(join(clone, "WHITE_PAGES"), { recursive: true });
   writeFileSync(join(clone, "tools", "github-ids.json"), JSON.stringify({
     [HANDLE]: { login: OWNER.login, id: OWNER.id, pinned: "2026-07-05" },

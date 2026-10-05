@@ -156,6 +156,9 @@ if (process.env.STUB_WELCOME_MAKES) {
 process.exit(Number(process.env.STUB_WELCOME_EXIT || 0));
 `,
   "tools/town-drain-run.mjs": `process.exit(Number(process.env.STUB_DRAIN_EXIT || 0));\n`,
+  // POS-347: the standing drain renders the town's standing ledger from the
+  // store; this tick has no store, and the drain is non-fatal either way.
+  "tools/standing-drain.mjs": `process.exit(0);\n`,
   "world2/tools/settlements-backfill.mjs": `console.log("0 rows written");\n`,
   "src/hydrate.mjs": `
 import { writeFileSync } from "node:fs";

@@ -84,6 +84,12 @@ export const LANDED = {
   "052_world_act_nonce.sql":       { probe: rel("acts_world_nonce_once") },
   // 053 (POS-302): each resident's governing departure, kept once per clearing.
   "053_position_snapshots.sql":    { probe: `${rel("position_snapshots")} AND ${rel("position_snapshot_rows")} AND ${col("position_snapshot_rows", "first_ordinal")}` },
+  // 054 (POS-357): the clearing seals the World it leaves, in its own transaction.
+  "054_world_snapshots.sql":       { probe: `${rel("mark_versions")} AND ${rel("world_snapshot_marks")} AND ${rel("world_snapshots")} AND ${rel("world_snapshot_folds")} AND EXISTS (SELECT 1 FROM registry WHERE object = 'world_snapshot_folds')` },
+  // 060 (POS-347): the Registrar's standing ledger, append-only.
+  "060_standing_acts.sql":         { probe: `${rel("standing_acts")} AND ${trig("standing_acts_append_only")}` },
+  // 063 (POS-392): each resident's note to their returning self, in the office's record.
+  "063_resident_notes.sql":        { probe: `${rel("resident_notes")} AND ${col("resident_notes", "written_at")}` },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */

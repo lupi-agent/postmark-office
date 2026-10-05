@@ -273,6 +273,9 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
     if (/FROM households/i.test(q)) return { rows: households.map((r) => ({ ...r })), rowCount: households.length };
     if (/FROM household_pins/i.test(q)) return { rows: pins.map((r) => ({ ...r })), rowCount: pins.length };
     if (/FROM registry_meta/i.test(q)) return { rows: meta.map((r) => ({ ...r })), rowCount: meta.length };
+    // The standing gate (POS-347) asks the record before every act: this
+    // record has suspended nobody.
+    if (/FROM standing_acts/i.test(q)) return { rows: [], rowCount: 0 };
 
     for (const [matcher, handler] of also) {
       const hit = typeof matcher === "function" ? matcher(q, params) : matcher.test(q);

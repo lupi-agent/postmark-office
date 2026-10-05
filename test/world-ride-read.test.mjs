@@ -292,6 +292,7 @@ test("ONE OWNER for the block: both readers call it, neither re-composes it", { 
   assert.equal((apex.match(/entered_via:/g) ?? []).length, 0, "and it is not this file any more");
 
   // And the read is a CASE, not a widening of the unwired default.
-  assert.match(apex, /case "ride":\s*\n\s*return \{ ride: await rideDomain\(oriented, key\) \};/);
+  // `fields` rides in since #3394: the read asks about the resident it names.
+  assert.match(apex, /case "ride":\s*\n\s*return \{ ride: await rideDomain\(oriented, key, fields\) \};/);
   assert.ok(!/result: await rideDomain/.test(apex), "the act branch's envelope key never reaches the read branch");
 });

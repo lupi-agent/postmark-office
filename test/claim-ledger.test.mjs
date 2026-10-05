@@ -24,12 +24,15 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { fixtureDb } from "./fixture.mjs";
 import { indexStore } from "./helpers/office-under-test.mjs";
+import { plantStanding, standingStoreFor } from "./helpers/standing-rows.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
 
 // The town index this file's offices read: a store seeded from each fixture
 // office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
 const STORES = [];
-const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x; };
+// The standing ledger is the store's (POS-347): the store the office reads it from.
+const LEDGER_STORE = { store: null };
 test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -82,7 +85,11 @@ before(async () => {
   resident(TWIN_B, TWINS_ACCT.login);
   resident(DUAL, DUAL_ACCT.login);
   seed.close();
-  const IX_ENV = await storeFor(dbPath);
+  const IX = await storeFor(dbPath);
+  const IX_ENV = IX.env;
+  const LEDGER = await standingStoreFor(IX);
+  STORES.push(LEDGER);
+  LEDGER_STORE.store = LEDGER.store;
 
   const clone = (CLONE.path = join(tmp, "town-clone"));
   mkdirSync(join(clone, "tools"), { recursive: true });
@@ -94,8 +101,8 @@ before(async () => {
     [TWIN_B]: { login: TWINS_ACCT.login, id: TWINS_ACCT.id, pinned: "2026-08-01" },
     [DUAL]: { login: DUAL_ACCT.login, id: DUAL_ACCT.id, pinned: "2026-08-01" },
   }));
-  writeFileSync(join(clone, "tools", "standing-ledger.md"),
-    `- 2026-09-01 · quarantine · ${QUARANTINED} · by: registrar · reason: an open question about who is writing\n`);
+  await plantStanding(LEDGER.store,
+    `- 2026-09-01 · quarantine · ${QUARANTINED} · by: registrar · reason: an open question about who is writing`);
 
   ghServer = createServer((req, res) => {
     res.setHeader("connection", "close");
@@ -208,12 +215,11 @@ test("A CLAIM KEY IS NOT A WAY ROUND THE LEDGER: quarantine a resident and their
   assert.equal((await cosign(askOf(claim), HOLDER_ACCT)).status, 200);
   assert.equal((await me(claim.key)).status, 200, "live before the ledger moves");
 
-  const ledger = join(CLONE.path, "tools", "standing-ledger.md");
-  const before = readFileSync(ledger, "utf8");
   try {
-    // The ledger is read from disk on every request, so the town can suspend
-    // someone mid-session and the doors know at the next call.
-    writeFileSync(ledger, `${before}- 2026-09-08 · quarantine · ${HOLDER} · by: registrar · reason: a question raised after the key was issued\n`);
+    // The ledger is the store's (POS-347), read on every request, so the town
+    // can suspend someone mid-session and the doors know at the next call.
+    await plantStanding(LEDGER_STORE.store,
+      `- 2026-09-08 · quarantine · ${HOLDER} · by: registrar · reason: a question raised after the key was issued`);
 
     // reads are untouched — the ledger's own law: "a suspension the resident
     // cannot read is a deletion the town will not admit to"
@@ -225,10 +231,11 @@ test("A CLAIM KEY IS NOT A WAY ROUND THE LEDGER: quarantine a resident and their
     assert.equal(rotate.status, 403, "a suspended resident cannot rotate into a fresh key either");
     assert.match((await rotate.json()).defect, /quarantined/i);
   } finally {
-    writeFileSync(ledger, before);
+    await plantStanding(LEDGER_STORE.store,
+      `- 2026-09-08 · lift · ${HOLDER} · by: registrar · reason: the question was answered`);
   }
 
-  // lifted by putting the ledger back: the gate is derived, never cached
+  // lifted by a lift row: the gate is derived, never cached
   assert.equal((await fetch(`${BASE}/keys`, { method: "POST", headers: { authorization: `Bearer ${claim.key}` } })).status, 201,
     "and the moment the ledger says otherwise, the door opens again");
 });

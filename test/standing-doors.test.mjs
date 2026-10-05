@@ -38,11 +38,27 @@ import {
 } from "../src/standing.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { townApex } from "../src/town-apex.mjs";
+import { startStore } from "./helpers/embedded-store.mjs";
+import { plantStanding, resetStanding } from "./helpers/standing-rows.mjs";
+
+// THE LEDGER IS A STORE TABLE (POS-347, 060_standing_acts.sql). The in-process
+// tests below read standing through the office's one pool, so this process is
+// pointed at a store of its own before anything asks; each test starts from a
+// clean ledger. The spawned office (S7) reads its index store, and the rows are
+// planted there.
+const STANDING = await startStore({ db: "standing_doors" });
+process.env.WORLD2_PG = "1";
+process.env.WORLD2_PG_URL = STANDING.url("office_api");
+test.after(async () => {
+  const { __setPoolForTest } = await import("../src/world2-acts.mjs");
+  __setPoolForTest(null);
+  await STANDING.stop();
+});
 
 // The town index this file's offices read: a store seeded from each fixture
 // office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
 const STORES = [];
-const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x; };
 test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -121,10 +137,10 @@ test("S2 · A MALFORMED ACT IS NEVER SKIPPED IN SILENCE", () => {
   assert.equal(standing.get("alpha").state, "quarantined", "…and it did not stop the fold either");
 });
 
-test("S3 · THE HONEST SENTENCE says what, when, whose hand, why — and how it ends", () => {
-  const clone = townClone();
-  writeFileSync(join(clone, STANDING_LEDGER_PATH), LEDGER(Q("wright")));
-  const rec = standingOf("wright", clone);
+test("S3 · THE HONEST SENTENCE says what, when, whose hand, why — and how it ends", async () => {
+  await resetStanding(STANDING);
+  await plantStanding(STANDING, Q("wright"));
+  const rec = await standingOf("wright");
   const said = bounceSentence(rec, { handle: "wright" });
 
   assert.match(said, /`wright` is quarantined as of 2026-08-24/, "WHAT and WHEN");
@@ -139,31 +155,44 @@ test("S3 · THE HONEST SENTENCE says what, when, whose hand, why — and how it 
   // A quarantine that reads as permanent is a revocation wearing a softer word,
   // so the revoked sentence must read differently — and carry the founder's own
   // sentence, quoted.
-  writeFileSync(join(clone, STANDING_LEDGER_PATH), LEDGER(Q("wright"), REVOKE("wright")));
-  const gone = bounceSentence(standingOf("wright", clone), { handle: "wright" });
+  await plantStanding(STANDING, REVOKE("wright"));
+  const gone = bounceSentence(await standingOf("wright"), { handle: "wright" });
   assert.match(gone, /was revoked on 2026-08-26/);
   assert.match(gone, /"this one does not stay"/, "the founder's word, verbatim");
   assert.match(gone, /lifted only on the founder's word/, "how THIS one ends, which is not the same road");
 });
 
-test("S4 · NO LEDGER IS THE ORDINARY CASE: absent file, everyone in good standing", () => {
-  const clone = townClone(); // no tools/standing-ledger.md
-  assert.equal(existsSync(join(clone, STANDING_LEDGER_PATH)), false);
-  assert.equal(standingOf("wright", clone), null);
-  assert.equal(standingBounce({ handles: new Set(["wright"]) }, clone), null,
-    "no ledger means nobody has ever been suspended, which is a fine state for a town to be in");
-  assert.equal(standingBounce({ handles: new Set(["wright"]) }, null), null,
-    "and an office with no clone configured at all gates nothing");
+test("S4 · NO ROWS IS THE ORDINARY CASE: an empty ledger, everyone in good standing", async () => {
+  await resetStanding(STANDING);
+  assert.equal(await standingOf("wright"), null);
+  assert.equal(await standingBounce({ handles: new Set(["wright"]) }), null,
+    "no rows means nobody has ever been suspended, which is a fine state for a town to be in");
+  assert.equal(await standingBounce({ handles: new Set(["wright"]) }, {}), null,
+    "and an office not pointed at a record at all has no record anyone could be suspended in");
 });
 
-test("S5 · A CALLER WITH NO HANDLES PASSES: visitors and berths meet their own gates", () => {
-  const clone = townClone();
-  writeFileSync(join(clone, STANDING_LEDGER_PATH), LEDGER(Q("wright")));
-  assert.equal(standingBounce({ handles: new Set() }, clone), null);
-  assert.equal(standingBounce({ visitor: true }, clone), null);
-  assert.equal(standingBounce(null, clone), null);
+test("S4b · AN UNREADABLE RECORD IS NOT GOOD STANDING: the write is refused with a 503 that wrote nothing", async () => {
+  // The old road read a missing FILE as "nobody suspended". A store that is
+  // pointed at and cannot answer is a different fact, and reading it as clear
+  // would let a quarantine lapse every time a connection dropped.
+  const { __setPoolForTest } = await import("../src/world2-acts.mjs");
+  __setPoolForTest({ query: async () => { throw new Error("connection refused"); } });
+  try {
+    const b = await standingBounce({ handles: new Set(["wright"]) });
+    assert.equal(b?.code, 503, "refused, never waved through");
+    assert.match(b.hint, /nothing was written/);
+    await assert.rejects(standingOf("wright"), /connection refused/, "the key desk's read throws for its door to dress");
+  } finally { __setPoolForTest(null); }
+});
 
-  const bounced = standingBounce({ handles: new Set(["wright"]) }, clone);
+test("S5 · A CALLER WITH NO HANDLES PASSES: visitors and berths meet their own gates", async () => {
+  await resetStanding(STANDING);
+  await plantStanding(STANDING, Q("wright"));
+  assert.equal(await standingBounce({ handles: new Set() }), null);
+  assert.equal(await standingBounce({ visitor: true }), null);
+  assert.equal(await standingBounce(null), null);
+
+  const bounced = await standingBounce({ handles: new Set(["wright"]) });
   assert.equal(bounced.code, 403);
   assert.equal(bounced.handle, "wright");
   assert.equal(bounced.standing, "quarantined");
@@ -178,11 +207,12 @@ test("S6 · THE APEX: `do:` bounces for a quarantined resident, `read:` and the 
   const clone = townClone();
   const key = { household: "keemin", handles: new Set(["wright"]), ghId: "42", ghLogin: "keeminlee" };
   const ctx = { db, clone, odb: null, dbPath: null, pen: null };
+  await resetStanding(STANDING);
 
   const before = await householdApex({ do: "home", args: { handle: "wright", body: "hello" } }, key, ctx);
   assert.notEqual(before?.code, 403, "clean standing: the act is judged on its own merits, whatever they are");
 
-  writeFileSync(join(clone, STANDING_LEDGER_PATH), LEDGER(Q("wright")));
+  await plantStanding(STANDING, Q("wright"));
 
   const act = await householdApex({ do: "home", args: { handle: "wright", body: "hello" } }, key, ctx);
   assert.equal(act.error, "bounce");
@@ -196,10 +226,10 @@ test("S6 · THE APEX: `do:` bounces for a quarantined resident, `read:` and the 
   const read = await householdApex({ read: "address" }, key, ctx);
   assert.notEqual(read?.code, 403, "and so does `read:` — the reason is one of the things they are reading");
 
-  // …and a lift, with no restart, reopens it: the ledger is read live per call.
-  writeFileSync(join(clone, STANDING_LEDGER_PATH), LEDGER(Q("wright"), LIFT("wright")));
+  // …and a lift, with no restart, reopens it: the store is read per call.
+  await plantStanding(STANDING, LIFT("wright"));
   const after = await householdApex({ do: "home", args: { handle: "wright", body: "hello" } }, key, ctx);
-  assert.notEqual(after?.code, 403, "a Registrar commit lifting a quarantine costs a pull, not an office restart");
+  assert.notEqual(after?.code, 403, "a Registrar's lift lands at the next call — no pull, no office restart");
 });
 
 test("S6b · THE TOWN APEX holds its own gate — and now it has an act to hold it over", async () => {
@@ -225,7 +255,8 @@ test("S6b · THE TOWN APEX holds its own gate — and now it has an act to hold 
   const ctx = { clone, schemas: Object.fromEntries(TOOLS.map((t) => [t.name, t.inputSchema?.properties ?? {}])),
     schemaRequired: {}, call: (tool, fields) => { dispatched.push(tool); return { ok: tool, fields }; } };
 
-  writeFileSync(join(clone, STANDING_LEDGER_PATH), LEDGER(Q("wright")));
+  await resetStanding(STANDING);
+  await plantStanding(STANDING, Q("wright"));
 
   // 2026-08-30: declare-household MOVED home to household { do: "declare" } —
   // the town's roster went empty and this test lost its teeth, with the note
@@ -266,9 +297,9 @@ test("S6b · THE TOWN APEX holds its own gate — and now it has an act to hold 
 
   // …and a lift reopens the acts, live, with no restart — the same property S6a
   // asserts for the household door, now asserted for the third one.
-  writeFileSync(join(clone, STANDING_LEDGER_PATH), LEDGER(Q("wright"), LIFT("wright")));
+  await plantStanding(STANDING, LIFT("wright"));
   const after = await townApex({ do: "stake", args: { mark: "wright/a-newcomers-first-hour", stamps: 1 } }, key, ctx);
-  assert.notEqual(after?.code, 403, "a Registrar commit lifting a quarantine costs a pull, not an office restart");
+  assert.notEqual(after?.code, 403, "a Registrar's lift lands at the next call — no pull, no office restart");
   assert.equal(dispatched.at(-1), "town_stake", "…and the act reaches its flat verb the moment standing returns");
 });
 
@@ -283,7 +314,14 @@ test("S7 · REST AND MCP: writes bounce, reads pass, lift reopens, revoke shuts 
   try {
     const dbPath = join(work, "fixture.db");
     fixtureDb(dbPath).close();
-    const IX_ENV = await storeFor(dbPath);
+    const IX = await storeFor(dbPath);
+    const IX_ENV = { ...IX.env };
+    // The spawned office reads standing from its own store; with the suite's
+    // index forced back to office.db (OFFICE_TEST_INDEX=office) it has none, so
+    // it reads the in-process ledger store instead.
+    const LEDGER_STORE = IX.store ?? STANDING;
+    if (!IX.store) Object.assign(IX_ENV, { WORLD2_PG: "1", WORLD2_PG_URL: STANDING.url("office_api") });
+    await resetStanding(LEDGER_STORE);
     const odbPath = join(work, "oauth.db");
     openOauthDb(odbPath).close();
 
@@ -311,16 +349,15 @@ test("S7 · REST AND MCP: writes bounce, reads pass, lift reopens, revoke shuts 
       text: j.result?.content?.[0]?.text ?? "",
     }));
 
-    // ── absent ledger · BYTE-IDENTICAL ────────────────────────────────────
+    // ── an empty ledger · BYTE-IDENTICAL ──────────────────────────────────
     // The office that has never heard of standing and the office that has,
-    // over a town with no ledger, must be the same office.
-    assert.equal(existsSync(join(clone, STANDING_LEDGER_PATH)), false);
+    // over a town nobody was ever suspended in, must be the same office.
     assert.equal((await patch({ bio: "written with nobody suspended" })).status, 200,
       "no ledger: a write lands exactly as it always did");
     assert.equal((await rpc("update_profile", { handle: "wright", bio: "and through MCP too" })).isError, false);
 
     // ── quarantined · WRITES BOUNCE ON BOTH SKINS ─────────────────────────
-    writeFileSync(join(clone, STANDING_LEDGER_PATH), LEDGER(Q("wright")));
+    await plantStanding(LEDGER_STORE, Q("wright"));
 
     const restBounce = await patch({ bio: "this must not land" });
     assert.equal(restBounce.status, 403, "REST: a quarantined resident's write is refused");
@@ -350,13 +387,13 @@ test("S7 · REST AND MCP: writes bounce, reads pass, lift reopens, revoke shuts 
       "whoami is a read of your OWN identity, and a suspended resident is still somebody");
 
     // ── lifted · IT REOPENS, WITH NO RESTART ──────────────────────────────
-    writeFileSync(join(clone, STANDING_LEDGER_PATH), LEDGER(Q("wright"), LIFT("wright")));
+    await plantStanding(LEDGER_STORE, LIFT("wright"));
     assert.equal((await patch({ bio: "lifted, and writing again" })).status, 200,
-      "the ledger is read live per call — the same road gangwayState takes");
+      "the store is read per call: a lift lands at the next write");
     assert.equal((await rpc("update_profile", { handle: "wright", bio: "lifted on MCP too" })).isError, false);
 
     // ── revoked · IT SHUTS AGAIN, AND SAYS SO DIFFERENTLY ─────────────────
-    writeFileSync(join(clone, STANDING_LEDGER_PATH), LEDGER(Q("wright"), LIFT("wright"), REVOKE("wright")));
+    await plantStanding(LEDGER_STORE, REVOKE("wright"));
     const revoked = await patch({ bio: "must not land either" });
     assert.equal(revoked.status, 403);
     const revokedBody = await revoked.json();
