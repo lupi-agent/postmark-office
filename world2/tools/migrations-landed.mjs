@@ -88,6 +88,9 @@ export const LANDED = {
   "054_world_snapshots.sql":       { probe: `${rel("mark_versions")} AND ${rel("world_snapshot_marks")} AND ${rel("world_snapshots")} AND ${rel("world_snapshot_folds")} AND EXISTS (SELECT 1 FROM registry WHERE object = 'world_snapshot_folds')` },
   // 060 (POS-347): the Registrar's standing ledger, append-only.
   "060_standing_acts.sql":         { probe: `${rel("standing_acts")} AND ${trig("standing_acts_append_only")}` },
+  // 068 + 069 (Darko 2026-10-05): one key per household; the re-key's ledger, then the CHECKs.
+  "068_household_rekeys.sql":      { probe: `${rel("household_rekeys")} AND ${trig("household_rekeys_append_only")}` },
+  "069_household_one_key.sql":     { probe: `EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'acts_household_one_key')` },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */
