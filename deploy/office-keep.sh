@@ -54,7 +54,8 @@ trap 'rm -rf "$SNAP"' EXIT
   # a door act whose push was lost. NON-FATAL: the doors read the store, not the
   # file, so a drain that cannot run leaves only the export (the witness's copy)
   # one tick behind, and the next tick asks again.
-  node /srv/postmark-office/tools/standing-drain.mjs --apply --clone "$TOWN_CLONE"     || echo "[office-keep] standing drain FAILED (non-fatal) — the line above names why; the doors read the store and are unaffected" >&2
+  node /srv/postmark-office/tools/standing-drain.mjs --apply --clone "$TOWN_CLONE" \
+    || echo "[office-keep] standing drain FAILED (non-fatal) — the line above names why; the doors read the store and are unaffected" >&2
   # mint-on-tick (2026-08-06): a MANUAL crossing delivers without minting (the
   # key is box custody), opening an owed-window that used to last until the
   # next automated crossing — and a settlement landing inside it refuses
