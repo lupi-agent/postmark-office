@@ -16,9 +16,9 @@
 // { error: { code, defect, hint } } (a bounce is an answer); exit 1 only when
 // the machinery itself trips.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
 import { lastLedgerLine } from "./stamp-tail.mjs";
@@ -86,8 +86,12 @@ async function main() {
     // whole fold otherwise).
     const line = lastLedgerLine(join(CLONE, "WHITE_PAGES", "stamp-ledger.md"));
     const held = await heldFor(CLONE, handle);
-    if (held.unread) throw new Error(held.unread); // as the whole-file parse threw before
-    const balance = held.liquid;
+    // heldFor answers `unread` where its folds can't run; the receipt then reads
+    // the balance the way it always did, the town's foldBalances over the file.
+    const balance = held.unread ? await (async () => {
+      const { parseStampLedger, foldBalances } = await import(pathToFileURL(mint));
+      return foldBalances(parseStampLedger(readFileSync(join(CLONE, "WHITE_PAGES", "stamp-ledger.md"), "utf8"))).get(handle) ?? 0;
+    })() : held.liquid;
 
     return { line, handle, amount, slug, by, date, balance, commit };
   }));
