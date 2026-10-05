@@ -84,6 +84,10 @@ export const LANDED = {
   "052_world_act_nonce.sql":       { probe: rel("acts_world_nonce_once") },
   // 053 (POS-302): each resident's governing departure, kept once per clearing.
   "053_position_snapshots.sql":    { probe: `${rel("position_snapshots")} AND ${rel("position_snapshot_rows")} AND ${col("position_snapshot_rows", "first_ordinal")}` },
+  // 064 (POS-341 Q1): the stamp ledger's signed chain, one row per line.
+  "064_stamp_lines.sql":           { probe: `${rel("stamp_lines")} AND ${col("stamp_lines", "seal")}` },
+  // 065 (POS-341): the mint's rooms and raw mail lines, read from git.
+  "065_town_mint_inputs.sql":      { probe: `${rel("town_rooms")} AND ${rel("town_mail_lines")}` },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */
