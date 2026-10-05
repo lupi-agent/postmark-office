@@ -3431,6 +3431,11 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
 
     const { amend, household, stamps: _st, preview: _pv, ...rest } = clean;
     const declaration = { ...rest, ...(staking ? { stamps: stakeN } : {}), ...(putForward ? { put_forward: true } : {}) };
+    // WHERE IT NESTS, asked ONCE, for the preview and the write alike (POS-413).
+    // The write used to echo `parent_id`, which a sited or parcel mark never
+    // carries, so wildcat's previewed parcel answered "the Gloaming" and the same
+    // geometry written answered null, with an overhang note riding on the null.
+    const parent = await nestingParent({ ...declaration, id }, [...canon.marks, ...live]);
     // ── PREVIEW (founder-ruled 2026-09-14, postmark#2692): SAY IT, WRITE NOTHING.
     // Every guard above has run and the verdict is computed; what a real leave
     // would do from here is stamp the witness line, append the row and hand the
@@ -3440,7 +3445,6 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
     // household's live drafts). The door's disclosures downstream (overhang, the
     // publish note) run on this answer exactly as they run on a written one.
     if (clean.preview === true) {
-      const parent = await previewParent({ ...declaration, id }, [...canon.marks, ...live]);
       const landing = pathFor({ ...declaration, id }, { publishedPathOf: filedPathOfAt(WORLD_CLONE, String(mainRef(WORLD_CLONE))) });
       return {
         preview: true, id, kind: clean.kind, parent, would: amending ? "amend" : "leave",
@@ -3525,7 +3529,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
       },
     });
     return {
-      id, kind: clean.kind, parent: clean.parent_id ?? null,
+      id, kind: clean.kind, parent,
       at: clean.at ?? null, extent: clean.extent ?? null,
       dir: String(willLandAt).replace(/^WORLD\/marks\//, "").replace(/\/mark\.md$/, ""),
       branch: draftBranch(household),
@@ -4214,17 +4218,26 @@ async function disclosePublishing(result, by) {
   } catch { /* the note is a courtesy — the mark already stands */ }
 }
 
-// WHERE A MARK WOULD NEST — the fold's own rule, never a second one (2026-09-14).
+// WHERE A MARK NESTS — the fold's own rule, never a second one (2026-09-14), and
+// the one answer the preview and the write both give (POS-413).
 // `containmentParentOf` is the engine's per-mark answer (the ≥99% coverage rule,
 // innermost wins); an older engine exports only `placementParent`, the same rule
 // without the root fallback; an engine with neither answers null rather than
 // guessing. The candidate is judged against the list the guards read, plus
 // itself, so a draft the author already left is a parent it can nest in.
-async function previewParent(candidate, marks) {
+//
+// A predicate's edge is the parent its author declared (the continuation law):
+// the engine reads it as `_parentMarkId`, which a declaration spells
+// `parent_id`, so it is handed over in the engine's spelling rather than
+// answered here. Without it the preview of a detail named the world's root.
+async function nestingParent(candidate, marks) {
   const engine = await foldConstants();
+  if (candidate.kind !== "sited" && candidate.kind !== "parcel" && candidate.parent_id)
+    candidate = { ...candidate, _parentMarkId: candidate.parent_id };
   const all = [...(marks ?? []).filter((m) => m?.id !== candidate.id), candidate];
   if (typeof engine.containmentParentOf === "function") return engine.containmentParentOf(candidate, all) ?? null;
-  if (typeof engine.placementParent === "function") return engine.placementParent(candidate, all) ?? engine.worldRootOf?.(all)?.id ?? null;
+  if (typeof engine.placementParent === "function")
+    return candidate._parentMarkId ?? engine.placementParent(candidate, all) ?? engine.worldRootOf?.(all)?.id ?? null;
   return null;
 }
 
