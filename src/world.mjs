@@ -1661,7 +1661,7 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
     ...(await keptPresence()), // POS-284: the kept positions, as GET /world/present reads them
   });
   const transport = await transportBlock(w, at);
-  return { standpoint: { ...at, stance: choice.stance }, crossing: { n: crossing, derivation: CROSSING_DERIVATION }, note, ...(noteUnavailable ? { note_unavailable: noteUnavailable } : {}), primer, ...o, ...(present ? { present } : {}), ...(transport ? { transport } : {}) };
+  return { standpoint: { ...at, stance: choice.stance }, crossing: { n: crossing, derivation: CROSSING_DERIVATION }, note, primer, ...o, ...(present ? { present } : {}), ...(transport ? { transport } : {}), ...(noteUnavailable ? { note_unavailable: noteUnavailable } : {}) };
 }
 
 // The telling's own line grammar, for residents: `  · <m> <bearing> — <who>`,
