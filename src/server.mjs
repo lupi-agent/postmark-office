@@ -2683,12 +2683,13 @@ const handle = (req, res) => {
     .catch(tripped);
 };
 
-import("./world-refresher.mjs").then((m) => m.startWorldRefresher(WORLD_CLONE));
+import("./world-refresher.mjs").then((m) => m.startWorldRefresher(WORLD_CLONE)); // POS-263: the world clone's git answered off the request path
 // POS-352: the principal is a role row; the describing flags read this set,
 // reloaded from the registry every minute in every process.
 startPrincipalRefresher(rdb);
-// POS-352: a human's shown name is the registry's `households.human`.
-import("./human-actor.mjs").then((m) => m.startHumanNamesRefresher()); // POS-263: the world clone's git answered off the request path
+// POS-352: a human's shown name is the registry's `households.human`, in every
+// process (the read workers answer world looks that compose the act-as roster).
+import("./human-actor.mjs").then((m) => m.startHumanNamesRefresher());
 // POS-270: the class layer from law_projection at the newest blessing, off the
 // request path. The main thread polls and announces a move; a read worker loads
 // once at boot and again on each announcement, so every process serves one law.

@@ -243,10 +243,19 @@ export function humanNamesFromRegistry(rows) {
   return out;
 }
 
-/** Reload the names from the store's registry. Not pointed at the record, or a failed read: the last good map stays. */
+/**
+ * Reload the names from the store's registry. Not pointed at the record, or a
+ * failed read: the last good map stays. On a switched office
+ * (TOWN_INDEX_READS=store) the read rides the town index's own read, the pool
+ * every read worker already holds, rather than open the record's second pool
+ * in every worker on a cluster dev and prod share.
+ */
 export async function refreshHumanNames(env = process.env) {
-  const { loadRegistryRows } = await import("./registry-store.mjs");
-  const rows = await loadRegistryRows(env);
+  const { loadRegistryRows, registryRowsVia } = await import("./registry-store.mjs");
+  const { townIndexReads, readTownIndex } = await import("./town-index-store.mjs");
+  const rows = townIndexReads(env)
+    ? (await readTownIndex((c) => registryRowsVia(c), { env })).out
+    : await loadRegistryRows(env);
   if (rows) humanNames = humanNamesFromRegistry(rows);
   return humanNames;
 }
