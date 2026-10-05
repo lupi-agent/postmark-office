@@ -36,6 +36,7 @@ import { join } from "node:path";
 import { __setPoolForTest } from "../src/world2-acts.mjs";
 import { rowsFromRegistry } from "../src/registry-rows.mjs";
 import { REGISTRY_PATH, PINS_PATH } from "../src/residency.mjs";
+import { GANGWAY_PATH, gangwayOfFile } from "../src/gangway.mjs";
 import { asJsonbReturns } from "./jsonb-key-order.mjs";
 
 /** The env that says "this office IS pointed at the record". */
@@ -68,7 +69,16 @@ export function poolFromClone(clone) {
     // starts empty and the suite's own assertions say whether that mattered.
     seed = { meta: { schema_version: 1 }, households: [], pins: [] };
   }
-  return makePool(seed);
+  // THE GANGWAY, AS THE STORE ADOPTS IT (POS-353). The office reads the
+  // gangway from `gangway_acts`; a fixture clone that carries a
+  // HARBOR/GANGWAY.md stands for a store that adopted it (tools/gangway-drain
+  // .mjs § THE STORE READS GIT), so its state seeds the one row.
+  let gangway = null;
+  try {
+    const g = gangwayOfFile(readFileSync(join(clone, GANGWAY_PATH), "utf8"));
+    gangway = { id: 1, state: g.state, since: g.since ?? "2026-08-21", reason: null, by_who: "git", actor_gh_id: null, source: "git" };
+  } catch { /* no file: a town that never raised it */ }
+  return makePool({ ...seed, gangway });
 }
 
 /** The in-memory pool itself, over a `rowsFromRegistry`-shaped seed. */
@@ -87,6 +97,7 @@ export function makePool(seed) {
     claims: (seed.claims ?? []).map((c) => ({ ...c })),
     acts: (seed.acts ?? []).map((a) => ({ ...a })),
     windows: (seed.windows ?? []).map((w) => ({ ...w })),
+    gangway: seed.gangway ? [{ ...seed.gangway }] : [],
   };
   return {
     state,
@@ -185,6 +196,8 @@ export function makePool(seed) {
       // The standing gate (POS-347) asks the record before every act: this
       // record has suspended nobody.
       if (/FROM standing_acts/.test(text)) return { rows: [] };
+      // The gangway (POS-353): its newest row, or none.
+      if (/FROM gangway_acts/.test(text)) return { rows: state.gangway.slice(-1).map((r) => ({ ...r })) };
       // ── THE ADOPTION'S STATEMENTS (src/solo-adoption.mjs), answered as they read ──
       if (/FROM marks\s+WHERE status = 'standing' AND household LIKE 'solo:%'/.test(text))
         return { rows: state.marks.filter((m) => m.status === "standing" && String(m.household).startsWith("solo:")).map((m) => ({ ...m })) };

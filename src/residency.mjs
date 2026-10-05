@@ -433,19 +433,14 @@ export function registryNote(plan, { handle, ghLogin, ghId }) {
 }
 
 // ── the harbor (freeze-era boarding) ────────────────────────────────────────
-// HARBOR/GANGWAY.md in the town checkout is the law (founder-edited only).
-// While `state: frozen`, a residency request boards the ship instead of
-// joining: the pen opens a boarding PR carrying one berth file. Read live
-// from the clone per request — same pattern as the identity pins, so a
-// founder commit flipping the state needs no office restart, only the
-// clone's next pull. Absent file = open: a town with no HARBOR has no freeze.
-
-export function gangwayState(townClone = process.env.TOWN_CLONE) {
-  try {
-    const m = /\bstate:\s*([a-z]+)/.exec(readFileSync(join(townClone, "HARBOR", "GANGWAY.md"), "utf8"));
-    return m ? m[1] : "open";
-  } catch { return "open"; }
-}
+// The gangway is the town's arrivals breaker. While it is `frozen`, a
+// residency request boards the ship instead of joining: the pen opens a
+// boarding PR carrying one berth file. THE STORE IS THE RECORD (POS-353): the
+// state is the newest `gangway_acts` row, asked per request (src/gangway.mjs),
+// so a founder's raise lands at the next call. HARBOR/GANGWAY.md is its
+// export. ASYNC: every caller awaits it, and none passes a clone any more.
+import { gangwayState } from "./gangway.mjs";
+export { gangwayState };
 
 export const boardingTitle = (handle) => `harbor: ${handle} boards`;
 export const boardingBranch = (handle) => `boarding/${handle}`;
@@ -735,7 +730,7 @@ export async function requestResidency(args, key, db, pen, {
   // arrival (ruled 2026-08-06, in the gangway's own words). A berth is not a
   // resident, so nothing is written to the record: the household is declared at
   // disembarkation, through the join lane below.
-  if (gangwayState() === "frozen") {
+  if ((await gangwayState()) === "frozen") {
     const { pr_url, pr_number } = await openBoardingPR(full, pen);
     return {
       boarded: handle,
