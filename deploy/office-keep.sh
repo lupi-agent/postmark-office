@@ -23,6 +23,11 @@ set -eu
 LOCK="${TOWN_LOCK:-/srv/postmark-office/town.lock}"
 SNAP="$(mktemp -d /tmp/postmark-tick.XXXXXX)"
 trap 'rm -rf "$SNAP"' EXIT
+# THE STORE'S REGISTRY for the town's tools this tick runs (POS-345): they read
+# `--registry "$REGISTRY_FILE"`, never the printed tools/households.json and
+# tools/github-ids.json. Written inside the flock below; when the store cannot be
+# read nothing is written, and each tool handed the path refuses by name.
+REGISTRY_FILE="$SNAP/registry.json"
 
 # ── under the lock: mutate + snapshot (seconds) ──────────────────────────────
 # The world clone gets FETCH, never pull: its checkout is the write pen's
@@ -35,6 +40,8 @@ trap 'rm -rf "$SNAP"' EXIT
   flock -w 300 9
   git -C "$TOWN_CLONE" pull --ff-only -q
   git -C "$WORLD_CLONE" fetch --prune -q origin
+  node /srv/postmark-office/deploy/registry-file.mjs "$REGISTRY_FILE" \
+    || echo "[office-keep] the store's registry could not be read — every town check below that needs it refuses this tick, by name" >&2
   # settle-on-tick (Keemin, 2026-09-29; overturns #3231's "no timer"): every
   # join merged since the last tick is bound here — the pen's residency/* and
   # hand-written single-address joins — BEFORE the mint catch-up and the
@@ -98,7 +105,7 @@ trap 'rm -rf "$SNAP"' EXIT
   # a local commit, exactly as it did before this block.
   ( cd "$TOWN_CLONE" || exit 1
     LEDGER=WHITE_PAGES/stamp-ledger.md
-    if ! node tools/stamp-verify.mjs; then
+    if ! node tools/stamp-verify.mjs --registry "$REGISTRY_FILE"; then
       echo "[office-keep] mint catch-up OFF — the ledger arrived red (stamp-verify above names the line), so this tick appended nothing; the catch-up resumes on the first tick that finds it green" >&2
       exit 0
     fi
@@ -132,7 +139,7 @@ trap 'rm -rf "$SNAP"' EXIT
         --town "$TOWN_CLONE" --key /srv/postmark-office/stamp-key.pem \
       || echo "[office-keep] welcome pass had refusals (non-fatal) — the lines above name each one; the household keeps its claim and the next crossing asks again" >&2
     if ! cmp -s "$LEDGER" "$HOLD/ledger.arrived"; then
-      node tools/stamp-verify.mjs || exit 1
+      node tools/stamp-verify.mjs --registry "$REGISTRY_FILE" || exit 1
     fi
     if ! git diff --quiet -- "$LEDGER"; then
       git add "$LEDGER" && git commit -qm "mint: tick catch-up pass" || exit 1
@@ -188,7 +195,7 @@ fi
 # JSON (the tool absent or crashed) still writes a line, `checked: false`, so
 # "did not run" never reads like "found nothing".
 HK_LOG="${HOUSEHOLD_KEYS_LOG:-/srv/postmark-harbor/household-keys.jsonl}"
-hk_out="$(node "$SNAP/town/tools/household-keys.mjs" --json --repo "$SNAP/town" 2>&1)" || true
+hk_out="$(node "$SNAP/town/tools/household-keys.mjs" --json --repo "$SNAP/town" --registry "$REGISTRY_FILE" 2>&1)" || true
 if node -e '
   const text = process.argv[1] ?? "";
   let j = null;

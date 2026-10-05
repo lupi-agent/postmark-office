@@ -187,6 +187,7 @@ const ROSTER = {
   "deploy/settlement-history.mjs": { args: ["--recurring", "3", "--history", NOWHERE], code: 1, needle: "", silent: true },
   // A safe entry proof for a tool that SIGNS: no --town, so it refuses before it
   // reads a plan, spawns a mint or touches a key. The needle is that refusal.
+  "deploy/registry-file.mjs": { args: [], code: 2, needle: "usage: registry-file.mjs <path>" },
   "deploy/welcome-pass.mjs": { args: [], code: 1, needle: "--town <town-clone> is required" },
   "deploy/settle-pass.mjs": { args: [], code: 1, needle: "--town <town-clone> is required" },
   "tools/rekey-household.mjs": { args: [], code: 1, needle: "--from <slug> --to <slug> --name" },

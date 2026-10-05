@@ -104,3 +104,28 @@ test("GET /households needs no key, and answers the store's houses, not the clon
   assert.deepEqual(Object.keys(all.registry.households), ["ana-house", "zed-house"]);
   assert.deepEqual(Object.keys(all.pins).sort(), ["ana", "kin", "zed"]);
 });
+
+// ── the file the office hands the town's tools (deploy/registry-file.mjs) ───
+
+test("registry-file writes the read's own document, and writes NOTHING when the store cannot be read", async () => {
+  const { writeRegistryFile } = await import("../deploy/registry-file.mjs");
+  const { existsSync, readFileSync: rf } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "pos345-file-"));
+  try {
+    const ok = await writeRegistryFile(join(dir, "registry.json"), { rows: ROWS });
+    assert.equal(ok.written, true);
+    const doc = JSON.parse(rf(join(dir, "registry.json"), "utf8"));
+    assert.deepEqual(doc, (await householdsRead({}, { rows: ROWS })).body, "the same document GET /households answers");
+    const no = await writeRegistryFile(join(dir, "none.json"), { rows: null });
+    assert.equal(no.written, false);
+    assert.equal(existsSync(join(dir, "none.json")), false, "a refused read leaves no file a tool could mistake for the record");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the keep tick hands its town tools the store's registry", async () => {
+  const { readFileSync: rf } = await import("node:fs");
+  const sh = rf(new URL("../deploy/office-keep.sh", import.meta.url), "utf8");
+  assert.match(sh, /node \/srv\/postmark-office\/deploy\/registry-file\.mjs "\$REGISTRY_FILE"/);
+  assert.equal((sh.match(/node tools\/stamp-verify\.mjs(?! --registry "\$REGISTRY_FILE")/g) ?? []).length, 0, "every stamp-verify the tick runs reads the store's registry");
+  assert.match(sh, /household-keys\.mjs" --json --repo "\$SNAP\/town" --registry "\$REGISTRY_FILE"/);
+});
