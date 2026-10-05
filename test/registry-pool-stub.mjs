@@ -182,6 +182,9 @@ export function makePool(seed) {
         return { rows: [...state.pins].sort((a, b) => (a.handle < b.handle ? -1 : 1)).map((r) => ({ ...r, gh_id: String(r.gh_id) })) };
       if (/FROM registry_meta/.test(text))
         return { rows: Object.entries(state.meta).map(([key, value]) => ({ key, value: asJsonbReturns(value) })) };
+      // The standing gate (POS-347) asks the record before every act: this
+      // record has suspended nobody.
+      if (/FROM standing_acts/.test(text)) return { rows: [] };
       // ── THE ADOPTION'S STATEMENTS (src/solo-adoption.mjs), answered as they read ──
       if (/FROM marks\s+WHERE status = 'standing' AND household LIKE 'solo:%'/.test(text))
         return { rows: state.marks.filter((m) => m.status === "standing" && String(m.household).startsWith("solo:")).map((m) => ({ ...m })) };

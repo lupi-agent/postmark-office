@@ -399,7 +399,7 @@ export async function townApex(args = {}, key = null, ctx = {}) {
   // for a SUSPENDED resident is stopped. Reads and the bare call never reach
   // this line.
   {
-    const st = standingBounce(key, clone);
+    const st = await standingBounce(key);
     if (st) return bounce(st.code, st.defect, st.hint);
   }
 

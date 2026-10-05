@@ -182,9 +182,22 @@ test("CONTROL: a sited mark on the commons still needs ✦1 — a zero is refuse
 });
 
 test("CONTROL: a parcel left with NO stamps field is still a private draft — omitting is not putting forward", async () => {
-  const out = await leave({ slug: "a-quiet-plot", kind: "parcel", by: "solace",
-    at: { x: 4000, y: 4000 }, body: "a quiet plot" }, SOLACE);
+  // By `stranger`, who holds nothing: solace already holds the-far-bank-porch
+  // above, and a resident holds one parcel (the-town/one-per-resident, Darko
+  // 2026-10-04; POS-368) — the door now says so, which the next leg pins.
+  const out = await leave({ slug: "a-quiet-plot", kind: "parcel", by: "stranger",
+    at: { x: 4000, y: 4000 }, body: "a quiet plot" }, keyFor("strangerhouse", "stranger"));
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(out.put_forward, false);
   assert.ok(out.privacy, "the private-draft answer, as for any unstaked mark");
+});
+
+test("ONE PARCEL PER RESIDENT at the door: solace's second parcel is refused with the law's own sentence (POS-368)", async () => {
+  const { ONE_PER_RESIDENT_SENTENCE } = await import("../src/parcel-law.mjs");
+  const out = await leave({ slug: "a-second-plot", kind: "parcel", by: "solace",
+    at: { x: 4400, y: 4400 }, body: "a second plot" }, SOLACE);
+  assert.equal(out.ok, false, JSON.stringify(out));
+  assert.equal(out.code, 409);
+  assert.equal(out.defect, ONE_PER_RESIDENT_SENTENCE, "the world's sentence (this fixture's fold predates the constant, so the office's copy)");
+  assert.match(out.hint, /you hold solace\/the-far-bank-porch/, "and it names the parcel they hold");
 });

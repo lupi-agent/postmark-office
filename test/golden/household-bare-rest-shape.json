@@ -353,6 +353,10 @@
      "description": "string",
      "type": "string"
     },
+    "household": {
+     "description": "string",
+     "type": "string"
+    },
     "pot": {
      "description": "string",
      "required": "boolean",

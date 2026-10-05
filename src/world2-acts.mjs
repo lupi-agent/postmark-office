@@ -194,7 +194,8 @@ export function __setPoolForTest(p) { state.pool = p; }
 async function pool(env = process.env) {
   if (state.pool) return state.pool;
   const { default: pg } = await import("pg");
-  state.pool = new pg.Pool({ connectionString: env.WORLD2_PG_URL, max: 2 });
+  const { storePoolOptions, watchPoolErrors } = await import("./store-pool.mjs"); // POS-370
+  state.pool = watchPoolErrors(new pg.Pool(storePoolOptions(env, { name: "acts", max: 2 })), "acts");
   return state.pool;
 }
 
@@ -338,7 +339,8 @@ const STANCE_URL_KEY = "WORLD2_STANCE_URL";
 async function stancePool(env = process.env) {
   if (state.stancePool) return state.stancePool;
   const { default: pg } = await import("pg");
-  state.stancePool = new pg.Pool({ connectionString: env[STANCE_URL_KEY], max: 2 });
+  const { storePoolOptions, watchPoolErrors } = await import("./store-pool.mjs"); // POS-370
+  state.stancePool = watchPoolErrors(new pg.Pool(storePoolOptions(env, { name: "stance", max: 2, connectionString: env[STANCE_URL_KEY] })), "stance");
   return state.stancePool;
 }
 

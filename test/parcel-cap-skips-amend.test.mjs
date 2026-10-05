@@ -59,6 +59,8 @@ put("WORLD/marks/let-there-be-light/mark.md",
 put("WORLD/marks/capped/plot-one/mark.md", parcel("capped", "plot-one", 100, 100));
 put("WORLD/marks/capped/plot-two/mark.md", parcel("capped", "plot-two", 200, 300));
 put("WORLD/marks/capped/plot-three/mark.md", parcel("capped", "plot-three", 300, 500));
+// one resident, one parcel, a household far under the cap (POS-368)
+put("WORLD/marks/single/the-one-plot/mark.md", parcel("single", "the-one-plot", 600, 100));
 put("seeding/manifest.json", JSON.stringify({ homes: [] }));
 // THE ENGINE, in miniature: exactly the names leave-exec.mjs imports from
 // tools/marks-fold.mjs, faithful to the shapes it reads and nothing more.
@@ -138,4 +140,15 @@ test("a FOURTH parcel for the same household is still refused at the cap, with t
   assert.equal(out.error?.code, 403, `expected the cap's 403, got ${JSON.stringify(out)}`);
   assert.match(out.error.defect, /already holds 3 parcels/, "the count is the household's holdings, not the amendment");
   assert.match(out.error.hint, /capped at 3 per household/);
+});
+
+test("ONE PARCEL PER RESIDENT on this door too: a resident's second parcel is refused under the cap, with the law's sentence (POS-368)", async () => {
+  const { ONE_PER_RESIDENT_SENTENCE } = await import("../src/parcel-law.mjs");
+  const out = leave(act("a-second-plot", { by: "single", household: "single", at: { x: 800, y: 100 } }));
+  assert.equal(out.error?.code, 409, `expected one-per-resident's 409, got ${JSON.stringify(out)}`);
+  assert.equal(out.error.defect, ONE_PER_RESIDENT_SENTENCE);
+  assert.ok(out.error.hint.includes("you hold single/the-one-plot"), out.error.hint);
+  // CONTROL: amending the one they hold is a relocation, never a second claim
+  const moved = leave(act("the-one-plot", { by: "single", household: "single", at: { x: 600, y: 100 }, amend: true }));
+  assert.equal(moved.error, undefined, JSON.stringify(moved.error));
 });

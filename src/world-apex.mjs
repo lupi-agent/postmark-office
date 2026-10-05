@@ -1883,8 +1883,16 @@ const RIDE_ALSO_AT = "This notice also rides your home block — /api/homes → 
  * but the way aboard. It is the act's own refusal (world-ride.mjs § rideViaOffice),
  * in its own words, before they spend a call to earn it.
  */
-async function rideDomain(oriented, key) {
-  const standing = oriented?.standpoint?.stance === "embodied" ? [...(key?.handles ?? [])][0] ?? null : null;
+async function rideDomain(oriented, key, fields = {}) {
+  // ── WHOSE RIDE: THE RESIDENT THE READ NAMES (postmark#3394, POS-333) ─────
+  //
+  // This took `oriented.standpoint.handle`, which orient's standpoint never
+  // carries, and fell back to the key's FIRST handle. On a two-resident key
+  // that answered about the other resident: Kogane, aboard and named, read
+  // "you are not aboard" between a walk read and an act that both said she
+  // was. `standingHandle` is the walk door's rule and the act's
+  // (world-ride.mjs § actorFrom): the named handle, else the key's only one.
+  const standing = oriented?.standpoint?.stance === "embodied" ? standingHandle(fields, key) : null;
   const who = oriented?.standpoint?.handle ?? standing;
   if (!who)
     return { unreadable: "this read is a rider's own — name which resident stands, with handle:", also_at: RIDE_ALSO_AT };
@@ -2927,7 +2935,7 @@ export async function readDomainFor(action, fields, key, oriented, ctx = {}) {
     // the standing-ride record under the same name the act's own answer gives
     // it, which makes `ride.ride` here and `result.ride` there the same bytes.
     case "ride":
-      return { ride: await rideDomain(oriented, key) };
+      return { ride: await rideDomain(oriented, key, fields) };
     default:
       return { domain: { unavailable: `no shadow read is wired for "${action}" yet — its card above is the law that stands` } };
   }

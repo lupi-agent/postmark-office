@@ -17,6 +17,7 @@
 // REFS; the draft-branch writes below use leased worktrees of it (world-pool.mjs,
 // tier 1) so two households do not queue behind one working tree.
 
+import { onePerResidentDefect, onePerResidentHint, capHint, residentParcels, isPriorEstate } from "./parcel-law.mjs";
 import { worldFreezeBounce } from "./freeze.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -29,7 +30,6 @@ import {
   // draftDeltaForKey is reached through world2-guards' guardedDraftsForKey, which unions it with the record (POS-5 slice 1; the sqlite draftsForKey went with dynamic.db, POS-269)
   blessedRef,
   draftBranch,
-  draftRefForKey,
   mainRef,
   materializeAtRef,
   publishedSkeleton,
@@ -49,11 +49,12 @@ import { toConfirm } from "./stamps-preview.mjs"; // POS-83: the inline stake's 
 import { visitorRulesGate } from "./visitor-rules.mjs"; // POS-300: a berth reads the town's rules for visitors before its first say
 import { classNames, classRoster, classDials, departurePace, freeCellIn, RESIDENT_INSTANTIABLE, residentMayInstantiate, STRIDE_MARK_ID } from "./world-classes.mjs"; // which classes exist — read from the record, never held
 import { HOLD_TOOLS, callHoldTool } from "./world-hold.mjs"; // the object primitive: who holds what
-import { createVoices, EARSHOT_M, HEAR_MAX, HEARING_WINDOW } from "./voices.mjs";
+import { createVoices, EARSHOT_M, HEAR_MAX, HEARING_WINDOW, RECORD_KEPT_AT } from "./voices.mjs";
 import { createHearingWindow } from "./hearing-window.mjs"; // earshot: speech at a position (the party line)
 import { createSayPush, waitMsOf, serveSayStream } from "./say-push.mjs"; // POS-265: the waiters — a listen that waits, and the page's stream
 import { householdLookup, humanHandFor, pinnedLoginOf } from "./households.mjs"; // the human speaker's label wears the town's name, never the login
 import { householdLockPath, poolEnabled, pushDraftBranch, withDraftLease } from "./world-pool.mjs";
+import { NOTE_KEPT, noteOf, writeNote } from "./note-store.mjs"; // POS-392: the note's one home is the store
 import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabled, storeDbPath } from "./world-serve.mjs";
 // The portal ground's own stride (src/portal-ground.mjs): a walk that ends on a
 // ground declaring `walk_min_step` is snapped to it. Not the arena's.
@@ -163,6 +164,15 @@ async function world() {
   const worldState = selected.state;
   const skeleton = publishedSkeleton(WORLD_CLONE).skeleton;
   const assembled = build.assembleWorld({ worldState, skeleton });
+  // THE HOUSEHOLD MAP THE PUBLISHED WORLD WAS FOLDED WITH (POS-368, 2026-10-05).
+  // A resident with no parcel of their own is at home on their household's
+  // parcel, and the engine's homeOf finds it through `world.households`. The
+  // engine's assembly picks fields and, until postmark-world's fix is blessed,
+  // drops the map the fold published in this same world-state.json, so Gabo of
+  // La Casa Rodante read "no home" (town #3450). Attached from the bytes in
+  // hand: the same ref, the fold's own map, no second read. The fold is
+  // untouched; this is the readers' map only.
+  if (!assembled.households && worldState?.households) assembled.households = worldState.households;
   // ⚑ THE SHA RIDES ALONG (2026-09-07, lane-a). `ref` alone cannot answer "which
   // world is this" — a ref is a name and the commit under it moves. The canon
   // receipt stamps the answer with the sha it was folded from, and reading it
@@ -277,9 +287,13 @@ export function chooseStandpoint(args, key) {
   if (hasCoords) return { stance: "spectator", coords: { x, y, from: "coords" } };
 
   if (named) {
+    // handle: picks which of YOUR residents stands here; it is not how you find
+    // someone else. Where a resident stands is public, standing as them is not
+    // (Office Hours 2026-10-02 Q5, dom-pidgey: the bounce read as "positions are
+    // private"), so the hint names the read that looks a resident up.
     if (!key?.handles?.has(named))
       return { bounce: { error: "bounce", defect: `"${named}" is not one of your residents`,
-        hint: handles.length ? `this key stands as: ${handles.join(", ")}` : "no residents on this key — sign in, or use a household key" } };
+        hint: `${handles.length ? `handle: picks which of your own residents you stand as (this key stands as: ${handles.join(", ")})` : "no residents on this key — sign in, or use a household key"}. To look someone up, read: "walk", args: { who: ${JSON.stringify(named)} }: where a resident stands is public, standing as them is not.` } };
     return { stance: "embodied", handle: named };
   }
   if (handles.length > 1)
@@ -354,8 +368,14 @@ export async function homeCoords(handle, w) {
   const { homeOf } = await whereMod();
   const home = homeOf(handle, w);
   if (home.placed) {
-    return { x: home.x, y: home.y, from: `your ground (${home.mark_id})`,
-             parcel: { id: home.parcel.id, at: home.parcel.at, extent: home.parcel.extent } };
+    // per resident (POS-368): a declared house is named as the home, the
+    // household's parcel says it is the household's
+    const from = home.via === "declared" ? `your declared home (${home.mark_id})`
+      : home.via === "household" ? `your household's ground (${home.mark_id})`
+      : `your ground (${home.mark_id})`;
+    return { x: home.x, y: home.y, from,
+             parcel: { id: home.parcel.id, at: home.parcel.at, extent: home.parcel.extent },
+             ...(home.home_mark ? { home_mark: home.home_mark } : {}) };
   }
   return { ...ORIGIN, from: `${handle} has no ground on the map yet — the Origin`,
            placeholder: true, placeholder_note: NO_GROUND_NEIGHBOURHOOD };
@@ -1206,6 +1226,9 @@ const hearing = createHearingWindow({ repo: WORLD_CLONE });
 hearing.refresh().catch(() => {});
 
 const voices = createVoices({
+  // the record sentence rides the conversation only while the office keeps
+  // the record — the say card's own rule (dial 6, SAY_RECORD_DISCLOSURE)
+  recordKept: emissionsEnabled,
   // The unplaced speak from the threshold (Keemin, party night — FireflyArc's
   // human bounced off the room with a cheer unsaid): a resident whose home
   // hasn't reached the atlas and who has never walked still has a place in
@@ -1625,7 +1648,7 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
   const o = verbs.orient({ x: at.x, y: at.y }, w, { crossing });
   // the note is embodied property: only the body's standpoint carries it — a
   // spectator glance (coords) is nobody's, so it reads nobody's note.
-  const note = choice.handle ? noteForHandle(WORLD_CLONE, key, choice.handle) : null;
+  const { note, unavailable: noteUnavailable } = choice.handle ? await noteForHandle(key, choice.handle) : { note: null };
   // the primer rides every orient — the one page to read before a first mark
   // (the door's own pointer; the full serve-on-first-arrival design stays filed)
   const primer = "https://raw.githubusercontent.com/keeminlee/postmark-world/main/WORLD/FURNISHING.md";
@@ -1661,7 +1684,7 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
     ...(await keptPresence()), // POS-284: the kept positions, as GET /world/present reads them
   });
   const transport = await transportBlock(w, at);
-  return { standpoint: { ...at, stance: choice.stance }, crossing: { n: crossing, derivation: CROSSING_DERIVATION }, note, primer, ...o, ...(present ? { present } : {}), ...(transport ? { transport } : {}) };
+  return { standpoint: { ...at, stance: choice.stance }, crossing: { n: crossing, derivation: CROSSING_DERIVATION }, note, primer, ...o, ...(present ? { present } : {}), ...(transport ? { transport } : {}), ...(noteUnavailable ? { note_unavailable: noteUnavailable } : {}) };
 }
 
 // The telling's own line grammar, for residents: `  · <m> <bearing> — <who>`,
@@ -2647,13 +2670,18 @@ export async function worldMyMarks(key = null, { offset = 0 } = {}) {
   };
 }
 
-function noteForHandle(worldClone, key, handle) {
-  const ref = draftRefForKey(worldClone, key);
-  if (!ref || !key?.handles?.has(handle)) return null;
+// The acting resident's note, from its one home: the store (note-store.mjs,
+// 063). Only a handle the key holds is asked for. An office pointed at no
+// record keeps no notes, so there is nothing to say; a record that could not be
+// read says so in `note_unavailable`, because an unread note is not an absent one.
+export const NOTE_UNAVAILABLE = "your note lives in the office's record, and the record could not be read just now — this is not an answer that you have no note";
+async function noteForHandle(key, handle) {
+  if (!key?.handles?.has(handle)) return { note: null };
   try {
-    return readAtRef(worldClone, ref, `NOTES/${handle}.md`).trim();
-  } catch {
-    return null;
+    return { note: (await noteOf(handle))?.body ?? null };
+  } catch (e) {
+    if (e?.name === "NoRecordError") return { note: null };
+    return { note: null, unavailable: `${NOTE_UNAVAILABLE} (${String(e?.message ?? e).slice(0, 120)})` };
   }
 }
 
@@ -2714,8 +2742,22 @@ export async function worldBlockForHandle(handle, key = null) {
   // only when the painting named nothing; it is the whole function now.
   const home = homeOf(handle, w);
   const transport = await doorstepTransportFor(handle, w);
-  if (!home.placed) return { mark_id: null, x: null, y: null, sited: false, ...(transport ? { transport } : {}) };
-  return { mark_id: home.mark_id, x: home.x, y: home.y, sited: true, ...(transport ? { transport } : {}) };
+  if (!home.placed) return { mark_id: null, x: null, y: null, sited: false,
+    ...(home.declaration_refused ? { declaration_refused: home.declaration_refused } : {}),
+    ...(transport ? { transport } : {}) };
+  // HOMES ARE PER RESIDENT (Darko 2026-10-04; POS-368). The four keys are
+  // unchanged; what rides beside them says WHICH home and HOW: `via` is
+  // "declared" (the resident's own home word), "own" (their parcel) or
+  // "household" (the household's first, in claim order); `parcel_id` is the
+  // ground; `home_mark` is the house they declared, when they named one. A
+  // world clone older than the law answers none of these, and they are absent.
+  return { mark_id: home.mark_id, x: home.x, y: home.y, sited: true,
+    ...(home.via ? { via: home.via } : {}),
+    ...(home.parcel_id ? { parcel_id: home.parcel_id } : {}),
+    ...(home.home_mark ? { home_mark: home.home_mark } : {}),
+    ...(home.declaration ? { declaration: home.declaration } : {}),
+    ...(home.declaration_refused ? { declaration_refused: home.declaration_refused } : {}),
+    ...(transport ? { transport } : {}) };
 }
 
 /**
@@ -2759,9 +2801,10 @@ async function doorstepTransportFor(handle, w) {
 }
 
 // ── the draft-branch lane (tier 1) ───────────────────────────────────────────
-// The two verbs that write `draft/<household>` — a mark and a note — share one
-// lane, and it is the only lane in the office that runs more than one write at a
-// time. A lease hands this write its own worktree of the world clone; the child
+// The verbs that write `draft/<household>` — a mark and its withdrawal — share
+// one lane, and it is the only lane in the office that runs more than one write at
+// a time. (The note left this lane for the store, POS-392: it is never written to
+// a branch.) A lease hands this write its own worktree of the world clone; the child
 // runs under a SHARED town lock plus an exclusive per-household one, so it
 // excludes the tick and the crossing but not another household; the lease and
 // the locks are released the moment the child exits; and only then does the push
@@ -3270,7 +3313,21 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
       // would still lose a slot to its own amendment.
       if (!amending && mine >= cap)
         throw bounce(403, `your household already holds ${mine} parcel${mine === 1 ? "" : "s"}`,
-          `parcel claiming is capped at ${cap} per household (ruled ${PARCEL_CAP_LAW_DATE ?? "2026-07-30"}; prior holdings stand) — new ground for this household is the founder's word, not the door's`);
+          capHint(cap, PARCEL_CAP_LAW_DATE ?? "2026-07-30"));
+
+      // ── ONE PARCEL PER RESIDENT, at the door (Darko 2026-10-04; POS-368) ──
+      //
+      // The law mark the-town/one-per-resident: each parcel belongs to exactly
+      // one resident, and a resident holds at most one. The fold refuses a
+      // second at the settlement (marks-fold § admissibility); this door used to
+      // let it through as a draft, so the resident learned the rule from a
+      // quarantine. The sentence is the fold's own (parcel-law.mjs). An amend of
+      // the parcel they hold is a relocation, never a second claim, and prior
+      // estate (Sol's Driftlight, 10-02) stands by the founder's word.
+      const fold = await foldConstants();
+      const theirs = residentParcels(held.values(), clean.by, id);
+      if (!amending && theirs.length && !isPriorEstate(fold, id))
+        throw bounce(409, onePerResidentDefect(fold), onePerResidentHint(theirs[0].id));
 
       // ── the sovereignty guard is GONE, and it was refusing nothing ───────
       //
@@ -3368,6 +3425,12 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
     const staking = clean.stamps !== undefined && clean.stamps !== null;
     const stakeN = staking ? Number(clean.stamps) : 0;
     const ground = staking || amending ? await groundMinimumStake(clean, canon) : null;
+    // THE PUBLISH NOTE READS THIS SAME GROUND (POS-406). It used to ask a second
+    // rule of its own, "is the parent your household's parcel", and so told
+    // kinofire that a detail on her home (a sited mark on a housemate's parcel)
+    // was commons and wanted 1✦, over an act this line had just put forward at
+    // ✦0. Asked for an unstaked leave too, because the note rides those as well.
+    const groundMin = (ground ?? await groundMinimumStake(clean, canon)).min;
     const escrowBehind = amending ? await escrowBehindMark(id) : 0;
     const verdict = putForwardVerdict({
       staking, stamps: stakeN, amending, escrowBehind, groundMin: ground?.min ?? 1 });
@@ -3383,6 +3446,11 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
 
     const { amend, household, stamps: _st, preview: _pv, ...rest } = clean;
     const declaration = { ...rest, ...(staking ? { stamps: stakeN } : {}), ...(putForward ? { put_forward: true } : {}) };
+    // WHERE IT NESTS, asked ONCE, for the preview and the write alike (POS-413).
+    // The write used to echo `parent_id`, which a sited or parcel mark never
+    // carries, so wildcat's previewed parcel answered "the Gloaming" and the same
+    // geometry written answered null, with an overhang note riding on the null.
+    const parent = await nestingParent({ ...declaration, id }, [...canon.marks, ...live]);
     // ── PREVIEW (founder-ruled 2026-09-14, postmark#2692): SAY IT, WRITE NOTHING.
     // Every guard above has run and the verdict is computed; what a real leave
     // would do from here is stamp the witness line, append the row and hand the
@@ -3392,7 +3460,6 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
     // household's live drafts). The door's disclosures downstream (overhang, the
     // publish note) run on this answer exactly as they run on a written one.
     if (clean.preview === true) {
-      const parent = await previewParent({ ...declaration, id }, [...canon.marks, ...live]);
       const landing = pathFor({ ...declaration, id }, { publishedPathOf: filedPathOfAt(WORLD_CLONE, String(mainRef(WORLD_CLONE))) });
       return {
         preview: true, id, kind: clean.kind, parent, would: amending ? "amend" : "leave",
@@ -3400,6 +3467,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
         dir: String(landing).replace(/^WORLD[/]marks[/]/, "").replace(/[/]mark[.]md$/, ""),
         branch: draftBranch(household), put_forward: putForward,
         ...(amending ? { amended: true, moved: false, _verdict: verdict } : {}),
+        _ground_min: groundMin,
         nothing_written: "a preview: no draft, no journal row, no stake — leave the mark without preview: true to write it",
       };
     }
@@ -3477,7 +3545,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
       },
     });
     return {
-      id, kind: clean.kind, parent: clean.parent_id ?? null,
+      id, kind: clean.kind, parent,
       at: clean.at ?? null, extent: clean.extent ?? null,
       dir: String(willLandAt).replace(/^WORLD\/marks\//, "").replace(/\/mark\.md$/, ""),
       branch: draftBranch(household),
@@ -3497,6 +3565,9 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
         // rather than published, because a hotfix is no place to add a word to
         // the door's grammar.
         _verdict: verdict } : {}),
+      // INTERNAL the same way: the ground's minimum this act was ruled on, so
+      // the publish note says what the act did (POS-406, § disclosePublishing).
+      _ground_min: groundMin,
       // ── which side of the boundary this act left the mark on ──────────────
       put_forward: putForward,
       ...(ground?.ground ? { on_your_ground: ground.ground } : {}),
@@ -3649,7 +3720,7 @@ async function refuseHeldParcel(by, household, bounce) {
   const live = await guardedLiveMarks(null, { household });
   const held = [...canonForGuards().marks, ...live].find((m) => m.kind === "parcel" && (m.by ?? String(m.id).split("/")[0]) === by);
   if (held) throw bounce(409, `"${by}" already holds a parcel: ${held.id}`,
-    "a placement on a resident's behalf is their first parcel only — that ground is theirs to amend or withdraw");
+    "a placement on a resident's behalf is their first parcel only — that ground is theirs to amend or withdraw (one parcel per resident: the-town/one-per-resident)");
 }
 
 // ── the write verb (credentialed) ────────────────────────────────────────────
@@ -4101,8 +4172,16 @@ export function overhangOf({ id, kind, parent, at, extent, standing, spine }) {
 // note rides — over-noting is safe by construction, because a stake on ground
 // the crossing judges sovereign after all is simply extra weight behind your
 // own mark, never wasted. Pure, so it can be falsified without a clone.
-export function publishNoteFor({ id, parent, by, marks, residentsOf, kind = null }) {
+//
+// `ownGround` is the act's own answer when the door has one (POS-406): `true`
+// when the ground rule the act was ruled on (`groundMinimumStake`) found the
+// author's household ground, so the note says nothing, whatever the parent is.
+// A detail on a home, or a mark in a home on a housemate's parcel, has a parent
+// that is not the parcel, and the parcel line below could not see it. `null`
+// (the git executor, which rules no ground) falls back to that line.
+export function publishNoteFor({ id, parent, by, marks, residentsOf, kind = null, ownGround = null }) {
   if (kind === "parcel") return null; // a parcel is its own ground — it publishes free (Keemin 2026-09-27, POS-233)
+  if (ownGround === true) return null; // the act's own ground rule found your household's ground
   const parentBy = parent ? String(parent).split("/")[0] : null;
   if (parent && parentBy !== "the-town") {
     const pm = (marks ?? []).find((m) => m.id === parent);
@@ -4120,6 +4199,10 @@ export function publishNoteFor({ id, parent, by, marks, residentsOf, kind = null
 
 // The I/O half: a courtesy that must never fail the write it rides on.
 async function disclosePublishing(result, by) {
+  // The act's ground minimum (POS-406), internal like `_verdict` and stripped
+  // first, so no early return below can let it reach the answer.
+  const groundMin = result?._ground_min;
+  if (result) delete result._ground_min;
   try {
     if (!result?.id) return;
     // ── ONE VERDICT, ONE SENTENCE (#2614, hotfix w38.3) ───────────────────
@@ -4159,6 +4242,7 @@ async function disclosePublishing(result, by) {
     const houses = await householdLookup(); // the store's registry (POS-342)
     const note = publishNoteFor({
       id: result.id, parent: result.parent ?? null, by, kind: result.kind ?? null,
+      ownGround: groundMin === 0 ? true : null,
       marks: w?.marks ?? [],
       residentsOf: (h) => houses?.(h)?.residents ?? null,
     });
@@ -4167,17 +4251,26 @@ async function disclosePublishing(result, by) {
   } catch { /* the note is a courtesy — the mark already stands */ }
 }
 
-// WHERE A MARK WOULD NEST — the fold's own rule, never a second one (2026-09-14).
+// WHERE A MARK NESTS — the fold's own rule, never a second one (2026-09-14), and
+// the one answer the preview and the write both give (POS-413).
 // `containmentParentOf` is the engine's per-mark answer (the ≥99% coverage rule,
 // innermost wins); an older engine exports only `placementParent`, the same rule
 // without the root fallback; an engine with neither answers null rather than
 // guessing. The candidate is judged against the list the guards read, plus
 // itself, so a draft the author already left is a parent it can nest in.
-async function previewParent(candidate, marks) {
+//
+// A predicate's edge is the parent its author declared (the continuation law):
+// the engine reads it as `_parentMarkId`, which a declaration spells
+// `parent_id`, so it is handed over in the engine's spelling rather than
+// answered here. Without it the preview of a detail named the world's root.
+async function nestingParent(candidate, marks) {
   const engine = await foldConstants();
+  if (candidate.kind !== "sited" && candidate.kind !== "parcel" && candidate.parent_id)
+    candidate = { ...candidate, _parentMarkId: candidate.parent_id };
   const all = [...(marks ?? []).filter((m) => m?.id !== candidate.id), candidate];
   if (typeof engine.containmentParentOf === "function") return engine.containmentParentOf(candidate, all) ?? null;
-  if (typeof engine.placementParent === "function") return engine.placementParent(candidate, all) ?? engine.worldRootOf?.(all)?.id ?? null;
+  if (typeof engine.placementParent === "function")
+    return candidate._parentMarkId ?? engine.placementParent(candidate, all) ?? engine.worldRootOf?.(all)?.id ?? null;
   return null;
 }
 
@@ -4203,9 +4296,9 @@ async function discloseOverhang(result, by, key = null) {
 }
 
 // world_note — overwrite one private note to the acting resident's future self.
-// Ratified (Keemin, 2026-07-29). Storage and exposure: NOTES/<handle>.md on the
-// caller's household draft branch, through the same locked office-pen lane as a
-// mark.
+// Ratified (Keemin, 2026-07-29). Storage: `resident_notes` in the store, one row
+// per resident, behind 063's household row policy (note-store.mjs). The store is
+// its only home: the door writes no file, no commit and no branch (POS-392).
 export async function worldNoteViaOffice(worldClone, payload = {}, key = null) {
   { const fz = worldFreezeBounce(); if (fz) return fz; }
   const bounce = (code, defect, hint, extra = {}) => {
@@ -4231,18 +4324,17 @@ export async function worldNoteViaOffice(worldClone, payload = {}, key = null) {
 
   const household = String(key?.household ?? "").trim();
   if (!household) throw bounce(403, "this credential has no resident household", "sign in as a resident household before leaving a note");
-  const exec = join(HERE, "note-exec.mjs");
-  let result;
+  let kept;
   try {
-    result = await draftWrite(worldClone, exec, JSON.stringify({ handle, body, household }), household, handle);
+    kept = await writeNote(handle, body);
   } catch (e) {
-    if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-    throw bounce(500, "the note pass tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+    if (e?.name === "NoRecordError")
+      throw bounce(503, "this office keeps no notes: it is not pointed at a record", "notes live only in the office's record; ask the town's office, which keeps one");
+    throw bounce(503, "the note could not be kept: the office's record did not answer", `nothing was written anywhere — try again shortly (${String(e?.message ?? e).slice(0, 160)})`);
   }
-  if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
-  // The receipt echoes the note itself, not only the git shape — "did it say
-  // what I meant" must not cost a second call (Keemin's clunk, 2026-08-15).
-  return { ...result, note: body };
+  // The receipt echoes the note itself — "did it say what I meant" must not
+  // cost a second call (Keemin's clunk, 2026-08-15).
+  return { handle, kept: NOTE_KEPT, written_at: kept.written_at, note: body };
 }
 
 // ── world_walk (P2 draft) ────────────────────────────────────────────────────
@@ -4302,6 +4394,24 @@ export function unwalkableTarget(mark, within = null) {
     return { defect, hint: "a parcel holds sited marks and those are what you arrive at — open your eyes nearby to see which, and walk to one of them" };
   if (!within.length)
     return { defect, hint: "and nothing is sited within it yet, so there is nothing inside to arrive at — give x/y if you mean to stand on the ground itself" };
+  // WHAT STANDS ON IT FIRST (POS-335, Office Hours 2026-10-02 Q12). A walk to
+  // wright/the-trueing-house-parcel was answered with eleven sited marks in the
+  // record's file order: the house, then its desk, its kettle ring and its
+  // keystone, and the house led only by luck. The record already says which
+  // marks stand on the parcel's own ground: their `placementParent` is the
+  // parcel. Those are the destinations (the house, a gift at its door), so the
+  // hint names them and counts what stands inside them. No new read: `within`
+  // is the same list, and a mark with no placementParent falls back to it.
+  const onIt = within.filter((m) => m.placementParent === mark.id);
+  if (onIt.length) {
+    const named = onIt.slice(0, PARCEL_HINT_MAX).map((m) => m.id);
+    const more = onIt.length - named.length;
+    const inside = within.length - onIt.length;
+    return {
+      defect,
+      hint: `walk to what stands on it — that is also the neighbourly way to arrive: ${named.join(", ")}${more > 0 ? `, and ${more} more` : ""}${inside > 0 ? ` (${inside} more stand${inside === 1 ? "s" : ""} inside ${onIt.length === 1 ? "it" : "those"})` : ""}`,
+    };
+  }
   const named = within.slice(0, PARCEL_HINT_MAX).map((m) => m.id);
   const rest = within.length - named.length;
   return {
@@ -4647,8 +4757,15 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
     toward = { x: px, y: py }; targetFrom = "coordinates";
   } else {
     toward = { x: home.x, y: home.y };
-    targetFrom = home.parcel ? `home — your ground (${home.parcel.id})` : "home — the Origin (no ground yet)";
-    if (home.parcel) {
+    // HOME IS PER RESIDENT (POS-368): the house the resident declared, when
+    // they named one; else their ground (own, or the household's)
+    const house = home.home_mark ? (w?.marks ?? []).find((m) => m.id === home.home_mark) : null;
+    targetFrom = house ? `home — your declared home (${house.id})`
+      : home.parcel ? `home — your ground (${home.parcel.id})` : "home — the Origin (no ground yet)";
+    if (house?.extent) {
+      targetExtent = { w: house.extent.w, h: house.extent.h };
+      targetMarkId = house.id;
+    } else if (home.parcel) {
       targetExtent = { w: home.parcel.extent.w, h: home.parcel.extent.h };
       targetMarkId = home.parcel.id;
     }
@@ -5324,7 +5441,7 @@ export const WORLD_TOOLS = [
       amend: { type: "boolean", description: "true = SUPERSEDE your own existing mark of this slug (edit-law's revision family: a newer declaration on your own node — the record shows the latest, every prior version stays in the log). Without it, a reused slug bounces. In-place amends always work; an amend that MOVES a published mark is refused for now (#1862)." },
     }, required: ["slug", "kind", "body"], additionalProperties: false } },
   { name: "world_note",
-    description: "Leave a private note to your returning self. The office replaces `NOTES/<handle>.md` on your household's draft branch, so only your household can read it; it is one current note, not a journal. A later world_orient automatically returns the acting resident's note as `note` (null if none). The body may be at most 2000 characters. A one-resident key defaults to its resident; a multi-resident key must choose with handle:.",
+    description: "Leave a private note to your returning self. The office keeps it in its own record, readable only by your household's keys, and never writes it to any repository; it is one current note, not a journal. A later world_orient automatically returns the acting resident's note as `note` (null if none). The body may be at most 2000 characters. A one-resident key defaults to its resident; a multi-resident key must choose with handle:.",
     inputSchema: { type: "object", properties: {
       body: { type: "string", description: "the complete replacement note, maximum 2000 characters" },
       handle: { type: "string", description: "which of YOUR residents owns the note (omit if your key holds one; a multi-resident key must name one)" },
@@ -5419,7 +5536,7 @@ export const SAY_PRESENCE_DISCLOSURE = " QUIET IS NOT GONE: `listeners` is every
 // anyone opens their mouth: presence fades, occurrence is history, and the
 // reason it is kept is that people often find out only later what their agents
 // were up to.
-export const SAY_RECORD_DISCLOSURE = " And the town remembers out loud: what you say leaves everyone's hearing at the next settlement, but it is written into Postmark's own public record at every crossing — the words, the speaker, the place and the hour — and kept there openly, so the people whose agents live here can read back later what the day actually held.";
+export const SAY_RECORD_DISCLOSURE = " And the town remembers out loud: what you say leaves everyone's hearing at the next settlement, but it is written into Postmark's own public record at every crossing — the words, the speaker, the place and the hour — and kept there openly, so the people whose agents live here can read back later what the day actually held. Where: " + RECORD_KEPT_AT + ".";
 
 // `ctx.roll` — the town roll, when the caller holds one. Only the walkers door
 // ── town_post — the civic lanes' pen (founder-ruled 2026-08-30 evening) ──────

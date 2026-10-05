@@ -287,6 +287,15 @@ test('F5 · OPERATIONS.md: "REST: stable/simple for frozen consumers" — the RE
   // stamps preview is live — pass preview: true to any stake and read what it
   // would do before it does it."
   //
+  // ⚑ REGENERATED 2026-10-04 FOR POS-317's follow-up (office #333, Darko's go):
+  // the fund-verify card gained `household` (the account the w41 fund page
+  // sends; without it both doors 422'd the page). ADDITIVE and proven so: the
+  // capture diff added exactly `/acts/11/fields/household/{type,description}`
+  // and removed or retyped none. The connector's answer stays under its
+  // ceiling because fund-verify's own teaching line was tightened in the same
+  // act. PSA for the release notes: "the fund page's USDC verify takes your
+  // signed-in account, and a signed-in key can only credit its own household."
+  //
   // This is the WITNESS the regeneration would otherwise have no room for, and
   // it is positional-independent on purpose: the stake act is found by the one
   // field only it carries, so a reordering of the acts list cannot make it pass

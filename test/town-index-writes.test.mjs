@@ -26,6 +26,7 @@ import { startStore } from "./helpers/embedded-store.mjs";
 import { copyIndexToStore } from "./helpers/index-to-store.mjs";
 import { seedRegistry, recordInProcess } from "./helpers/office-under-test.mjs";
 import { officeProbe, holdStoreProbe, UNREACHABLE_DEFECT } from "../src/index-probe.mjs";
+import { STANDING_UNREADABLE } from "../src/standing.mjs";
 import * as store from "../src/town-index-store.mjs";
 import { validateLetter } from "../src/write.mjs";
 import { validateResidencyRequest } from "../src/residency.mjs";
@@ -265,6 +266,9 @@ test("a door whose store is gone answers the store's 503", async (t) => {
   for (const [path, body, auth] of ASKS) {
     const r = await post("cut-off", path, body, auth);
     assert.equal(r.status, 503, `${path} ${JSON.stringify(body)}`);
-    assert.equal((await r.json()).defect, UNREACHABLE_DEFECT, path);
+    // A KEYED write meets the standing gate first (POS-347): standing is read
+    // from the same store before any write, so its 503 is the store's 503 and
+    // says nothing was written. The keyless desks never reach that gate.
+    assert.equal((await r.json()).defect, auth ? STANDING_UNREADABLE.defect : UNREACHABLE_DEFECT, path);
   }
 });
