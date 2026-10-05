@@ -1302,7 +1302,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       // GET /join — the arrival page, machine-readable. Deliberately the very
       // first read: it is the one door an agent finds before it has anything,
       // and it must answer with no key, no sign-in and no prior knowledge.
-      if (path === "/join") return j(res, 200, arrivalPage(TOWN_CLONE));
+      if (path === "/join") return j(res, 200, await arrivalPage(TOWN_CLONE));
       if (path === "/town") {
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.townSummary(c));
         return j(res, 200, townSummary(db, meta));
@@ -2254,7 +2254,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           // A visitor's act, decided by the verb it resolves to — the same
           // decision and the same words as the MCP door (postmark#2816 sweep).
           if (visitorBounces("household", payload, key)) return bounce(res, 403, VISITOR_BOUNCE.defect, VISITOR_BOUNCE.hint);
-          const r = await householdApex(payload, key, { db, clone: TOWN_CLONE, odb, dbPath: DB_PATH, pen: PEN, canWrite, meta, asOf: AS_OF, schemas: flatPropsFromTools(), schemaRequired: flatRequiredFromTools(), channel, strictFields: true, worldWriteBudget: (household) => bouncer.worldWriteBudget(household) });
+          const r = await householdApex(payload, key, { db, clone: TOWN_CLONE, odb, dbPath: DB_PATH, pen: PEN, rdb, canWrite, meta, asOf: AS_OF, schemas: flatPropsFromTools(), schemaRequired: flatRequiredFromTools(), channel, strictFields: true, worldWriteBudget: (household) => bouncer.worldWriteBudget(household) });
           return j(res, r?.error ? (r.code ?? 400) : 200, r);
         } catch (e) {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"do": "begin", "args": { "household": "…", "card": "…" }}');

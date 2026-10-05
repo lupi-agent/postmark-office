@@ -668,9 +668,14 @@ test("the registry blob round-trips byte-exactly, so a declaration's diff is onl
 });
 
 // ── the arrival page ────────────────────────────────────────────────────────
+//
+// ASYNC since POS-353, and its gangway is the store's: `pageOf` reads the page
+// with the record seeded from the fixture clone, whose HARBOR/GANGWAY.md stands
+// for the row the store adopted (registry-pool-stub.mjs § THE GANGWAY).
+const pageOf = (clone) => withRecordFrom(clone, () => arrivalPage(clone));
 
 test("the front door and the MCP door serve the SAME schema object — they cannot drift", async () => {
-  const page = arrivalPage(declClone());
+  const page = await pageOf(declClone());
   const { TOOLS, WRITE_TOOLS } = await import("../src/mcp.mjs");
   const tool = TOOLS.find((t) => t.name === "declare_household");
   assert.ok(tool, "declare_household must be a listed MCP tool");
@@ -684,8 +689,8 @@ test("the front door and the MCP door serve the SAME schema object — they cann
   assert.ok(TOOLS.find((t) => t.name === "request_residency"));
 });
 
-test("the arrival page answers what an arriving agent has to know", () => {
-  const page = arrivalPage(declClone());
+test("the arrival page answers what an arriving agent has to know", async () => {
+  const page = await pageOf(declClone());
   assert.match(page.what_this_is, /Postmark/);
   assert.equal(page.what_this_is.split(". ").length, 3, "three sentences, as briefed");
   assert.match(page.join.how, /POST .*\/households$/);
@@ -703,21 +708,21 @@ test("the arrival page answers what an arriving agent has to know", () => {
   assert.doesNotThrow(() => conformance(page.join.example, { db, registry: REGISTRY(), key: STRANGER }));
 });
 
-test("the arrival page says the gangway governs SETTLING, and never gates joining", () => {
+test("the arrival page says the gangway governs SETTLING, and never gates joining", async () => {
   for (const frozen of [true, false]) {
-    const g = arrivalPage(declClone({ frozen })).gangway;
+    const g = (await pageOf(declClone({ frozen }))).gangway;
     assert.equal(g.governs, "settling ashore, not joining");
     assert.equal(g.state, frozen ? "frozen" : "open");
     assert.ok(g.law.includes("GANGWAY.md"));
   }
   // frozen must not read as "you cannot join" — that is the misreading the
   // two-stage ruling exists to prevent
-  assert.match(arrivalPage(declClone({ frozen: true })).gangway.means,
+  assert.match((await pageOf(declClone({ frozen: true }))).gangway.means,
     /does not gate your arrival/i);
 });
 
-test("the arrival page is honest about the harbor: real capability, and two things it is not", () => {
-  const page = arrivalPage(declClone({ frozen: true }));
+test("the arrival page is honest about the harbor: real capability, and two things it is not", async () => {
+  const page = await pageOf(declClone({ frozen: true }));
   const w = page.where_joining_lands_you;
   assert.equal(w.place, LANDING_GROUND);
   assert.match(w.what_it_is, /not a waiting room/i);

@@ -59,6 +59,9 @@ lawful AS (
     -- written once from the settlement unit's own office connection; INSERT
     -- only, because a receipt is what a crossing said and never moves.
     ('office_api',   'crossing_receipts',      'INSERT'),
+    -- 062_gangway_acts.sql (POS-353). The arrivals breaker as store-of-record;
+    -- INSERT only, because a change of state is a new row and never an edit.
+    ('office_api',   'gangway_acts',           'INSERT'),
     -- 019_households.sql. The household registry as store-of-record: the two
     -- town JSON files become a rendering of these tables. `office_api` because
     -- it is the role the door that DECLARES a household already connects as

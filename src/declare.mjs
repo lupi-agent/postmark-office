@@ -673,7 +673,7 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
   // The breaker, read live off the clone (same pattern as the identity pins, so
   // a founder commit flipping it needs no restart). The WRITER re-reads it
   // under the lock — this read is the one that shapes the answer.
-  const plan = planDeclaration(registry, pins, decl, { gangway: gangwayState(clone) });
+  const plan = planDeclaration(registry, pins, decl, { gangway: await gangwayState() });
 
   // The writer is the authority on what actually landed: it re-reads the
   // registers under the lock and may see one this read could not.
