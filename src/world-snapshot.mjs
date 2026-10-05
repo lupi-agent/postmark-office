@@ -170,9 +170,11 @@ export function foldDifference(a, b) {
 // every World is derived from them on demand. The fold's inputs, each named:
 //
 //   marks          SOURCE   the snapshot's mark versions (054)
-//   mark ORDER     OPEN     the fold is first-in-order-wins and its order is the
-//                           loader's filing walk, which no row records: STOPPED
-//                           on shape with Wright (POS-410); today, slug order
+//   mark ORDER     DERIVED  the fold is first-in-order-wins, and its order is the
+//                           loader's walk over the filings: the freeze manifest
+//                           and the tree at law_sha, else the write-down's rule
+//                           (src/world-filing-order.mjs § inFilingOrder; Wright,
+//                           2026-10-05: derived, never stored)
 //   class marks    SHA REF  law_projection kind `class` at law_sha
 //   terrain        SHA REF  law_projection kind `skeleton` at law_sha (one row per
 //                           top-level key of WORLD/skeleton.json, law-ingest)
@@ -334,13 +336,17 @@ export async function snapshotFoldInputs(p, header, { townRepo = null } = {}) {
 
 /**
  * A snapshot's World, derived from its sources alone. `fold` is the world's own
- * engine at the snapshot's law_sha; the caller materialises it.
+ * engine at the snapshot's law_sha; the caller materialises it. `filing` is
+ * `filingAt(worldRepo, header.law_sha)` (world-filing-order.mjs), the filings
+ * the marks' order derives from; null derives every filing by the rule alone.
  */
-export async function foldOfSnapshot(p, header, { fold, townRepo = null }) {
+export async function foldOfSnapshot(p, header, { fold, townRepo = null, filing = null }) {
   const { marksFromRows } = await import("./world2-fold.mjs");
+  const { inFilingOrder } = await import("./world-filing-order.mjs");
   const rows = await snapshotRows(p, header.marks_digest);
   const inputs = await snapshotFoldInputs(p, header, { townRepo });
-  const state = fold({ marks: marksFromRows(markRowsOfVersions(rows), inputs.lawRows), terrain: inputs.terrain, stakes: inputs.stakes, households: inputs.households });
+  const marks = inFilingOrder(marksFromRows(markRowsOfVersions(rows), inputs.lawRows), filing);
+  const state = fold({ marks, terrain: inputs.terrain, stakes: inputs.stakes, households: inputs.households });
   return { state, stakesSource: inputs.stakesSource, householdsSource: inputs.householdsSource };
 }
 

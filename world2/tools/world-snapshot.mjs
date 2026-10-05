@@ -29,13 +29,15 @@
 //      moved since.
 //   3. THE WORLD, with --world-repo, DERIVED FROM THE SNAPSHOT'S SOURCES ALONE
 //      (POS-410, Darko 2026-10-05): the marks' versions, the register at the seal,
-//      the ledger position, the law and terrain at law_sha. No git file but the
-//      engine's code is read. Then, for the newest snapshot, the same fold over the
-//      store's own standing rows (the office's read, real uuids), and against a
-//      cached fold and a --published file. Folds compare as CANONICAL JSON (keys
-//      sorted, arrays in order): jsonb keeps no key order, so bytes cannot be
-//      compared, and every value and every array order can. A difference names
-//      its first key; when only the marks' order differs, it says so.
+//      the ledger position, the law and terrain at law_sha, and the marks in the
+//      order derived from their filings (src/world-filing-order.mjs). The git
+//      reads are at law_sha: the engine's code, the freeze manifest and the tree's
+//      filings. Then, for the newest snapshot, the same fold over the store's own
+//      standing rows (the office's read, real uuids), and against a cached fold
+//      and a --published file. Folds are compared VALUE-EQUAL, as canonical JSON
+//      (keys sorted, every array in order; Wright, 2026-10-05). jsonb keeps no key
+//      order, so a key order is never a difference, and an array order always is.
+//      A difference names its first key, and says when only an order differs.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -77,7 +79,7 @@ const ok = (line) => console.log(`  ✓ ${line}`);
  */
 function compareFolds(label, a, b) {
   const c = foldComparison(a, b);
-  if (!c.orderOnly.length && !c.values.length) { ok(`${label}: equal (canonical: every value, every array order; ${c.equal.length} keys)`); return; }
+  if (!c.orderOnly.length && !c.values.length) { ok(`${label}: VALUE-EQUAL (canonical JSON: keys sorted, every array in order; ${c.equal.length} keys)`); return; }
   if (c.values.length) red(`${label}: VALUES differ in ${c.values.join(", ")} (first: ${foldDifference(a, b) ?? c.values[0]})`);
   if (c.orderOnly.length) red(`${label}: the same values in another ORDER in ${c.orderOnly.join(", ")}${c.values.length ? "" : " — nothing else differs"}`);
 }
@@ -142,14 +144,16 @@ try {
     const { materializeAtRef } = await import("../../src/world-branches.mjs");
     const tools = materializeAtRef(worldRepo, header.law_sha, "tools");
     const { fold } = await import(pathToFileURL(join(tools, "tools", "marks-fold.mjs")).href);
-    const { state: derived, stakesSource, householdsSource } = await foldOfSnapshot(client, header, { fold, townRepo });
-    console.log(`  · world: derived from the snapshot's sources — the engine, class marks and terrain at law ${header.law_sha.slice(0, 12)}; stakes ${stakesSource}; households ${householdsSource}; marks in slug order (the order is open on POS-410)`);
+    const { filingAt, inFilingOrder } = await import("../../src/world-filing-order.mjs");
+    const filing = filingAt(worldRepo, header.law_sha);
+    const { state: derived, stakesSource, householdsSource } = await foldOfSnapshot(client, header, { fold, townRepo, filing });
+    console.log(`  · world: derived from the snapshot's sources — the engine, class marks and terrain at law ${header.law_sha.slice(0, 12)}; stakes ${stakesSource}; households ${householdsSource}; the marks in their filing order (${filing.frozen.size} frozen, ${filing.filed.size} filed at that sha, the rest by the write-down's rule)`);
     if (isNewest) {
       const { marksFromRows } = await import("../../src/world2-fold.mjs");
       const { rows: storeRows } = await client.query(
         "SELECT id, slug, kind, owner, household, body, geometry, status, locked_window, parent, data FROM marks WHERE status = 'standing' ORDER BY slug");
       const inputs = await snapshotFoldInputs(client, header, { townRepo });
-      const storeFold = fold({ marks: marksFromRows(storeRows, inputs.lawRows), terrain: inputs.terrain, stakes: inputs.stakes, households: inputs.households });
+      const storeFold = fold({ marks: inFilingOrder(marksFromRows(storeRows, inputs.lawRows), filing), terrain: inputs.terrain, stakes: inputs.stakes, households: inputs.households });
       compareFolds("world vs the store rows' fold", derived, storeFold);
     }
     const { rows: [cached] } = await client.query("SELECT state FROM world_snapshot_folds WHERE digest = $1", [header.digest]);
