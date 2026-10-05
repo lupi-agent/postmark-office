@@ -48,7 +48,7 @@
 //       tip (there is no journal read at all there); it is a pin on the shape
 //       of the fix, and its flip is "let the journal win".
 
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { generateKeyPairSync } from "node:crypto";
@@ -62,6 +62,7 @@ import { promisify } from "node:util";
 import { CROSSING_MS } from "../src/crossings.mjs";
 import { HANDLE_FIELD, decodeSession } from "../tools/stripe-watch.mjs";
 import { NO_TOWN, townClone } from "./fixture-paths.mjs";
+import { startPayerStore } from "./helpers/payer-store.mjs";
 // `unwitnessedSeen` is imported inside F5 rather than here ON PURPOSE. A static
 // import of a symbol the train tip does not export is a LOAD error, and a load
 // error reds every case in the file for a reason none of them is about — the
@@ -77,6 +78,18 @@ const CLI = join(HERE, "..", "tools", "stripe-watch.mjs");
 const TOWN = [townClone()].filter(Boolean)
   .find((p) => existsSync(join(p, "tools", "stamp-mint.mjs")));
 const SKIP = !TOWN && NO_TOWN;
+
+// POS-346: the watcher resolves its payers from the store, so each fixture town's
+// files seed a real one (test/helpers/payer-store.mjs), which the CLI reaches
+// through the environment it inherits.
+let payerStore = null;
+before(async () => {
+  if (SKIP) return;
+  payerStore = await startPayerStore({ db: "stripe_watch_held_behind_cursor" });
+  Object.assign(process.env, payerStore.env);
+});
+after(async () => { if (payerStore) await payerStore.stop(); });
+const seeded = async (town) => { await payerStore.seedFrom(town.repo); return town; };
 
 const KEY = "rk_test_thisisnotarealkey";
 const HELD = "cs_test_held1111111111111111111";
@@ -101,6 +114,8 @@ function seamTown() {
   const repo = mkdtempSync(join(tmpdir(), "stripe-held-"));
   mkdirSync(join(repo, "tools"), { recursive: true });
   mkdirSync(join(repo, "WHITE_PAGES"), { recursive: true });
+  // Each resident has a room: the store's roll is the town's rooms (POS-346).
+  for (const h of ["paz"]) mkdirSync(join(repo, "WHITE_PAGES", h), { recursive: true });
   writeFileSync(join(repo, "tools", "github-ids.json"), JSON.stringify({ paz: { login: "p", id: 2 } }));
   writeFileSync(join(repo, "WHITE_PAGES", "mail-ledger.md"), "# ledger\n\n- 2026-06-12 · m-1 · paz → paz · thread: new\n");
   writeFileSync(join(repo, "tools", "stamp-pubkey.pem"), publicKey.export({ type: "spki", format: "pem" }));
@@ -133,7 +148,7 @@ const seenRow = (raw, at = "2026-09-16T01:22:00Z") => ({ kind: "seen", at, ...de
 /** A town, a journal, a state file, and a fake Stripe — one tick's worth. */
 async function tick({ live = [], journal = [], cursor, t }) {
   const { port, seen } = await fakeStripe(live, t);
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const statePath = join(town.repo, "state.json");
   const journalPath = join(town.repo, "intake.jsonl");
   writeFileSync(statePath, JSON.stringify({ cursor, last_run: "2026-09-18T15:26:07.000Z" }, null, 2) + "\n");

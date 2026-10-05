@@ -13,8 +13,16 @@ Description=usdc-watch — read the town's intake address on Base and report wha
 # test/usdc-watch.test.mjs for the proof.
 #
 # Reads the town clone (ledger only, through the town's own fold) and writes its
-# cursor + report under /srv/postmark-usdc/. Keyless by construction: public
-# Base RPCs, no account, nothing to leak.
+# cursor + report under /srv/postmark-usdc/. Public Base RPCs, no chain account.
+#
+# ONE CREDENTIAL, THE STORE'S (POS-346, 2026-10-04): a wallet registration must
+# name a resident on the store's roll (town_residents), so the watch reads the
+# store. /etc/postmark-usdc-watch.env holds WORLD2_PG_URL and nothing else (mode
+# 600, owner meepo, the stripe-watch convention), never the whole office env,
+# which also carries keys this unit has no use for. Without the file systemd
+# refuses to start the unit (a missing EnvironmentFile= without "-" fails it),
+# so the unit reddens. The cursor doesn't move, so no arrival is lost, but none
+# is seen until the file exists.
 #
 # NOT INSTALLED. Repo copy only — the box install is Wright's hand:
 #   sudo cp deploy/postmark-usdc-watch.{service,timer} /etc/systemd/system/
@@ -28,6 +36,7 @@ Type=oneshot
 User=meepo
 WorkingDirectory=/srv/postmark-office
 Environment=TOWN_CLONE=/srv/postmark-office/town-clone
+EnvironmentFile=/etc/postmark-usdc-watch.env
 ExecStart=/usr/bin/node tools/usdc-watch.mjs --state /srv/postmark-usdc/state.json --out /srv/postmark-usdc/arrivals.json
 # An unreachable chain exits non-zero on purpose: a silent empty report from a
 # blind watcher is indistinguishable from a quiet day, and the second is a lie.

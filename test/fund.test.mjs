@@ -14,7 +14,7 @@
 // paraphrased the law instead of calling it would be exactly the drift the
 // alignment pass existed to close.
 
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
@@ -26,6 +26,7 @@ import { WHAT_THIS_BUYS } from "../src/funding.mjs";
 import { verifyUsdcPayment, INTAKE, USDC, TRANSFER_TOPIC, MIN_CONF } from "../src/usdc-witness.mjs";
 import { fundVerify, fundGuards, intakeDisclosure } from "../src/fund.mjs";
 import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
+import { startPayerStore } from "./helpers/payer-store.mjs";
 
 // The aligned town engine — the same tip the door's parser is pinned to.
 const TOWN = townClone();
@@ -66,6 +67,8 @@ function seamTown({ pots = {}, gifts = [] } = {}) {
   writeFileSync(join(repo, "tools", "github-ids.json"), JSON.stringify({
     paz: { login: "p", id: 2 }, stan: { login: "s", id: 1 }, vic: { login: "v", id: 6 },
   }));
+  // Each resident has a room: the store's roll is the town's rooms (POS-346).
+  for (const h of ["paz", "stan", "vic"]) mkdirSync(join(repo, "WHITE_PAGES", h), { recursive: true });
   writeFileSync(join(repo, "WHITE_PAGES", "mail-ledger.md"),
     "# ledger\n\n- 2026-06-12 · m-1 · stan → paz · thread: new\n");
   writeFileSync(join(repo, "tools", "stamp-pubkey.pem"), pub);
@@ -103,7 +106,19 @@ const cliRecorder = ({ repo, keyFile }) => async ({ pot, usd, from, ref }) => {
   return { line: entriesOf(repo).at(-1)?.raw ?? "", commit: null };
 };
 
-const call = (town, body, opts) => fundVerify(town.repo, body, { engine: ENGINE, ...opts });
+// POS-346: the door resolves its payer from the store, so every call reads a real
+// one, seeded with what the fixture town's own files say (test/helpers/payer-store.mjs).
+let payerStore = null;
+before(async () => {
+  if (SKIP) return;
+  payerStore = await startPayerStore({ db: "fund_test" });
+  Object.assign(process.env, payerStore.env);
+});
+after(async () => { if (payerStore) await payerStore.stop(); });
+const call = async (town, body, opts) => {
+  await payerStore.seedFrom(town.repo);
+  return fundVerify(town.repo, body, { engine: ENGINE, ...opts });
+};
 const caught = async (fn) => { try { await fn(); return null; } catch (e) { return e; } };
 
 // ── THE WITNESS — its four checks, each driven into its refusal ─────────────

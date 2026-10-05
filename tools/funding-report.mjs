@@ -51,6 +51,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { foldFunding, readPots, parseLedgerText, TREASURY_POT } from "../src/funding.mjs";
 import { readWalletRegistry } from "../src/wallet-registry.mjs";
+import { payerRegistry } from "../src/fund-holder.mjs";
 import { townLoginHands } from "../src/household-logins.mjs";
 // the town day, from the one place that owns it — a receipt's date is the
 // town's clock and never the operator's laptop's
@@ -217,12 +218,12 @@ export function readyToWitness({ stripe, usdcReport, date }) {
  * rows (Stage B). They are the same shape by construction: the journal stores
  * exactly what `decodeSession` produced.
  */
-export function stripeQueue({ journal, engine, entries, clone, households, loginHands = null, now }) {
+export function stripeQueue({ journal, engine, entries, clone, households, loginHands = null, registry = null, now }) {
   const seen = new Map();
   for (const r of journal) if (r.kind === "seen" && r.session) seen.set(r.session, r);
   const buckets = { hold: [], witness: [], anomaly: [], already: [] };
   for (const s of seen.values()) {
-    const r = resolveSession(s, { engine, entries, clone, households, loginHands, now });
+    const r = resolveSession(s, { engine, entries, clone, households, loginHands, registry, now });
     buckets[r.disposition].push(r);
   }
   return buckets;
@@ -431,7 +432,15 @@ async function main() {
 
   const mint = join(clone, "tools", "stamp-mint.mjs");
   const engine = existsSync(mint) ? await import(pathToFileURL(mint)) : null;
-  const households = engine ? engine.householdKeys(clone) : null;
+  // POS-346: the payer registry is the store's, as the watchers read it. Handed
+  // to the card queue too: without it every account-referenced session read
+  // "no-registry" here while the watcher credited it. Unreadable, the report
+  // runs without it (households null, each typed hand reads as a gift) and
+  // says so as a red rail row, rather than refusing to print at all.
+  let registry = null, payersUnread = null;
+  try { registry = await payerRegistry(); }
+  catch (e) { payersUnread = `the store's payer registry could not be read, so no payer below is resolved: ${String(e?.message ?? e).slice(0, 160)}`; }
+  const households = registry?.residents ?? null;
   // THE SECOND CHANNEL, threaded HERE and not only in the watcher, on purpose.
   // This report and the tick that may later act on it call the same pure
   // resolver so they cannot disagree — but a resolver only answers what it was
@@ -461,7 +470,7 @@ async function main() {
   let stripe = { hold: [], witness: [], anomaly: [], already: [] };
   let stripeRail = { rail: "stripe (live read)", ok: false, last_run: null, note: "no STRIPE_KEY in the environment and no watcher journal on disk — the card rail was NOT read, so nothing below is a claim about card payments" };
   const journalPath = arg("stripe-journal", STRIPE_JOURNAL);
-  const decided = (sessions) => stripeQueue({ journal: sessions, engine, entries, clone, households, loginHands, now });
+  const decided = (sessions) => stripeQueue({ journal: sessions, engine, entries, clone, households, loginHands, registry, now });
 
   if (engine && process.env.STRIPE_KEY) {
     const days = Number(arg("days", COLDSTART_DAYS));
@@ -497,6 +506,7 @@ async function main() {
   }
 
   const rails = [stripeRail, railHealth("usdc-watch", usdcState, { now })];
+  if (payersUnread) rails.push({ rail: "payer registry (the store)", ok: false, last_run: null, note: payersUnread });
   const anomalyRows = anomalies({ fold, potsInvalid, stripe, usdcReport, walletInvalid, mapInvalid });
   const ready = readyToWitness({ stripe, usdcReport, date: townDay() });
 

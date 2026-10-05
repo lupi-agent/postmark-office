@@ -96,7 +96,7 @@ import { CROSSING_MS } from "../src/crossings.mjs";
 import { fundGuards, penRecorder } from "../src/fund.mjs";
 import { townLoginHands } from "../src/household-logins.mjs";
 import { resolveHand, potGateOf, townEngine, ledgerEntries, readJournal, appendJournal, readState, writeState, MIN_USD } from "./stripe-watch.mjs";
-import { parseFundRef, resolveAccount, readFundRegistry, meepLawOf } from "../src/fund-holder.mjs";
+import { parseFundRef, resolveAccount, payerRegistry, meepLawOf } from "../src/fund-holder.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -284,7 +284,7 @@ export function resolveTransaction(s, { engine, entries, clone, households, logi
     return { ...s, usd_total: usdTotal, usd: whole, ...anomaly("needs-pot", gate.defect, "\"a receipt needs the pot it pays\" — a draft or closed pot takes no dollars", "the founder: open the pot, or record the dollars against the pot the giver meant. The next tick re-reads it") };
 
   if (s.account && !registry)
-    return { ...s, usd_total: usdTotal, usd: whole, ...anomaly("no-registry", `the order names account g${s.account}, and the office could not read the town's household registry to resolve it`, "a payment in a household's name is credited to that household, never guessed", "the next tick, once the town clone's tools/households.json reads") };
+    return { ...s, usd_total: usdTotal, usd: whole, ...anomaly("no-registry", `the order names account g${s.account}, and the office could not read the store's household registry to resolve it`, "a payment in a household's name is credited to that household, never guessed", "the next tick, once the store's household registry reads") };
   const hand = s.account
     ? resolveAccount(s.account, { registry, isMeep, outside: OUTSIDE_FROM })
     : resolveHand(s.handle_typed, households, loginHands, OUTSIDE_FROM);
@@ -418,9 +418,13 @@ export async function main(argv = process.argv.slice(2), { fetchImpl = fetch, lo
   catch (e) { err(`paypal-watch: ${e.message}`); return 1; }
 
   const entries = ledgerEntries(clone, engine);
-  const households = engine.householdKeys(clone);
+  // POS-346: the payer is resolved from the store (stripe-watch.mjs § main says
+  // why). Unreadable, the tick refuses before it journals anything.
+  let registry;
+  try { registry = await payerRegistry({ env }); }
+  catch (e) { err(`paypal-watch: the store's payer registry could not be read, so nothing was decided this tick: ${e.message}`); return 1; }
+  const households = registry.residents;
   const loginHands = townLoginHands(clone, engine);
-  const registry = readFundRegistry(clone);
   const isMeep = meepLawOf(engine, entries, new Date(now).toISOString().slice(0, 10));
   const journalRows = readJournal(journalPath);
   const behind = unwitnessedSeen(journalRows);

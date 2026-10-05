@@ -104,6 +104,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { baseRpc, INTAKE, USDC, TRANSFER_TOPIC, MIN_CONF } from "../src/usdc-witness.mjs";
 import { readWalletRegistry, handleForAddress } from "../src/wallet-registry.mjs";
+import { payerRegistry } from "../src/fund-holder.mjs";
 import { CROSSING_MS } from "../src/crossings.mjs";
 import { fundGuards, penRecorder } from "../src/fund.mjs";
 import { readIntakeMap, intakeAddresses } from "../src/intake-map.mjs";
@@ -612,7 +613,9 @@ async function main() {
   const cursor = from != null ? Number(from) - 1 : (state.cursor ?? null);
 
   const { map: potMap, invalid: mapInvalid } = readIntakeMap();
-  const households = typeof engine.householdKeys === "function" ? engine.householdKeys(clone) : null;
+  // POS-346: a registration must name a resident on the store's roll. Unreadable,
+  // the tick fails here, before the registry is folded without its check.
+  const households = (await payerRegistry()).residents;
   const { byAddress: wallets, invalid: walletInvalid, path: registryPath, present: registryPresent } = readWalletRegistry(undefined, { households });
 
   // THE SECOND READ, taken ONCE here and used twice: to re-decide the arrivals

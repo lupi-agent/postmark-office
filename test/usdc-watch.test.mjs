@@ -13,7 +13,7 @@
 // epoch-close CLI, and the watch reads it back through the town's own
 // foldPotReceipts. A hand-rolled ledger scan would be a second copy of the rule.
 
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -24,6 +24,7 @@ import { execFileSync } from "node:child_process";
 import { INTAKE, USDC, TRANSFER_TOPIC, MIN_CONF, verifyUsdcPayment } from "../src/usdc-witness.mjs";
 import { fundVerify } from "../src/fund.mjs";
 import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
+import { startPayerStore } from "./helpers/payer-store.mjs";
 import {
   watch, scanRange, reconcile, decodeArrival, ledgerEntries,
   MIN_USD, UNDER_A_DOLLAR, MAX_SPAN,
@@ -32,6 +33,18 @@ import {
 const TOWN = townClone();
 const ENGINE = TOWN ? await import(townModuleUrl("tools", "stamp-mint.mjs")) : null;
 const SKIP = !TOWN && NO_TOWN;
+
+// POS-346: the watcher resolves its payers from the store, so each fixture town's
+// files seed a real one (test/helpers/payer-store.mjs), which the CLI reaches
+// through the environment it inherits.
+let payerStore = null;
+before(async () => {
+  if (SKIP) return;
+  payerStore = await startPayerStore({ db: "usdc_watch" });
+  Object.assign(process.env, payerStore.env);
+});
+after(async () => { if (payerStore) await payerStore.stop(); });
+const seeded = async (town) => { await payerStore.seedFrom(town.repo); return town; };
 
 // ── a hand-built Base that actually filters ─────────────────────────────────
 const pad32 = (a) => "0x" + "0".repeat(24) + String(a).replace(/^0x/, "").toLowerCase();
@@ -80,6 +93,8 @@ function seamTown() {
   const repo = mkdtempSync(join(tmpdir(), "watch-town-"));
   mkdirSync(join(repo, "tools"), { recursive: true });
   mkdirSync(join(repo, "WHITE_PAGES"), { recursive: true });
+  // Each resident has a room: the store's roll is the town's rooms (POS-346).
+  for (const h of ["paz", "stan"]) mkdirSync(join(repo, "WHITE_PAGES", h), { recursive: true });
   writeFileSync(join(repo, "tools", "github-ids.json"), JSON.stringify({ paz: { login: "p", id: 2 }, stan: { login: "s", id: 1 } }));
   writeFileSync(join(repo, "WHITE_PAGES", "mail-ledger.md"), "# ledger\n\n- 2026-06-12 · m-1 · stan → paz · thread: new\n");
   writeFileSync(join(repo, "tools", "stamp-pubkey.pem"), publicKey.export({ type: "spki", format: "pem" }));
@@ -157,7 +172,7 @@ test("a payment under a dollar is set aside with the door's own sentence", { ski
   // LAW (fund.mjs, guard 5): "$X is less than a dollar — the ledger records
   //     whole dollars, so a payment under $1 cannot be witnessed as a receipt.
   //     It reached the town and it is not lost — write to the postmaster."
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const c = chain({ head: 5000, logs: [
     transfer({ txhash: HASH_DUST, block: 4000, usd: 0.5 }),
     transfer({ txhash: HASH_A, block: 4001, usd: 1 }),
@@ -178,7 +193,7 @@ test("an arrival nobody has claimed is reported as unclaimed, and never as a rec
   //     cannot attach to a hand can still be a gift, but it cannot mint your holo."
   //     Unclaimed money is a thing the office must SEE; it is not a thing the
   //     watch may record.
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const before = readFileSync(join(town.repo, "WHITE_PAGES", "stamp-ledger.md"), "utf8");
   const c = chain({ head: 5000, logs: [transfer({ txhash: HASH_A, block: 4000, usd: 40 })] });
 
@@ -207,7 +222,7 @@ test("once the patron pastes, the SAME arrival reports as witnessed — the watc
   //     reads and reports — it never writes to any world." Re-running it must
   //     therefore be free: the second run over the same chain discovers nothing
   //     new, it only reads the ledger's answer differently once the ledger moved.
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const c = chain({ head: 5000, logs: [transfer({ txhash: HASH_A, block: 4000, usd: 40 })] });
 
   const first = await watch({ rpc: c.rpc, entries: entriesOf(town.repo), engine: ENGINE, cursor: 3999 });
@@ -243,7 +258,7 @@ test("the cursor never crosses a block that is not buried deep enough", { skip: 
   //     confirmations (< 12) — call again in a minute; depth is part of the
   //     witness". An arrival the door would refuse for depth must not be
   //     reported, and the cursor must not step over the blocks holding it.
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const head = 5000;
   const c = chain({ head, logs: [
     transfer({ txhash: HASH_A, block: head - MIN_CONF, usd: 10 }),      // exactly deep enough
@@ -268,7 +283,7 @@ test("an unreachable chain exits loud, reports nothing, and leaves the cursor wh
   //     minute... Disclose the blindness instead." For a watch, disclosing the
   //     blindness means FAILING — a silent empty report from a blind watcher is
   //     indistinguishable from a quiet day, and the second one is a lie.
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const c = chain({ throws: true });
   const cursorBefore = 4321;
 
@@ -283,7 +298,7 @@ test("an unreachable chain exits loud, reports nothing, and leaves the cursor wh
 
 test("a tick with nothing newly settled moves nothing", { skip: SKIP }, async () => {
   // The cursor is only ever advanced over blocks that were actually READ.
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const head = 5000;
   const c = chain({ head, logs: [] });
   const { report, cursor } = await watch({ rpc: c.rpc, entries: entriesOf(town.repo), engine: ENGINE, cursor: head - MIN_CONF });
@@ -295,7 +310,7 @@ test("a tick with nothing newly settled moves nothing", { skip: SKIP }, async ()
 test("a long catch-up is read in bounded chunks, not one enormous request", { skip: SKIP }, async () => {
   // Public Base RPCs cap an eth_getLogs range; a cold start must not ask for
   // a span no endpoint will answer, and must not silently lose the remainder.
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const c = chain({ head: 10_000, logs: [transfer({ txhash: HASH_A, block: 9_000, usd: 3 })] });
   const { report, cursor } = await watch({ rpc: c.rpc, entries: entriesOf(town.repo), engine: ENGINE, cursor: 5_000 });
 
@@ -320,7 +335,7 @@ test("AUTO-WITNESSING WOULD DESTROY THE PATRON'S HOLO — the reason this watch 
   // and for a later hash-paste to ATTACH the handle instead of double-witnessing.
   // This test is why that was not built: the first half consumes the hash's one
   // mint chance, and the ledger has no row kind that can perform the second.
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const record = cliRecorder(town);
   const witness = () => verifyUsdcPayment({
     txhash: HASH_A,
@@ -363,7 +378,7 @@ test("one dollar cannot become two by respelling its hash", { skip: SKIP }, asyn
   // normalised at the point it is minted, pasting 0xab… and then 0xAB… recorded
   // ONE payment TWICE — two receipts, twice the mint, $80 witnessed for $40 of real
   // money. This is the flip that proves the fix can still fail.
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const record = cliRecorder(town);
   const chainFor = (h) => () => verifyUsdcPayment({
     txhash: h,

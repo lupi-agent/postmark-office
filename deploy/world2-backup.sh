@@ -224,6 +224,46 @@ NODE
 fi
 rm -f "$ROLES_ERR"
 
+# ── 1c · the money intake files: who registered which wallet, and what each rail has seen ─
+# POS-346, 2026-10-04. Four box files hold money facts that no repo and no store
+# table has (the store inventory, design-notes/store-inventory.md § A8):
+#
+#   wallets       /srv/postmark-wallets/registrations.jsonl: which Base address
+#                 belongs to which household (src/wallet-registry.mjs). Kept off
+#                 the town repo by the founder's 2026-08-25 ruling, so this
+#                 private repo is its only other copy.
+#   stripe        /srv/postmark-stripe/stripe-intake.jsonl, and
+#   paypal        /srv/postmark-paypal/paypal-intake.jsonl: every payment each
+#                 card watcher has SEEN, including the ones still in their grace
+#                 window or held as anomalies, which no ledger line names yet.
+#   usdc          /srv/postmark-usdc/state.json: the USDC watch's cursor and its
+#                 unresolved arrivals.
+#
+# They ride in the SAME commit as the dump, like roles.db. They become store rows
+# later, which is the issue's larger half; this is the smaller half, first. Each
+# is append-only or rewritten whole by one writer, so a plain copy is a sound
+# copy: at worst it misses a line appended during the copy, which the next night
+# carries. ABSENT IS NOT FAILED (a rail that has never run has no file). An
+# UNREADABLE one does not stop the dump either, since the dump is the copy that
+# survives the box, but it reddens the unit at the end and names the file.
+INTAKE_STATUS=""; INTAKE_UNREAD=""
+INTAKE_STAGE="$DUMPS/intake-$STAMP"
+mkdir -p "$INTAKE_STAGE"; chmod 700 "$INTAKE_STAGE"
+for spec in \
+  "wallets=${W2_WALLET_REGISTRY:-/srv/postmark-wallets/registrations.jsonl}" \
+  "stripe=${W2_STRIPE_INTAKE:-/srv/postmark-stripe/stripe-intake.jsonl}" \
+  "paypal=${W2_PAYPAL_INTAKE:-/srv/postmark-paypal/paypal-intake.jsonl}" \
+  "usdc=${W2_USDC_STATE:-/srv/postmark-usdc/state.json}"; do
+  name="${spec%%=*}"; src="${spec#*=}"
+  if [ ! -e "$src" ]; then st=absent; bytes=0
+  elif cp "$src" "$INTAKE_STAGE/$name-$(basename "$src")" 2>/dev/null; then
+    st=copied; bytes=$(stat -c %s "$INTAKE_STAGE/$name-$(basename "$src")")
+  else st=unreadable; bytes=0; INTAKE_UNREAD="$INTAKE_UNREAD $src"
+  fi
+  INTAKE_STATUS="$INTAKE_STATUS${INTAKE_STATUS:+,}\"$name\":{\"status\":\"$st\",\"source\":\"$src\",\"bytes\":$bytes}"
+done
+chmod 600 "$INTAKE_STAGE"/* 2>/dev/null
+
 # ── 2 · the physical base backup, so the WAL means something ────────────────
 BASE="$BASEBACKUPS/base-$STAMP"
 if PGPASSWORD="$OWNER_PW" pg_basebackup --host "${WORLD2_PGHOST:-localhost}" --port "${WORLD2_PGPORT:-5432}" \
@@ -291,6 +331,13 @@ cp "$DUMP" "$REPO/dumps/"
 if [ "$ROLES_STATUS" = copied ]; then
   mkdir -p "$REPO/roles"
   cp "$ROLES_COPY" "$REPO/roles/"
+fi
+# The intake files (§ 1c) keep ONE name each, overwritten nightly: they are whole
+# journals that only grow, so the repo's history is their archive and a stamped
+# copy per night would put every past night's whole journal in the tree again.
+if ls "$INTAKE_STAGE"/* >/dev/null 2>&1; then
+  mkdir -p "$REPO/intake"
+  cp "$INTAKE_STAGE"/* "$REPO/intake/"
 fi
 
 # The bundles this lane shipped before 2026-09-03 stay in the repo's history and
@@ -362,8 +409,11 @@ cat > "$REPO/LATEST.json" <<JSON
     "read": "role_audit is append-only, so its count only ever grows; grant_rows is live standing and falls on a revoke",
     "absent_is_legal": "OFFICE_ROLE_GATES is unset on every office today (src/server.mjs:170), so a box that has never granted a role has no file to copy"
   },
+  "intake": {$INTAKE_STATUS},
+  "intake_why": "POS-346: wallet registrations and each rail's seen-but-unwitnessed payments exist on the box and nowhere else until they become store rows",
   "restore": "pg_restore --clean --if-exists --no-owner --no-acl -d <db> dumps/<file>",
-  "restore_roles": "cp roles/<file> /srv/postmark-office/roles.db (the office opens it at boot; it is a whole database, not a delta)"
+  "restore_roles": "cp roles/<file> /srv/postmark-office/roles.db (the office opens it at boot; it is a whole database, not a delta)",
+  "restore_intake": "cp intake/<name>-<file> back to the source path named under intake (each watcher reads its file whole on its next tick)"
 }
 JSON
 
@@ -380,6 +430,7 @@ REMOTE_TIP=$(git -C "$REPO" ls-remote origin refs/heads/main | cut -f1)
 # ── 5 · local retention ─────────────────────────────────────────────────────
 ls -1t "$DUMPS"/world2-*.dump 2>/dev/null | tail -n +$((KEEP_DUMPS + 1)) | xargs -r rm -f
 ls -1t "$DUMPS"/roles-*.db 2>/dev/null | tail -n +$((KEEP_DUMPS + 1)) | xargs -r rm -f
+ls -1dt "$DUMPS"/intake-* 2>/dev/null | tail -n +$((KEEP_DUMPS + 1)) | xargs -r rm -rf
 # The notary bundles this lane stopped making on 2026-09-03. A count-based rule
 # would keep the newest fourteen of them on the disk forever, which is the
 # residue class exactly — a cache with no ceiling, left behind by a lane that
@@ -416,13 +467,15 @@ WAL_FILES=$(find "$WAL" -type f 2>/dev/null | wc -l)   # recounted AFTER the pru
 # distinguishes the two silences a reader must never confuse — `absent` (no role
 # was ever granted on this box) from a copy that FAILED, which exits 1 above and
 # never reaches this line at all.
-w2_state backup.json "$(printf '"status":"%s","database":"%s","dump_bytes":%d,"toc_entries":%d,"basebackup_ok":%s,"basebackup_bytes":%d,"wal_bytes":%d,"wal_files":%d,"roles_status":"%s","roles_db_bytes":%d,"role_audit_rows":%d,"grant_rows":%d,"remote_tip":"%s","destination":"github.com/wright-starforge/postmark-world2-backups (private)"' \
+w2_state backup.json "$(printf '"status":"%s","database":"%s","dump_bytes":%d,"toc_entries":%d,"basebackup_ok":%s,"basebackup_bytes":%d,"wal_bytes":%d,"wal_files":%d,"roles_status":"%s","roles_db_bytes":%d,"role_audit_rows":%d,"grant_rows":%d,"intake":{%s},"remote_tip":"%s","destination":"github.com/wright-starforge/postmark-world2-backups (private)"' \
   "$([ "$BASE_OK" = true ] && echo shipped || echo shipped-no-basebackup)" \
   "$DB" "$DUMP_BYTES" "$TOC_ENTRIES" "$BASE_OK" "$BASE_BYTES" "$WAL_BYTES_AFTER" "$WAL_FILES" \
-  "$ROLES_STATUS" "$ROLES_BYTES" "$ROLES_AUDIT" "$ROLES_GRANTS" "$REMOTE_TIP")"
+  "$ROLES_STATUS" "$ROLES_BYTES" "$ROLES_AUDIT" "$ROLES_GRANTS" "$INTAKE_STATUS" "$REMOTE_TIP")"
 
 echo "[world2-backup] $DB → $(numfmt --to=iec "$DUMP_BYTES") dump, $TOC_ENTRIES toc entries; remote main = $REMOTE_TIP"
 echo "[world2-backup] on-box: basebackup=$BASE_OK ($(numfmt --to=iec "$BASE_BYTES")), wal $WAL_FILES files $(numfmt --to=iec "$WAL_BYTES_AFTER")"
 echo "[world2-backup] roles.db: $ROLES_STATUS — $ROLES_AUDIT audit rows, $ROLES_GRANTS live grants, $(numfmt --to=iec "$ROLES_BYTES")"
+echo "[world2-backup] intake: {$INTAKE_STATUS}"
+[ -z "$INTAKE_UNREAD" ] || { echo "[world2-backup] intake file(s) UNREADABLE, so they are on the box and nowhere else:$INTAKE_UNREAD" >&2; exit 1; }
 [ "$BASE_OK" = true ] || exit 1
 exit 0

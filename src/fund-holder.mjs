@@ -37,8 +37,12 @@
 // and PayPal watchers, the /fund door, GET /me for the page) asks this one
 // function, so the page always shows the name the watcher will credit.
 
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { join } from "node:path";
+
+import { resolveHouse, VIA } from "./household-deriver.mjs";
+import { registryRowsVia } from "./registry-store.mjs";
+import { registryFromRows, pinsFromRows } from "./registry-rows.mjs";
 
 /** `g<id>`: an account reference, as every rail carries it. */
 export const ACCOUNT_REF_RE = /^g([1-9]\d{0,19})$/;
@@ -76,31 +80,50 @@ export function fundRefFor(pot, ghId, rail) {
   return ghId == null || ghId === "" ? String(pot) : `${pot}${sep}${accountRef(ghId)}`;
 }
 
-// ── the registry, read from the town clone ──────────────────────────────────
+// ── the registry, read from the store (POS-346) ─────────────────────────────
+//
+// Darko's model (2026-10-04): git can be written to, the store reads git, the
+// store is the record, and every reader reads the store. Who paid was the last
+// money decision still taken from the printouts: the clone's tools/households.json
+// and tools/github-ids.json, which the drain renders FROM the store's households
+// and household_pins (registry-drain, byte-equal by --check). So an account bound
+// in the store and not yet printed was a gift, and a printout edited by hand was
+// a payer the store had never heard of. Now every payer, on every rail, is
+// resolved from the store's own rows, and the resident set a typed handle is
+// checked against is the store's roll (town_residents), not the clone's rooms.
+//
+// A store that can't be read is a THROW, never an empty registry. An empty one
+// would turn every payer into an outside gift, which is a guess about whose money
+// it was. Every caller refuses its tick or its request on the throw, and the
+// payment is decided again next time, exactly as an unreadable printout held it.
 
-let cache = null;
-/** `{ houses, pins }` from the town clone's tools/households.json and tools/github-ids.json, cached on their stamps. */
-export function readFundRegistry(clone) {
-  const files = ["households.json", "github-ids.json"].map((f) => join(clone, "tools", f));
-  let stamp;
-  try { stamp = files.map((f) => { const st = statSync(f); return `${f}|${st.mtimeMs}|${st.size}`; }).join(";"); }
-  catch { return null; }
-  if (cache?.stamp === stamp) return cache.value;
-  try {
-    const houses = JSON.parse(readFileSync(files[0], "utf8"))?.households ?? {};
-    const pins = JSON.parse(readFileSync(files[1], "utf8")) ?? {};
-    cache = { stamp, value: { houses, pins } };
-    return cache.value;
-  } catch { return null; }
+/**
+ * `{ houses, pins, residents }` from the queryable's store: the declared houses
+ * and pins as household-deriver folds the registry rows (the same fold the drain
+ * prints the files from), and the town's resident handles. Read fresh on every
+ * call. The fund page asks on each signed-in page and a watcher once a tick, and
+ * a payer bound a minute ago must not wait for a cache to notice.
+ */
+export async function payerRegistryVia(q) {
+  const rows = await registryRowsVia(q);
+  const residents = new Set((await q.query("SELECT handle FROM town_residents")).rows.map((r) => r.handle));
+  return { houses: registryFromRows(rows).households ?? {}, pins: pinsFromRows(rows), residents };
 }
 
-/** The declared household an account belongs to (households.json § accounts[].id), or null. */
+/** The same, through the office's READ ONLY pen. Throws when the office can't read its record. */
+export async function payerRegistry({ env = process.env } = {}) {
+  const { officeRead } = await import("./world2-pen.mjs");
+  return officeRead(payerRegistryVia, { env });
+}
+
+/**
+ * The declared household an account belongs to, or null. Asked of the one
+ * deriver (household-deriver.mjs § resolveHouse), narrowed to the account walk:
+ * an account's id against each house's `accounts[]`, id first.
+ */
 export function houseForAccount(ghId, houses) {
-  const id = Number(ghId);
-  if (!Number.isFinite(id)) return null;
-  for (const [slug, rec] of Object.entries(houses ?? {}))
-    if ((rec?.accounts ?? []).some((a) => Number(a?.id) === id)) return slug;
-  return null;
+  if (!Number.isFinite(Number(ghId))) return null;
+  return resolveHouse({ ghId: Number(ghId) }, { households: houses ?? {} }, {}, { via: VIA.ACCOUNT }).slug;
 }
 
 /** The town's FIRST RESIDENT rule: earliest `pinned`, ties alphabetical, unpinned last. */
@@ -183,10 +206,13 @@ async function meepLawAtOffice(clone) {
   return isMeep;
 }
 
-/** `{ household, name, handle, residents, rule }` for a signed-in account, or null. */
-export async function fundHolderAtOffice(clone, ghId) {
+/**
+ * `{ household, name, handle, residents, rule }` for a signed-in account, or
+ * null. The registry is the store's (`payerRegistry`); `registry` is injected
+ * by a falsifier. A store that can't be read throws, and GET /me then leaves the
+ * garnish off, which is what the page shows an outside gift as.
+ */
+export async function fundHolderAtOffice(clone, ghId, { registry = null, env = process.env } = {}) {
   if (ghId == null) return null;
-  const registry = readFundRegistry(clone);
-  if (!registry) return null;
-  return fundHolder(ghId, { registry, isMeep: await meepLawAtOffice(clone) });
+  return fundHolder(ghId, { registry: registry ?? await payerRegistry({ env }), isMeep: await meepLawAtOffice(clone) });
 }

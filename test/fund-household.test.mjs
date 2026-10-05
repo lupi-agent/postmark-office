@@ -22,7 +22,7 @@
 //   7. a household with several residents → the rule's resident, named on the row;
 //   8. a household whose slug carries dots resolves by account all the same (slugs never ride a reference).
 
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
@@ -33,8 +33,9 @@ import { execFileSync } from "node:child_process";
 import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
 import { townLoginHands } from "../src/household-logins.mjs";
 import {
-  parseFundRef, fundRefFor, holderOf, fundHolder, firstResident, houseForAccount, parseAccountRef, fundHolderAtOffice, readFundRegistry,
+  parseFundRef, fundRefFor, holderOf, fundHolder, firstResident, houseForAccount, parseAccountRef, fundHolderAtOffice, payerRegistry,
 } from "../src/fund-holder.mjs";
+import { startPayerStore } from "./helpers/payer-store.mjs";
 import { decide as stripeDecide, HANDLE_FIELD } from "../tools/stripe-watch.mjs";
 import { decide as paypalDecide } from "../tools/paypal-watch.mjs";
 import { fundVerify } from "../src/fund.mjs";
@@ -199,11 +200,21 @@ test("1 · 3 · 5 · PayPal: `<pot>|g<id>` → the holder; an old `<pot>|<handle
 
 // ── the USDC rail: the /fund door ───────────────────────────────────────────
 
+// POS-346: the door and the page resolve from the store, seeded with the fixture's files.
+let payerStore = null;
+before(async () => {
+  if (SKIP) return;
+  payerStore = await startPayerStore({ db: "fund_household" });
+  Object.assign(process.env, payerStore.env);
+});
+after(async () => { if (payerStore) await payerStore.stop(); });
+
 const TX = "0x" + "ab".repeat(32);
 const verified = async () => ({ verified: true, txhash: TX, usd: 25, receipt_ref: `usdc:${TX}`, from_address: "0x1", to: "0x2", pot: null });
 
 test("1 · 3 · USDC: the form's `household: g<id>` → `from:` the holder; an unheld account is refused by name; household and handle together are refused", { skip: SKIP }, async () => {
   const town = seamTown();
+  await payerStore.seedFrom(town.repo);
   const recorded = [];
   const record = async (r) => { recorded.push(r); return { line: "x", commit: null }; };
   const ok = await fundVerify(town.repo, { txhash: TX, pot: "keep", household: "g101" }, { verify: verified, record, engine: ENGINE, potMap: new Map() });
@@ -220,9 +231,10 @@ test("1 · 3 · USDC: the form's `household: g<id>` → `from:` the holder; an u
 
 // ── the page asks the same function (GET /me's fund_holder) ─────────────────
 
-test("the page's answer is the watcher's: fundHolderAtOffice reads the clone's registry and names the same holder", { skip: SKIP }, async () => {
+test("the page's answer is the watcher's: fundHolderAtOffice reads the store's registry and names the same holder", { skip: SKIP }, async () => {
   const town = seamTown();
-  assert.ok(readFundRegistry(town.repo));
+  await payerStore.seedFrom(town.repo);
+  assert.deepEqual(Object.keys((await payerRegistry()).houses), Object.keys(HOUSES));
   const h = await fundHolderAtOffice(town.repo, 101);
   assert.deepEqual([h.household, h.name, h.handle, h.rule], ["the-harbor", "The Harbor", "bram", "first-resident"]);
   assert.equal(await fundHolderAtOffice(town.repo, 999), null);

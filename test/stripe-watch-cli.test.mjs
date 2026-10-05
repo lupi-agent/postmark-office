@@ -11,7 +11,7 @@
 // child process reading a real env. It records what the request carried, which
 // is how the auth-header assertion below can mean anything.
 
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { generateKeyPairSync } from "node:crypto";
@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { NO_TOWN, townClone } from "./fixture-paths.mjs";
+import { startPayerStore } from "./helpers/payer-store.mjs";
 
 // execFileSync BLOCKS THE EVENT LOOP, so the in-process fake Stripe below could
 // never accept the child's connection and every run died on the fetch timeout.
@@ -35,6 +36,18 @@ const CLI = join(HERE, "..", "tools", "stripe-watch.mjs");
 const TOWN = [townClone()].filter(Boolean)
   .find((p) => existsSync(join(p, "tools", "stamp-mint.mjs")));
 const SKIP = !TOWN && NO_TOWN;
+
+// POS-346: the watcher resolves its payers from the store, so each fixture town's
+// files seed a real one (test/helpers/payer-store.mjs), which the CLI reaches
+// through the environment it inherits.
+let payerStore = null;
+before(async () => {
+  if (SKIP) return;
+  payerStore = await startPayerStore({ db: "stripe_watch_cli" });
+  Object.assign(process.env, payerStore.env);
+});
+after(async () => { if (payerStore) await payerStore.stop(); });
+const seeded = async (town) => { await payerStore.seedFrom(town.repo); return town; };
 
 const KEY = "rk_test_thisisnotarealkey";
 const CS = "cs_test_cli111111111111111111111";
@@ -83,6 +96,8 @@ function seamTown() {
   const repo = mkdtempSync(join(tmpdir(), "stripe-cli-"));
   mkdirSync(join(repo, "tools"), { recursive: true });
   mkdirSync(join(repo, "WHITE_PAGES"), { recursive: true });
+  // Each resident has a room: the store's roll is the town's rooms (POS-346).
+  for (const h of ["paz"]) mkdirSync(join(repo, "WHITE_PAGES", h), { recursive: true });
   writeFileSync(join(repo, "tools", "github-ids.json"), JSON.stringify({ paz: { login: "p", id: 2 } }));
   writeFileSync(join(repo, "WHITE_PAGES", "mail-ledger.md"), "# ledger\n\n- 2026-06-12 · m-1 · paz → paz · thread: new\n");
   writeFileSync(join(repo, "tools", "stamp-pubkey.pem"), publicKey.export({ type: "spki", format: "pem" }));
@@ -116,7 +131,7 @@ test("the CLI runs end to end: env → reader → pages → journal → state, a
   // differs whenever the run crosses a second boundary.
   const fed = session();
   const { seen, port } = await fakeStripe([fed], t);
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const state = join(town.repo, "state.json");
   const journal = join(town.repo, "intake.jsonl");
   const ledger = join(town.repo, "WHITE_PAGES", "stamp-ledger.md");
@@ -159,7 +174,7 @@ test("the CLI runs end to end: env → reader → pages → journal → state, a
 
 test("a second run journals the SAME session once — the journal is append-only, not append-again", { skip: SKIP }, async (t) => {
   const { port } = await fakeStripe([session()], t);
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const state = join(town.repo, "state.json");
   const journal = join(town.repo, "intake.jsonl");
   execFileSync(process.execPath, [join(TOWN, "tools", "stamp-mint.mjs"), "--append", "--key", town.keyFile, "--repo", town.repo], { encoding: "utf8" });
@@ -204,7 +219,7 @@ test("POS-183 · the CLI reads a EUR session's SETTLED dollars off its balance t
   const fed = session({ created: due, amount_total: 1840, currency: "eur", payment_intent: "pi_eur" });
   const intents = { pi_eur: { id: "pi_eur", object: "payment_intent", latest_charge: { id: "ch_eur", object: "charge", balance_transaction: { id: "txn_eur", object: "balance_transaction", amount: 2013, currency: "usd" } } } };
   const { seen, port } = await routedStripe({ sessions: [fed], intents }, t);
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const state = join(town.repo, "state.json");
   const journal = join(town.repo, "intake.jsonl");
   execFileSync(process.execPath, [join(TOWN, "tools", "stamp-mint.mjs"), "--append", "--key", town.keyFile, "--repo", town.repo], { encoding: "utf8" });
@@ -256,7 +271,7 @@ test("POS-183 · a real tick WITNESSES the settled dollars: the ledger row says 
   const fed = session({ created: due, amount_total: 1840, currency: "eur", payment_intent: "pi_eur" });
   const intents = { pi_eur: { id: "pi_eur", object: "payment_intent", latest_charge: { id: "ch_eur", object: "charge", balance_transaction: { id: "txn_eur", object: "balance_transaction", amount: 2013, currency: "usd" } } } };
   const { port } = await routedStripe({ sessions: [fed], intents }, t);
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const state = join(town.repo, "state.json");
   const journal = join(town.repo, "intake.jsonl");
   execFileSync(process.execPath, [join(TOWN, "tools", "stamp-mint.mjs"), "--append", "--key", town.keyFile, "--repo", town.repo], { encoding: "utf8" });
@@ -283,7 +298,7 @@ test("POS-183 · a real tick WITNESSES the settled dollars: the ledger row says 
 });
 
 test("no key is a loud refusal, not a quiet empty tick", { skip: SKIP }, async () => {
-  const town = seamTown();
+  const town = await seeded(seamTown());
   execFileSync(process.execPath, [join(TOWN, "tools", "stamp-mint.mjs"), "--append", "--key", town.keyFile, "--repo", town.repo], { encoding: "utf8" });
   let err = null;
   try {

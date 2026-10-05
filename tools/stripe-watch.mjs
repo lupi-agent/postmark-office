@@ -217,7 +217,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { CROSSING_MS } from "../src/crossings.mjs";
 import { fundGuards, penRecorder } from "../src/fund.mjs";
 import { townLoginHands } from "../src/household-logins.mjs";
-import { parseFundRef, resolveAccount, readFundRegistry, meepLawOf } from "../src/fund-holder.mjs";
+import { parseFundRef, resolveAccount, payerRegistry, meepLawOf } from "../src/fund-holder.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -516,7 +516,7 @@ export function resolveSession(s, { engine, entries, clone, households, loginHan
   // anything else is a gift. A payer part that is not an account is not guessed at.
   const typed = s.handle_typed || null;
   if (ref.account && !registry)
-    return { ...s, usd_total: usdTotal, usd: whole, pot: named, ...anomaly("no-registry", `the session names account g${ref.account}, and the office could not read the town's household registry to resolve it`, "a payment in a household's name is credited to that household, never guessed", "the next tick, once the town clone's tools/households.json reads") };
+    return { ...s, usd_total: usdTotal, usd: whole, pot: named, ...anomaly("no-registry", `the session names account g${ref.account}, and the office could not read the store's household registry to resolve it`, "a payment in a household's name is credited to that household, never guessed", "the next tick, once the store's household registry reads") };
   const hand = ref.account
     ? resolveAccount(ref.account, { registry, isMeep, outside: OUTSIDE_FROM })
     : ref.typed
@@ -854,12 +854,18 @@ async function main() {
   const sessions = await listCompleteSessions({ stripe, createdGte: cursor });
 
   const entries = ledgerEntries(clone, engine);
-  const households = engine.householdKeys(clone);
+  // POS-346: the payer is resolved from the store. The account references go
+  // through its registry (POS-317), and a typed handle is checked against its
+  // resident roll. A store that can't be read throws here, before anything is
+  // journalled or the cursor moves, so the tick fails and the next one decides
+  // these sessions again. An empty registry would have made every payer a gift.
+  const registry = await payerRegistry();
+  const households = registry.residents;
   // The second channel's map, derived by the town's own resolver. Built here
   // and handed down so the rule stays pure and a falsifier can withhold it.
+  // It still reads the mint's keys from the clone: which key a login minted
+  // under is the ledger's question (POS-341), not the registry's.
   const loginHands = townLoginHands(clone, engine);
-  // POS-317: the registry the account references resolve through, and the town's meep law today.
-  const registry = readFundRegistry(clone);
   const isMeep = meepLawOf(engine, entries, new Date().toISOString().slice(0, 10));
 
   // THE SECOND READ. The journal is read ONCE here and used twice: to re-decide

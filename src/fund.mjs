@@ -46,7 +46,7 @@
 // change" — but R1 rules stamps, not dollars, so this leans on it by analogy
 // and wants the founder's word before it is called law.
 
-import { parseAccountRef, readFundRegistry, fundHolder, meepLawOf } from "./fund-holder.mjs";
+import { parseAccountRef, payerRegistry, fundHolder, meepLawOf } from "./fund-holder.mjs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
@@ -169,6 +169,10 @@ export async function fundVerify(clone, body, {
   // with per-pot addresses the shipped deploy/intake-addresses.json does not
   // have. Null reads the shipped file, which is what production does.
   potMap = null,
+  // `{ houses, pins, residents }`, the payer registry (fund-holder.mjs §
+  // payerRegistry), injected by a falsifier. Null reads the store, which is
+  // what production does (POS-346).
+  payers = null,
 } = {}) {
   const { txhash, pot } = body ?? {};
   let handle = body?.handle;
@@ -199,7 +203,7 @@ export async function fundVerify(clone, body, {
   const eng = engine ?? await townEngine(clone);
   if (!eng) throw bounce(409, "not-yet-open", "the office has no town clone with the funding seam — the door is dark until the seam merges");
 
-  const { parseStampLedger, householdKeys } = eng;
+  const { parseStampLedger } = eng;
   const { readFileSync } = await import("node:fs");
   const ledgerPath = join(clone, "WHITE_PAGES", "stamp-ledger.md");
   const entries = existsSync(ledgerPath) ? parseStampLedger(readFileSync(ledgerPath, "utf8")) : [];
@@ -209,9 +213,13 @@ export async function fundVerify(clone, body, {
   if (!gate.ok) throw bounce(gate.code, gate.defect, gate.hint);
 
   // 3a · the household's holder, when the form named the account (POS-317).
+  // POS-346: the account, and the handle below, are resolved from the store.
+  let registry = payers;
+  if (!registry) {
+    try { registry = await payerRegistry(); }
+    catch { throw bounce(503, "the town's household registry could not be read", "nothing was recorded — try again shortly"); }
+  }
   if (account) {
-    const registry = readFundRegistry(clone);
-    if (!registry) throw bounce(503, "the town's household registry could not be read", "nothing was recorded — try again shortly");
     holder = fundHolder(parseAccountRef(account), { registry, isMeep: meepLawOf(eng, entries, new Date().toISOString().slice(0, 10)) });
     if (!holder)
       throw bounce(404, `no household holds account ${account}`, "holo mints to a town household, so this door needs a household the town knows. Not in town yet? Join first — or write to the postmaster and your dollars will be recorded by hand.");
@@ -221,8 +229,7 @@ export async function fundVerify(clone, body, {
   // 3 · the resident. § 8's holo law is household-shaped: a payer earns holo
   // only as a town household. An outsider's dollars are still welcome and are
   // still recorded — but by the founder's hand, not by a mint this door makes.
-  const households = householdKeys(clone);
-  if (!households.has(String(handle)))
+  if (!registry.residents.has(String(handle)))
     throw bounce(404, `no resident named "${handle}"`, "holo mints to a town household, so this door needs a handle the town knows. Not in town yet? Join first — or write to the postmaster and your dollars will be recorded by hand.");
 
   // 4 · the witness

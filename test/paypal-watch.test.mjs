@@ -28,7 +28,7 @@
 // PayPal is INJECTED: the fake answers the query it is handed (the window, the
 // page), so an assertion about windows is about the request we send.
 
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
@@ -39,6 +39,7 @@ import { execFileSync } from "node:child_process";
 import { CROSSING_MS } from "../src/crossings.mjs";
 import { townLoginHands } from "../src/household-logins.mjs";
 import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
+import { startPayerStore } from "./helpers/payer-store.mjs";
 import {
   decide, decodeTransaction, resolveTransaction, listTransactions, parseCustom, customIdFor, main,
   OUTSIDE_FROM, RAIL, CUSTOM_MAX, WINDOW_DAYS,
@@ -47,6 +48,18 @@ import {
 const TOWN = [townClone()].filter(Boolean).find((p) => existsSync(join(p, "tools", "stamp-mint.mjs")));
 const ENGINE = TOWN ? await import(townModuleUrl("tools", "stamp-mint.mjs")) : null;
 const SKIP = !TOWN && NO_TOWN;
+
+// POS-346: the watcher resolves its payers from the store, so each fixture town's
+// files seed a real one (test/helpers/payer-store.mjs), which the CLI reaches
+// through the environment it inherits.
+let payerStore = null;
+before(async () => {
+  if (SKIP) return;
+  payerStore = await startPayerStore({ db: "paypal_watch" });
+  Object.assign(process.env, payerStore.env);
+});
+after(async () => { if (payerStore) await payerStore.stop(); });
+const seeded = async (town) => { await payerStore.seedFrom(town.repo); return town; };
 
 // ── a transaction as Transaction Search returns it (PayPal's documented shape) ─
 const txn = ({ id, at, value = "10.00", currency = "USD", custom = "keep|paz", code = "T0006", status = "S", ref = null, email = "giver@example.test" }) => ({
@@ -65,6 +78,8 @@ function seamTown({ tools = TOWN, pots = { keep: 1000 } } = {}) {
   const repo = mkdtempSync(join(tmpdir(), "paypal-town-"));
   mkdirSync(join(repo, "tools"), { recursive: true });
   mkdirSync(join(repo, "WHITE_PAGES"), { recursive: true });
+  // Each resident has a room: the store's roll is the town's rooms (POS-346).
+  for (const h of ["paz", "stan"]) mkdirSync(join(repo, "WHITE_PAGES", h), { recursive: true });
   writeFileSync(join(repo, "tools", "github-ids.json"), JSON.stringify({ paz: { login: "p", id: 2 }, stan: { login: "s", id: 1 } }));
   writeFileSync(join(repo, "WHITE_PAGES", "mail-ledger.md"), "# ledger\n\n- 2026-06-12 · m-1 · stan → paz · thread: new\n");
   writeFileSync(join(repo, "tools", "stamp-pubkey.pem"), publicKey.export({ type: "spki", format: "pem" }));
@@ -237,13 +252,13 @@ function fetchFor(transactions) {
 test("5 · the same capture twice → ONE pot-receipt on the ledger; the second tick answers already",
   { skip: RAIL_TOWN ? false : "no town with `rail: paypal` in its grammar yet (the town branch paypal/rail); set PAYPAL_RAIL_TOWN to a town tree that carries it" },
   async () => {
-    const town = seamTown({ tools: RAIL_TOWN });
+    const town = await seeded(seamTown({ tools: RAIL_TOWN }));
     const git = (...a) => execFileSync("git", ["-C", town.repo, ...a], { encoding: "utf8" });
     git("init", "-q"); git("add", "-A"); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "seed");
     const state = join(town.repo, "state.json");
     const journal = join(town.repo, "intake.jsonl");
     const fed = [txn({ id: "5O190127TN364715T", at: DUE, value: "25.00", custom: "keep|paz" })];
-    const env = { PAYPAL_CLIENT_ID: "id", PAYPAL_SECRET: "secret", PAYPAL_ENV: "live" };
+    const env = { ...payerStore.env, PAYPAL_CLIENT_ID: "id", PAYPAL_SECRET: "secret", PAYPAL_ENV: "live" };
     const saved = { STAMP_KEY: process.env.STAMP_KEY, TOWN_PUSH: process.env.TOWN_PUSH };
     Object.assign(process.env, { STAMP_KEY: town.keyFile, TOWN_PUSH: "" });
     try {
@@ -277,7 +292,7 @@ test("5 · the same capture twice → ONE pot-receipt on the ledger; the second 
 // ── 6 ───────────────────────────────────────────────────────────────────────
 
 test("6 · the CLI refuses to guess which money it reads, refuses sandbox writes, and refuses a town with no `rail: paypal`", { skip: SKIP }, async () => {
-  const town = seamTown();
+  const town = await seeded(seamTown());
   const say = async (argv, env) => { const out = []; const code = await main(argv, { fetchImpl: fetchFor([]), env, now: NOW, log: (s) => out.push(s), err: (s) => out.push(s) }); return { code, out: out.join("\n") }; };
   const base = ["--clone", town.repo, "--state", join(town.repo, "s.json"), "--journal", join(town.repo, "j.jsonl")];
   const guess = await say(base, { PAYPAL_CLIENT_ID: "id", PAYPAL_SECRET: "s" });
