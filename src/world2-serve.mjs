@@ -438,12 +438,22 @@ export const DOCKET_SELECT =
  * no town head ingested, or the projection cannot answer at that sha (migration
  * 014 unapplied, or this sha not ingested) — and each carries its own sentence,
  * because a reader told "unavailable" with no reason cannot tell which.
+ *
+ * `ingestedAt` rides with the sha (POS-412, mari, 2026-10-05): the time that
+ * head was written, read off the same row in the same statement. A stake made
+ * after it is on the ledger and not yet here, and a reader shown only a sha
+ * cannot tell how far behind that is. Mari staked at 17:17Z, read 2 here at
+ * 17:18Z from a head ingested at 06:00Z, and took the receipt for a false one.
+ * The head only moves at the clearing (stamp-ingest is its first step), so the
+ * gap can be twelve hours.
  */
 export async function docketEscrow(p) {
   let townSha = null;
+  let ingestedAt = null;
   try {
-    const { rows: [head] } = await p.query("SELECT sha FROM projection_heads WHERE repo = 'town'");
+    const { rows: [head] } = await p.query("SELECT sha, ingested_at FROM projection_heads WHERE repo = 'town'");
     townSha = head?.sha ?? null;
+    ingestedAt = head?.ingested_at ? new Date(head.ingested_at).toISOString() : null;
   } catch (e) {
     return { townSha: null, byMark: null,
       reason: `the town's projection head could not be read (${String(e?.message ?? e).slice(0, 120)}), so what stands behind these marks is unknown — not zero` };
@@ -452,11 +462,11 @@ export async function docketEscrow(p) {
     reason: "no town sha is ingested, so the store cannot say what stands behind these marks — unknown, not zero" };
   try {
     const byMark = await escrowPresenceAt((sql, params) => p.query(sql, params), { townSha });
-    if (byMark == null) return { townSha, byMark: null,
+    if (byMark == null) return { townSha, ingestedAt, byMark: null,
       reason: `escrow_projection cannot answer at town ${townSha.slice(0, 8)} (migration 014 not applied, or this sha not ingested) — what stands behind these marks is unknown, not zero` };
-    return { townSha, byMark, reason: null };
+    return { townSha, ingestedAt, byMark, reason: null };
   } catch (e) {
-    return { townSha, byMark: null,
+    return { townSha, ingestedAt, byMark: null,
       reason: `the escrow projection could not be read at town ${townSha.slice(0, 8)} (${String(e?.message ?? e).slice(0, 120)}) — unknown, not zero` };
   }
 }

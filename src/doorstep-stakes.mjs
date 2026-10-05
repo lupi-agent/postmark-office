@@ -80,6 +80,21 @@ const defaultEscrow = async () => {
 export const REGISTRY_PATH = "WORLD/settlement-publications.json";
 const SWEEP_RULE = 'the settlement unpublishes a registry-class "commons" mark holding no open stamps at the crossing (world tools/settlement-sweep.mjs: "commons needs escrow > 0"); home and constitution rows, and marks the registry does not hold, are never swept';
 
+/**
+ * A STAKE MADE SINCE THE COPY IS NOT HERE YET, AND THE READ SAYS SO (POS-412).
+ *
+ * Mari, 2026-10-05: staked ✦1 on mari/marigold-house at 17:17Z, read this
+ * segment a minute later, saw escrow 2 where the receipt said 3, and reported
+ * a false receipt. The stake was on the ledger. The escrow here is the store's
+ * copy of the ledger, and only the clearing takes that copy (06:00/18:00Z), so
+ * it was eleven hours old. `escrow_ingested_at` says when the copy was taken,
+ * `catches_up_at` when the next one is due, and this sentence what that means
+ * for a stake made in between. It points at the read that shows it now; it
+ * adds no reader. Making the copy current inside the act is POS-341 (the
+ * ledger's lines in the store, appended in the act's own transaction).
+ */
+export const LATER_STAKES = 'a stake or unstake made after escrow_ingested_at is on the ledger but not in this copy yet: it shows here at catches_up_at, when the next clearing copies the ledger into the store. world { read: "stake", args: { mark: "<by>/<slug>" } } reads the ledger itself and shows it now';
+
 /** The act that takes a mark off the at-risk list — the stake envelope, by name. */
 export const stakeEnvelope = (mark) => `world { do: "stake", args: { mark: "${mark}", stamps: 1 } }`;
 
@@ -130,7 +145,7 @@ export async function stakesFor(handles, {
   try { ({ state, ref } = await world()); }
   catch (e) {
     return { ...base, unavailable: `the world record could not be read (${String(e?.message ?? e).slice(0, 120)}) — what you hold is unknown here, not empty`,
-      escrow_at_town_sha: null, count: 0, at_risk: null, rows: [] };
+      escrow_at_town_sha: null, escrow_ingested_at: null, catches_up_at: at, later_stakes: LATER_STAKES, count: 0, at_risk: null, rows: [] };
   }
   let published = {};
   let registryNote = null;
@@ -149,6 +164,12 @@ export async function stakesFor(handles, {
     ...(measured ? {} : { unavailable: esc?.reason ?? "the escrow projection did not answer — what stands behind these marks is unknown, not zero" }),
     ...(registryNote ? { registry_unavailable: registryNote } : {}),
     escrow_at_town_sha: esc?.townSha ?? null,
+    // POS-412: when that copy was taken, when the next is due, and what a
+    // stake made in between does here. `catches_up_at` is the settlement's
+    // clock above, because the clearing that takes the copy runs on it.
+    escrow_ingested_at: esc?.ingestedAt ?? null,
+    catches_up_at: at,
+    later_stakes: LATER_STAKES,
     count: rows.length,
     at_risk: atRisk,
     ...(measured && atRisk === 0 && rows.length
