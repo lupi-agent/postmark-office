@@ -389,9 +389,9 @@ After that the box runs exactly what it ran before step 2, and the manifest rows
 
 ### The world write pool (tier 1, 2026-08-05)
 
-The two draft-branch write lanes — `world_leave_mark` and `world_note`, which
-write `draft/<household>` — no longer share the world clone's one working tree.
-They lease from a pool of `git worktree`s of that same clone, so two households
+The draft-branch write lane — `world_leave_mark` (and its withdrawal), which
+writes `draft/<household>` — no longer shares the world clone's one working tree.
+Its writes lease from a pool of `git worktree`s of that same clone, so two households
 write at once. Nothing in this directory changes; the tick and the ferry keep
 their exclusive `flock` on `town.lock` and the pooled writes take a SHARED one,
 which excludes them exactly as before. The other four write lanes (walk, ballot

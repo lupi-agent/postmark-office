@@ -84,6 +84,8 @@ export const LANDED = {
   "052_world_act_nonce.sql":       { probe: rel("acts_world_nonce_once") },
   // 053 (POS-302): each resident's governing departure, kept once per clearing.
   "053_position_snapshots.sql":    { probe: `${rel("position_snapshots")} AND ${rel("position_snapshot_rows")} AND ${col("position_snapshot_rows", "first_ordinal")}` },
+  // 063 (POS-392): each resident's note to their returning self, in the office's record.
+  "063_resident_notes.sql":        { probe: `${rel("resident_notes")} AND ${col("resident_notes", "written_at")}` },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */

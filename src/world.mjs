@@ -29,7 +29,6 @@ import {
   // draftDeltaForKey is reached through world2-guards' guardedDraftsForKey, which unions it with the record (POS-5 slice 1; the sqlite draftsForKey went with dynamic.db, POS-269)
   blessedRef,
   draftBranch,
-  draftRefForKey,
   mainRef,
   materializeAtRef,
   publishedSkeleton,
@@ -54,6 +53,7 @@ import { createHearingWindow } from "./hearing-window.mjs"; // earshot: speech a
 import { createSayPush, waitMsOf, serveSayStream } from "./say-push.mjs"; // POS-265: the waiters — a listen that waits, and the page's stream
 import { householdOf, humanHandFor, pinnedLoginOf } from "./households.mjs"; // the human speaker's label wears the town's name, never the login
 import { householdLockPath, poolEnabled, pushDraftBranch, withDraftLease } from "./world-pool.mjs";
+import { NOTE_KEPT, noteOf, writeNote } from "./note-store.mjs"; // POS-392: the note's one home is the store
 import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabled, storeDbPath } from "./world-serve.mjs";
 // The portal ground's own stride (src/portal-ground.mjs): a walk that ends on a
 // ground declaring `walk_min_step` is snapped to it. Not the arena's.
@@ -1625,7 +1625,7 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
   const o = verbs.orient({ x: at.x, y: at.y }, w, { crossing });
   // the note is embodied property: only the body's standpoint carries it — a
   // spectator glance (coords) is nobody's, so it reads nobody's note.
-  const note = choice.handle ? noteForHandle(WORLD_CLONE, key, choice.handle) : null;
+  const { note, unavailable: noteUnavailable } = choice.handle ? await noteForHandle(key, choice.handle) : { note: null };
   // the primer rides every orient — the one page to read before a first mark
   // (the door's own pointer; the full serve-on-first-arrival design stays filed)
   const primer = "https://raw.githubusercontent.com/keeminlee/postmark-world/main/WORLD/FURNISHING.md";
@@ -1661,7 +1661,7 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
     ...(await keptPresence()), // POS-284: the kept positions, as GET /world/present reads them
   });
   const transport = await transportBlock(w, at);
-  return { standpoint: { ...at, stance: choice.stance }, crossing: { n: crossing, derivation: CROSSING_DERIVATION }, note, primer, ...o, ...(present ? { present } : {}), ...(transport ? { transport } : {}) };
+  return { standpoint: { ...at, stance: choice.stance }, crossing: { n: crossing, derivation: CROSSING_DERIVATION }, note, ...(noteUnavailable ? { note_unavailable: noteUnavailable } : {}), primer, ...o, ...(present ? { present } : {}), ...(transport ? { transport } : {}) };
 }
 
 // The telling's own line grammar, for residents: `  · <m> <bearing> — <who>`,
@@ -2647,13 +2647,18 @@ export async function worldMyMarks(key = null, { offset = 0 } = {}) {
   };
 }
 
-function noteForHandle(worldClone, key, handle) {
-  const ref = draftRefForKey(worldClone, key);
-  if (!ref || !key?.handles?.has(handle)) return null;
+// The acting resident's note, from its one home: the store (note-store.mjs,
+// 063). Only a handle the key holds is asked for. An office pointed at no
+// record keeps no notes, so there is nothing to say; a record that could not be
+// read says so in `note_unavailable`, because an unread note is not an absent one.
+export const NOTE_UNAVAILABLE = "your note lives in the office's record, and the record could not be read just now — this is not an answer that you have no note";
+async function noteForHandle(key, handle) {
+  if (!key?.handles?.has(handle)) return { note: null };
   try {
-    return readAtRef(worldClone, ref, `NOTES/${handle}.md`).trim();
-  } catch {
-    return null;
+    return { note: (await noteOf(handle))?.body ?? null };
+  } catch (e) {
+    if (e?.name === "NoRecordError") return { note: null };
+    return { note: null, unavailable: `${NOTE_UNAVAILABLE} (${String(e?.message ?? e).slice(0, 120)})` };
   }
 }
 
@@ -2759,9 +2764,10 @@ async function doorstepTransportFor(handle, w) {
 }
 
 // ── the draft-branch lane (tier 1) ───────────────────────────────────────────
-// The two verbs that write `draft/<household>` — a mark and a note — share one
-// lane, and it is the only lane in the office that runs more than one write at a
-// time. A lease hands this write its own worktree of the world clone; the child
+// The verbs that write `draft/<household>` — a mark and its withdrawal — share
+// one lane, and it is the only lane in the office that runs more than one write at
+// a time. (The note left this lane for the store, POS-392: it is never written to
+// a branch.) A lease hands this write its own worktree of the world clone; the child
 // runs under a SHARED town lock plus an exclusive per-household one, so it
 // excludes the tick and the crossing but not another household; the lease and
 // the locks are released the moment the child exits; and only then does the push
@@ -4202,9 +4208,9 @@ async function discloseOverhang(result, by, key = null) {
 }
 
 // world_note — overwrite one private note to the acting resident's future self.
-// Ratified (Keemin, 2026-07-29). Storage and exposure: NOTES/<handle>.md on the
-// caller's household draft branch, through the same locked office-pen lane as a
-// mark.
+// Ratified (Keemin, 2026-07-29). Storage: `resident_notes` in the store, one row
+// per resident, behind 063's household row policy (note-store.mjs). The store is
+// its only home: the door writes no file, no commit and no branch (POS-392).
 export async function worldNoteViaOffice(worldClone, payload = {}, key = null) {
   { const fz = worldFreezeBounce(); if (fz) return fz; }
   const bounce = (code, defect, hint, extra = {}) => {
@@ -4230,18 +4236,17 @@ export async function worldNoteViaOffice(worldClone, payload = {}, key = null) {
 
   const household = String(key?.household ?? "").trim();
   if (!household) throw bounce(403, "this credential has no resident household", "sign in as a resident household before leaving a note");
-  const exec = join(HERE, "note-exec.mjs");
-  let result;
+  let kept;
   try {
-    result = await draftWrite(worldClone, exec, JSON.stringify({ handle, body, household }), household, handle);
+    kept = await writeNote(handle, body);
   } catch (e) {
-    if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-    throw bounce(500, "the note pass tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+    if (e?.name === "NoRecordError")
+      throw bounce(503, "this office keeps no notes: it is not pointed at a record", "notes live only in the office's record; ask the town's office, which keeps one");
+    throw bounce(503, "the note could not be kept: the office's record did not answer", `nothing was written anywhere — try again shortly (${String(e?.message ?? e).slice(0, 160)})`);
   }
-  if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
-  // The receipt echoes the note itself, not only the git shape — "did it say
-  // what I meant" must not cost a second call (Keemin's clunk, 2026-08-15).
-  return { ...result, note: body };
+  // The receipt echoes the note itself — "did it say what I meant" must not
+  // cost a second call (Keemin's clunk, 2026-08-15).
+  return { handle, kept: NOTE_KEPT, written_at: kept.written_at, note: body };
 }
 
 // ── world_walk (P2 draft) ────────────────────────────────────────────────────
@@ -5323,7 +5328,7 @@ export const WORLD_TOOLS = [
       amend: { type: "boolean", description: "true = SUPERSEDE your own existing mark of this slug (edit-law's revision family: a newer declaration on your own node — the record shows the latest, every prior version stays in the log). Without it, a reused slug bounces. In-place amends always work; an amend that MOVES a published mark is refused for now (#1862)." },
     }, required: ["slug", "kind", "body"], additionalProperties: false } },
   { name: "world_note",
-    description: "Leave a private note to your returning self. The office replaces `NOTES/<handle>.md` on your household's draft branch, so only your household can read it; it is one current note, not a journal. A later world_orient automatically returns the acting resident's note as `note` (null if none). The body may be at most 2000 characters. A one-resident key defaults to its resident; a multi-resident key must choose with handle:.",
+    description: "Leave a private note to your returning self. The office keeps it in its own record, readable only by your household's keys, and never writes it to any repository; it is one current note, not a journal. A later world_orient automatically returns the acting resident's note as `note` (null if none). The body may be at most 2000 characters. A one-resident key defaults to its resident; a multi-resident key must choose with handle:.",
     inputSchema: { type: "object", properties: {
       body: { type: "string", description: "the complete replacement note, maximum 2000 characters" },
       handle: { type: "string", description: "which of YOUR residents owns the note (omit if your key holds one; a multi-resident key must name one)" },
