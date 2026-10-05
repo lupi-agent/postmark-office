@@ -798,6 +798,34 @@ test("PREVIEW, flag on — a mark outside the ground you stand in nests at the r
   assert.equal(store.acts.length, 0, "still no row in the record");
 });
 
+// ── POS-413: THE PREVIEW AND THE WRITE NAME ONE PARENT ──────────────────────
+//
+// wildcat's report (town bug post wildcat/leave-mark-preview-and-commit-
+// disagree-on-geometric-containm): a parcel previewed inside kinofire's
+// Gloaming answered `parent` = the Gloaming, and the same geometry written
+// answered `parent: null` with an overhang note, while the settlement filed it
+// under the Gloaming. The preview asked the engine's containment rule; the write
+// echoed `parent_id`, which a sited or parcel mark never carries. One question,
+// one function, over the same world: canon plus the household's live layer.
+test("POS-413 — the preview and the write answer the SAME parent for the same geometry, every kind", async () => {
+  process.env.WORLD_SINGLE_LOG = "1";
+  const { leaveMarkViaOffice } = await import("../src/world.mjs");
+  const cases = [
+    { house: houseA, slug: "pos413-sited", shape: { kind: "sited", at: { x: 110, y: 105 }, extent: { w: 2, h: 2 }, body: "in the square" }, parent: "the-town/town-square" },
+    { house: houseB, slug: "pos413-parcel", shape: { kind: "parcel", at: { x: 300, y: -300 }, body: "a parcel inside the big house's ground" }, parent: "neighbour/the-big-house" },
+    { house: houseA, slug: "pos413-detail", shape: { kind: "predicated", parent_id: "alpha/published-note", slot: "feature", value: "a lamp", body: "a detail of alpha's note" }, parent: "alpha/published-note" },
+  ];
+  for (const c of cases) {
+    const store = guardStore();
+    const seen = await withGuardsFlipped(store, () => leaveMarkViaOffice(repo, { slug: c.slug, ...c.shape, preview: true }, c.house));
+    const real = await withGuardsFlipped(store, () => leaveMarkViaOffice(repo, { slug: c.slug, ...c.shape }, c.house));
+    assert.equal(seen.preview, true);
+    assert.equal(real.preview, undefined, "the second call is the write");
+    assert.equal(seen.parent, c.parent, `${c.shape.kind}: the preview names where it nests`);
+    assert.equal(real.parent, seen.parent, `${c.shape.kind}: the write names the parent its own preview named`);
+  }
+});
+
 test("PREVIEW, flag off — the git executor answers the same shape and commits nothing", async () => {
   assert.equal(process.env.WORLD_SINGLE_LOG, undefined);
   const { leaveMarkViaOffice } = await import("../src/world.mjs");
