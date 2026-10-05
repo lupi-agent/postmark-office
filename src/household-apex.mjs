@@ -193,6 +193,21 @@ const OPERATOR_ACTS = {
       required: ["handle"],
     },
   },
+  // POS-347: the Registrar's standing act. The store is the record; the town's
+  // tools/standing-ledger.md is rendered from it in the same pen commit.
+  "standing": {
+    tool: null, residue: null,
+    may: async (key) => (await import("./standing-door.mjs")).callerMayStand(key),
+    fields: {
+      properties: {
+        act: { type: "string", description: "quarantine, lift or revoke" },
+        handle: { type: "string", description: "the resident the act is about" },
+        reason: { type: "string", description: "the reason, in the words chosen; no `·`" },
+        founder_word: { type: "string", description: "the founder's own sentence, verbatim — required to revoke, and to lift a revocation" },
+      },
+      required: ["act", "handle", "reason"],
+    },
+  },
 };
 
 async function operatorAct(act, key) {
@@ -1588,7 +1603,7 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
   // are reading. Both skins reach this line — REST `/household` is exempted
   // from the server's path-static check precisely so it lands here.
   {
-    const st = standingBounce(key, clone);
+    const st = await standingBounce(key);
     if (st) return bounce(st.code, st.defect, st.hint);
   }
   const envelope = parseEnvelope(args);
@@ -1790,6 +1805,11 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
       case "settle-join": {
         const { settleJoinAtOffice } = await import("./settle-join.mjs");
         result = await settleJoinAtOffice(fields, key, { pen, clone });
+        break;
+      }
+      case "standing": {
+        const { standingAtOffice } = await import("./standing-door.mjs");
+        result = await standingAtOffice(fields, key, { clone });
         break;
       }
     }

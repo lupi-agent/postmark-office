@@ -34,7 +34,7 @@ import { declareViaOffice, SETTLING_ASHORE } from "./declare.mjs";
 import { uploadMedia } from "./media.mjs";
 import { harborGated, HARBOR_BOUNCE } from "./harbor-gate.mjs";
 import { VISITOR_RULES, useRulesRecorder } from "./visitor-rules.mjs"; // POS-300
-import { standingBounce, standingOf, isSuspended, bounceSentence, STANDING_BOUNCE_CODE } from "./standing.mjs";
+import { standingBounce, standingOf, isSuspended, bounceSentence, STANDING_BOUNCE_CODE, STANDING_UNREADABLE } from "./standing.mjs";
 import { rolesSchema, roleGate, roleGatesOn, ROLE_SUBSCRIBER } from "./roles.mjs";
 import { openPaper, paperworkStoreOn } from "./paperwork.mjs"; // POS-271: sign-in, roles, the media ledger and the town log, one door
 import { arrivalPage } from "./arrival.mjs";
@@ -741,7 +741,10 @@ let readPool = null;
 // `route` is the office's one request handler; `handle` (below it) resolves the
 // bearer credential first and hands it in, because since POS-271 the lookup is a
 // read of the paperwork and may be a round trip to the store.
-const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
+// ASYNC since POS-347: the standing gate reads the store. `handle` below
+// catches every route's rejection, so a throw anywhere in here answers 500
+// instead of escaping the request listener.
+const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname.replace(/\/+$/, "") || "/";
 
@@ -1007,7 +1010,9 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
         // that mints for a suspended resident and only refuses them afterwards
         // is not the door the ledger was promised. Refused here with the
         // ledger's own sentence, which is the one a resident can act on.
-        const stand = standingOf(handle, TOWN_CLONE);
+        let stand;
+        try { stand = await standingOf(handle); }
+        catch { return bounce(res, STANDING_UNREADABLE.code, STANDING_UNREADABLE.defect, STANDING_UNREADABLE.hint); }
         if (isSuspended(stand))
           return bounce(res, STANDING_BOUNCE_CODE,
             stand.state === "revoked"
@@ -1215,7 +1220,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
     // fresh key, is the act the audit exists to hold. A visitor or a berth
     // carries no handles, so the gate never fires on the genuinely arriving.
     if (req.method !== "GET" && path !== "/household" && path !== "/world/apex" && path !== "/town/apex") {
-      const st = standingBounce(key, TOWN_CLONE);
+      const st = await standingBounce(key);
       if (st) return bounce(res, st.code, st.defect, st.hint);
     }
   }
@@ -2404,7 +2409,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
             // and the standing gate, inside the `do:` branch for the same
             // reason the harbor's is: the bare and `read:` shapes of this route
             // are reads, and reads are never suspended.
-            const st = standingBounce(key, TOWN_CLONE);
+            const st = await standingBounce(key);
             if (st) return bounce(res, st.code, st.defect, st.hint);
           }
           // The SAME validator the MCP door runs, against the SAME tool schema —
@@ -2658,12 +2663,13 @@ const resolveBearer = async (token) =>
 const handle = (req, res) => {
   const t0 = Date.now();
   const auth = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? "");
-  if (!auth) return route(req, res, null, t0);
+  const tripped = (e) => { if (!res.headersSent) bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200)); };
+  if (!auth) return route(req, res, null, t0).catch(tripped);
   const fixed = KEYS.get(auth[1]);
-  if (fixed) return route(req, res, fixed, t0);
+  if (fixed) return route(req, res, fixed, t0).catch(tripped);
   resolveBearer(auth[1]).catch(() => null)
     .then((key) => route(req, res, key, t0))
-    .catch((e) => { if (!res.headersSent) bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200)); });
+    .catch(tripped);
 };
 
 import("./world-refresher.mjs").then((m) => m.startWorldRefresher(WORLD_CLONE)); // POS-263: the world clone's git answered off the request path

@@ -51,6 +51,10 @@ lawful AS (
     -- fold is replaced, never edited.
     ('office_api',   'world_snapshot_folds',   'INSERT'),
     ('office_api',   'world_snapshot_folds',   'DELETE'),
+    -- 060_standing_acts.sql (POS-347). The Registrar's standing ledger as
+    -- store-of-record; INSERT only, because an act is never edited or removed
+    -- (a lift is a new row) and 060's trigger refuses UPDATE and DELETE.
+    ('office_api',   'standing_acts',          'INSERT'),
     -- 019_households.sql. The household registry as store-of-record: the two
     -- town JSON files become a rendering of these tables. `office_api` because
     -- it is the role the door that DECLARES a household already connects as

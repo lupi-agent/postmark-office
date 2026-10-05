@@ -86,6 +86,8 @@ export const LANDED = {
   "053_position_snapshots.sql":    { probe: `${rel("position_snapshots")} AND ${rel("position_snapshot_rows")} AND ${col("position_snapshot_rows", "first_ordinal")}` },
   // 054 (POS-357): the clearing seals the World it leaves, in its own transaction.
   "054_world_snapshots.sql":       { probe: `${rel("mark_versions")} AND ${rel("world_snapshot_marks")} AND ${rel("world_snapshots")} AND ${rel("world_snapshot_folds")} AND EXISTS (SELECT 1 FROM registry WHERE object = 'world_snapshot_folds')` },
+  // 060 (POS-347): the Registrar's standing ledger, append-only.
+  "060_standing_acts.sql":         { probe: `${rel("standing_acts")} AND ${trig("standing_acts_append_only")}` },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */
