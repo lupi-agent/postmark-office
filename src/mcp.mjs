@@ -1017,7 +1017,7 @@ async function handleMessage(msg, ctx) {
       // their arguments are malformed, which is what a validator bounce reads
       // as. Reads never reach it: `writeShaped` is false for every one.
       if (writeShaped(name, args) && ctx.key) {
-        const st = standingBounce(ctx.key, ctx.clone);
+        const st = await standingBounce(ctx.key);
         if (st) return rpcResult(msg.id, {
           content: [{ type: "text", text: JSON.stringify({ error: "bounce", defect: st.defect, hint: st.hint }, null, 1) }],
           isError: true,

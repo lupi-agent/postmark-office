@@ -97,9 +97,28 @@ const flagOn = async (fn) => {
   try { return await fn(); } finally { delete process.env.TOWN_SINGLE_LOG; }
 };
 
-const quarantine = (clone, handle, reason) =>
-  writeFileSync(join(clone, "tools", "standing-ledger.md"),
-    `# standing ledger\n\n- 2026-08-25 · quarantine · ${handle} · by: registrar · reason: ${reason}\n`);
+// THE LEDGER IS THE STORE'S (POS-347): a quarantine is a row in `standing_acts`,
+// and `freshFor` asks the store. This points THIS process's one pool at a store
+// of its own holding the act, and answers the function that puts it all back.
+const quarantine = async (handle, reason) => {
+  const { startStore } = await import("./helpers/embedded-store.mjs");
+  const { plantStanding } = await import("./helpers/standing-rows.mjs");
+  const { __setPoolForTest } = await import("../src/world2-acts.mjs");
+  const { default: pg } = await import("pg");
+  const store = await startStore({ db: "freshness_standing" });
+  await plantStanding(store, `- 2026-08-25 · quarantine · ${handle} · by: registrar · reason: ${reason}`);
+  const keep = { pg: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL };
+  const pool = new pg.Pool({ connectionString: store.url("office_api"), max: 2 });
+  __setPoolForTest(pool);
+  Object.assign(process.env, { WORLD2_PG: "1", WORLD2_PG_URL: store.url("office_api") });
+  return async () => {
+    __setPoolForTest(null);
+    await pool.end().catch(() => {});
+    if (keep.pg === undefined) delete process.env.WORLD2_PG; else process.env.WORLD2_PG = keep.pg;
+    if (keep.url === undefined) delete process.env.WORLD2_PG_URL; else process.env.WORLD2_PG_URL = keep.url;
+    await store.stop();
+  };
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // F0 · THE RUNG THAT FIRES TODAY: a pen edit the index has not seen is WRITTEN
@@ -230,6 +249,7 @@ test("F2 · a SUSPENDED handle's pending row does not compose, and their record 
   const db = fixtureDb();
   const clone = townClone();
   const odb = odbFile();
+  let lift = null;
   try {
     await flagOn(async () => {
       await logPaperAct(odb, { act: "address-body", handle: "wright", household: "keemin", args: { body: "x" }, key: KEY });
@@ -237,7 +257,7 @@ test("F2 · a SUSPENDED handle's pending row does not compose, and their record 
       assert.equal(resident(db, "wright", (await freshFor("wright", { clone, odb }))).address.body, "a claim the audit has not seen",
         "…which composes freely while the resident is in good standing");
 
-      quarantine(clone, "wright", "sybil suspicion, pending audit");
+      lift = await quarantine("wright", "sybil suspicion, pending audit");
 
       const card = resident(db, "wright", (await freshFor("wright", { clone, odb })));
       assert.equal(card.address.body, "# wright",
@@ -260,7 +280,7 @@ test("F2 · a SUSPENDED handle's pending row does not compose, and their record 
       assert.equal(neighbour.freshness.fields["address.body"].tense, TENSE.written,
         "nobody else is gated by one resident's standing");
     });
-  } finally { db.close(); odb.close(); }
+  } finally { db.close(); odb.close(); await lift?.(); }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
