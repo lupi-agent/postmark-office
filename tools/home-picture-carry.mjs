@@ -128,7 +128,7 @@ if (isMain) {
   const { openOauthDb, oauthSchema, householdFor } = await import("../src/oauth.mjs");
   const { openPaper } = await import("../src/paperwork.mjs");
   const { setHomePicture } = await import("../src/home-picture.mjs");
-  const { loadRegistry } = await import("../src/registry-store.mjs");
+  const { loadRegistry, loadPins } = await import("../src/registry-store.mjs");
   const { homePictureIn } = await import("../src/registry-rows.mjs");
   const { drainRegistry } = await import("./registry-drain.mjs");
   const { DatabaseSync } = await import("node:sqlite");
@@ -138,11 +138,13 @@ if (isMain) {
   if (registry === null && !DRY) { console.error("this office is not pointed at the record (WORLD2_PG=1 + WORLD2_PG_URL) — nothing can be kept"); process.exit(2); }
 
   // The door's resolver, asked the way backfill-home-shelf.mjs asks it: the
-  // town's pins first, the residents index's ADDRESS github binding second.
+  // store's pins first (POS-345: the record, never the printed
+  // tools/github-ids.json), the residents index's ADDRESS github binding second.
   const idx = existsSync(OFFICE_DB) ? new DatabaseSync(OFFICE_DB, { readOnly: true }) : (() => {
     const d = new DatabaseSync(":memory:"); d.exec("CREATE TABLE residents (handle TEXT PRIMARY KEY, json TEXT)"); return d;
   })();
-  const pins = (() => { try { return JSON.parse(readFileSync(join(TOWN, "tools", "github-ids.json"), "utf8")); } catch { return {}; } })();
+  const pins = await loadPins();
+  if (pins === null) { console.error("home-picture-carry: this office is not pointed at the store (WORLD2_PG=1 and WORLD2_PG_URL), so it cannot read the pins — nothing carried"); process.exit(2); }
   const loginOf = (handle) => {
     try {
       const row = idx.prepare("SELECT json FROM residents WHERE handle = ?").get(handle);

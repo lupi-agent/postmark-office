@@ -211,6 +211,7 @@ if (isMain) {
   }
   const { uploadMedia, mediaConfigured, MEDIA_BASE } = await import("../src/media.mjs");
   const { householdFor } = await import("../src/oauth.mjs");
+  const { loadPins } = await import("../src/registry-store.mjs");
   const { DatabaseSync } = await import("node:sqlite");
 
   // The door's resolver wants the arguments the door has: a verified GitHub id
@@ -227,10 +228,9 @@ if (isMain) {
     d.exec("CREATE TABLE residents (handle TEXT PRIMARY KEY, json TEXT)");
     return d;
   })();
-  const pins = (() => {
-    try { return JSON.parse(readFileSync(join(TOWN, "tools", "github-ids.json"), "utf8")); }
-    catch { return {}; }
-  })();
+  // The store's pins (POS-345): the record, never the printed tools/github-ids.json.
+  const pins = await loadPins();
+  if (pins === null) { console.error("backfill-home-shelf: this office is not pointed at the store (WORLD2_PG=1 and WORLD2_PG_URL), so it cannot read the pins — nothing uploaded"); process.exit(2); }
   const loginOf = (handle) => {
     try {
       const row = idx.prepare("SELECT json FROM residents WHERE handle = ?").get(handle);

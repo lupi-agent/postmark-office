@@ -39,14 +39,14 @@
 // derivation was made ISO too on 2026-09-27 (Keemin: "yeah everything iso
 // please"), so isoAt here is now belt-and-braces over an ISO string.
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { doorstep, DOORSTEP_STANCES, mailList, mailAwaiting, stampsDetail, windowRead, outboxSettled } from "./queries.mjs";
 import { ownerGate } from "./doorstep-bundle.mjs";
 import { unreadFor } from "./unread-store.mjs";
 import { nextCrossingForDoorstep, currentCrossing, CROSSING_EPOCH_UTC, CROSSING_MS } from "./crossings.mjs";
-import { resolveHouse, houseRows, VIA } from "./household-deriver.mjs";
+import { resolveHouse, VIA } from "./household-deriver.mjs";
+import { loadRegistryRows } from "./registry-store.mjs";
+import { registryFromRows, pinsFromRows } from "./registry-rows.mjs";
 import { freshFor } from "./paper-fresh.mjs"; // POS-271: the pending paper rows, read before a composed read
 
 /** The doorstep keys that are the same on every resident's page: carried once, at the top. */
@@ -73,24 +73,28 @@ export function isoEvents(events = []) {
 // ── WHICH HOUSE, AND WHO LIVES IN IT ─────────────────────────────────────────
 
 /**
- * The registry, from the record when the office is pointed at it, else the
- * town clone's own `tools/households.json` (the file households.mjs reads).
- * `from` says which, because the two can disagree for a crossing.
+ * The registry, from the record: the store's `households` / `household_pins`,
+ * read fresh on every call. Null when the office cannot ask the store.
+ *
+ * THE PRINTOUT IS NOT A FALLBACK (POS-345). This used to fall back to the town
+ * clone's tools/households.json when the store did not answer, and `from`
+ * said which, "because the two can disagree for a crossing". They can, and the
+ * store is the record: the file is its printout (registry-drain.mjs), so a
+ * house read from it could be a crossing stale or carry a hand edit the record
+ * never held. A store this office cannot ask is now a refusal (houseMembers'
+ * 503), never the printout's answer.
+ *
+ * FRESH, NOT THE PROCESS MEMO. `houseRows()` folds once per process until a
+ * writer IN THAT PROCESS clears it; the house read is served by read workers,
+ * where no ceremony ever writes, so a memo there would answer with the town
+ * from boot for as long as the worker lived. Three small reads per call.
  */
 export async function registryFor(clone, readers = {}) {
   if (readers.registry) return { ...readers.registry, from: readers.registry.from ?? "injected" };
-  try {
-    const rows = await houseRows();
-    if (rows) return { registry: rows.registry, pins: rows.pins, from: "the registry store" };
-  } catch { /* the store is optional here; the clone's file is the next answer */ }
-  try {
-    const registry = JSON.parse(readFileSync(join(clone, "tools", "households.json"), "utf8"));
-    let pins = {};
-    try { pins = JSON.parse(readFileSync(join(clone, "tools", "github-ids.json"), "utf8")); } catch { /* pins optional */ }
-    return { registry, pins, from: "the town clone's tools/households.json" };
-  } catch {
-    return null;
-  }
+  let rows;
+  try { rows = await loadRegistryRows(); } catch { return null; }
+  if (!rows) return null;
+  return { registry: registryFromRows(rows), pins: pinsFromRows(rows), from: "the registry store" };
 }
 
 /**
@@ -99,7 +103,7 @@ export async function registryFor(clone, readers = {}) {
  */
 export async function houseMembers({ household, key, clone, readers = {} }) {
   const reg = await registryFor(clone, readers);
-  if (!reg) return { refused: [503, "this office cannot read the household registry", "neither the registry store nor the town clone's tools/households.json answered — nothing is guessed in their place"] };
+  if (!reg) return { refused: [503, "this office cannot read the household registry", "the registry store did not answer — nothing is guessed in its place, and the town's printed households.json is not the record"] };
   const houses = reg.registry?.households ?? {};
   const asked = String(household ?? "").trim().replace(/^hh:/, "");
   let slug = null;

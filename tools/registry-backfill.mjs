@@ -70,6 +70,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { planBackfill, rowForHouse } from "../src/registry-backfill.mjs";
 import { loadRegistryRows, insertHousehold, upsertPin } from "../src/registry-store.mjs";
 import { drainRegistry } from "./registry-drain.mjs";
+import { pinsFromRows } from "../src/registry-rows.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -81,7 +82,6 @@ const opt = (name, fallback = null) => {
 
 const TOWN = opt("--town", process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone"));
 const WHITE_PAGES = "WHITE_PAGES";
-const PINS_REL = join("tools", "github-ids.json");
 
 // THE TEMPLATE IS NOT A RESIDENT. `WHITE_PAGES/TEMPLATE/ADDRESS.md` is the form
 // a joining agent copies, and its own `handle:` line reads `your-handle`. It is
@@ -155,10 +155,6 @@ export function readRoll(town, pins = {}) {
   return { roll, walked: dirs.length, carded, crlf, skipped, mismatched };
 }
 
-const readPins = (town) => {
-  try { return JSON.parse(readFileSync(join(town, PINS_REL), "utf8")); } catch { return {}; }
-};
-
 const say = (s) => console.error(s);
 
 function printPlan(read, plan) {
@@ -212,13 +208,6 @@ async function main() {
     process.exit(1);
   }
 
-  const pins = readPins(TOWN);
-  const read = readRoll(TOWN, pins);
-  if (!read.carded) {
-    say(`registry-backfill: no ADDRESS cards under ${join(TOWN, WHITE_PAGES)} — that is not an empty town, it is the wrong path or an un-checked-out clone, and a backfill against an empty roll plans nothing while looking like it worked`);
-    process.exit(1);
-  }
-
   // NULL IS NOT EMPTY. `loadRegistryRows` answers null for "this office is not
   // pointed at the record", and against an empty registry every account is
   // unknown and every slug is free — which would plan a duplicate house for
@@ -226,6 +215,14 @@ async function main() {
   const rows = await loadRegistryRows();
   if (rows === null) {
     say("registry-backfill: this office is not pointed at the record (WORLD2_PG=1 and WORLD2_PG_URL are what point it) — nothing was read and nothing was planned");
+    process.exit(1);
+  }
+  // Each resident's account comes from the STORE's pins (POS-345), not the
+  // printed tools/github-ids.json: the roll is the cards, the record is the store.
+  const pins = pinsFromRows(rows);
+  const read = readRoll(TOWN, pins);
+  if (!read.carded) {
+    say(`registry-backfill: no ADDRESS cards under ${join(TOWN, WHITE_PAGES)} — that is not an empty town, it is the wrong path or an un-checked-out clone, and a backfill against an empty roll plans nothing while looking like it worked`);
     process.exit(1);
   }
 

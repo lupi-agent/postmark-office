@@ -28,6 +28,8 @@ import { doorstepBundle } from "../src/doorstep-bundle.mjs";
 import { appendTownJournal } from "../src/town-journal.mjs";
 import { houseBundle, needsYou, isoAt, isoEvents, HOUSE_ONCE } from "../src/house-bundle.mjs";
 import { householdApex, HOUSEHOLD_READS, HOUSEHOLD_READ_FIELDS } from "../src/household-apex.mjs";
+import { poolFromClone, RECORD_ON } from "./registry-pool-stub.mjs";
+import { __setPoolForTest } from "../src/world2-acts.mjs";
 
 const AS_OF = "housefixture0000000000000000000000000000";
 const HOUSE = "fixture-house";
@@ -72,6 +74,18 @@ writeFileSync(join(scratch, "tools", "households.json"), JSON.stringify({ househ
   [HOUSE]: { name: "Fixture", human: "FIX", accounts: [{ login: "fixture", id: 1 }], residents: MEMBERS },
   other: { name: "Other", human: "OTH", accounts: [{ login: "other", id: 2 }], residents: ["r-stranger"] },
 } }));
+// THE HOUSE IS THE STORE'S (POS-345): the house read takes its members from the
+// registry store and never from the clone's printed households.json, so the
+// suite's two houses are seeded into a stub store from the same document.
+__setPoolForTest(poolFromClone(scratch));
+const keepRecord = { on: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL };
+process.env.WORLD2_PG = RECORD_ON.WORLD2_PG;
+process.env.WORLD2_PG_URL = RECORD_ON.WORLD2_PG_URL;
+after(() => {
+  __setPoolForTest(null);
+  if (keepRecord.on === undefined) delete process.env.WORLD2_PG; else process.env.WORLD2_PG = keepRecord.on;
+  if (keepRecord.url === undefined) delete process.env.WORLD2_PG_URL; else process.env.WORLD2_PG_URL = keepRecord.url;
+});
 const meta = { as_of: AS_OF, quest_registry: JSON.stringify({ quests: [] }) };
 const NOW = Date.parse("2026-09-27T06:00:00Z");
 
@@ -111,7 +125,7 @@ test("THE HOUSE: residents ashore, one answer, the harbor named rather than drop
   assert.deepEqual(h.ashore, ["r000", "r001", "r002"]);
   assert.deepEqual(h.not_ashore, ["r-harbor"]);
   assert.deepEqual(Object.keys(h.residents), ["r000", "r001", "r002"]);
-  assert.match(h.members_from, /tools\/households\.json/);
+  assert.equal(h.members_from, "the registry store");
 });
 
 test("THE DOORSTEP'S NAMES: each resident's segments deep-equal the doorstep's, key for key", async () => {
@@ -244,4 +258,18 @@ test("NO DOCKET IS SAID: an office with no docket store does not pass off its ze
   assert.equal(h.outcomes.count, 0);
   assert.equal(h.outcomes.store, "none");
   assert.match(h.outcomes.note, /no docket store/);
+});
+
+// POS-345: the printout is not a fallback. The scratch clone still carries a
+// households.json naming this house; with the store unaskable the house read
+// refuses rather than answer from it.
+test("A STORE THE OFFICE CANNOT ASK is a refusal, never the clone's printed households.json", async () => {
+  const keep = process.env.WORLD2_PG;
+  delete process.env.WORLD2_PG;
+  try {
+    const { readers } = worldReaders();
+    const h = await houseBundle({ household: HOUSE }, ctx({ readers }));
+    assert.equal(h.refused?.[0], 503, "the house is the store's, and the store did not answer");
+    assert.match(h.refused[2], /registry store did not answer/);
+  } finally { process.env.WORLD2_PG = keep; }
 });
