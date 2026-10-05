@@ -77,8 +77,10 @@ const withEnv = async (over, fn) => {
   finally { for (const [k, v] of Object.entries(prev)) { if (v == null) delete process.env[k]; else process.env[k] = v; } }
 };
 
+// The lines this crossing wrote: every registry line sealedTown did not seed (seeds are dated
+// 2026-09-01). The real planner dates its lines today, so this never names a calendar day.
 const appended = (dir) => readFileSync(join(dir, "WHITE_PAGES/stamp-ledger.md"), "utf8")
-  .split("\n").filter((l) => / · registry: /.test(l) && /2026-10-04/.test(l))
+  .split("\n").filter((l) => / · registry: /.test(l) && !/^- 2026-09-01 /.test(l))
   .map((l) => l.replace(/ · sig: \S+$/, ""));
 
 // Kev's house, in miniature: two residents on their human's gh: key.
