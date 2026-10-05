@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { parseWelcomePlan, townDate, mintArgv, main } from "../deploy/welcome-pass.mjs";
 import { NO_TOWN, townClone } from "./fixture-paths.mjs";
+import { rowsFromRegistry } from "../src/registry-rows.mjs";
 
 const TOWN = townClone(); // the same real checkout every office test imports the town's tools from
 const SKIP = !TOWN && NO_TOWN;
@@ -35,13 +36,13 @@ const SKIP = !TOWN && NO_TOWN;
 // exactly as it does on the box — no stub of the mint anywhere in this file,
 // because a stub would be this office asserting its own idea of the welcome law
 // back to itself.
-function fixtureTown({ pins, deliveries = [] }) {
+function fixtureTown({ pins, deliveries = [], town = TOWN, rooms = [] }) {
   const repo = mkdtempSync(join(tmpdir(), "welcome-pass-"));
   mkdirSync(join(repo, "tools"), { recursive: true });
   mkdirSync(join(repo, "WHITE_PAGES"), { recursive: true });
-  copyFileSync(join(TOWN, "tools", "stamp-mint.mjs"), join(repo, "tools", "stamp-mint.mjs"));
+  copyFileSync(join(town, "tools", "stamp-mint.mjs"), join(repo, "tools", "stamp-mint.mjs"));
   writeFileSync(join(repo, "tools", "github-ids.json"), JSON.stringify(pins));
-  for (const handle of Object.keys(pins)) {
+  for (const handle of [...Object.keys(pins), ...rooms]) {
     mkdirSync(join(repo, "WHITE_PAGES", handle), { recursive: true });
     writeFileSync(join(repo, "WHITE_PAGES", handle, "ADDRESS.md"), `---\nhandle: ${handle}\n---\n`);
   }
@@ -57,6 +58,14 @@ function fixtureTown({ pins, deliveries = [] }) {
     { encoding: "utf8" });
   return { repo, keyFile };
 }
+
+// THE STORE'S REGISTRY the pass reads (POS-344). For the tests below that are
+// about the town's law, not the store, it states exactly what the fixture's
+// printouts say, so the two cannot disagree; the store's own tests are at the foot.
+const rowsOf = (repo) => {
+  const read = (p) => { try { return JSON.parse(readFileSync(join(repo, "tools", p), "utf8")); } catch { return null; } };
+  return rowsFromRegistry(read("households.json") ?? { households: {} }, read("github-ids.json") ?? {});
+};
 
 const D = (date, id, from, to) => `- ${date} · ${id} · ${from} → ${to} · thread: new`;
 const ledgerOf = (repo) => readFileSync(join(repo, "WHITE_PAGES", "stamp-ledger.md"), "utf8");
@@ -147,7 +156,7 @@ test("every owed household is paid ✦5 once, to its FIRST resident, by the town
     pins: { alice: { id: 1, pinned: "2026-06-01" }, bob: { id: 1, pinned: "2026-06-05" }, carol: { id: 2, pinned: "2026-06-02" } },
     deliveries: [D("2026-06-12", "a-1", "alice", "bob"), D("2026-06-13", "c-1", "carol", "alice")],
   });
-  const code = await main(["--town", repo, "--key", keyFile, "--date", "2026-09-14"]);
+  const code = await main(["--town", repo, "--key", keyFile, "--date", "2026-09-14"], { registryRows: rowsOf(repo) });
   assert.equal(code, 0);
 
   const rows = welcomeRows(repo);
@@ -165,14 +174,14 @@ test("a SECOND pass mints nothing more — and the town's own law is what refuse
     pins: { alice: { id: 1, pinned: "2026-06-01" } },
     deliveries: [D("2026-06-12", "a-1", "alice", "alice")],
   });
-  assert.equal(await main(["--town", repo, "--key", keyFile, "--date", "2026-09-14"]), 0);
+  assert.equal(await main(["--town", repo, "--key", keyFile, "--date", "2026-09-14"], { registryRows: rowsOf(repo) }), 0);
   const after = ledgerOf(repo);
   assert.equal(welcomeRows(repo).length, 1);
 
   // The ordinary second run: the plan no longer names her, so nothing is asked.
   // This is the path the tick takes every crossing, and it must be a clean
   // no-op — NOT the guard, which the next test drives directly.
-  assert.equal(await main(["--town", repo, "--key", keyFile, "--date", "2026-09-15"]), 0);
+  assert.equal(await main(["--town", repo, "--key", keyFile, "--date", "2026-09-15"], { registryRows: rowsOf(repo) }), 0);
   assert.equal(ledgerOf(repo), after, "a second pass must leave the ledger byte-identical");
   rmSync(repo, { recursive: true, force: true });
 });
@@ -182,7 +191,7 @@ test("the once-per-household refusal is the real guard, and it fires", { skip: S
     pins: { alice: { id: 1, pinned: "2026-06-01" } },
     deliveries: [D("2026-06-12", "a-1", "alice", "alice")],
   });
-  assert.equal(await main(["--town", repo, "--key", keyFile, "--date", "2026-09-14"]), 0);
+  assert.equal(await main(["--town", repo, "--key", keyFile, "--date", "2026-09-14"], { registryRows: rowsOf(repo) }), 0);
   let out = "";
   try {
     execFileSync(process.execPath,
@@ -204,9 +213,9 @@ test("a town with every household welcomed is a no-op that says so", { skip: SKI
     pins: { alice: { id: 1, pinned: "2026-06-01" } },
     deliveries: [D("2026-06-12", "a-1", "alice", "alice")],
   });
-  await main(["--town", repo, "--key", keyFile, "--date", "2026-09-14"]);
+  await main(["--town", repo, "--key", keyFile, "--date", "2026-09-14"], { registryRows: rowsOf(repo) });
   const before = ledgerOf(repo);
-  assert.equal(await main(["--town", repo, "--key", keyFile, "--date", "2026-09-16"]), 0);
+  assert.equal(await main(["--town", repo, "--key", keyFile, "--date", "2026-09-16"], { registryRows: rowsOf(repo) }), 0);
   assert.equal(ledgerOf(repo), before);
   rmSync(repo, { recursive: true, force: true });
 });
@@ -217,7 +226,7 @@ test("--dry-run writes nothing and signs nothing, with no key at all", { skip: S
     deliveries: [D("2026-06-12", "a-1", "alice", "alice")],
   });
   const before = ledgerOf(repo);
-  assert.equal(await main(["--town", repo, "--dry-run"]), 0);
+  assert.equal(await main(["--town", repo, "--dry-run"], { registryRows: rowsOf(repo) }), 0);
   assert.equal(ledgerOf(repo), before, "a dry run that writes is not a dry run");
   assert.equal(welcomeRows(repo).length, 0);
   rmSync(repo, { recursive: true, force: true });
@@ -226,7 +235,7 @@ test("--dry-run writes nothing and signs nothing, with no key at all", { skip: S
 test("a missing town and a missing key are refused before anything is read", { skip: SKIP }, async () => {
   assert.equal(await main(["--town", join(tmpdir(), "no-such-town-ever")]), 1);
   const { repo } = fixtureTown({ pins: { alice: { id: 1, pinned: "2026-06-01" } }, deliveries: [] });
-  assert.equal(await main(["--town", repo, "--key", join(repo, "no-such-key.pem")]), 1,
+  assert.equal(await main(["--town", repo, "--key", join(repo, "no-such-key.pem")], { registryRows: rowsOf(repo) }), 1,
     "a pass with no key must stop, never fall through to an unsigned append");
   rmSync(repo, { recursive: true, force: true });
 });
@@ -285,4 +294,47 @@ test("the office decides nothing about who is owed or what a bundle is worth", (
   assert.doesNotMatch(src, /--amount|--by\b/,
     "the ✦5 and the-town authority are pinned in the town's welcomeLine and held again at verify; this pass must never name either");
   assert.ok(existsSync(new URL("../deploy/welcome-pass.mjs", import.meta.url)));
+});
+
+// ── WHO AND WHICH HOUSE COME FROM THE STORE (POS-344) ────────────────────────
+//
+// The flip needs the town's verbs to READ `--registry`, which is the town half
+// of this lane (postmark#… on the town's main). Against a pinned town clone
+// that predates it, the verbs ignore the flag and read the printouts, and the
+// store-only house would not be owed for the wrong reason, so this skips by
+// name. WELCOME_TOWN=<a town tree with the change> runs it.
+const STORE_TOWN = process.env.WELCOME_TOWN ?? TOWN;
+const STORE_TOWN_READS = (() => { try { return readFileSync(join(STORE_TOWN, "tools", "stamp-mint.mjs"), "utf8").includes("'--registry'"); } catch { return false; } })();
+const STORE_SKIP = SKIP || (!STORE_TOWN_READS && "the town clone's stamp-mint.mjs does not read --registry yet (set WELCOME_TOWN to a town tree that does)");
+
+test("a house bound only in the STORE is owed, and one bound only in the printout is not", { skip: STORE_SKIP }, async () => {
+  // xeno's pin is in the store and not in the printout; yara's is in the
+  // printout and not in the store. Each is a house of one.
+  // The printout carries yara's pin only: the drain has not printed xeno's
+  // ceremony yet, so xeno's room is there and xeno's pin is not.
+  const { repo, keyFile } = fixtureTown({
+    town: STORE_TOWN,
+    pins: { yara: { id: 6, pinned: "2026-09-02" } },
+    rooms: ["xeno"],
+    deliveries: [D("2026-06-12", "y-1", "yara", "yara")],
+  });
+  const store = rowsFromRegistry({ households: {} }, { xeno: { login: "xeno-gh", id: 5, pinned: "2026-10-03" } });
+  const code = await main(["--town", repo, "--key", keyFile, "--date", "2026-10-04"], { registryRows: store });
+  assert.equal(code, 0);
+  const rows = welcomeRows(repo);
+  assert.equal(rows.length, 1, `one bundle — got:\n${rows.join("\n")}`);
+  assert.match(rows[0], /- 2026-10-04 · MINT → xeno · 5 · for: welcome:solo:xeno · by: the-town/, "the store binds xeno, so xeno's house is paid");
+  assert.ok(!rows.some((l) => / → yara · /.test(l)), "a pin only the printout carries pays nobody");
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test("a store the pass cannot read is a refusal: nothing planned, nothing paid", { skip: SKIP }, async () => {
+  const { repo, keyFile } = fixtureTown({
+    pins: { alice: { id: 1, pinned: "2026-06-01" } },
+    deliveries: [D("2026-06-12", "a-1", "alice", "alice")],
+  });
+  const before = ledgerOf(repo);
+  assert.equal(await main(["--town", repo, "--key", keyFile, "--date", "2026-09-14"], { registryRows: null }), 1);
+  assert.equal(ledgerOf(repo), before, "the printouts are never the fallback");
+  rmSync(repo, { recursive: true, force: true });
 });

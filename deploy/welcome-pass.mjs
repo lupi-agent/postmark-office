@@ -40,6 +40,19 @@
 // first-resident rule here is precisely the drift `STANDING_FACT`'s bound
 // falsifier exists to prevent, one door over.
 //
+// ── WHO AND WHICH HOUSE COME FROM THE STORE (POS-344, w42) ─────────────────
+//
+// The town's verbs used to read who is bound, which declared house a resident
+// stands in, and the first-resident pin dates from the printed
+// tools/households.json and tools/github-ids.json. Those files are the store's
+// printout (registry-drain.mjs), so a house the ceremony bound and the drain had
+// not yet printed waited a crossing, and a hand edit to a printout could make
+// somebody owed. This pass reads the registry from the store
+// (`loadRegistryRows`), writes it to a file beside the run as
+// `{ households, pins }`, and hands it to both verbs with `--registry`. A
+// store it cannot read is a refusal: nothing is planned and nothing is paid,
+// and the household keeps its claim for the next crossing.
+//
 // ── IDEMPOTENT IN TWO PLACES, AND THE OUTER ONE IS NOT THE GUARD ────────────
 //
 // The plan re-reads the sealed ledger every run, so a welcomed household simply
@@ -83,9 +96,12 @@
 // names the household again on the next tick.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadRegistryRows } from "../src/registry-store.mjs";
+import { registryFromRows, pinsFromRows } from "../src/registry-rows.mjs";
 
 /** The town's own household-key grammar (stamp-mint.mjs HOUSEHOLD_KEY). */
 const HOUSEHOLD_KEY_RE = /^[a-z0-9][a-z0-9-]*:[a-z0-9][a-z0-9._-]*$/;
@@ -182,9 +198,20 @@ const run = (town, args) =>
     cwd: town, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
   });
 
+/**
+ * The store's registry as the town's verbs read it: `{ households, pins }`,
+ * the same two shapes as the printouts. Null when the store could not be read.
+ * `rows` is injectable so the suite drives a store it seeded.
+ */
+export async function storeRegistry(rows = undefined) {
+  const got = rows === undefined ? await loadRegistryRows() : rows;
+  if (!got) return null;
+  return { households: registryFromRows(got).households ?? {}, pins: pinsFromRows(got) };
+}
+
 const arg = (name, argv) => { const i = argv.indexOf(name); return i === -1 ? null : argv[i + 1]; };
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), { registryRows = undefined } = {}) {
   const town = arg("--town", argv);
   const keyPath = arg("--key", argv);
   const date = arg("--date", argv) ?? townDate();
@@ -199,7 +226,21 @@ export async function main(argv = process.argv.slice(2)) {
     return 1;
   }
 
-  const plan = run(town, ["--welcome-plan"]);
+  let registry;
+  try { registry = await storeRegistry(registryRows); } catch (e) { registry = null; console.error(`welcome-pass: ${e?.message ?? e}`); }
+  if (!registry) {
+    console.error("welcome-pass: the store's registry could not be read — nothing planned, nothing paid; every owed house keeps its claim for the next crossing");
+    return 1;
+  }
+  const scratch = mkdtempSync(join(tmpdir(), "welcome-pass-"));
+  const registryFile = join(scratch, "registry.json");
+  writeFileSync(registryFile, JSON.stringify(registry));
+  try { return await pass(town, keyPath, date, dryRun, registryFile); }
+  finally { rmSync(scratch, { recursive: true, force: true }); }
+}
+
+async function pass(town, keyPath, date, dryRun, registryFile) {
+  const plan = run(town, ["--welcome-plan", "--registry", registryFile]);
   if (plan.status !== 0) {
     console.error(`welcome-pass: the town's --welcome-plan failed (exit ${plan.status})\n${plan.stderr ?? ""}`);
     return 1;
@@ -229,7 +270,7 @@ export async function main(argv = process.argv.slice(2)) {
     // ONLY households the plan named, one line each, the town's own verb. No
     // amount, no authority, no household resolution of ours: every term of the
     // bundle is pinned in the town and held again at verify.
-    const r = run(town, ["--welcome", o.first, "--household", o.household, "--date", date, "--key", keyPath]);
+    const r = run(town, ["--welcome", o.first, "--household", o.household, "--date", date, "--key", keyPath, "--registry", registryFile]);
     if (r.status === 0) {
       console.log(`[welcome-pass] minted ✦5 → ${o.first} · ${o.household}`);
     } else {
