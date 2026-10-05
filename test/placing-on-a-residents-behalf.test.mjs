@@ -100,9 +100,11 @@ git("config", "user.name", "pos233 falsifier");
 git("add", "-A");
 git("commit", "-qm", "canon: reader holds a parcel, solace holds nothing");
 
-// THE TOWN'S PINS — the file `oauth.mjs § householdFor` reads a signed-in key's
-// household from. Solace's household is Ana's account; the placers share one.
-put(town, "tools/github-ids.json", JSON.stringify({
+// THE TOWN'S PINS — the record `oauth.mjs § householdFor` reads a signed-in
+// key's household from: the STORE's household_pins (POS-343), seeded into the
+// stub pen below, not a file in the clone. Solace's household is Ana's
+// account; the placers share one.
+const PINS = {
   solace: { login: "Ana-Login", id: 100 },
   reader: { login: "readerhouse", id: 9 },
   illuminator: { login: "keeminlee", id: 1 },
@@ -111,7 +113,7 @@ put(town, "tools/github-ids.json", JSON.stringify({
   stranger: { login: "strangerhouse", id: 77 },
   bird: { login: "bird-login", id: 55 },
   wren: { login: "wren-login", id: 56 },
-}));
+};
 
 process.env.WORLD_CLONE = repo;
 process.env.TOWN_CLONE = town;
@@ -128,7 +130,8 @@ const { installActsPen, uninstallActsPen, RECORD_ON } = await import("./acts-pen
 process.env.WORLD2_PG = RECORD_ON.WORLD2_PG;
 process.env.WORLD2_PG_URL = RECORD_ON.WORLD2_PG_URL;
 const claimsPen = await import("../src/world2-claims.mjs");
-const pen = installActsPen();
+const { rowsFromRegistry } = await import("../src/registry-rows.mjs");
+const pen = installActsPen({ pins: rowsFromRegistry({ households: {} }, PINS).pins });
 claimsPen.__setPoolForTest(pen);
 after(() => { uninstallActsPen(); claimsPen.__setPoolForTest(null); delete process.env.WORLD2_PG; delete process.env.WORLD2_PG_URL; });
 

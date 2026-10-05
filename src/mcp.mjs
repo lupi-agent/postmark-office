@@ -49,7 +49,7 @@ import { bountyBoard, ideasTank, civicQuarter } from "./world-classes.mjs"; // t
 import { doorstepBundle } from "./doorstep-bundle.mjs"; // the doorstep, finished — one implementation, three doors
 import { THREE_STRINGS } from "./mail-thread.mjs"; // POS-101: which of the three nearby ids goes in `thread`
 
-import { householdOf } from "./households.mjs";
+import { withHouseholdBlock, householdsFor } from "./households.mjs";
 import { freshFor } from "./paper-fresh.mjs"; // POS-271: the pending paper rows, read before a composed read
 
 // Tools that WRITE — gated on a signed-in door. Called without a credential
@@ -621,7 +621,9 @@ export async function callTool(name, args, ctx) {
       if (!r) return notFound(`no resident "${args.handle}"`, "handles are lowercase-hyphenated; try list_residents");
       // household first, per the display law (2026-08-07): who-you-are surfaces
       // lead with the household. Garnish-shaped — a missing registry never 500s a read.
-      try { const hh = householdOf(args.handle); if (hh) r.household = hh; } catch { /* garnish only */ }
+      // The block reads the store's registry (POS-342); the card's composer no
+      // longer adds it, so this is the one place the MCP card gets it.
+      await withHouseholdBlock(r, args.handle);
       // ── WHAT THIS RESIDENT HAS MADE (walk #2 item 2, 2026-09-06) ──────────
       //
       // "you can find what someone said and where they sleep, but not what they
@@ -787,7 +789,7 @@ export async function callTool(name, args, ctx) {
         ? { handle: args.handle, ...(await stampsDetailFromStore(c, args.handle)) }
         : stampsRosterFromStore(c, { limit: args?.limit, offset: args?.offset })));
       return args.handle
-        ? { handle: args.handle, ...stampsDetail(db, args.handle) }
+        ? { handle: args.handle, ...(await stampsDetail(db, args.handle)) }
         : stampsRoster(db, meta, { limit: args?.limit, offset: args?.offset });
     case "read_quests": return townIndexReads() ? fromStore((c) => questBoardFromStore(c, args.handle, clone)) : questBoardFor(db, meta, args.handle, clone);
     case "read_bounties": return bountyBoard();
@@ -838,7 +840,8 @@ export async function callTool(name, args, ctx) {
     case "whoami": {
       const id = identityOf(key);
       // the registry view per handle — household is the primary column (2026-08-07)
-      try { if (id?.handles) { const hh = Object.fromEntries(id.handles.map((h) => [h, householdOf(h)])); if (Object.values(hh).some(Boolean)) id.households = hh; } } catch { /* garnish only */ }
+      // from the store's registry (POS-342)
+      try { if (id?.handles) { const hh = await householdsFor(id.handles); if (hh) id.households = hh; } } catch { /* garnish only */ }
       return id;
     }
     case "request_residency": {

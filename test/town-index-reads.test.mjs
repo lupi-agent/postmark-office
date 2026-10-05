@@ -125,7 +125,7 @@ test("stampsRoster and stampsDetail answer as office.db does", async (t) => {
   for (const a of [{}, { limit: 1 }, { limit: 2, offset: 1 }, { offset: 9 }, { limit: "x" }])
     await same(`stampsRoster ${JSON.stringify(a)}`, office.stampsRoster(db, meta, a), store.stampsRoster(api, a));
   for (const h of ["wright", "limen", "Zed", "nobody"])
-    await same(`stampsDetail ${h}`, office.stampsDetail(db, h), store.stampsDetail(api, h));
+    await same(`stampsDetail ${h}`, await office.stampsDetail(db, h), store.stampsDetail(api, h));
 });
 
 test("the store's as-of is the index's own", async (t) => {

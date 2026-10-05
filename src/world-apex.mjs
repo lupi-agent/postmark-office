@@ -112,7 +112,7 @@ import { actorRoster, resolveHumanActor } from "./human-actor.mjs";
 // The hand an embodied act is recorded under. Imported rather than derived here:
 // `worldSayHuman` has owned this label since 2026-08-08 and `humanHandFor` is
 // that one derivation, moved somewhere both doors can read it.
-import { humanHandFor, householdOf } from "./households.mjs";
+import { humanHandFor, householdLookup } from "./households.mjs";
 import {
   classOfInstance, entriesOfClass, guardsPass, heldEntries, kindOf, resolveGrants, resolveForActor,
 } from "./world-grants.mjs";
@@ -1397,10 +1397,10 @@ export const actorKindOf = (args = {}) => {
  * checks it: WHERE the seating comes from, WHOSE name goes on the row, and WHO
  * actually acted.
  */
-export const seatBlock = (ground, args = {}, key = null) => ({
+export const seatBlock = async (ground, args = {}, key = null) => ({
   ground,
   seat: standingHandle(args, key),
-  human: humanHandFor([...(key?.handles ?? [])]),
+  human: await humanHandFor([...(key?.handles ?? [])]),
   note: "you are seated by this ground: your acts here are a resident's, and the record carries the seat's name with your own beside it",
 });
 
@@ -1489,6 +1489,8 @@ export async function groundWithinReach(oriented, key = null) {
     const { pointWithinMarkFn } = await import("./world.mjs");
     const withinFn = await pointWithinMarkFn().catch(() => null);
 
+    // One read of the store's registry for the whole ground (POS-342).
+    const householdOf = await householdLookup();
     const out = [];
     for (const r of rows) {
       const mark = marks.find((m) => m.id === r.id);
@@ -2189,8 +2191,8 @@ async function apexRead(args, key, ctx = {}) {
       // the disclosure is what makes the difference between a seat and
       // ghost-writing. It names no ground because it stands on none, and it
       // carries the hour it ends, which is the whole of how it ends.
-      ...(seatedAt ? { seat: seatBlock(seatedAt, args, key) }
-        : handoffSeat ? { seat: { ...seatBlock(null, args, key), ground: null, via: "handoff",
+      ...(seatedAt ? { seat: await seatBlock(seatedAt, args, key) }
+        : handoffSeat ? { seat: { ...(await seatBlock(null, args, key)), ground: null, via: "handoff",
             expires_at: handoffSeat.expires_at,
             note: "you are seated by your own resident's handoff, not by a ground: your acts here are a resident's, the record carries the seat's name with your own beside it, and the seat travels with them and ends at its ttl rather than at a fence" } }
         : {}),
@@ -2517,7 +2519,7 @@ async function apexDo(args, key, ctx = {}) {
       // disclose it too (the walk door's `acted_by` does), but a disclosure
       // that depended on each handler remembering would be a promise kept by
       // habit — this is the one place every act passes through.
-      ...(seatedAt ? { seat: seatBlock(seatedAt, args, key), ...(match.via_seat ? { via_seat: true } : {}) } : {}),
+      ...(seatedAt ? { seat: await seatBlock(seatedAt, args, key), ...(match.via_seat ? { via_seat: true } : {}) } : {}),
       ...(acting ? { actor: { kind: acting.kind, standing: acting.standing, residue: acting.residue, says: acting.says, note: acting.note } } : {}) };
     let result;
     // Declared out here, as it was when the arena's wheel on the crossing below
@@ -2582,7 +2584,7 @@ async function apexDo(args, key, ctx = {}) {
       // humans-as-residents design arrives. Recording the human's own name
       // beside a borrowed standpoint is the closest true thing this office can
       // write, and it is disclosed by `standing_with` on the answer.
-      hand = acting?.standing === "embodied" ? humanHandFor([...(key?.handles ?? [])]) : null;
+      hand = acting?.standing === "embodied" ? await humanHandFor([...(key?.handles ?? [])]) : null;
       if (acting?.route === "worldSayHuman" || (hand && action === "say")) {
         // THE ORIENT HANDLE IS NOT A VOICE (2026-08-28, found live on the
         // dungeon stage): the envelope's `handle:` chose whose standpoint

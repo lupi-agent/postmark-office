@@ -361,8 +361,9 @@ export async function reachContext(thing, actor) {
     // everything else this door reaches for, and ABSENT rather than wrong when
     // the module cannot answer — `sameHousehold` degrades to handle identity
     // and says which test answered.
+    // A synchronous lookup over ONE read of the store's registry (POS-342).
     let householdOf = null;
-    try { ({ householdOf } = await import("./households.mjs")); } catch { householdOf = null; }
+    try { householdOf = await (await import("./households.mjs")).householdLookup(); } catch { householdOf = null; }
     return { mark, canon_readable: canon_marks > 0, within, standing, standsWithin, householdOf };
   } catch { return null; }
 }
@@ -938,7 +939,7 @@ export async function fileSetDownAmend({ did, stood, key, actId = null, deps = {
   try {
     let householdOf = deps.householdOf;
     if (householdOf === undefined) {
-      try { ({ householdOf } = await import("./households.mjs")); } catch { householdOf = null; }
+      try { householdOf = await (await import("./households.mjs")).householdLookup(); } catch { householdOf = null; }
     }
     const house = sameHousehold(madeBy, actor, householdOf);
     if (!house.same) {

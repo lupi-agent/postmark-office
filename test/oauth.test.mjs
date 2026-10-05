@@ -51,6 +51,8 @@ before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-office-oauth-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
+  // (wright stands in no house in this suite's store, so the household block
+  // the office adds to /me — POS-342 — is the honest solo one)
   const IX_ENV = await storeFor(dbPath);
 
   // a minimal town clone: just the pins file the household mapping reads
@@ -209,7 +211,8 @@ test("full dance: register → GitHub → consent → code → token → /town 2
   // GET /me — the signed-in household reads its own identity (the login island's key)
   const me = await (await fetch(`${BASE}/me`, { headers: { authorization: `Bearer ${grant.access_token}` } })).json();
   assert.deepEqual(me, { household: "keeminlee", handles: ["wright"], visitor: false,
-    verified_github: { login: "keeminlee", id: 999 }, key_kind: "oauth", principal: false });
+    verified_github: { login: "keeminlee", id: 999 }, key_kind: "oauth", principal: false,
+    households: { wright: { key: "solo:wright", slug: null, human: null, residents: ["wright"] } } });
 
   // refresh rotates: old refresh dies, new pair works
   const ref = await fetch(`${BASE}/oauth/token`, {
@@ -320,7 +323,8 @@ test("key desk: a signed-in household mints a pmk_ key that resolves like the si
 
   const me = await (await fetch(`${BASE}/me`, { headers: { authorization: `Bearer ${key}` } })).json();
   assert.deepEqual(me, { household: "keeminlee", handles: ["wright"], visitor: false,
-    verified_github: { login: "keeminlee", id: 999 }, key_kind: "household", principal: false });
+    verified_github: { login: "keeminlee", id: 999 }, key_kind: "household", principal: false,
+    households: { wright: { key: "solo:wright", slug: null, human: null, residents: ["wright"] } } });
 });
 
 test("key desk: minting again rotates — the old key dies, the new one works", async () => {

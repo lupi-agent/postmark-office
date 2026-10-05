@@ -119,9 +119,9 @@ test("F1b · the count moves with the slice — a total drawn from a wider WHERE
 
 // ── F2 · IN ONE PAYLOAD ─────────────────────────────────────────────────────
 
-test("F2 · one doorstep payload: the `mail` segment carries nothing the `awaiting` segment has not seen delivered", () => {
+test("F2 · one doorstep payload: the `mail` segment carries nothing the `awaiting` segment has not seen delivered", async () => {
   const db = withAnswer(fixtureDb(), { crossed: false });
-  const page = doorstep(db, "limen", "fixturesha000000000000000000000000000000");
+  const page = (await doorstep(db, "limen", "fixturesha000000000000000000000000000000"));
 
   // the two segments, read off ONE payload — which is the whole complaint
   const carried = page.mail.letters.map((l) => l.id);
@@ -150,9 +150,9 @@ test("F2 · one doorstep payload: the `mail` segment carries nothing the `awaiti
 
 // ── F3 · AND THEY MOVE TOGETHER ─────────────────────────────────────────────
 
-test("F3 · the crossing moves BOTH segments — agreement is not silence, it is the same answer twice", () => {
+test("F3 · the crossing moves BOTH segments — agreement is not silence, it is the same answer twice", async () => {
   const db = withAnswer(fixtureDb(), { crossed: true });
-  const page = doorstep(db, "limen", "fixturesha000000000000000000000000000000");
+  const page = (await doorstep(db, "limen", "fixturesha000000000000000000000000000000"));
   const row = page.awaiting.conversations.find((c) => c.conversation === CONV);
 
   assert.equal(row.attention_state, "they_spoke_again", "the ferry carried it; the state must move");

@@ -118,7 +118,7 @@ test("THE DOORSTEP'S NAMES: each resident's segments deep-equal the doorstep's, 
   const { readers } = worldReaders();
   const h = await houseBundle({ household: HOUSE }, ctx({ readers }));
   for (const who of h.ashore) {
-    const d = doorstep(db, who, AS_OF, { fresh: { odb: null, clone: scratch, asOf: AS_OF }, nowMs: NOW });
+    const d = (await doorstep(db, who, AS_OF, { fresh: { odb: null, clone: scratch, asOf: AS_OF }, nowMs: NOW }));
     for (const k of ["mail", "awaiting", "stamps", "window", "pending_outbox", "counts"])
       assert.deepEqual(h.residents[who][k], d[k], `${who}.${k} is the doorstep's own ${k}`);
     assert.equal(h.residents[who].window.handle ?? who, who);
@@ -128,7 +128,7 @@ test("THE DOORSTEP'S NAMES: each resident's segments deep-equal the doorstep's, 
 test("ONCE: the town-wide blocks ride at the top and on no resident", async () => {
   const { readers } = worldReaders();
   const h = await houseBundle({ household: HOUSE }, ctx({ readers }));
-  const d = doorstep(db, "r000", AS_OF, { fresh: { odb: null, clone: scratch, asOf: AS_OF }, nowMs: NOW });
+  const d = (await doorstep(db, "r000", AS_OF, { fresh: { odb: null, clone: scratch, asOf: AS_OF }, nowMs: NOW }));
   for (const k of HOUSE_ONCE) {
     assert.deepEqual(h[k], d[k], `${k} at the top is the doorstep's`);
     for (const who of h.ashore) assert.ok(!(k in h.residents[who]), `${k} is not repeated on ${who}`);

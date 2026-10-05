@@ -86,10 +86,8 @@ import { join } from "node:path";
 // a TOWN_CLONE the same way households.mjs does, for `profileOf` — see that
 // export's tombstone at the foot of this file. With `profileOf` gone the module
 // is a pure reader: every function here takes the checkout it should read.
-// households.mjs still binds the ambient clone at module load, and that one is
-// NOT the same shape — it imports the town's own stamp-mint engine from the
-// checkout, so its clone is fixed when the module loads rather than when a
-// caller asks. Worth knowing before assuming this row has one answer.
+// (households.mjs no longer reads a clone either: since POS-342 it reads the
+// store's registry.)
 
 // Upstream's PROFILE_STRING_FIELDS, verbatim. Deliberately NOT edit.mjs's
 // PROFILE_FIELDS (the writable four) and deliberately not shared with it:

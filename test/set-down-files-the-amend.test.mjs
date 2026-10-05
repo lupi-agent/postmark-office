@@ -140,13 +140,14 @@ git("add", "-A");
 git("commit", "-qm", "canon: keith's stool, folded in his garage");
 git("branch", "-q", "draft/keithhouse");
 
-// THE TOWN'S HOUSEHOLD MAP, the one `households.mjs § householdOf` folds —
-// the same reader the door's reach clause asks. Two houses.
-put(town, "tools/stamp-mint.mjs", `
-export function currentHouseholds() {
-  return new Map([["keith", { key: "gh:1" }], ["kin", { key: "gh:1" }], ["ana", { key: "gh:2" }]]);
-}
-`);
+// THE TOWN'S HOUSEHOLD MAP, the one `households.mjs § householdOf` reads —
+// the same reader the door's reach clause asks. Two houses, in the STORE's
+// registry (POS-342), seeded into each fresh pen below.
+const { rowsFromRegistry } = await import("../src/registry-rows.mjs");
+const REGISTRY_ROWS = rowsFromRegistry({ households: {
+  "keith-house": { residents: ["keith", "kin"], accounts: [{ login: "keith-gh", id: 1 }] },
+  "ana-house": { residents: ["ana"], accounts: [{ login: "ana-gh", id: 2 }] },
+} }, {});
 
 process.env.WORLD_CLONE = repo;
 process.env.TOWN_CLONE = town;
@@ -169,7 +170,7 @@ const claimsPen = await import("../src/world2-claims.mjs");
 // are on, as in prod), so each fresh pen gets the guard reader with it.
 let unread = () => {};
 const install = async () => {
-  const p = installActsPen({ marks: [{ id: STANDING_ID, slug: STOOL }] });
+  const p = installActsPen({ marks: [{ id: STANDING_ID, slug: STOOL }], households: REGISTRY_ROWS.households });
   claimsPen.__setPoolForTest(p);
   unread(); unread = await readHoldsFrom(p);
   return p;

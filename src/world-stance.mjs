@@ -1078,7 +1078,8 @@ export async function setDownFor(thing, target, marks = [], deps = {}) {
   const hold = await import("./world-hold.mjs");
   let householdOf = deps.householdOf;
   if (householdOf === undefined) {
-    try { ({ householdOf } = await import("./households.mjs")); } catch { householdOf = null; }
+    // one read of the store's registry, a synchronous lookup over it (POS-342)
+    try { householdOf = await (await import("./households.mjs")).householdLookup(); } catch { householdOf = null; }
   }
   const madeBy = String(target?.by ?? String(thing).split("/")[0]);
   const speakerHouse = (h) => hold.sameHousehold(madeBy, String(h), householdOf).same;

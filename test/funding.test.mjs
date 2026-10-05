@@ -439,12 +439,12 @@ function fundingDb() {
   return db;
 }
 
-test("a household with holo reads four tenses that sum sanely — and holo is IN the balance, once", () => {
+test("a household with holo reads four tenses that sum sanely — and holo is IN the balance, once", async () => {
   // AMENDED 2026-09-17 — the founder: "non-spendable is repealed; the stamps are
   // like any other, but are holo to signify the special source." This test used
   // to assert `assets === 10` under the words "holo is NOT in assets — soulbound
   // means outside the arithmetic". It now asserts the opposite, out loud.
-  const d = stampsDetail(fundingDb(), "keemin");
+  const d = (await stampsDetail(fundingDb(), "keemin"));
   assert.deepEqual(
     { minted: d.tenses.minted, liquid: d.tenses.liquid, staked: d.tenses.staked, holo: d.tenses.holo },
     { minted: 11, liquid: 5, staked: 6, holo: 1 },
@@ -517,12 +517,12 @@ test("THE MONEY MOMENT says holo votes, and names the cap in the same breath", (
     "and so is the conversion caveat, which this ruling never touched");
 });
 
-test("minted · for keeping reads as its own section — no liquid coin, and no fifth tense", () => {
+test("minted · for keeping reads as its own section — no liquid coin, and no fifth tense", async () => {
   // LAW R12: "with NO liquid coin (the coin was paid when the stake burned; the
   //          row stays purpose-tagged so balance folds never hand liquid back)."
   // LAW D1:  "ownership is a derived READ = minted (all sources) + holo — NOT a
   //          tense; no fifth tense node."
-  const d = stampsDetail(fundingDb(), "wright");
+  const d = (await stampsDetail(fundingDb(), "wright"));
   assert.equal(d.keeping_mint.total, 2, "the σ leg is SHOWN, not swallowed");
   assert.deepEqual(d.keeping_mint.rows[0], { pot: "keeping-ec2", minted: 2, epoch: "2026-08", date: "2026-08-31" });
   assert.ok(d.keeping_mint.teach, "it teaches at the point of contact like every other new field");
@@ -543,7 +543,7 @@ test("minted · for keeping reads as its own section — no liquid coin, and no 
   assert.equal(d.keeping_mint.counted_in, "ownership", "it is counted — deliberately, in the ownership read");
 });
 
-test("THE DOUBLE-COUNT FALSIFIER: ownership counts holo ONCE, because the town's mint fold already did", () => {
+test("THE DOUBLE-COUNT FALSIFIER: ownership counts holo ONCE, because the town's mint fold already did", async () => {
   // THE FOUNDER, 2026-09-17: "non-spendable is repealed; the stamps are like any
   // other, but are holo to signify the special source." And: "funding minted
   // stamps contribute to the max stamps you can get from another fund. it
@@ -560,7 +560,7 @@ test("THE DOUBLE-COUNT FALSIFIER: ownership counts holo ONCE, because the town's
   // and keemin reads 12 against a true 11 — a giver's own gift counted twice on
   // their own page.
   const db = fundingDb();
-  const k0 = stampsDetail(db, "keemin");
+  const k0 = (await stampsDetail(db, "keemin"));
   assert.equal(k0.tenses.minted, 11, "the town's fold put the holo inside minted");
   assert.equal(k0.holo.total, 1, "and the holo readout still says how much of it came from giving");
   assert.equal(k0.ownership.total, 11,
@@ -581,7 +581,7 @@ test("THE DOUBLE-COUNT FALSIFIER: ownership counts holo ONCE, because the town's
   assert.ok(k0.liquid < k0.assets, "ownership is still not a spendable number — a staked stamp is not free");
 });
 
-test("D1: ownership is a derived READ — minted (all sources), holo inside it, with its parts shown", () => {
+test("D1: ownership is a derived READ — minted (all sources), holo inside it, with its parts shown", async () => {
   // LAW D1 (Keemin, 2026-08-21): "ownership is a derived READ = minted (all
   //         sources) + holo — NOT a tense; no fifth tense node." The "+ holo"
   //         half is AMENDED 2026-09-17 (see the falsifier above); the rest of
@@ -591,7 +591,7 @@ test("D1: ownership is a derived READ — minted (all sources), holo inside it, 
   const db = fundingDb();
 
   // wright staked and kept: 9 earned + 2 minted for keeping, no holo
-  const w = stampsDetail(db, "wright");
+  const w = (await stampsDetail(db, "wright"));
   assert.equal(w.ownership.minted_earned, 9);
   assert.equal(w.ownership.minted_keeping, 2);
   assert.equal(w.ownership.minted, 11, "minted = all sources");
@@ -605,7 +605,7 @@ test("D1: ownership is a derived READ — minted (all sources), holo inside it, 
   // a live door's answer, which this lane may not do; it is reported up on
   // postmark-town/postmark#2885 instead. The value is right and is checked here
   // against what it actually holds, so a future rename starts from a true test.
-  const k = stampsDetail(db, "keemin");
+  const k = (await stampsDetail(db, "keemin"));
   assert.equal(k.ownership.minted_earned, 11,
     "the town's mint_count, holo inside it — the `_earned` in the name is the drift this ruling created");
   assert.equal(k.ownership.minted, 11);
@@ -619,8 +619,8 @@ test("D1: ownership is a derived READ — minted (all sources), holo inside it, 
   assert.equal(Object.keys(k.tenses).includes("ownership"), false, "ownership is a read beside the tenses, never one of them");
 });
 
-test("a household with zero holo reads a well-formed empty section, not an absence", () => {
-  const d = stampsDetail(fundingDb(), "limen");
+test("a household with zero holo reads a well-formed empty section, not an absence", async () => {
+  const d = (await stampsDetail(fundingDb(), "limen"));
   assert.equal(d.holo.total, 0);
   assert.deepEqual(d.holo.mints, []);
   assert.equal(d.holo.caption, HOLO_CAPTION, "the caption stands even at zero");
@@ -639,7 +639,7 @@ test("a household with zero holo reads a well-formed empty section, not an absen
 // fold that does the crediting is the town's (tools/stamp-mint.mjs, imported
 // live by src/hydrate.mjs), and this repo has no copy of it to flip. The
 // office-side flip that DOES red is the double-count one, above.
-test("THE ESTATE FALSIFIER: primary 10 + holo 3, staked 4 reads minted 13 · liquid 9 · holo 3", () => {
+test("THE ESTATE FALSIFIER: primary 10 + holo 3, staked 4 reads minted 13 · liquid 9 · holo 3", async () => {
   const db = new DatabaseSync(":memory:");
   db.exec(SCHEMA);
   // 10 primary + 3 holo = 13 minted; 4 staked, so 9 free to spend
@@ -648,7 +648,7 @@ test("THE ESTATE FALSIFIER: primary 10 + holo 3, staked 4 reads minted 13 · liq
   insHolo.run("giver", "keeping-ec2", 2, "2026-09", "2026-09-30", "ch_one");
   insHolo.run("giver", "keeping-ec2", 1, "2026-09", "2026-09-30", "ch_two");
 
-  const d = stampsDetail(db, "giver");
+  const d = (await stampsDetail(db, "giver"));
   assert.deepEqual(
     { minted: d.tenses.minted, liquid: d.tenses.liquid, staked: d.tenses.staked, holo: d.tenses.holo },
     { minted: 13, liquid: 9, staked: 4, holo: 3 },

@@ -69,7 +69,7 @@ export async function doorstepBundle(handle, ctx = {}) {
   // `ix` is the index the door picked (POS-268): absent, office.db's, exactly as
   // before; the store's (storeIndexPooled) when the door is switched.
   const opts = { conversationsOffset, slim, fresh: await freshFor(handle, { odb, clone, asOf }), nowMs };
-  const core = ix ? await ix.doorstep(handle, asOf, opts) : doorstep(db, handle, asOf, opts);
+  const core = ix ? await ix.doorstep(handle, asOf, opts) : await doorstep(db, handle, asOf, opts);
   if (!core) return null;
 
   // ── THE HEADER'S CLOCK (postmark#2922) ─────────────────────────────────────

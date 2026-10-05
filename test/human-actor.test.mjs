@@ -261,7 +261,9 @@ test("the seam routes and never re-derives the hand", () => {
   // sits after the dispatch try the hand used to be scoped to. The property
   // pinned is untouched: the hand is DERIVED ONCE, by humanHandFor, off
   // `acting.standing`, and never spelled a second way here.
-  assert.match(apex, /hand = acting\?\.standing === "embodied" \? humanHandFor\(/,
+  // AMENDED 2026-10-04 (POS-342): the derivation reads the store's registry,
+  // so it is awaited; the property pinned is the same one derivation.
+  assert.match(apex, /hand = acting\?\.standing === "embodied" \? await humanHandFor\(/,
     "the hand is the one derivation, read — not a second spelling of the label invented here");
   assert.match(apex, /let hand = null;/,
     "and it is declared where both the dispatch and the crossing can see it, rather than derived twice");
@@ -281,14 +283,14 @@ test("the seam routes and never re-derives the hand", () => {
 
 // ── THE OWN HAND, at the two doors that answer for it ───────────────────────
 
-test("the hand an embodied act is recorded under is the human's own label", () => {
+test("the hand an embodied act is recorded under is the human's own label", async () => {
   // `human-of-<slug>` is RESERVED town-wide so it can never collide with a
   // resident's voice: residency.mjs and declare.mjs both refuse a handle wearing
   // it. That reservation is what makes it safe to write into an act row.
-  const hand = humanHandFor(["wright", "rei"]);
+  const hand = await humanHandFor(["wright", "rei"]);
   assert.match(hand, /^human-of-/, "the label the town reserves for a household's human");
   assert.ok(!/^wright$|^rei$/.test(hand), "and never one of the residents' own names");
-  assert.equal(humanHandFor([]), null,
+  assert.equal(await humanHandFor([]), null,
     "no handles is null, never a guessed default — the same refusal humanTokenUrl makes");
 });
 

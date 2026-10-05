@@ -153,7 +153,7 @@ export async function stampsRoster(q, { limit, offset } = {}) {
 /** queries.stampsDetail, from the store. */
 export async function stampsDetail(q, handle) {
   const row = (await q.query("SELECT balance, mint_count, staked FROM town_stamps WHERE handle = $1", [handle])).rows[0];
-  const parties = stampParties(handle);
+  const parties = await stampParties(handle);
   const holoRows = (await q.query(
     `SELECT h.party, h.pot, h.holo, h.epoch, h.date, h.receipt, r.usd AS usd
        FROM town_funding_holo h LEFT JOIN town_pot_receipts r ON r.receipt = h.receipt

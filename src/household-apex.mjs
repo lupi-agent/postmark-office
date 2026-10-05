@@ -22,6 +22,7 @@
 // stays the only valve. Completion is necessary, never sufficient.
 
 import { existsSync } from "node:fs";
+import { withHouseholdBlock } from "./households.mjs";
 import { join } from "node:path";
 
 import { DECLARE_SCHEMA, BEGIN_PROPERTIES, declareViaOffice, SETTLING_ASHORE } from "./declare.mjs";
@@ -1175,6 +1176,8 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
       let r = null;
       if (ix) r = await ix.resident(handle, await freshFor(handle, { odb, clone, asOf }));
       else { try { r = residentQ(db, handle); } catch { r = null; } }
+      // household leads (2026-08-07), from the store's registry (POS-342)
+      if (r) await withHouseholdBlock(r, handle);
       return r ? shadowReadAnswer("address", { read: "address", of: handle, address: r }, { read: "address", of: handle }, r, ctx) : bounce(404, `no settled address for "${handle}"`, "a harbor resident has no white-pages address yet — that comes with settling");
     }
     if (what === "home") {

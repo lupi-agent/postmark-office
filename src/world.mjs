@@ -52,7 +52,7 @@ import { HOLD_TOOLS, callHoldTool } from "./world-hold.mjs"; // the object primi
 import { createVoices, EARSHOT_M, HEAR_MAX, HEARING_WINDOW } from "./voices.mjs";
 import { createHearingWindow } from "./hearing-window.mjs"; // earshot: speech at a position (the party line)
 import { createSayPush, waitMsOf, serveSayStream } from "./say-push.mjs"; // POS-265: the waiters — a listen that waits, and the page's stream
-import { householdOf, humanHandFor, pinnedLoginOf } from "./households.mjs"; // the human speaker's label wears the town's name, never the login
+import { householdLookup, humanHandFor, pinnedLoginOf } from "./households.mjs"; // the human speaker's label wears the town's name, never the login
 import { householdLockPath, poolEnabled, pushDraftBranch, withDraftLease } from "./world-pool.mjs";
 import { cannotAnswer, pointAnswerable, servedRead, storeEpoch, storeShadowEnabled, storeDbPath } from "./world-serve.mjs";
 // The portal ground's own stride (src/portal-ground.mjs): a walk that ends on a
@@ -1405,7 +1405,7 @@ async function humanStand(args = {}, key = null) {
   // the hand an embodied act is recorded under. Two copies of a label is two
   // answers waiting to disagree; this door still owns the label, it just no
   // longer keeps the only copy of how it is spelled.
-  const speaker = humanHandFor(handles);
+  const speaker = await humanHandFor(handles);
   // Whom the human stands beside. `with:` names a housemate explicitly; the
   // default prefers a housemate who is ABOARD a vessel over one ashore (learned
   // mid-crossing 2026-08-08: a split household stood DARKO's welcome in a
@@ -2273,8 +2273,8 @@ export async function thingStandsBlock(id, w, r) {
       centreOf,
       // POS-138: whose house set it down decides whether the set-down is the
       // author's move or a stranger's, unaccepted — the town's household map,
-      // never the handle alone.
-      householdOf,
+      // never the handle alone. One read of the store's registry (POS-342).
+      householdOf: await householdLookup(),
       // …and whether the author's house has answered a stranger's set-down
       // (POS-138's stance arm). Read only here, where the thing has a holding
       // history; an unreadable stance record is silence, never an answer.
@@ -3625,7 +3625,7 @@ const PLACED_BY_KEY = "_placed_by";
 const CONSENT_KEY = "_consent";
 
 /** Null when this is not a placement on another's behalf (the caller answers the unchanged 403); otherwise who placed, on whose asking, under which household. */
-function placingOnBehalf(by, payload, key, bounce) {
+async function placingOnBehalf(by, payload, key, bounce) {
   const placers = ON_BEHALF_PLACERS.filter((h) => key?.handles?.has(h));
   if (!placers.length || payload.kind !== "parcel") return null;
   const consent = typeof payload.consent === "string" ? payload.consent.trim() : "";
@@ -3638,9 +3638,9 @@ function placingOnBehalf(by, payload, key, bounce) {
     throw bounce(403, `"${named}" is not a placer on this key`, `this key places as: ${placers.join(", ")}`);
   if (named === null && placers.length > 1)
     throw bounce(422, "which placer is placing this?", `pass placed_by: one of ${placers.join(", ")}`);
-  const household = pinnedLoginOf(by);
+  const household = await pinnedLoginOf(by);
   if (!household) throw bounce(422, `the office cannot tell which household "${by}" belongs to`,
-    "a placement lands under the resident's own household, read from the town's pins — this handle has none");
+    "a placement lands under the resident's own household, read from the store's pins — this handle has none, or the store could not be read");
   return { placer: named ?? placers[0], consent, household };
 }
 
@@ -3675,7 +3675,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
   const handles = [...(key?.handles ?? [])];
   const by = payload.by ?? (handles.length === 1 ? handles[0] : undefined);
   if (!by) throw bounce(422, "which resident is leaving this mark?", handles.length ? `pass by: one of ${handles.join(", ")}` : "this key acts for no resident");
-  const onBehalf = key?.handles?.has(by) ? null : placingOnBehalf(by, payload, key, bounce);
+  const onBehalf = key?.handles?.has(by) ? null : await placingOnBehalf(by, payload, key, bounce);
   if (!key?.handles?.has(by) && !onBehalf) throw bounce(403, `"${by}" is not one of your residents`, `this key acts for: ${handles.join(", ") || "(none)"}`);
   if (!onBehalf && (payload.consent !== undefined || payload.placed_by !== undefined))
     throw bounce(422, "consent and placed_by are for a placement on another resident's behalf",
@@ -4156,10 +4156,11 @@ async function disclosePublishing(result, by) {
       }
     }
     const w = await world();
+    const houses = await householdLookup(); // the store's registry (POS-342)
     const note = publishNoteFor({
       id: result.id, parent: result.parent ?? null, by, kind: result.kind ?? null,
       marks: w?.marks ?? [],
-      residentsOf: (h) => householdOf(h)?.residents ?? null,
+      residentsOf: (h) => houses?.(h)?.residents ?? null,
     });
     if (!note) return;
     result.publishing = note;

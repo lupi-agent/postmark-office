@@ -279,8 +279,8 @@ test("residentList stays WHOLE — the bound lives at the door, not in the deriv
 // carries it as its `awaiting` segment. Each assertion below is the same
 // assertion at the new address; the bundle's own structural falsifier lives in
 // test/doorstep-bundle.test.mjs.
-test("doorstep: the conversation ledger is bounded and the summary counts the whole of it", () => {
-  const d = doorstep(db, "r000", AS_OF);
+test("doorstep: the conversation ledger is bounded and the summary counts the whole of it", async () => {
+  const d = (await doorstep(db, "r000", AS_OF));
   assert.equal(d.awaiting.conversations.length, 20);
   assert.equal(d.awaiting.conversations_total, 30);
   assert.notEqual(d.awaiting.conversations_total, d.awaiting.conversations.length,
@@ -292,7 +292,7 @@ test("doorstep: the conversation ledger is bounded and the summary counts the wh
   assert.match(d.awaiting.language, /sequence, never debt/);
 });
 
-test("doorstep: the awaiting threads are DERIVED FROM THE WHOLE LEDGER, then bounded", () => {
+test("doorstep: the awaiting threads are DERIVED FROM THE WHOLE LEDGER, then bounded", async () => {
   // The five threads awaiting a reply sit at conversation indices 25–29 —
   // beyond the 20-row render bound. Deriving from the slice would answer "no
   // threads awaiting your reply" to someone with five of them. That is the
@@ -308,7 +308,7 @@ test("doorstep: the awaiting threads are DERIVED FROM THE WHOLE LEDGER, then bou
   // that cannot fail proves nothing, so it is replaced rather than deleted: the
   // claim is now tested by SHRINKING THE BUDGET, which is the law's own words —
   // "a budget decides how much gets said; it must not decide what is true."
-  const d = doorstep(db, "r000", AS_OF);
+  const d = (await doorstep(db, "r000", AS_OF));
   assert.equal(d.awaiting.threads_total, 5);
   assert.equal(d.awaiting.threads.length, 5);
   assert.ok(d.awaiting.threads.every((a) => a.state === "new_inbound"));
@@ -347,8 +347,8 @@ test("doorstep: what awaits YOU is on the first page, and the summary still coun
   assert.equal(a.summary.last_word_yours, 25, "the law's own numbers ride through untouched");
 });
 
-test("doorstep: the correspondence cursor walks to the end and stops", () => {
-  const d = doorstep(db, "r000", AS_OF, { conversationsOffset: 20 });
+test("doorstep: the correspondence cursor walks to the end and stops", async () => {
+  const d = (await doorstep(db, "r000", AS_OF, { conversationsOffset: 20 }));
   assert.equal(d.awaiting.conversations.length, 10);
   assert.equal(d.awaiting.conversations_offset, 20);
   assert.equal(d.awaiting.conversations_complete, true);
@@ -356,8 +356,8 @@ test("doorstep: the correspondence cursor walks to the end and stops", () => {
   assert.equal(d.awaiting.conversations_total, 30, "the total does not shrink as you walk");
 });
 
-test("doorstep: the bulletin is a teaser with a total, newest first", () => {
-  const d = doorstep(db, "r000", AS_OF);
+test("doorstep: the bulletin is a teaser with a total, newest first", async () => {
+  const d = (await doorstep(db, "r000", AS_OF));
   // Three on the morning page now, not ten: the bundle's bulletin segment IS
   // `town read: "bulletin", limit: 3` — a teaser and a pointer, per the
   // refactor. `read_bulletin` with no arguments still answers the whole board.

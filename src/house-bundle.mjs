@@ -206,12 +206,12 @@ function lastActiveOf(db, handle) {
  * The REST skin's bounds: the house read has no connector abridgement.
  */
 export const DOORSTEP_INBOX = 20;
-export function residentSegments(db, handle, fresh) {
+export async function residentSegments(db, handle, fresh) {
   const one = (sql, ...p) => Object.values(db.prepare(sql).get(...p))[0];
   return residentSegmentsOf({
     mail: mailList(db, handle, "inbox", { limit: DOORSTEP_INBOX }),
     awaiting: mailAwaiting(db, handle, { offset: 0 }),
-    stamps: stampsDetail(db, handle),
+    stamps: await stampsDetail(db, handle),
     window: windowRead(db, handle, fresh),
     pendingOutbox: outboxSettled(db, handle),
     counts: {
@@ -288,7 +288,7 @@ export async function houseBundle({ household = null } = {}, ctx = {}) {
   // arrivals and folds the PSA board and the pulse), so it is paid once here
   // where nine doorsteps paid it nine times.
   const firstOpts = ashore.length ? { fresh: await freshFor(ashore[0], { odb, clone, asOf }), nowMs } : null;
-  const first = !ashore.length ? null : ix ? await ix.doorstep(ashore[0], asOf, firstOpts) : doorstep(db, ashore[0], asOf, firstOpts);
+  const first = !ashore.length ? null : ix ? await ix.doorstep(ashore[0], asOf, firstOpts) : await doorstep(db, ashore[0], asOf, firstOpts);
   const once = first ? Object.fromEntries(HOUSE_ONCE.filter((k) => k in first).map((k) => [k, first[k]])) : {};
 
   // UNREAD, ONCE FOR THE HOUSE (POS-286): one store read for every resident
@@ -301,7 +301,7 @@ export async function houseBundle({ household = null } = {}, ctx = {}) {
   const residents = {};
   for (const h of ashore) {
     const fresh = await freshFor(h, { odb, clone, asOf });
-    const d = { handle: h, ...(ix ? await ix.residentSegments(h, fresh) : residentSegments(db, h, fresh)) };
+    const d = { handle: h, ...(ix ? await ix.residentSegments(h, fresh) : await residentSegments(db, h, fresh)) };
     await ownerGate(d, h, { db, clone, key, odb, meta, asOf, unread, ix });
     d.last_active = ix ? await ix.lastActive(h) : lastActiveOf(db, h);
     d.stands = stands.byHandle[h] ?? null;
