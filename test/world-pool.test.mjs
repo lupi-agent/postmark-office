@@ -156,7 +156,7 @@ git("-c", "user.name=fixture", "-c", "user.email=fixture@test.invalid", "commit"
 process.env.WORLD_CLONE = repo;
 process.env.WORLD_POOL_DIR = pool;
 process.env.WORLD_POOL_SIZE = "2"; // deliberately smaller than the households below
-const { leaveMarkViaOffice, walkViaOffice, worldNoteViaOffice } = await import("../src/world.mjs");
+const { leaveMarkViaOffice, walkViaOffice } = await import("../src/world.mjs");
 const { poolStats } = await import("../src/world-pool.mjs");
 
 const key = (household, ...handles) => ({ household, handles: new Set(handles) });
@@ -254,21 +254,22 @@ test("the pool is a cap, not a promise: four households at once run two at a tim
 
 // ── (b) one household never writes twice at once ─────────────────────────────
 
+// The note left this lane for the store (POS-392), so the same-household case
+// is three marks: two residents of one house, one of them twice.
 test("same-household writes serialize and all of them land, in call order", async () => {
   const before = Number(git("rev-list", "--count", "draft/house-a").trim());
   const [first, second, third] = await Promise.all([
-    worldNoteViaOffice(repo, { handle: "alpha", body: "the first note" }, houseA),
-    worldNoteViaOffice(repo, { handle: "aleph", body: "the sibling's note" }, houseA),
-    worldNoteViaOffice(repo, { handle: "alpha", body: "the last word" }, houseA),
+    leaveMarkViaOffice(repo, sited("serial-one", "the first word", { x: 70, y: 10 }, "alpha"), houseA),
+    leaveMarkViaOffice(repo, sited("serial-two", "the sibling's word", { x: 70, y: 20 }, "aleph"), houseA),
+    leaveMarkViaOffice(repo, sited("serial-three", "the last word", { x: 70, y: 30 }, "alpha"), houseA),
   ]);
 
   for (const r of [first, second, third]) assert.equal(r.branch, "draft/house-a");
   assert.equal(new Set([first.commit, second.commit, third.commit]).size, 3,
     "three writes, three commits — none was lost to a clobber");
   assert.equal(Number(git("rev-list", "--count", "draft/house-a").trim()), before + 3);
-  assert.equal(shown("draft/house-a", "NOTES/alpha.md").trim(), "the last word",
-    "the third write saw the first two: it ran last, not concurrently");
-  assert.equal(shown("draft/house-a", "NOTES/aleph.md").trim(), "the sibling's note");
+  for (const id of ["alpha/serial-one", "aleph/serial-two", "alpha/serial-three"])
+    assert.ok(has("draft/house-a", markPath(id)), `${id} stands on the household's branch: the later writes saw the earlier ones`);
   assert.equal(poolStats(repo).maxPerHousehold, 1,
     "one household, one writer at a time — they target the same ref");
 });
