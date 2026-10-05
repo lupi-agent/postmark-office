@@ -157,6 +157,7 @@ const ROSTER = {
   // indistinguishable from the correct answer on today's town (0 planned).
   "tools/registry-backfill.mjs": { args: [], env: NO_PG, code: 1, needle: "pass exactly one of --dry-run or --apply" },
   "tools/registry-drain.mjs": { args: [], env: NO_PG, code: 1, needle: "pass exactly one of --check, --apply or --ingest-missing" },
+  "tools/standing-drain.mjs": { args: [], env: NO_PG, code: 2, needle: "pass exactly one of --check or --apply" },
   "tools/registry-seed.mjs": { args: [], env: NO_PG, code: 1, needle: "pass exactly one of --dry-run or --apply" },
   // POS-193 (fix-forward, 2026-09-23): the baseline tool refuses at its first gate
   // when the named tip cannot be resolved — before any gh call and before the
@@ -190,6 +191,8 @@ const ROSTER = {
   "deploy/welcome-pass.mjs": { args: [], code: 1, needle: "--town <town-clone> is required" },
   "deploy/settle-pass.mjs": { args: [], code: 1, needle: "--town <town-clone> is required" },
   "tools/rekey-household.mjs": { args: [], code: 1, needle: "--from <slug> --to <slug> --name" },
+  // --help: the usage line, before any clone, key or Postgres (a bare run builds the whole sandbox).
+  "tools/stamp-sandbox.mjs": { args: ["--help"], code: 0, needle: "usage: node tools/stamp-sandbox.mjs" },
   // world2/tools/
   // No --world-repo: stops on usage before any git read or Postgres connect (POS-212).
   "world2/tools/adopt-solo.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: adopt-solo.mjs" },

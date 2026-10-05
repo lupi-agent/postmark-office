@@ -118,7 +118,7 @@ const ACTS = {
   stake: { tool: null, residue: "the-town/stake-pot",
     inline: "Stake stamps on a funding pot — escrow, not payment; it comes home whole at the close, and the share the dollars funded sizes the givers' fresh mint." },
   "fund-verify": { tool: null, residue: "the-town/keeping-stake",
-    inline: "Witness a USDC payment against a pot — the tx hash in, a receipt on the ledger or the refusal you are owed, verbatim." },
+    inline: "Witness a USDC payment against a pot: the tx hash in, a ledger receipt or the refusal, verbatim." },
   // ── THE CONSENT DOOR (the founder's ruling, #2392, 2026-09-02) ────────────
   //
   // THE MAIL FOLD'S REASONING, APPLIED A THIRD TIME. The `stances` READ came
@@ -193,6 +193,21 @@ const OPERATOR_ACTS = {
       required: ["handle"],
     },
   },
+  // POS-347: the Registrar's standing act. The store is the record; the town's
+  // tools/standing-ledger.md is rendered from it in the same pen commit.
+  "standing": {
+    tool: null, residue: null,
+    may: async (key) => (await import("./standing-door.mjs")).callerMayStand(key),
+    fields: {
+      properties: {
+        act: { type: "string", description: "quarantine, lift or revoke" },
+        handle: { type: "string", description: "the resident the act is about" },
+        reason: { type: "string", description: "the reason, in the words chosen; no `·`" },
+        founder_word: { type: "string", description: "the founder's own sentence, verbatim — required to revoke, and to lift a revocation" },
+      },
+      required: ["act", "handle", "reason"],
+    },
+  },
 };
 
 async function operatorAct(act, key) {
@@ -228,6 +243,7 @@ export const APEX_ONLY_FIELDS = {
       txhash: { type: "string", description: "the USDC transaction hash to witness" },
       pot: { type: "string", description: "the pot the payment was made against" },
       handle: { type: "string", description: "the patron's handle — whose holo this mints" },
+      household: { type: "string", description: "your account, g<id> (the fund page sends it); this or handle" },
     },
     required: ["txhash", "pot"],
   },
@@ -1588,7 +1604,7 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
   // are reading. Both skins reach this line — REST `/household` is exempted
   // from the server's path-static check precisely so it lands here.
   {
-    const st = standingBounce(key, clone);
+    const st = await standingBounce(key);
     if (st) return bounce(st.code, st.defect, st.hint);
   }
   const envelope = parseEnvelope(args);
@@ -1697,7 +1713,7 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
       }
       case "fund-verify": {
         const { fundVerifyViaOffice } = await import("./fund.mjs");
-        result = await fundVerifyViaOffice(clone, fields);
+        result = await fundVerifyViaOffice(clone, fields, { key });
         break;
       }
       // ── round 2's three ──────────────────────────────────────────────────
@@ -1790,6 +1806,11 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
       case "settle-join": {
         const { settleJoinAtOffice } = await import("./settle-join.mjs");
         result = await settleJoinAtOffice(fields, key, { pen, clone });
+        break;
+      }
+      case "standing": {
+        const { standingAtOffice } = await import("./standing-door.mjs");
+        result = await standingAtOffice(fields, key, { clone });
         break;
       }
     }
