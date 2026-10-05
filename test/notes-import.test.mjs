@@ -161,3 +161,19 @@ test("without a mode, a clone or a store it refuses before reading anything", { 
   const noStore = spawnSync(process.execPath, [TOOL, "--dry-run", "--world-repo", clone], { encoding: "utf8", env: { ...env, WORLD2_PG: "", WORLD2_PG_URL: "" } });
   assert.equal(noStore.status, 2); assert.match(noStore.stderr, /no store/);
 });
+
+// The import's no-row check gates first, so a flip of `ifAbsent` alone cannot
+// redden a run: the guard only bites when a door write lands between the check
+// and the INSERT. Held here, at the writer, where that race is one call.
+test("writeNote's ifAbsent never replaces a standing note (the race the import's check cannot see)", { skip }, async () => {
+  const { default: pg } = await import("pg");
+  const pool = new pg.Pool({ connectionString: store.url("office_api"), max: 2 });
+  try {
+    const pen = await import("../src/world2-pen.mjs");
+    pen.__setPoolForTest(pool);
+    const { writeNote } = await import("../src/note-store.mjs");
+    const lost = await writeNote("beta", "an import arriving second", { now: Date.parse("2026-09-12T00:00:00Z"), ifAbsent: true });
+    assert.equal(lost.kept, false, "the standing row is kept, and the writer says so");
+    assert.equal((await rows()).find((x) => x.handle === "beta").body, "written since the deploy");
+  } finally { await pool.end(); }
+});
