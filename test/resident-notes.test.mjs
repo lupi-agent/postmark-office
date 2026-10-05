@@ -13,7 +13,7 @@
 // world clone with a bare origin and TOWN_PUSH=1, so a push, if anything made
 // one, would land somewhere this file can look.
 //
-// THE FLIP (the lane's NOTES.md holds the red line): run this file against
+// THE FLIP (the PR body quotes the red line): run this file against
 // origin/main's src/ (before the fix the door committed the note to the
 // household's draft branch and pushed it); the first test goes red naming the
 // ref that carries the note.
