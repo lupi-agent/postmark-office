@@ -32,19 +32,32 @@ async function householdOfHandle(handle, env) {
 }
 
 /**
- * Replace `handle`'s note with `body`. Returns `{ handle, household, written_at }`.
- * `ifNewer` keeps a newer note already standing (a backfill's rule; the door
- * always replaces). Throws when the store cannot be written: nothing is kept
- * anywhere else.
+ * The household key a note by `handle` is kept under, exactly as the door
+ * resolves it, or null when the registry houses no such resident (the
+ * resolver's `solo:<handle>` answer). An importer refuses on null; the door
+ * keeps a solo resident's note under `solo:<handle>`.
  */
-export async function writeNote(handle, body, { env = process.env, now = Date.now(), ifNewer = false } = {}) {
+export async function noteHouseholdOf(handle, { env = process.env } = {}) {
+  const key = await householdOfHandle(handle, env);
+  return key && !String(key).startsWith("solo:") ? key : null;
+}
+
+/**
+ * Replace `handle`'s note with `body`. Returns `{ handle, household, written_at }`.
+ * `ifNewer` keeps a newer note already standing; `ifAbsent` writes only where
+ * this resident has no row under this house (an import's rule: a note written
+ * through the door is never replaced). The door always replaces. `kept` says
+ * whether this call's row stands. Throws when the store cannot be written:
+ * nothing is kept anywhere else.
+ */
+export async function writeNote(handle, body, { env = process.env, now = Date.now(), ifNewer = false, ifAbsent = false } = {}) {
   const household = await householdOfHandle(handle, env);
   const writtenAt = new Date(now).toISOString();
   const row = await officeWrite(async (c) => {
     const { rows } = await c.query(
       `INSERT INTO resident_notes (handle, household, body, written_at) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (handle, household) DO UPDATE SET body = EXCLUDED.body, written_at = EXCLUDED.written_at
-       ${ifNewer ? "WHERE resident_notes.written_at < EXCLUDED.written_at" : ""}
+       ON CONFLICT (handle, household) ${ifAbsent ? "DO NOTHING" : `DO UPDATE SET body = EXCLUDED.body, written_at = EXCLUDED.written_at
+       ${ifNewer ? "WHERE resident_notes.written_at < EXCLUDED.written_at" : ""}`}
        RETURNING written_at`,
       [handle, household, body, writtenAt]);
     return rows[0] ?? null;
