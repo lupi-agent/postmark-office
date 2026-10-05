@@ -168,12 +168,18 @@ function foldRegistryRows(households, pins, meta) {
  * and a column holding it would be a column nobody could read.
  */
 export async function loadRegistryRows(env = process.env) {
-  const [households, pins, meta] = await Promise.all([
-    actsQuery(HOUSEHOLDS_SQL, [], env),
-    actsQuery(PINS_SQL, [], env),
-    actsQuery(META_SQL, [], env),
-  ]);
-  if (households === null || pins === null || meta === null) return null;
+  // ONE CONNECTION AT A TIME (POS-343): since sign-in and the household block
+  // read the registry on every request, three parallel reads asked a pool of
+  // two (world2-acts § pool) for three connections, and under a cold or busy
+  // store the third waited out the acquire timeout and a sign-in answered 503.
+  // Three short reads in turn hold one connection, and nothing else here needs
+  // them to be simultaneous: the registry has one writer and the drain reads
+  // its own writes in the same process.
+  const households = await actsQuery(HOUSEHOLDS_SQL, [], env);
+  if (households === null) return null;
+  const pins = await actsQuery(PINS_SQL, [], env);
+  const meta = await actsQuery(META_SQL, [], env);
+  if (pins === null || meta === null) return null;
   return foldRegistryRows(households, pins, meta);
 }
 
@@ -183,10 +189,12 @@ export async function loadRegistry(env = process.env) {
   return rows === null ? null : registryFromRows(rows);
 }
 
-/** The pins object, as the clone's `tools/github-ids.json` parses to. `null` = not asked. */
+/** The pins object, as the clone's `tools/github-ids.json` parses to. `null` = not asked.
+ *  ONE read (sign-in asks this on every bearer request, POS-343): the pins
+ *  table alone, never the households and the meta beside it. */
 export async function loadPins(env = process.env) {
-  const rows = await loadRegistryRows(env);
-  return rows === null ? null : pinsFromRows(rows);
+  const pins = await actsQuery(PINS_SQL, [], env);
+  return pins === null ? null : pinsFromRows({ pins });
 }
 
 // ── the writers ─────────────────────────────────────────────────────────────
