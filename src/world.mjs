@@ -164,6 +164,15 @@ async function world() {
   const worldState = selected.state;
   const skeleton = publishedSkeleton(WORLD_CLONE).skeleton;
   const assembled = build.assembleWorld({ worldState, skeleton });
+  // THE HOUSEHOLD MAP THE PUBLISHED WORLD WAS FOLDED WITH (POS-368, 2026-10-05).
+  // A resident with no parcel of their own is at home on their household's
+  // parcel, and the engine's homeOf finds it through `world.households`. The
+  // engine's assembly picks fields and, until postmark-world's fix is blessed,
+  // drops the map the fold published in this same world-state.json, so Gabo of
+  // La Casa Rodante read "no home" (town #3450). Attached from the bytes in
+  // hand: the same ref, the fold's own map, no second read. The fold is
+  // untouched; this is the readers' map only.
+  if (!assembled.households && worldState?.households) assembled.households = worldState.households;
   // ⚑ THE SHA RIDES ALONG (2026-09-07, lane-a). `ref` alone cannot answer "which
   // world is this" — a ref is a name and the commit under it moves. The canon
   // receipt stamps the answer with the sha it was folded from, and reading it
