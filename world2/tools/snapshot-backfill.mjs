@@ -236,8 +236,9 @@ async function readTag({ W, T, base, tag_sha, town_sha }) {
 }
 
 // ── the run ──────────────────────────────────────────────────────────────────
-const isMain = process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
-if (isMain) {
+// The entry guard is the house's basename idiom (test/cli-guard.test.mjs § the roster),
+// which also holds when the tool is run through a junction.
+if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).pop())) {
   const arg = (n) => { const i = process.argv.indexOf(`--${n}`); return i === -1 ? null : process.argv[i + 1]; };
   const worldRepo = arg("world-repo"), townRepo = arg("town-repo");
   if (!worldRepo || !townRepo) { console.error("usage: snapshot-backfill.mjs --world-repo <clone> --town-repo <clone> [--from n] [--to n] [--apply] [--pg-url url] [--json file]"); process.exit(2); }

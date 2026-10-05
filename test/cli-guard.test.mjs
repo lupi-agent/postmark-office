@@ -246,6 +246,7 @@ const ROSTER = {
   "world2/tools/seed-import.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: seed-import.mjs" },
   // No --world-repo: stops on usage before any git or Postgres (postmark#2897).
   "world2/tools/settlements-backfill.mjs": { args: [], env: NO_PG, code: 2, needle: "--world-repo <checkout> is required" },
+  "world2/tools/snapshot-backfill.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: snapshot-backfill.mjs --world-repo <clone> --town-repo <clone>" },
   "world2/tools/snapshot-export.mjs": { args: ["--help"], env: NO_PG, code: 2, needle: "usage:" },
   "world2/tools/stamp-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: stamp-ingest.mjs" },
   "world2/tools/town-index-ingest.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: town-index-ingest.mjs" },
