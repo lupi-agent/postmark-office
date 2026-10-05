@@ -45,6 +45,12 @@ lawful AS (
     -- because a snapshot is written once and never moves.
     ('office_api',   'position_snapshots',     'INSERT'),
     ('office_api',   'position_snapshot_rows', 'INSERT'),
+    -- 054_world_snapshots.sql (POS-357, POS-337 R1). The computed World of a
+    -- snapshot, a cache built outside the clearing by the office on first read:
+    -- INSERT + DELETE and no UPDATE, because only the newest few are kept and a
+    -- fold is replaced, never edited.
+    ('office_api',   'world_snapshot_folds',   'INSERT'),
+    ('office_api',   'world_snapshot_folds',   'DELETE'),
     -- 019_households.sql. The household registry as store-of-record: the two
     -- town JSON files become a rendering of these tables. `office_api` because
     -- it is the role the door that DECLARES a household already connects as
@@ -130,6 +136,12 @@ lawful AS (
     ('clearing_job', 'windows',          'UPDATE'),
     ('clearing_job', 'marks',            'INSERT'),
     ('clearing_job', 'marks',            'UPDATE'),
+    -- 054_world_snapshots.sql (POS-357, POS-337 R1). The clearing seals the
+    -- World it leaves in its own transaction, a pure SQL copy; INSERT only,
+    -- because a version, a list and a header are written once and never move.
+    ('clearing_job', 'mark_versions',        'INSERT'),
+    ('clearing_job', 'world_snapshot_marks', 'INSERT'),
+    ('clearing_job', 'world_snapshots',      'INSERT'),
     ('law_ingester', 'law_projection',   'INSERT'),
     ('law_ingester', 'law_projection',   'DELETE'),
     ('law_ingester', 'stamp_projection', 'INSERT'),
