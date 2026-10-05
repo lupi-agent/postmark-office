@@ -308,6 +308,8 @@ test("the record disclosure appears on both doors exactly when the record is bei
   const on = say.description;
   assert.equal(on, off + SAY_RECORD_DISCLOSURE, "and the only difference is the record sentence");
   assert.match(on, /the words, the speaker, the place and the hour/);
+  assert.match(on, /every say is kept in postmark-world STATE\/log\/<crossing>\.jsonl/, "and it says where (POS-330)");
+  assert.equal(off.includes("STATE/log"), false);
   assert.match(worldConversations().record, /openly remembers them/);
   assert.match(worldConversations().record, /the words themselves/);
 
