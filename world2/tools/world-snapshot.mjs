@@ -107,6 +107,8 @@ try {
   // 2 · the store, for the newest snapshot
   if (!isNewest) {
     console.log(`  · store: not compared — snapshot ${newest.id} (window ${newest.window_id ?? "∅"}) is newer, and the store has moved past this one`);
+  } else if (header.source === "backfill") {
+    console.log("  · store: not compared — a back-filled snapshot is its settlement tag's World, not a copy of this store's rows");
   } else {
     const now = await standingRowsNow(client);
     const { dropped, extra, changed } = compareToStore(rows, now);

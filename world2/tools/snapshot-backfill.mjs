@@ -197,7 +197,9 @@ export async function deriveTag({ W: base, T: townBase, townRepo, number, scratc
 
 /** The reads of one tag: its marks, the register at the ledger position, and the fold's proof. */
 async function readTag({ W, T, base, tag_sha, town_sha }) {
-  const seed = await deriveSeed({ worldRepo: W, lawSha: tag_sha, townSha: town_sha });
+  // The seed's window is not the snapshot's: S1–S26 predate STATE/log, so no
+  // town clock exists to read, and no canonical row carries a window id.
+  const seed = await deriveSeed({ worldRepo: W, lawSha: tag_sha, townSha: town_sha, window: { id: 0, receipts: null } });
   const marks = canonicalInputsOf(seed.marks);
 
   let register = null, register_note = null;
