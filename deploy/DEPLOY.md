@@ -387,6 +387,89 @@ systemctl show postmark-office-rehydrate.service -p ExecStart   # office-tick.sh
 
 After that the box runs exactly what it ran before step 2, and the manifest rows go back to what they said (keep parked).
 
+### Switch 2's guard: the store never waits on a held transaction (POS-370, 2026-10-04)
+
+On 2026-10-04 switch 2 (`TOWN_INDEX_READS=store`) went on at 16:52Z and the
+office's index reads stalled for about an hour: nine `office_api` sessions sat
+idle in transaction (three read workers times the pen's pool of three), every
+one last running the quest board's `town_quest_progress` read. The board held
+its pen connection while its world read rebuilt the positions projection through
+a second one from the same pool. Wright rolled it back at 19:35Z. The code fix
+and the guard ship on the w42 train; three things are the box's:
+
+**1. The roles' idle-transaction limit (by hand, as `postgres`, once).** The
+office's own pools already ask for `idle_in_transaction_session_timeout` as a
+startup parameter (`WORLD2_PG_IDLE_TX_MS`, default 30 s; src/store-pool.mjs),
+so this step is for every OTHER client that logs in as these roles (a psql
+session, a tool). No migration can do it: this repo creates no roles, and
+`world2_owner` cannot alter them.
+
+    sudo -u postgres psql -v ON_ERROR_STOP=1 <<'SQL'
+    ALTER ROLE office_api     SET idle_in_transaction_session_timeout = '30s';
+    ALTER ROLE stance_reader  SET idle_in_transaction_session_timeout = '30s';
+    -- snapshot_reader holds READ ONLY transactions across git reads (the
+    -- era-one compare, position-snapshot.mjs --compare-era-one): a ceiling,
+    -- not a 30 s limit, until its longest idle gap is measured
+    ALTER ROLE snapshot_reader SET idle_in_transaction_session_timeout = '5min';
+    SELECT rolname, rolconfig FROM pg_roles WHERE rolname IN ('office_api','stance_reader','snapshot_reader');
+    SQL
+
+A role setting applies to NEW sessions: restart the office afterwards (or wait
+for the next deploy) so its pools reconnect. The tools that log in as
+`office_api` from the keeping tick (settlements-backfill, position-snapshot)
+build their rows before BEGIN and run their transactions statement after
+statement, so 30 s does not touch them. Undo: `ALTER ROLE <role> RESET
+idle_in_transaction_session_timeout;`.
+
+**2. The watch.** The office writes
+`/srv/postmark-office/telemetry/store-txn-4380.json` every minute
+(src/store-txn-watch.mjs): `calm_at` is the last minute no `office_api` session
+had been idle inside a transaction for 5 s or more. The roll-call's
+"the office's store transactions" row alarms at 5 minutes. Live:
+`curl -s https://postmark.town/api/ops/store-txn | jq '{calm_at, last_minute}'`.
+By hand, as any role that may read pg_stat_activity in full:
+
+    sudo -u postgres psql -c "SELECT pid, application_name, state, now() - state_change AS idle, now() - xact_start AS in_txn, left(query, 120) AS query FROM pg_stat_activity WHERE usename = 'office_api' AND state LIKE 'idle in transaction%' ORDER BY state_change;"
+
+Zero rows is the healthy answer; `application_name` (`postmark-office:<pool>:t<thread>`)
+says which pool and which worker holds a row that is not.
+
+**3. The acquire timeout.** Every office pool refuses a request it cannot give a
+connection to within `WORLD2_PG_ACQUIRE_MS` (default 10 s) with a sentence that
+names the pool, instead of leaving it waiting. Nothing to install; the env line
+is there to raise it, never to remove it (0 means no limit).
+
+**Re-flipping switch 2** (only after this train is on the box and step 1 is done):
+
+1. Dev first, under load. On the dev office (4381) set `TOWN_INDEX_READS=store`
+   with the same `WORLD_POSITIONS=1` / `WORLD_MOVEMENT_V2=1` prod runs, restart
+   it, and run the endurance replay (POS-267 / POS-354) against it, through the
+   tunnel its header names:
+   `node tools/party-replay.mjs --base http://127.0.0.1:14381 --steps 5:0,10:0,20:0,40:0`.
+   The replay drives the world reads and the says but no index door, so run the
+   index doors beside it for the same window, twenty at a time (the quest board
+   is the one that stalled); it prints only a door that failed or took over 2 s:
+
+       while sleep 1; do for i in $(seq 20); do for d in residents world/apex quests/wright quests/darko town; do
+         curl -s -o /dev/null -m 10 -w "%{http_code} %{time_total} $d\n" "http://127.0.0.1:14381/$d" &
+       done; done; wait; done | awk '$1 != 200 || $2 > 2'
+
+   Pass: no 5xx or timeout from `/api/residents`, `/api/world/apex`,
+   `/api/quests/{h}`, the doorstep or MCP `world`; the watch query above at zero
+   rows on every sample; dev's `/api/ops/store-txn` `calm_at` never older than
+   two minutes; and no `NestedStoreError` or `StoreAcquireTimeout` in its journal
+   (`journalctl -u postmark-office-dev --since "-2h" | grep -E "NestedStoreError|StoreAcquireTimeout|nested-store|store-acquire"`).
+2. Prod: back up `/etc/postmark-office.env` to `/var/backups`, add
+   `TOWN_INDEX_READS=store`, `sudo systemctl restart postmark-office` (and the read
+   workers, `postmark-office-read@{4391,4392,4393}`, if they are running).
+3. Probes, at once and again at +5, +15 and +60 minutes: `/api/residents`,
+   `/api/world/apex`, `/api/quests/wright`, a doorstep and MCP `world` each
+   answer 200 under 2 s, with the `x-postmark-town-index-as-of` header on the
+   switched doors; the watch query reads zero rows; `/api/ops/store-txn`
+   `last_minute.stuck` is 0.
+4. Roll back on the first stuck row or hung door: the env line out, the office
+   restarted (the 2026-10-04 rollback, unchanged).
+
 ### The world write pool (tier 1, 2026-08-05)
 
 The two draft-branch write lanes — `world_leave_mark` and `world_note`, which

@@ -9,7 +9,7 @@
 // arrive with no CONTRIBUTING.md in context, so the contract IS the etiquette.
 
 import { townSummary, residentList, residentPage, resident, mailList, letterAnswer, LETTER_READING_LAW_LINE, search, bulletinList, bulletinTeaser, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, home, identityOf, repoLog, DOORSTEP_SEGMENTS } from "./queries.mjs";
-import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore, stampsRoster as stampsRosterFromStore, stampsDetail as stampsDetailFromStore, questBoardFor as questBoardFromStore } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
+import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore, stampsRoster as stampsRosterFromStore, stampsDetail as stampsDetailFromStore, questIndexRows, questBoardOfRows } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
 import * as townIndexStore from "./town-index-store.mjs"; // the moved readers by name, as the list above grows past a line
 import { READ_FIELDS } from "./one-contract.mjs"; // the one field list a read shares with its twin at another door (POS-70 row 39)
 
@@ -577,8 +577,9 @@ const rollOf = (db) => {
 
 // A read switched to the store's town index: its answer, or the store's fixed
 // refusal (the MCP door has no status code, so the sentence is the signal).
-async function fromStore(fn) {
-  const r = await storeAnswer(fn);
+// `then` runs after the connection is back (storeAnswer § then; POS-370).
+async function fromStore(fn, then = null) {
+  const r = await storeAnswer(fn, { then });
   return r.refused ?? r.out;
 }
 
@@ -789,7 +790,7 @@ export async function callTool(name, args, ctx) {
       return args.handle
         ? { handle: args.handle, ...stampsDetail(db, args.handle) }
         : stampsRoster(db, meta, { limit: args?.limit, offset: args?.offset });
-    case "read_quests": return townIndexReads() ? fromStore((c) => questBoardFromStore(c, args.handle, clone)) : questBoardFor(db, meta, args.handle, clone);
+    case "read_quests": return townIndexReads() ? fromStore((c) => questIndexRows(c, args.handle), (rows) => questBoardOfRows(rows, clone)) : questBoardFor(db, meta, args.handle, clone);
     case "read_bounties": return bountyBoard();
     // The Civic Quarter, read whole. No args: the quarter is five buildings and
     // the answer is all five — a caller who has to name one has to already know
