@@ -32,7 +32,7 @@
 // a refusal by name, never a mint from nothing. Exit 0 appended or up to date,
 // 1 refused.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, realpathSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -140,5 +140,10 @@ async function main() {
   } catch (e) { console.error(`FATAL: ${e.message}`); return 1; }
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+// Entry guard: real paths, the junction lesson (town-index-ingest.mjs § entry guard).
+const isMain = (() => {
+  if (!process.argv[1]) return false;
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return pathToFileURL(process.argv[1]).href === import.meta.url; }
+})();
 if (isMain) process.exitCode = await main();

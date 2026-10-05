@@ -30,7 +30,7 @@
 // Exit 0: parity (and the control green). 1: a difference, named. 2: could not run.
 // A difference is a STOP (the ruling): it is reported, never reconciled here.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, realpathSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -155,5 +155,10 @@ async function main() {
   return report.ok ? 0 : 1;
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+// Entry guard: real paths, the junction lesson (town-index-ingest.mjs § entry guard).
+const isMain = (() => {
+  if (!process.argv[1]) return false;
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return pathToFileURL(process.argv[1]).href === import.meta.url; }
+})();
 if (isMain) process.exitCode = await main();

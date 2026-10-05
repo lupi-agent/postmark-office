@@ -16,9 +16,9 @@
 // the export byte for byte against the store. Read-only. Exit 0 green, 1 red,
 // 2 could not run.
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { engineOf, syncStampLinesVia, verifyStampLinesVia } from "../../src/stamp-lines.mjs";
 
@@ -26,6 +26,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 function arg(name, fallback = null) { const i = process.argv.indexOf(`--${name}`); return i === -1 ? fallback : process.argv[i + 1]; }
 
 async function main() {
+  if (!process.argv.includes("--sync") && !process.argv.includes("--verify")) { console.error("say --sync or --verify"); return 2; }
   const clone = resolve(arg("clone", process.env.TOWN_CLONE ?? resolve(HERE, "..", "..", "town-clone")));
   if (!existsSync(join(clone, "tools", "stamp-mint.mjs"))) { console.error(`no town clone with tools/stamp-mint.mjs at ${clone}`); return 2; }
   const engine = await engineOf(clone);
@@ -48,9 +49,13 @@ async function main() {
     }
     return v.ok ? 0 : 1;
   }
-  console.error("say --sync or --verify");
   return 2;
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+// Entry guard: real paths, the junction lesson (town-index-ingest.mjs § entry guard).
+const isMain = (() => {
+  if (!process.argv[1]) return false;
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return pathToFileURL(process.argv[1]).href === import.meta.url; }
+})();
 if (isMain) process.exitCode = await main();
