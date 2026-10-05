@@ -53,7 +53,7 @@ import { assertSha } from "./law-ingest.mjs";
 import { readTown } from "../../vendor/tools/lib/town.mjs";
 import {
   TOWN_TABLES, deriveTownIndex, readHistory, residentRows, letterRows, threadRows, bulletinRows,
-  ledgerLines, mailStateRows, stampFold, fundingRows, questRows, atlasRows,
+  ledgerLines, mailStateRows, stampFold, stampTipOf, fundingRows, questRows, atlasRows,
 } from "../../src/town-index.mjs";
 import { isResidentHandle } from "../../src/residency.mjs";
 
@@ -343,6 +343,7 @@ export async function applyDelta(client, { townRepo, head, sha, log = quiet }) {
   // ledger's past must be the past the head saw.
   const meta = new Map((await client.query("SELECT key, value FROM town_meta")).rows.map((r) => [r.key, r.value]));
   let minted = meta.get("stamps_minted") ?? null;
+  let tip = meta.get("stamps_tip") ?? "";
   const hasStamps = existsSync(join(townRepo, "tools", "stamp-mint.mjs")) && existsSync(join(townRepo, "WHITE_PAGES", "stamp-ledger.md"));
   if (hasStamps) {
     const { parseStampLedger } = await import(pathToFileURL(resolve(townRepo, "tools", "stamp-mint.mjs")));
@@ -361,6 +362,7 @@ export async function applyDelta(client, { townRepo, head, sha, log = quiet }) {
     });
     await diffTable(client, "stamps", cands, tally, { scope: new Set([...accts].map((a) => JSON.stringify([a]))) });
     minted = String(Number(minted ?? 0) + -(d.balance.get("MINT") ?? 0));
+    tip = stampTipOf(all);
   }
   lap("stamps");
 
@@ -389,7 +391,7 @@ export async function applyDelta(client, { townRepo, head, sha, log = quiet }) {
       bulletin: (town.bulletin ?? []).length,
     })],
   ];
-  if (hasStamps) metaRows.push(["stamps_minted", minted]);
+  if (hasStamps) metaRows.push(["stamps_minted", minted], ["stamps_tip", tip]);
   if (q) metaRows.push(["quest_day", q.questDay], ["quest_registry", q.questRegistry]);
   await diffTable(client, "meta", metaRows, tally);
   lap("bulletin+atlas+meta");
