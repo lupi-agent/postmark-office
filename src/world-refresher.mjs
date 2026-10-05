@@ -287,6 +287,18 @@ export function startWorldRefresher(repo, { intervalMs = 1000 } = {}) {
 
 export const worldRefresher = (repo) => REFRESHERS.get(repo) ?? null;
 
+/**
+ * True when this clone's refresher has published answers and the refs have
+ * moved since (a few `stat`s, no child). A memo that keeps an answer under the
+ * refs' current stamp must not compute it from those answers
+ * (world-branches.mjs § remembered, POS-402).
+ */
+export function refresherBehind(repo) {
+  const r = REFRESHERS.get(repo);
+  if (!r?.published) return false;
+  return stampSync(r.dir) !== r.published.stamp;
+}
+
 function keepImmutable(r, key, answer) {
   const size = answer.stdout?.length ?? 0;
   if (size > IMMUTABLE_BYTES / 4) return;

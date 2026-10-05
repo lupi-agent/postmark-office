@@ -23,7 +23,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
 import { NEWEST_SETTLEMENT_FORMAT, newestSettlementFromRefLines } from "./settlements.mjs";
-import { answerFrom, askRefresher, replay } from "./world-refresher.mjs";
+import { answerFrom, askRefresher, refresherBehind, replay } from "./world-refresher.mjs";
 
 const HOUSEHOLD_RE = /^[a-z0-9][a-z0-9._-]*$/i;
 const viewCache = new Map();
@@ -45,11 +45,13 @@ const GIT_MAX_BUFFER = 512 * 1024 * 1024;
 // A plain question (no stdio, env or buffer of its own) is first put to the
 // world refresher, which answers from memory (world-refresher.mjs, POS-263).
 // Inside a write (`writing` > 0) nothing is: a write must see the refs it has
-// just moved. Without a running refresher, or for anything it will not answer,
-// this is the synchronous child it always was.
+// just moved. Nor is a ref memo's recompute while the refresher is behind
+// (`direct` > 0, see § remembered). Without a running refresher, or for
+// anything it will not answer, this is the synchronous child it always was.
 let writing = 0;
+let direct = 0;
 function git(repo, args, options = {}) {
-  const plain = writing === 0 && options.stdio == null && options.env == null && options.maxBuffer == null;
+  const plain = writing === 0 && direct === 0 && options.stdio == null && options.env == null && options.maxBuffer == null;
   const encoding = options.encoding ?? "utf8";
   const memory = plain ? askRefresher(repo, args, encoding) : null;
   if (memory?.hit) return replay(memory.answer, repo, args);
@@ -350,6 +352,18 @@ export function readAtRef(repo, ref, path, encoding = "utf8") {
 // two main refs, the settlement tags' directory, HEAD). A few stat calls in
 // place of several git processes, and never a stale answer: a fetch, a push, a
 // new tag or a settlement's commit each touches one of those files.
+//
+// A RECOMPUTE ASKS GIT ITSELF WHILE THE REFRESHER IS BEHIND (POS-402, town
+// #3445). The memo files its answer under the stamp it read BEFORE computing,
+// so the compute must see the refs that stamp describes. Through the refresher
+// it may not: after a move, a read is answered from the refs as they stood
+// before until the refresher publishes (world-refresher.mjs). That behind
+// answer was then kept under the new stamp, and nothing computed it again until
+// a ref file moved again. S94 was tagged at 06:36:37Z on main's unchanged sha,
+// and the World header named S93 until the office restarted at 12:01Z. It hid
+// in a young process, whose refresher had not yet learned these questions and
+// sent them to git. So while the refresher is behind, the compute goes to git,
+// as a write does; once it has caught up, its answers are the refs' own.
 const gitDirOf = new Map();
 function refStamp(repo) {
   let dir = gitDirOf.get(repo);
@@ -368,7 +382,13 @@ function remembered(kind, repo, compute) {
   const stamp = refStamp(repo);
   const hit = refMemo.get(key);
   if (hit && hit.stamp === stamp) return hit.value;
-  const value = compute();
+  let value;
+  if (refresherBehind(repo)) {
+    direct++;
+    try { value = compute(); } finally { direct--; }
+  } else {
+    value = compute();
+  }
   refMemo.set(key, { stamp, value });
   return value;
 }
