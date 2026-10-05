@@ -297,6 +297,19 @@ test("with the record unreachable, sign-in refuses by name, and the pen opens no
   assert.deepEqual([captured.trees.length, captured.commits.length, captured.refs.length, captured.pulls.length], [0, 0, 0, 0],
     "no tree, no commit, no branch, no PR");
   assert.equal(execFileSync("git", ["-C", clone, "status", "--porcelain"], { encoding: "utf8" }), "", "and nothing in the town clone");
+
+  // AND A TOKEN ALREADY ISSUED is refused by name, not served as anonymous: the
+  // office cannot say which residents it acts for (server.mjs § handle).
+  const { DatabaseSync } = await import("node:sqlite");
+  const token = randomBytes(24).toString("base64url");
+  const odb = new DatabaseSync(join(tmp, "bare-oauth.db"));
+  odb.prepare("INSERT INTO tokens (token_hash, kind, gh_id, gh_login, client_id, expires, created) VALUES (?, 'access', ?, ?, 'test', ?, ?)")
+    .run(createHash("sha256").update(token).digest("base64url"), 999, "keeminlee", Math.floor(Date.now() / 1000) + 3600, Math.floor(Date.now() / 1000));
+  odb.close();
+  const read = await fetch(`${base}/town`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal(read.status, 503, "a live token whose household cannot be read is refused, not served as nobody");
+  assert.match((await read.json()).defect, /sign-in cannot read the town's record/);
+  assert.equal(captured.pulls.length, 0, "and still no PR");
 });
 
 test("residency validation bounces before the pen: taken, malformed, oversize", async () => {
