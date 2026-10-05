@@ -190,6 +190,8 @@ const ROSTER = {
   "deploy/welcome-pass.mjs": { args: [], code: 1, needle: "--town <town-clone> is required" },
   "deploy/settle-pass.mjs": { args: [], code: 1, needle: "--town <town-clone> is required" },
   "tools/rekey-household.mjs": { args: [], code: 1, needle: "--from <slug> --to <slug> --name" },
+  // --help: the usage line, before any clone, key or Postgres (a bare run builds the whole sandbox).
+  "tools/stamp-sandbox.mjs": { args: ["--help"], code: 0, needle: "usage: node tools/stamp-sandbox.mjs" },
   // world2/tools/
   // No --world-repo: stops on usage before any git read or Postgres connect (POS-212).
   "world2/tools/adopt-solo.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: adopt-solo.mjs" },
