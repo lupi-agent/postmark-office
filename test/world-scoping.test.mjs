@@ -273,29 +273,24 @@ test("world_open_your_eyes defaults to telling + compact objects and preserves d
   assert.ok(diagnostic.radial.byBearing, "the existing radial organization stays intact");
 });
 
-test("world_note overwrites one resident note on the household draft and orient reads it back", async () => {
-  const first = await worldNoteViaOffice(repo, { body: "Remember the blue door." }, houseA);
-  assert.equal(first.handle, "alpha");
-  assert.equal(first.path, "NOTES/alpha.md");
-  assert.equal(first.branch, "draft/house-a");
-  assert.equal(git("show", "draft/house-a:NOTES/alpha.md").trim(), "Remember the blue door.");
-  assert.equal(git("ls-tree", "--name-only", "main", "--", "NOTES/alpha.md").trim(), "");
-  assert.equal((await worldOrient({}, houseA)).note, "Remember the blue door.");
-  assert.equal((await worldOrient({}, houseB)).note, null, "another household cannot read the note");
+// The note's home is the store (POS-392, note-store.mjs); its store behaviour is
+// test/resident-notes.test.mjs, on a real Postgres. This office is pointed at no
+// record, so the door refuses and writes nothing anywhere, git included, and an
+// embodied orient reads a null note without claiming the record failed.
+test("world_note on an office with no record refuses, writes nothing to git, and orient reads a null note", async () => {
+  const refsBefore = git("for-each-ref", "--format=%(refname) %(objectname)");
+  const statusBefore = git("status", "--porcelain");
+  await assert.rejects(worldNoteViaOffice(repo, { body: "Remember the blue door." }, houseA),
+    (e) => e.code === 503 && /not pointed at a record/.test(e.defect));
+  assert.equal(git("for-each-ref", "--format=%(refname) %(objectname)"), refsBefore, "no ref moved: the note touched no branch");
+  assert.equal(git("status", "--porcelain"), statusBefore, "and left no file in the clone");
+  const embodied = await worldOrient({}, houseA);
+  assert.equal(embodied.note, null);
+  assert.equal("note_unavailable" in embodied, false, "no record is not a failed record");
+  assert.equal(embodied.standpoint.stance, "embodied");
   assert.equal((await worldOrient({ x: 0, y: 0 }, houseA)).note, null,
     "a spectator glance reads nobody's note — even your own (the 2026-07-31 unbundle)");
   assert.equal((await worldOrient({ x: 0, y: 0 }, houseA)).standpoint.stance, "spectator");
-  assert.equal((await worldOrient({}, houseA)).standpoint.stance, "embodied");
-
-  const second = await worldNoteViaOffice(repo, { body: "Bring the brass key." }, houseA);
-  assert.notEqual(second.commit, first.commit);
-  assert.equal(git("show", "draft/house-a:NOTES/alpha.md").trim(), "Bring the brass key.");
-  assert.equal((await worldOrient({}, houseA)).note, "Bring the brass key.");
-  assert.equal(
-    git("diff-tree", "--no-commit-id", "--name-only", "-r", second.commit).trim(),
-    "NOTES/alpha.md",
-    "a note overwrite commits only the resident's one note",
-  );
 });
 
 test("the draft delta carries WORLD-framed geometry — the overlay's whole contract (2026-08-22)", async () => {
