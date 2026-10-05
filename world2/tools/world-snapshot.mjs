@@ -94,6 +94,7 @@ try {
   const newest = await snapshotHeader(client);
   const isNewest = newest && newest.id === header.id;
   console.log(`snapshot ${header.id} · window ${header.window_id ?? "∅"} · ${header.marks} mark(s) · digest ${header.digest.slice(0, 12)} · taken ${new Date(header.taken_at).toISOString()}${isNewest ? " (the newest)" : ""}`);
+  if (header.source === "backfill") console.log(`  back-filled from settlement tag ${header.law_sha?.slice(0, 12)}; its ledger position was found ${header.town_sha_from === "named" ? "in the tag's own message" : "as town main at the tag's commit time"}`);
   console.log(`  law ${header.law_sha?.slice(0, 12) ?? "∅"} · town ${header.town_sha?.slice(0, 12) ?? "∅"} · world ${header.world_sha?.slice(0, 12) ?? "∅"} · register ${header.register_digest?.slice(0, 12) ?? "∅ (sealed before 064)"}`);
 
   // 1 · the digests

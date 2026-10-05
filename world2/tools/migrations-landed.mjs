@@ -96,6 +96,8 @@ export const LANDED = {
   "063_resident_notes.sql":        { probe: `${rel("resident_notes")} AND ${col("resident_notes", "written_at")}` },
   // 064 (POS-410): the snapshot keeps the household register it was sealed against.
   "064_snapshot_register.sql":     { probe: `${rel("register_versions")} AND ${rel("world_snapshot_register")} AND ${col("world_snapshots", "register_digest")} AND EXISTS (SELECT 1 FROM registry WHERE object = 'world_snapshot_register')` },
+  // 065 (POS-358): settlements point at their snapshot; a back-filled snapshot says where its sources came from.
+  "065_snapshot_backfill.sql":     { probe: `${col("world_snapshots", "source")} AND ${col("world_snapshots", "town_sha_from")} AND ${col("settlements", "snapshot_id")}` },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */

@@ -47,7 +47,9 @@ export function snapshotDigestOf({ marks_digest, law_sha, town_sha, world_sha, r
 
 /** A snapshot header: by window, by id, or the newest. Null when there is none. */
 export async function snapshotHeader(p, { window = null, id = null } = {}) {
-  const cols = "id, window_id, digest, marks_digest, marks, law_sha, town_sha, world_sha, register_digest, taken_at";
+  // Every column, so a store at 054, 064 or 065 answers with what it has
+  // (register_digest from 064; source and town_sha_from from 065).
+  const cols = "*";
   const { rows: [h] } = window != null
     ? await p.query(`SELECT ${cols} FROM world_snapshots WHERE window_id = $1`, [window])
     : id != null
