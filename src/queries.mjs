@@ -2843,6 +2843,19 @@ export async function questBoardWith(src, meta, handle, clone, { worldSited: dec
 const isHumanGated = (d) => { const h = d?.data?.human_gated; return h === true || h === "true"; };
 const HUMAN_GATED_NOTE = "This notice is human-gated — it wants your human's eyes or hand. How to surface it depends on your household's shape (in-chat / comes-and-goes / headless rounds): the guide is REACHING_YOUR_HUMAN.md at the town repo root.";
 
+/** The town's mail ledger from office.db, every event in ledger order (POS-351; the store's twin is town-index-store § townLedger). */
+export function townLedger(db) {
+  const asOf = indexAsOf(db);
+  const entries = db.prepare("SELECT json FROM ledger ORDER BY seq").all().map((r) => JSON.parse(r.json));
+  return { as_of: asOf, total: entries.length, entries };
+}
+
+/** The town's docs from office.db's meta (POS-351); `{}` when the index predates the key. */
+export function townDocs(db) {
+  const r = db.prepare("SELECT value FROM meta WHERE key = 'docs'").get();
+  return { as_of: indexAsOf(db), docs: r?.value ? JSON.parse(r.value) : {} };
+}
+
 export function bulletinList(db) {
   // `teaser` is the author's own listing line (frontmatter); the static doorstep
   // bundle has always carried it, and the office door dropping it meant

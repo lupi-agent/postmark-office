@@ -52,7 +52,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertSha } from "./law-ingest.mjs";
 import { readTown } from "../../vendor/tools/lib/town.mjs";
 import {
-  TOWN_TABLES, deriveTownIndex, readHistory, residentRows, letterRows, threadRows, bulletinRows,
+  TOWN_TABLES, deriveTownIndex, readHistory, residentRows, letterRows, threadRows, bulletinRows, townDocsValue,
   ledgerLines, mailStateRows, stampFold, stampTipOf, fundingRows, questRows, atlasRows,
 } from "../../src/town-index.mjs";
 import { isResidentHandle } from "../../src/residency.mjs";
@@ -390,6 +390,7 @@ export async function applyDelta(client, { townRepo, head, sha, log = quiet }) {
       threads: town.threads.length, ledger: town.ledger.length,
       bulletin: (town.bulletin ?? []).length,
     })],
+    ["docs", townDocsValue(town)], // POS-351, in the seed's position (src/town-index.mjs)
   ];
   if (hasStamps) metaRows.push(["stamps_minted", minted], ["stamps_tip", tip]);
   if (q) metaRows.push(["quest_day", q.questDay], ["quest_registry", q.questRegistry]);

@@ -38,7 +38,7 @@ import { standingBounce, standingOf, isSuspended, bounceSentence, STANDING_BOUNC
 import { rolesSchema, roleGate, roleGatesOn, ROLE_SUBSCRIBER } from "./roles.mjs";
 import { openPaper, paperworkStoreOn } from "./paperwork.mjs"; // POS-271: sign-in, roles, the media ledger and the town log, one door
 import { arrivalPage } from "./arrival.mjs";
-import { townSummary, residentList, residentPage, resident, mailList, letter, search, bulletinList, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, regionOne, home, identityOf, repoLog } from "./queries.mjs";
+import { townSummary, residentList, residentPage, resident, mailList, letter, search, bulletinList, bulletinEntry, townLedger, townDocs, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, regionOne, home, identityOf, repoLog } from "./queries.mjs";
 import { householdOf } from "./households.mjs";
 import * as townIndexStore from "./town-index-store.mjs"; // the office.db readers moved to the store (POS-268)
 import { probeOf, isUnreachable } from "./index-probe.mjs"; // the write path's questions of the index, office.db's or the store's (POS-268)
@@ -2023,6 +2023,17 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       if (path === "/bulletin") {
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.bulletinList(c));
         return j(res, 200, bulletinList(db));
+      }
+
+      // POS-351: the town's mail ledger and docs, so the site's ledger.json and
+      // docs.json come through the office and never from a town checkout.
+      if (path === "/town/ledger") {
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.townLedger(c));
+        return j(res, 200, townLedger(db));
+      }
+      if (path === "/town/docs") {
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.townDocs(c));
+        return j(res, 200, townDocs(db));
       }
 
       if ((m = /^\/bulletin\/([a-z0-9-]+)$/.exec(path))) {
