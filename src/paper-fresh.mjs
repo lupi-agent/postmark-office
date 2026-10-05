@@ -94,6 +94,17 @@ import { readWindowState } from "./panes.mjs";
 import { pendingPaperRows, PAPER_ACTS, SETTLES_AT } from "./town-updates.mjs";
 import { standingOf, isSuspended } from "./standing.mjs";
 
+// The read's own road to standing: through the town index's read when the
+// office is switched to the store (the pool every read worker already holds),
+// else the record's one pool. Same table, same answer.
+async function standingForRead(handle) {
+  const { townIndexReads, readTownIndex } = await import("./town-index-store.mjs");
+  if (!townIndexReads()) return standingOf(handle);
+  const { standingForHandlesVia } = await import("./standing-store.mjs");
+  const { out } = await readTownIndex((c) => standingForHandlesVia(c, [handle]));
+  return out.get(handle) ?? null;
+}
+
 /** The rungs, in order. Exported because the site's encoding names them. */
 export const TENSE = Object.freeze({ settled: "settled", written: "written", pending: "pending" });
 export const TENSES = Object.freeze(["settled", "written", "pending"]);
@@ -187,7 +198,7 @@ export async function freshFor(handle, { odb = null, clone = null, asOf = null }
   try { pendingRows = await pendingPaperRows(odb, handle); } catch { /* garnish only */ }
   let suspended = false;
   if (handle) {
-    try { suspended = isSuspended(await standingOf(handle)); }
+    try { suspended = isSuspended(await standingForRead(handle)); }
     catch { suspended = true; /* unreadable: no overlay, the settled index answers */ }
   }
   return { clone, asOf, pendingRows, suspended };

@@ -333,12 +333,6 @@ test("S7 · REST AND MCP: writes bounce, reads pass, lift reopens, revoke shuts 
     ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath, "--oauth-db", odbPath], {
       env: {
         ...process.env, ...IX_ENV, OFFICE_KEYS: `${KEY}=keemin:wright`,
-        // PROD'S WORKER COUNT (4 cores − 1). Since POS-347 every read worker
-        // opens the record's acts pool (max 2) for the freshness ladder's
-        // standing read, and at this machine's default (cores − 1 = 15) the
-        // spawned office overran the suite store's 100 connections. Named in
-        // the PR as a finding about prod's shared cluster, not hidden here.
-        OFFICE_READ_WORKERS: "3",
         TOWN_CLONE: clone, WORLD_CLONE: join(work, "no-world"), VOICES_LOG: join(work, "voices.jsonl"), TOWN_PUSH: "",
       },
       stdio: ["ignore", "pipe", "pipe"],

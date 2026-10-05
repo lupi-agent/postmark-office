@@ -45,13 +45,28 @@ export async function loadStandingActs(env = process.env) {
  * (060's `standing_acts_handle_idx`), so a lift lands at the next call, never
  * at a restart or a pull.
  */
+const FOR_HANDLES_SQL = `SELECT DISTINCT ON (handle) id, date, act, handle, by_who, founder_word, reason, line, source, actor
+       FROM standing_acts WHERE handle = ANY($1::text[]) ORDER BY handle, id DESC`;
+
 export async function standingForHandles(handles, env = process.env) {
   const list = [...new Set([...(handles ?? [])].map(String))];
   if (!list.length) return new Map();
-  const rows = await actsQuery(
-    `SELECT DISTINCT ON (handle) id, date, act, handle, by_who, founder_word, reason, line, source, actor
-       FROM standing_acts WHERE handle = ANY($1::text[]) ORDER BY handle, id DESC`, [list], env);
+  const rows = await actsQuery(FOR_HANDLES_SQL, [list], env);
   if (rows === null) return null;
+  return foldRecords(rows.map(recordOfRow)).standing;
+}
+
+/**
+ * The same read on a client the caller already holds (`c.query`). The
+ * freshness ladder asks standing on every resident read, and those run in the
+ * read workers; on a switched office (TOWN_INDEX_READS=store) it rides the
+ * town index's own read (src/paper-fresh.mjs § freshFor) rather than open a
+ * second pool in every worker on a cluster dev and prod share.
+ */
+export async function standingForHandlesVia(c, handles) {
+  const list = [...new Set([...(handles ?? [])].map(String))];
+  if (!list.length) return new Map();
+  const { rows } = await c.query(FOR_HANDLES_SQL, [list]);
   return foldRecords(rows.map(recordOfRow)).standing;
 }
 
