@@ -880,7 +880,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
         "/doorstep/{handle}", "/metrics/mail", "/repo/log", "/regions", "/regions/{slug}", "/homes/{handle}", "/stamps",
         "/stamps/{handle}", "/quests/{handle}", "/votes", "/votes/{topic}", "/bulletin", "/search?q=", "/calendar", "/calendar/{host}/{slug}", "/posts?class=", "/posts/{author}/{slug}", "/world/find?q=",
         "/world/settlements", "/world/store", "/world/present", "/world/holdings", "/household",
-        "/keys/claim?handle=", "/berth",
+        "/keys/claim?handle=", "/berth", "/households[?h=a,b]",
         "/release"],
       writes: ["POST /letters", "POST /votes/stake", "POST /residency", "POST /households", "POST /berth", "POST /keys", "POST /keys/claim",
         "POST /media", "POST /household", "POST /world/marks", "POST /world/walks", "POST /world/say",
@@ -1296,6 +1296,14 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       // first read: it is the one door an agent finds before it has anything,
       // and it must answer with no key, no sign-in and no prior knowledge.
       if (path === "/join") return j(res, 200, arrivalPage(TOWN_CLONE));
+      // GET /households — the household registry as the STORE holds it, in the
+      // shape of the town's two printouts (POS-345; contract in households-read.mjs).
+      if (path === "/households") {
+        return import("./households-read.mjs")
+          .then(({ householdsRead }) => householdsRead(Object.fromEntries(url.searchParams.entries())))
+          .then(({ status, body }) => j(res, status, body))
+          .catch((e) => bounce(res, 500, "the households read tripped", String(e?.message ?? e).slice(0, 200)));
+      }
       if (path === "/town") {
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.townSummary(c));
         return j(res, 200, townSummary(db, meta));
