@@ -1147,17 +1147,20 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     // THE MARKS READ IS FOR THE ANCHORS, not for the marks. A live say stores
     // the witnessed line (anchor + offset), so composing it back to a point
     // needs the anchor mark's centre — world.mjs's own
-    // `(id) => marks.find((m) => m.id === id)?.at`.
+    // `(id) => marks.find((m) => m.id === id)?.at`. Every mark the store holds,
+    // retired ones too: a say happened where its anchor stood at the time. A say
+    // whose anchor is in no row at all is left out and disclosed by count; it
+    // never fails the read (#351: 187 of them 500'd every caller on prod).
     const at = clockOf(searchParams);
     if (at.error) return at.error;
     const n = (k, d) => { const v = Number(searchParams?.get(k)); return Number.isFinite(v) && v > 0 ? v : d; };
     const [{ rows }, { rows: markRows }] = await Promise.all([
       p.query(`SELECT id, at, actor, action, at_anchor, at_dx, at_dy, payload FROM acts
                 WHERE action = ANY($1) ${talk.VOICE_ORDER_SQL}`, [talk.VOICE_ACTIONS]),
-      p.query("SELECT slug, geometry, data FROM marks WHERE status = 'standing'"),
+      p.query(talk.ANCHOR_MARKS_SQL),
     ]);
-    const centres = new Map(markRows.map((m) => [m.slug, m.geometry?.at ?? null]));
-    const dials = talk.sayDials(markRows);
+    const centres = talk.anchorCentres(markRows);
+    const dials = talk.sayDials(markRows.filter((m) => m.status === "standing"));
     let derived;
     try { derived = talk.voiceRecords(rows, { centreOf: (id) => centres.get(id) ?? null }); }
     catch (e) { return { code: 500, body: { error: "bounce", defect: "a voice act matches no known era", hint: String(e.message).slice(0, 400) } }; }
@@ -1169,13 +1172,17 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
       closedMax: n("closed", 40), voiceCap: n("voices", 80),
     });
     const fellBack = talk.sayDialsDisclosure(dials);
+    const unplacedLine = talk.unplacedDisclosure(derived.unplaced);
     return { code: 200, body: {
       what: "every conversation in the world, live ones first — a thread is a derivation over the record, not an object",
       evaluated_at: new Date(at.ms).toISOString(),
       voices: derived.voices.length, eras: derived.eras,
       dials: Object.fromEntries(Object.entries(dials).map(([k, d]) => [k, { value: d.value, source: d.source }])),
       ...body,
-      disclosed: [talk.DISCLOSURES.eras, talk.DISCLOSURES.presence, talk.DISCLOSURES.no_window, ...(fellBack ? [fellBack] : [])],
+      ...(unplacedLine ? { unplaced_says: { count: derived.unplaced.length,
+        example: { act_id: derived.unplaced[0].act_id, anchor: derived.unplaced[0].anchor } } } : {}),
+      disclosed: [talk.DISCLOSURES.eras, talk.DISCLOSURES.presence, talk.DISCLOSURES.no_window,
+        ...(fellBack ? [fellBack] : []), ...(unplacedLine ? [unplacedLine] : [])],
     } };
   }
 

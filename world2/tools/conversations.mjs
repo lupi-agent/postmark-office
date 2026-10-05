@@ -257,8 +257,13 @@ export function composeAnchor({ anchor, dx, dy }, centreOf = null) {
 // bare x,y because that is the photograph the crossing log took; the live era
 // stores an anchor and an offset because the 2026-08-23 witnessed-line ruling
 // said a bare world x,y is "a photograph of a moving thing". A live say whose
-// anchor cannot be resolved to a point is REFUSED rather than placed at {0,0} —
-// composeAnchor's own refusal, carried up.
+// anchor cannot be resolved to a point is never placed at {0,0} — composeAnchor's
+// own refusal, carried up. It is UNPLACED, which is not the same as refused: the
+// act is understood (who, when, what was said), only its place is lost, because
+// the anchor mark is gone from the store (postmark-office#351: act 2971's
+// vermillion/the-track-garage was withdrawn on 2026-09-02, before the store was
+// seeded). An unplaced say is left out of the clustering and disclosed by count;
+// it never fails the read.
 
 export const VOICE_ACTIONS = Object.freeze(["legacy:emission", "emission", "say"]);
 export const VOICE_ORDER_SQL = "ORDER BY acts.at, acts.id";
@@ -298,7 +303,7 @@ export function voiceOf(row, centreOf = null) {
     if (!handle || !Number.isFinite(at)) return { refused: true, reason: `act ${row?.id} is a say with no actor or no instant` };
     const point = composeAnchor({ anchor: row.at_anchor, dx: row.at_dx, dy: row.at_dy }, centreOf);
     if (!point) {
-      return { refused: true, reason:
+      return { unplaced: true, act_id: String(row?.id), anchor: row.at_anchor ?? null, reason:
         `act ${row?.id} is a say whose witnessed line does not compose to a point ` +
         `(anchor ${JSON.stringify(row.at_anchor)}, offset ${row.at_dx},${row.at_dy}) — ` +
         `a voice with no place cannot be clustered, and {0,0} is the Origin, a real place somebody could be standing` };
@@ -324,16 +329,22 @@ export function voiceOf(row, centreOf = null) {
  * `strict` refuses the whole read on an act no era explains, matching
  * `departureRecords`. A door that answered around an unreadable act would serve
  * a conversation with a hole in it and call it the record.
+ *
+ * AN UNPLACED SAY IS NOT AN UNREADABLE ACT. It is left out of `voices` and
+ * returned in `unplaced`, so the door can say how many it could not place.
+ * Refusing the whole read on it is what 500'd every caller on prod (#351).
  */
 export function voiceRecords(rows, { centreOf = null, strict = true } = {}) {
   const voices = [];
   const refusals = [];
+  const unplaced = [];
   const eras = { crystallized: 0, live: 0 };
   let skipped = 0;
   for (const row of rows ?? []) {
     const r = voiceOf(row, centreOf);
     if (r.skip) { skipped += 1; continue; }
     if (r.refused) { refusals.push(r.reason); continue; }
+    if (r.unplaced) { unplaced.push({ act_id: r.act_id, anchor: r.anchor, reason: r.reason }); continue; }
     eras[r.era] += 1;
     // The era rides the record. It decides nothing about clustering — a voice is
     // a voice — but the equality falsifier has to scope its comparison per era,
@@ -345,7 +356,29 @@ export function voiceRecords(rows, { centreOf = null, strict = true } = {}) {
   if (strict && refusals.length) {
     throw new Error(`${refusals.length} voice act(s) match no known era, e.g.\n  ${refusals[0]}`);
   }
-  return { voices, eras, refusals, non_sound_emissions: skipped };
+  return { voices, eras, refusals, unplaced, non_sound_emissions: skipped };
+}
+
+/**
+ * The anchors' centres, from EVERY mark the store holds, standing or retired.
+ * A say happened where its anchor stood at the time; a mark retired since is
+ * still the store's record of that place, so its last geometry composes the
+ * line. (The say dials are law and read only what stands: that filter belongs
+ * to `sayDials`'s caller, not here.)
+ */
+export const ANCHOR_MARKS_SQL = "SELECT slug, status, geometry, data FROM marks";
+export function anchorCentres(markRows = []) {
+  return new Map(markRows.map((m) => [m.slug, m.geometry?.at ?? null]));
+}
+
+/** The answer's line about the says it could not place, or null when it placed them all. */
+export function unplacedDisclosure(unplaced = []) {
+  if (!unplaced.length) return null;
+  const e = unplaced[0];
+  return `${unplaced.length} say${unplaced.length === 1 ? "" : "s"} could not be placed and ${unplaced.length === 1 ? "is" : "are"} left out of every ` +
+    `conversation: the witnessed line does not compose to a point, most often because the anchor mark is in no row of the store ` +
+    `(e.g. act ${e.act_id}, anchor ${JSON.stringify(e.anchor)}). ` +
+    "A say with no place is never put at {0,0}, the Origin, a real place somebody could be standing.";
 }
 
 /**

@@ -302,14 +302,15 @@ async function main() {
     const { rows } = await client.query(
       `SELECT id, at, actor, action, at_anchor, at_dx, at_dy, payload FROM acts
         WHERE action = ANY($1) ${talk.VOICE_ORDER_SQL}`, [talk.VOICE_ACTIONS]);
-    const { rows: markRows } = await client.query("SELECT slug, geometry, data FROM marks WHERE status = 'standing'");
-    const centres = new Map(markRows.map((m) => [m.slug, m.geometry?.at ?? null]));
+    // The door's own anchors (every mark the store holds) and its own dials (only what stands).
+    const { rows: markRows } = await client.query(talk.ANCHOR_MARKS_SQL);
+    const centres = talk.anchorCentres(markRows);
 
     let derived;
     try { derived = talk.voiceRecords(rows, { centreOf: (id) => centres.get(id) ?? null }); }
     catch (e) { die(`the port refuses an act it cannot explain, so there is nothing to compare: ${e.message}`); }
 
-    const dials = talk.sayDials(markRows);
+    const dials = talk.sayDials(markRows.filter((m) => m.status === "standing"));
     const earshotM = dials.earshot_m.value;
     const closeMs = dials.conversation_lull_min.ms;
     const fadeMs = dials.fade_min.ms;
@@ -377,6 +378,7 @@ async function main() {
       findings: Object.values(e).flatMap((r) => r.findings),
       vendor_drift: vendorDrift(OFFICE),
       refusals: derived.refusals,
+      unplaced: derived.unplaced,
       allowlist: LOST_TO_THE_PRE_FIX_ERA.map((l) => ({ ...l, exercised: (c1.excused ?? []).includes(`${Date.parse(l.at)}|${l.handle}`) })),
     };
 
@@ -449,12 +451,14 @@ async function main() {
         return { bit: derived.voices.length, findings: c3Page(oracleBody, bent).findings };
       });
       // 6 · A REFUSAL SWALLOWED — an act shape no era explains, skipped instead
-      //     of named. Aimed at `voiceRecords`' own strictness.
+      //     of named. Aimed at `voiceRecords`' own strictness. A say with no
+      //     actor is unreadable; a say whose anchor is gone is only UNPLACED and
+      //     is answered around and disclosed (#351), so it is not this proof's act.
       proof("an unreadable voice act skipped instead of refused", () => {
-        const forged = { id: "999999", at: new Date(), actor: "nobody", action: "say", at_anchor: "no/such-mark", at_dx: 1, at_dy: 1, payload: { text: "" } };
+        const forged = { id: "999999", at: new Date(), actor: null, action: "say", at_anchor: "world", at_dx: 1, at_dy: 1, payload: { text: "" } };
         let threw = false;
-        try { talk.voiceRecords([...rows, forged], { centreOf: () => null }); } catch { threw = true; }
-        return { bit: 1, findings: threw ? ["the strict read refuses a say whose witnessed line does not compose"] : [] };
+        try { talk.voiceRecords([...rows, forged], { centreOf: (id) => centres.get(id) ?? null }); } catch { threw = true; }
+        return { bit: 1, findings: threw ? ["the strict read refuses a say with no actor"] : [] };
       });
       // 7 · THE ALLOWLIST MUST BE A ROW, NOT A WINDOW. A second loss inside the
       //     era must not shelter behind the first one's excuse. Taken from the

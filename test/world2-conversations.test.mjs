@@ -62,13 +62,22 @@ test("a live say composes its point from the WITNESSED LINE — anchor plus offs
   assert.deepEqual({ x: r.voice.x, y: r.voice.y }, { x: 1402, y: 5658 });
 });
 
-test("a live say whose anchor does not resolve is REFUSED, never placed at {0,0}", () => {
+test("a live say whose anchor does not resolve is UNPLACED, never placed at {0,0}, and never refused (#351)", () => {
   // "{x:0,y:0} is the Origin, a real place somebody could be standing, and
   //  a deriver that substitutes it for 'unknown' is the exact quiet substitution
   //  the customs-house law forbids."
   const r = voiceOf(say(), () => null);
-  assert.equal(r.refused, true);
+  assert.equal(r.unplaced, true);
+  assert.equal(r.voice, undefined, "no point is made up for it");
+  assert.equal(r.refused, undefined, "the act is understood; only its place is lost");
+  assert.deepEqual({ act_id: r.act_id, anchor: r.anchor }, { act_id: "2", anchor: "the-town/the-quay" });
   assert.match(r.reason, /does not compose to a point/);
+});
+
+test("voiceRecords answers AROUND an unplaced say and returns it, where an unreadable act still throws", () => {
+  const { voices, unplaced } = voiceRecords([emission(), say()], { centreOf: () => null });
+  assert.equal(voices.length, 1);
+  assert.deepEqual(unplaced.map((u) => u.act_id), ["2"]);
 });
 
 test("composeAnchor checks `dx == null` FIRST — Number(null) is 0, not NaN", () => {
