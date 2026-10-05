@@ -168,10 +168,10 @@ export function escrowLines({ refused = [], unchecked = [] } = {}, townSha) {
  *
  * `fold-input.mjs § stakesFromStore` answers the WEIGHT question: it carries the
  * `weight_k` dial, refuses a sha whose rows disagree about k, and reproduces the
- * town's own walk order because the fold consumes an ordered array. This gate
- * asks a BOOLEAN — has this mark any open stamps at this sha — and importing the
- * weight derivation for a boolean would drag k's torn-ingest rules into a check
- * that performs no arithmetic. One question, one reader.
+ * town's own walk order because the fold consumes an ordered array. The gates
+ * here ask for RAW open stamps per mark (5.5 whether any; step 3, POS-411, how
+ * many), and importing the weight derivation for that would drag k's torn-ingest
+ * rules into checks that never price weight. One question, one reader.
  *
  * What IS taken from it, verbatim in spirit, is the empty-set discipline: no
  * rows for a sha is a REFUSAL to answer, never "nobody stakes". Its own words —
@@ -189,4 +189,66 @@ export async function escrowPresenceAt(q, { townSha } = {}) {
     "SELECT mark, sum(n)::int AS n FROM escrow_projection WHERE town_sha = $1 GROUP BY mark", [townSha]);
   if (!rows.length) return null;
   return new Map(rows.map((r) => [r.mark, Number(r.n)]));
+}
+
+/** The check name step 3 writes into `claims.refusal_check` (`mark-receipt.mjs` maps it to `unbacked`). */
+export const INSUFFICIENT_CHECK = "insufficient-stamps";
+
+/**
+ * Which staked claims are not backed — the clearing's step 3 (POS-411).
+ *
+ * ── A STAKE IS JUDGED FROM ITS OWN RECORD ───────────────────────────────────
+ *
+ * THE INSTANCE: window 231 refused `special-delibry/the-starling-house-mailbox`
+ * with `staked 1, liquid 0`. Lyra had staked 1 on it, the ledger had moved her
+ * stamp, and escrow_projection held `wayward-archivist · 1` on the mark at the
+ * window's own town sha. The old step summed `claims.stake` per CLAIMANT and
+ * asked for the claimant's liquid, and both halves were wrong:
+ *
+ *   - `claims.stake` is the number the STAKER asked, written onto the AUTHOR's
+ *     claim by the promotion (`promoteDraftOnStake`, `stake = GREATEST(stake,
+ *     n)`; ruled 2026-09-12 to stay the number asked). Nothing on the row names
+ *     who staked. A housemate's stake on the author's draft is charged to the
+ *     author.
+ *   - liquid excludes escrow (merge ruling 2, world2/tools/README.md), so a stake
+ *     the ledger has already moved has LEFT the liquid the old step counted it
+ *     against. lu-yu staked both of her two stamps and was refused on both.
+ *
+ * The record of a stake is the ledger line, and escrow_projection is its
+ * projection: `(mark, holder, n)` at this sha. So the stamps open in escrow on a
+ * claim's own mark back it, whoever holds them. Only the part of the ask with no
+ * escrow behind it (a stake whose ledger line is not in the pinned town read, or
+ * a stake the ledger clipped) still asks the liquid question. That remainder has
+ * no staker on any record, so it is judged against the claimant, the only name
+ * the claim carries, summed over the claimant's window as before. Ruling 2 is
+ * kept: liquid stays liquid, and it is asked only of stamps still liquid.
+ *
+ * PURE: two Maps in, refusals out.
+ *
+ * @param claims       `[{ id, slug, claimant, stake }]` — the undecided claims.
+ * @param escrowByMark `escrowPresenceAt`'s Map, or NULL when it could not answer.
+ *                     NULL is not zero escrow: every stake then asks liquid, which
+ *                     is the old rule exactly, and `escrowUnread` says so.
+ * @param liquidOf     Map handle → stamp_projection balance at this sha.
+ */
+export function unbackedStakesAmong(claims, { escrowByMark, liquidOf, townSha } = {}) {
+  const short = new Map(); // claimant -> { asked, held, ids: [{ id, slug }] }
+  for (const c of claims) {
+    const asked = Number(c.stake ?? 0);
+    if (asked <= 0) continue;
+    const held = Math.min(asked, escrowByMark == null ? 0 : Number(escrowByMark.get(c.slug) ?? 0));
+    if (held >= asked) continue;
+    const s = short.get(c.claimant) ?? { asked: 0, held: 0, ids: [] };
+    s.asked += asked; s.held += held; s.ids.push({ id: c.id, slug: c.slug });
+    short.set(c.claimant, s);
+  }
+  const at = String(townSha ?? "?").slice(0, 8);
+  const refused = [];
+  for (const [claimant, s] of short) {
+    const liquid = Number(liquidOf?.get?.(claimant) ?? 0);
+    if (liquid >= s.asked - s.held) continue;
+    for (const { id, slug } of s.ids)
+      refused.push({ id, slug, check: `${INSUFFICIENT_CHECK}: staked ${s.asked}, held ${s.held}, liquid ${liquid} at town ${at}` });
+  }
+  return { refused, escrowUnread: escrowByMark == null };
 }
