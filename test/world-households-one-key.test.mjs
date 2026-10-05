@@ -28,6 +28,12 @@ import { loginKeys, householdsOf, oneKeyPerHouse } from "../src/household-logins
 const OFFICE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const scratch = mkdtempSync(join(tmpdir(), "postmark-one-key-"));
 after(() => { try { rmSync(scratch, { recursive: true, force: true }); } catch { /* litter */ } });
+// THE STORE the export renders (POS-350): it reads the registry from the store,
+// never the fixture town's printouts, so each run re-states the store from them.
+import { registryStoreForTowns } from "./helpers/office-under-test.mjs";
+const REG = await registryStoreForTowns({ db: "one_key_test" });
+after(() => REG.stop());
+
 
 const ACCOUNT = { login: "commander-and-chief", id: 334016343 };
 
@@ -58,7 +64,7 @@ const DECLARED = {
   },
 };
 
-function run(label, { declared = DECLARED } = {}) {
+async function run(label, { declared = DECLARED } = {}) {
   const town = join(scratch, `${label}-town`);
   mkdirSync(join(town, "tools"), { recursive: true });
   const entries = Object.entries(LEDGER).map(([h, key]) => `["${h}", { key: ${JSON.stringify(key)} }]`);
@@ -67,13 +73,14 @@ function run(label, { declared = DECLARED } = {}) {
   if (declared) writeFileSync(join(town, "tools", "households.json"), JSON.stringify(declared));
   const world = join(scratch, `${label}-world`);
   mkdirSync(join(world, "WORLD"), { recursive: true });
+  await REG.seedFrom(town);
   const out = execFileSync(process.execPath, [join(OFFICE, "tools", "world-households-export.mjs"), "--town", town, "--world", world],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...REG.env } });
   return { out, emitted: JSON.parse(readFileSync(join(world, "WORLD", "households.json"), "utf8")) };
 }
 
-test("House of Many Doors: an office-declared resident and three PR-joined residents under one account get ONE key", () => {
-  const { emitted } = run("hmd");
+test("House of Many Doors: an office-declared resident and three PR-joined residents under one account get ONE key", async () => {
+  const { emitted } = (await run("hmd"));
   for (const h of ["kinofire", "seasiren", "wayward-archivist", "wildcat"])
     assert.equal(emitted.households[h], "hh:house-of-many-doors", `${h} is the house's`);
   assert.equal(emitted.logins["commander-and-chief"], "hh:house-of-many-doors", "the account's login points at the house");
@@ -87,8 +94,8 @@ test("House of Many Doors: an office-declared resident and three PR-joined resid
   assert.equal(author, branch, "the wall reads one household on both sides");
 });
 
-test("a re-keyed house: its resident and its former sketchbook name resolve to the current key", () => {
-  const { emitted } = run("rekeyed");
+test("a re-keyed house: its resident and its former sketchbook name resolve to the current key", async () => {
+  const { emitted } = (await run("rekeyed"));
   assert.equal(emitted.households["emmett-songbound"], "hh:the-held-place-at-fern-hollow");
   assert.equal(emitted.logins["the-held-place-at-fern-hollow"], "hh:the-held-place-at-fern-hollow");
   assert.equal(emitted.logins["the-held-place.-a-long-old-key"], "hh:the-held-place-at-fern-hollow",
@@ -96,15 +103,15 @@ test("a re-keyed house: its resident and its former sketchbook name resolve to t
   assert.equal(emitted.logins["sunflower-vertigo"], "hh:the-held-place-at-fern-hollow");
 });
 
-test("a handle no declared house lists keeps its ledger key; every login binds a key some handle carries", () => {
-  const { emitted } = run("undeclared");
+test("a handle no declared house lists keeps its ledger key; every login binds a key some handle carries", async () => {
+  const { emitted } = (await run("undeclared"));
   assert.equal(emitted.households.wanderer, "solo:wanderer");
   for (const [name, key] of Object.entries(emitted.logins))
     assert.ok(Object.values(emitted.households).includes(key), `logins["${name}"] binds ${key}, which no handle carries`);
 });
 
-test("a town with no households.json keeps the ledger's keys exactly (nothing to resolve to)", () => {
-  const { emitted } = run("none", { declared: null });
+test("a town with no households.json keeps the ledger's keys exactly (nothing to resolve to)", async () => {
+  const { emitted } = (await run("none", { declared: null }));
   assert.deepEqual(emitted.households, Object.fromEntries(Object.entries(LEDGER).sort(([a], [b]) => a.localeCompare(b))));
 });
 

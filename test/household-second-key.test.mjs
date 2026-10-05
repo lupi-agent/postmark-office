@@ -49,6 +49,12 @@ const OFFICE = resolve(HERE, "..");
 
 const scratch = mkdtempSync(join(tmpdir(), "postmark-second-key-"));
 after(() => { try { rmSync(scratch, { recursive: true, force: true }); } catch { /* litter */ } });
+// THE STORE the export renders (POS-350): it reads the registry from the store,
+// never the fixture town's printouts, so each run re-states the store from them.
+import { registryStoreForTowns } from "./helpers/office-under-test.mjs";
+const REG = await registryStoreForTowns({ db: "second_key_test" });
+after(() => REG.stop());
+
 
 const PINS = { "aion-solare": { login: "aionsolare", id: 293432145 } };
 // EVERY SHAPE, AND ONE OF THEM CARRIES A DOT ON PURPOSE. `hh:cadaeic.space` is a
@@ -91,18 +97,19 @@ function fixtureTown(label, { households = HOUSEHOLDS, pins = PINS } = {}) {
   return repo;
 }
 
-function runExport(label, opts) {
+async function runExport(label, opts) {
   const town = fixtureTown(`${label}-town`, opts);
   const world = join(scratch, `${label}-world`);
   mkdirSync(join(world, "WORLD"), { recursive: true });
+  await REG.seedFrom(town);
   const out = execFileSync(process.execPath,
     [join(OFFICE, "tools", "world-households-export.mjs"), "--town", town, "--world", world],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...REG.env } });
   return { out, emitted: JSON.parse(readFileSync(join(world, "WORLD", "households.json"), "utf8")) };
 }
 
-test("H1 · the emitted registry binds a household of EVERY shape the town can mint", () => {
-  const { emitted } = runExport("h1");
+test("H1 · the emitted registry binds a household of EVERY shape the town can mint", async () => {
+  const { emitted } = (await runExport("h1"));
 
   assert.equal(emitted.logins.aionsolare, "gh:293432145",
     "the pin's own binding is untouched — this projection adds to the map, it never answers over it");
@@ -145,7 +152,7 @@ test("H2 · THE MONEY MAP DOES NOT MOVE — loginKeys and the card rail gain not
     "and the hands projection is unchanged, which is what the rail asks about a house");
 });
 
-test("H3 · idempotent — a second pass over the merged map plants nothing", () => {
+test("H3 · idempotent — a second pass over the merged map plants nothing", async () => {
   // The export re-runs on pin churn. A projection that grows every run is a
   // projection nobody can diff, and the diff is how a person reviews this file.
   const first = project();
@@ -154,8 +161,8 @@ test("H3 · idempotent — a second pass over the merged map plants nothing", ()
   assert.deepEqual(second.additions, {}, "every key it would bind is already bound");
   assert.deepEqual(second.collisions, [], "and it does not report its own first pass as a collision");
 
-  const a = runExport("h3a").emitted.logins;
-  const b = runExport("h3b").emitted.logins;
+  const a = (await runExport("h3a")).emitted.logins;
+  const b = (await runExport("h3b")).emitted.logins;
   assert.deepEqual(a, b, "two runs of the tool over the same town emit the same map");
 });
 
@@ -166,7 +173,7 @@ test("H3 · idempotent — a second pass over the merged map plants nothing", ()
 // after one of two candidates would tell the wall that one household's marks
 // belong to the other, and the wall would then act on it.
 
-test("H4 · a name a real login already holds is LEFT ALONE and said out loud", () => {
+test("H4 · a name a real login already holds is LEFT ALONE and said out loud", async () => {
   const households = { ...HOUSEHOLDS, someone: "hh:aionsolare" };
   const { logins, additions, collisions } = project(households);
   assert.equal(logins.aionsolare, "gh:293432145", "the pin still owns the name");
@@ -177,7 +184,7 @@ test("H4 · a name a real login already holds is LEFT ALONE and said out loud", 
   assert.deepEqual(c.keys, ["hh:aionsolare"]);
   assert.equal(c.holds, "gh:293432145", "the report names what already holds the name");
 
-  const { out } = runExport("h4", { households });
+  const { out } = (await runExport("h4", { households }));
   assert.equal(JSON.parse(readFileSync(join(scratch, "h4-world", "WORLD", "households.json"), "utf8"))
     .logins.aionsolare, "gh:293432145", "and the emitted file keeps the pin's answer");
   assert.match(out, /1 key\(s\) LEFT UNBINDABLE/, "the run says a key was left unbindable");

@@ -255,13 +255,16 @@ import { currentCrossing } from "../../src/crossings.mjs";
 const SCRATCH_WINDOW = currentCrossing();
 
 async function plantPopulation(ownerClient, dbPath) {
-  // identities — `householdKeyFor` reads this to resolve the household KEY, and
-  // an unseeded roster would make every claim `solo:<handle>` and G2 red for a
-  // reason that is the harness's rather than the port's.
-  for (const [k, handle] of Object.entries(ACTORS))
-    await ownerClient.query(
-      "INSERT INTO identities (handle, household, status) VALUES ($1,$2,'resident') ON CONFLICT (handle) DO UPDATE SET household = EXCLUDED.household",
-      [handle, HOUSEHOLD_KEY[k]]);
+  // identities — a VIEW over the registry since 055 (POS-350), so the
+  // registry seeded below is what fills it. On a floor that predates 055 it is
+  // still the law pen's table, and the seed it always had is kept for that case.
+  const identitiesIsTable = (await ownerClient.query(
+    "SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'identities' AND c.relkind = 'r'")).rows.length > 0;
+  if (identitiesIsTable)
+    for (const [k, handle] of Object.entries(ACTORS))
+      await ownerClient.query(
+        "INSERT INTO identities (handle, household, status) VALUES ($1,$2,'resident') ON CONFLICT (handle) DO UPDATE SET household = EXCLUDED.household",
+        [handle, HOUSEHOLD_KEY[k]]);
 
   // THE REGISTRY, which is what `householdKeyFor` reads since POS-160 — the
   // store-of-record 019 made these three tables into, rather than the world

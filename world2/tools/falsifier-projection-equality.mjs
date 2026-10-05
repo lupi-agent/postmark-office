@@ -131,30 +131,20 @@ async function checkLaw(client, lawRepo) {
       `This pen never moves a checkout — put it at the recorded sha. Comparing against a different sha would prove nothing.`] };
   }
 
-  const { rows: derived, identities } = await deriveLaw({ lawRepo });
+  // `identities` is no longer the law pen's (055, POS-350): it is a VIEW over the
+  // store's registry, so there is nothing of it to hold to the law repo.
+  const { rows: derived } = await deriveLaw({ lawRepo });
   const db = (await client.query(
     "SELECT kind, path, key, data FROM law_projection WHERE law_sha = $1", [head.sha])).rows;
-  const dbIdent = (await client.query(
-    "SELECT handle, household, human, gh_login, gh_id, since, status, data FROM identities")).rows;
 
   const findings = [
     ...diffKeyed(derived, db, {
       label: "law_projection", idOf: (r) => `${r.kind}/${r.key}`,
       fieldsOf: (r) => ({ path: r.path, data: r.data }),
     }),
-    ...diffKeyed(identities, dbIdent, {
-      label: "identities", idOf: (r) => r.handle,
-      fieldsOf: (r) => ({
-        household: r.household, human: r.human, gh_login: r.gh_login,
-        // gh_id arrives from pg as a string (bigint) and from the repo as a
-        // number; the projection's claim is the identity, not the JS type.
-        gh_id: r.gh_id === null || r.gh_id === undefined ? null : Number(r.gh_id),
-        status: r.status, data: r.data,
-      }),
-    }),
   ];
   return { lane: LAW_REPO_KEY, status: findings.length ? "drift" : "equal", sha: head.sha,
-    counts: { derived: derived.length, db: db.length, identities: identities.length, db_identities: dbIdent.length }, findings };
+    counts: { derived: derived.length, db: db.length }, findings };
 }
 
 /**

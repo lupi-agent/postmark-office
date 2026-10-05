@@ -238,6 +238,39 @@ export async function worldStateServed({ env = process.env, fileState, storeStat
   }
 }
 
+/**
+ * THE FOLD'S HOUSEHOLDS, FROM THE STORE'S REGISTRY (POS-350). PURE.
+ *
+ * `handle -> declared house slug`, the map marks-fold's household law asks
+ * for: the world's own projector (postmark-world tools/households-project.mjs)
+ * keys by the declared slug for the same reason — a household is a human, and
+ * the credential key `gh:<id>` files one house's residents as strangers. A
+ * handle no house lists is absent here and folds as `solo:<handle>`, the
+ * fold's own default. It was the blessed ref's WORLD/households.json: the
+ * sweep's export of the town's ledger resolver, a printout of a printout.
+ *
+ * The registry holds NOW, not a history, so this is current-state household
+ * identity — the projector's own words: "what a fold of the present world asks
+ * for" (ruled with the VIEW, 10-05).
+ *
+ * It REFUSES, as the projector does, a resident two houses both list: a grain
+ * nobody declared is not handed to the law.
+ */
+export function householdsFromRegistry(registry) {
+  const out = {};
+  const seen = new Map();
+  const twice = [];
+  for (const [slug, rec] of Object.entries(registry?.households ?? {})) {
+    for (const r of rec?.residents ?? []) {
+      if (seen.has(r)) { twice.push(`${r} (${seen.get(r)} and ${slug})`); continue; }
+      seen.set(r, slug);
+      out[r] = slug;
+    }
+  }
+  if (twice.length) throw new Error(`the registry lists a resident in two houses: ${twice.join(", ")} — the fold's household law will not guess which`);
+  return Object.fromEntries(Object.entries(out).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+
 /** Test seam: forget the cached fold. */
 export function resetStoreFoldCache() { cache.key = null; cache.state = null; cache.pending = null; }
 
@@ -255,8 +288,11 @@ export async function officeStoreFold({ p, repo, fileState }) {
   const tools = materializeAtRef(repo, b.ref, "tools");
   const { fold } = await import(pathToFileURL(join(tools, "tools", "marks-fold.mjs")).href);
   const terrain = readJsonAtRef(repo, b.ref, "WORLD/skeleton.json");
-  let households = null;
-  try { households = readJsonAtRef(repo, b.ref, "WORLD/households.json")?.households ?? null; } catch { households = null; }
+  // The households are the STORE's registry, read through the fold's own
+  // queryable (POS-350), never the blessed ref's WORLD/households.json.
+  const { registryRowsVia } = await import("./registry-store.mjs");
+  const { registryFromRows } = await import("./registry-rows.mjs");
+  const households = householdsFromRegistry(registryFromRows(await registryRowsVia(p)));
   const published = await fileState();
   return foldFromStore(p, {
     fold, terrain, households,

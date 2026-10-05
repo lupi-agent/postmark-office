@@ -55,6 +55,13 @@ import { fileURLToPath } from "node:url";
 const OFFICE = join(dirname(fileURLToPath(import.meta.url)), "..");
 const scratch = mkdtempSync(join(tmpdir(), "postmark-hhrefresh-"));
 after(() => { try { rmSync(scratch, { recursive: true, force: true }); } catch { /* litter */ } });
+// THE STORE the crossing's household export renders (POS-350): the export reads
+// the registry from the store, never the fixture town's printouts, so each
+// crossing re-states the store from the town seed first.
+import { registryStoreForTowns } from "./helpers/office-under-test.mjs";
+const REG = await registryStoreForTowns({ db: "refresh_registry_test" });
+after(() => REG.stop());
+
 
 const has = (cmd) => { try { execFileSync("sh", ["-c", cmd], { stdio: "ignore" }); return true; } catch { return false; } };
 // The chain is POSIX-shell shaped. Where `sh` is not a real shell these SKIP
@@ -258,6 +265,7 @@ function runCrossing(root, { env = {} } = {}) {
   const seen = join(root, `registry-seen-${++seq}.json`);
   const argvOut = join(root, `sweep-argv-${seq}.txt`);
 
+  REG.seedFromSync(join(root, "town-seed"));
   const res = spawnSync("sh", [join(OFFICE, "deploy", "settlement-auto.sh")], {
     encoding: "utf8",
     env: {
@@ -273,6 +281,7 @@ function runCrossing(root, { env = {} } = {}) {
       WORLD_DYNAMIC_DB: join(root, "dynamic.db"),
       REGISTRY_SEEN_OUT: seen,
       SWEEP_ARGV_OUT: argvOut,
+      ...REG.env,
       ...env,
     },
   });

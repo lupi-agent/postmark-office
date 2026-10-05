@@ -84,6 +84,8 @@ export const LANDED = {
   "052_world_act_nonce.sql":       { probe: rel("acts_world_nonce_once") },
   // 053 (POS-302): each resident's governing departure, kept once per clearing.
   "053_position_snapshots.sql":    { probe: `${rel("position_snapshots")} AND ${rel("position_snapshot_rows")} AND ${col("position_snapshot_rows", "first_ordinal")}` },
+  // 055 (POS-350): identities is a VIEW over the registry, not the law pen's table.
+  "055_identities_from_the_registry.sql": { probe: "EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'identities' AND c.relkind = 'v')" },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */

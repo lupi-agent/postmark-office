@@ -42,6 +42,13 @@ import { fileURLToPath } from "node:url";
 const OFFICE = join(dirname(fileURLToPath(import.meta.url)), "..");
 const scratch = mkdtempSync(join(tmpdir(), "postmark-srcflip-"));
 after(() => { try { rmSync(scratch, { recursive: true, force: true }); } catch { /* litter */ } });
+// THE STORE the crossing's household export renders (POS-350): the export reads
+// the registry from the store, never the fixture town's printouts, so each
+// crossing re-states the store from the town seed first.
+import { registryStoreForTowns } from "./helpers/office-under-test.mjs";
+const REG = await registryStoreForTowns({ db: "source_flip_test" });
+after(() => REG.stop());
+
 
 const sh = (cmd, opts = {}) => execFileSync("sh", ["-c", cmd], { encoding: "utf8", ...opts });
 const has = (cmd) => { try { execFileSync("sh", ["-c", cmd], { stdio: "ignore" }); return true; } catch { return false; } };
@@ -266,6 +273,7 @@ function runCrossing(root, script, { env = {}, perturb = null } = {}) {
   const scriptPath = join(root, "settlement-auto.sh");
   writeFileSync(scriptPath, perturb ? perturb(script) : script);
 
+  REG.seedFromSync(join(root, "town-seed"));
   const res = spawnSync("sh", [scriptPath], {
     encoding: "utf8",
     env: {
@@ -285,6 +293,9 @@ function runCrossing(root, script, { env = {}, perturb = null } = {}) {
       WORLD_SINGLE_LOG: "1",
       WORLD_DYNAMIC_DB: join(root, "dynamic.db"),
       SWEEP_SAW_OUT: join(root, "sweep-saw.json"),
+      ...REG.env,
+      // the store path reaches the candle now (POS-350); this fixture lights none
+      SETTLEMENT_CLEARING_WAIT_S: "1",
       ...env,
     },
   });
@@ -455,8 +466,13 @@ test("F-store · the store path fetches no sketchbook and pushes no draft branch
   // does not exist, so `world2/tools/fold-input.mjs` refuses. That refusal IS
   // the assertion here: it must happen, it must be named, and the commands
   // issued before it must contain no sketchbook fetch.
+  // AMENDED 2026-10-05 (POS-350): the crossing's household export reads the
+  // registry from the STORE, so this suite's crossings hold a store read, and
+  // the store path now gets as far as the candle — which this fixture never
+  // lights. It refuses there, by name; the wait is shortened so the refusal
+  // arrives in a second, not the box's four minutes.
   const store = crossing("store", readFileSync(join(OFFICE, "deploy", "settlement-auto.sh"), "utf8"),
-    { env: { SETTLEMENT_SOURCE: "store" } });
+    { env: { SETTLEMENT_SOURCE: "store", SETTLEMENT_CLEARING_WAIT_S: "1" } });
 
   assert.equal(ghostSweepPresent(store.commands, store.root), false,
     "the store-source chain must not run the rollback ghost sweep");
@@ -483,7 +499,7 @@ test("F-store · the store path fetches no sketchbook and pushes no draft branch
   assert.equal(store.res.status, 1, "with no store entry point the crossing must refuse, not publish");
   assert.equal(store.receipt.status, "refused");
   assert.equal(store.receipt.source, "store", "and the refusal says which path refused");
-  assert.match(store.receipt.detail, /entry-point-absent|no-store-credential/,
+  assert.match(store.receipt.detail, /entry-point-absent|no-store-credential|clearing-did-not-run/,
     "the refusal names its own reason so the operator is not sent to the wrong repair");
 });
 
