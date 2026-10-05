@@ -453,20 +453,33 @@ test("the door's whitelist passes the seam's own words through", () => {
   assert.equal(v?.error, undefined, `an embodied act's envelope validates clean, got: ${JSON.stringify(v)}`);
 });
 
-test("THE CREDENTIAL IS NOT THE NAME: POSTMARK_HUMAN_NAMES maps a login's shown label, display only", async () => {
-  const { actorRoster } = await import("../src/human-actor.mjs");
+test("THE CREDENTIAL IS NOT THE NAME: the registry's human name is a login's shown label, display only", async () => {
+  // POS-352: the name is `households.human` in the store's registry, looked up
+  // by the caller's login among a house's accounts (or the house's own slug);
+  // the env line POSTMARK_HUMAN_NAMES is retired and must name nobody.
+  const { actorRoster, humanNamesFromRegistry, __setHumanNamesForTest } = await import("../src/human-actor.mjs");
   const prev = process.env.POSTMARK_HUMAN_NAMES;
-  process.env.POSTMARK_HUMAN_NAMES = "keeminlee=DARKO, other=Someone Else";
+  process.env.POSTMARK_HUMAN_NAMES = "somebody=An Env Name";
+  __setHumanNamesForTest(humanNamesFromRegistry({ households: [
+    { slug: "keemin", human: "DARKO", accounts: [{ login: "keeminlee", id: 1 }] },
+    { slug: "quiet-house", human: null, accounts: [{ login: "quietone", id: 2 }] },
+  ] }));
   try {
     const r = actorRoster({ residents: ["rei"], humanGrants: [{ action: "strike" }], humanHandle: "keeminlee", seats: [] });
     const h = r.find((x) => x.kind === "human");
-    assert.equal(h.label, "DARKO", "the shown name is the town name");
+    assert.equal(h.label, "DARKO", "the shown name is the town name, from the registry");
     assert.equal(h.id, "keeminlee", "the id stays the credential — renaming a record orphans its readers");
     assert.equal(h.handle, "keeminlee", "the handle stays the credential");
-    // CAN-FAIL control: an unmapped login shows as itself
+    const bySlug = actorRoster({ residents: [], humanGrants: [], humanHandle: "keemin", seats: [] });
+    assert.equal(bySlug.find((x) => x.kind === "human").label, "DARKO", "a static key's household slug finds the same name");
+    // CAN-FAIL controls: an unnamed house and an unknown login show as themselves,
+    // and the retired env line names nobody
+    const quiet = actorRoster({ residents: [], humanGrants: [], humanHandle: "quietone", seats: [] });
+    assert.equal(quiet.find((x) => x.kind === "human").label, "quietone");
     const r2 = actorRoster({ residents: [], humanGrants: [], humanHandle: "somebody", seats: [] });
-    assert.equal(r2.find((x) => x.kind === "human").label, "somebody");
+    assert.equal(r2.find((x) => x.kind === "human").label, "somebody", "POSTMARK_HUMAN_NAMES is not read");
   } finally {
+    __setHumanNamesForTest([]);
     if (prev == null) delete process.env.POSTMARK_HUMAN_NAMES; else process.env.POSTMARK_HUMAN_NAMES = prev;
   }
 });

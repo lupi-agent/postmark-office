@@ -55,6 +55,10 @@ lawful AS (
     -- store-of-record; INSERT only, because an act is never edited or removed
     -- (a lift is a new row) and 060's trigger refuses UPDATE and DELETE.
     ('office_api',   'standing_acts',          'INSERT'),
+    -- 061_crossing_receipts.sql (POS-352). Each decided crossing's receipt,
+    -- written once from the settlement unit's own office connection; INSERT
+    -- only, because a receipt is what a crossing said and never moves.
+    ('office_api',   'crossing_receipts',      'INSERT'),
     -- 019_households.sql. The household registry as store-of-record: the two
     -- town JSON files become a rendering of these tables. `office_api` because
     -- it is the role the door that DECLARES a household already connects as
