@@ -1,5 +1,5 @@
 // intake-addresses.test.mjs — the check deploy/intake-addresses.json never had
-// (POS-346, part 3).
+// (POS-346, part 3), and its owner.
 //
 // That file decides which pot a stranger's USDC pays, read off the address it
 // landed on. It's written by an office commit and read by usdc-watch and the
@@ -28,6 +28,12 @@ import { NO_TOWN, townClone } from "./fixture-paths.mjs";
 
 const raw = JSON.parse(readFileSync(INTAKE_MAP_FILE, "utf8"));
 const rows = Object.entries(raw.addresses ?? {});
+
+// THE OWNER (Darko, RULED 2026-10-05, POS-346): who may add a row, written in
+// the file itself, word for word, so a reader of the map finds its owner there.
+test("the file names its owner, as ruled", () => {
+  assert.equal(raw._owner, "Darko mints each address; a row lands by an office PR he approves; Wright reviews.");
+});
 
 test("every row of deploy/intake-addresses.json is one the reader takes", () => {
   const { map, invalid } = readIntakeMap();
