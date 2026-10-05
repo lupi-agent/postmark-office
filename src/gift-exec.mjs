@@ -16,11 +16,13 @@
 // { error: { code, defect, hint } } (a bounce is an answer); exit 1 only when
 // the machinery itself trips.
 
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
+import { lastLedgerLine } from "./stamp-tail.mjs";
+import { heldFor } from "./stamps-preview.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -78,11 +80,18 @@ async function main() {
     if (commit?.error) return commit;
 
     // Read back the signed gift line + the recipient's new balance from the town's
-    // own fold (one source of truth — never a hand-rolled parse).
-    const { parseStampLedger, foldBalances } = await import(pathToFileURL(mint));
-    const entries = parseStampLedger(readFileSync(join(CLONE, "WHITE_PAGES", "stamp-ledger.md"), "utf8"));
-    const line = entries.at(-1)?.raw ?? "";
-    const balance = foldBalances(entries).get(handle) ?? 0;
+    // own fold (one source of truth — never a hand-rolled parse). SNAPSHOT 7
+    // (POS-314): the line is the file's last, read from its end, and the balance
+    // is heldFor's (town_stamps plus the tail when the index is on the store, the
+    // whole fold otherwise).
+    const line = lastLedgerLine(join(CLONE, "WHITE_PAGES", "stamp-ledger.md"));
+    const held = await heldFor(CLONE, handle);
+    // heldFor answers `unread` where its folds can't run; the receipt then reads
+    // the balance the way it always did, the town's foldBalances over the file.
+    const balance = held.unread ? await (async () => {
+      const { parseStampLedger, foldBalances } = await import(pathToFileURL(mint));
+      return foldBalances(parseStampLedger(readFileSync(join(CLONE, "WHITE_PAGES", "stamp-ledger.md"), "utf8"))).get(handle) ?? 0;
+    })() : held.liquid;
 
     return { line, handle, amount, slug, by, date, balance, commit };
   }));
