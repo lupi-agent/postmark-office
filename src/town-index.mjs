@@ -207,6 +207,10 @@ export function bulletinRows(town) {
   return out.rows();
 }
 
+/** The town's docs as one meta value: `{ README: { body, path }, … }`, keys sorted, JSON. */
+export const townDocsValue = (town) =>
+  JSON.stringify(Object.fromEntries(Object.entries(town.docs ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
+
 /** The mail ledger, unnumbered: `[kind, date, id, from_h, to_h, json]` per line, in ledger order. */
 export function ledgerLines(town) {
   return town.ledger.map((e) => [e.kind, e.date ?? null, e.id ?? null, e.from ?? null, e.to ?? null, JSON.stringify(e)]);
@@ -452,6 +456,10 @@ export async function deriveTownIndex(TOWN, { log = console } = {}) {
       threads: town.threads.length, ledger: town.ledger.length,
       bulletin: (town.bulletin ?? []).length,
     })],
+    // THE TOWN'S DOCS (POS-351): README / JOINING / TOWN-RULES / MAIL /
+    // CONTRIBUTING, as the vendored reader keeps them, so the site's docs.json
+    // comes through the office (GET /town/docs) and never from a checkout.
+    ["docs", townDocsValue(town)],
   ];
   const history = readHistory(TOWN, { log });
   const t = {};

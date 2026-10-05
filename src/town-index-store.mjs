@@ -47,7 +47,7 @@ import { freshnessFor, composeHome } from "./paper-fresh.mjs"; // the freshness 
 export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home", "stampsRoster", "stampsDetail", "potBoard", "questBoardFor", "standingFor", "townQuestBoard",
   "letter", "letterAnswer", "letterList", "mailList", "mailCorrespondents", "mailAwaiting", "search", "metricsMail", "outboxSettled",
   "residentList", "residentPage", "resident", "townSummary", "officeHandles", "windowRead", "psaFold", "doorstep",
-  "hasResident", "hasLetter", "loginIndex", "unansweredFrom"]);
+  "hasResident", "hasLetter", "loginIndex", "unansweredFrom", "townLedger", "townDocs"]);
 
 /** Is the switch on? Only the exact value `store` turns it on. */
 export const townIndexReads = (env = process.env) => env.TOWN_INDEX_READS === "store";
@@ -55,6 +55,24 @@ export const townIndexReads = (env = process.env) => env.TOWN_INDEX_READS === "s
 const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ", LOWER = "abcdefghijklmnopqrstuvwxyz";
 /** sqlite's LIKE: ASCII case folded on both sides, nothing else. */
 const likeAscii = (col, param, escape = "\\") => `translate(${col}, '${UPPER}', '${LOWER}') LIKE translate(${param}, '${UPPER}', '${LOWER}') ESCAPE '${escape}'`;
+
+/**
+ * The town's mail ledger, every event in ledger order (POS-351: the site's
+ * ledger.json comes through the office). Each entry is the vendored reader's
+ * own object, stored whole in `town_ledger.json`.
+ */
+export async function townLedger(q) {
+  const asOf = await townIndexAsOf(q);
+  const entries = (await q.query("SELECT json FROM town_ledger ORDER BY seq")).rows.map((r) => JSON.parse(r.json));
+  return { as_of: asOf, total: entries.length, entries };
+}
+
+/** The town's docs (POS-351), from town_meta `docs`; `{}` when the index predates the key. */
+export async function townDocs(q) {
+  const asOf = await townIndexAsOf(q);
+  const r = (await q.query("SELECT value FROM town_meta WHERE key = 'docs'")).rows[0];
+  return { as_of: asOf, docs: r?.value ? JSON.parse(r.value) : {} };
+}
 
 /** The sha the store's index was last ingested at (town_meta `as_of`), or null. */
 export async function townIndexAsOf(q) {
