@@ -226,6 +226,9 @@ class FakeClient {
     if (/FROM household_pins/i.test(t)) return { rows: [] };
     if (/FROM registry_meta/i.test(t)) return { rows: [{ key: "schema_version", value: 1 }] };
 
+    // The candle's lock (POS-404): the door shares it before it reads the open
+    // window. No clearing runs against this store, so it is granted at once.
+    if (/^SELECT pg_advisory_xact_lock_shared\(/i.test(t)) return { rows: [{}], rowCount: 1 };
     if (/FROM windows WHERE status = 'open'/i.test(t)) {
       const w = store.windows.filter((x) => x.status === "open").sort((a, b) => b.id - a.id)[0];
       return { rows: w ? [{ id: w.id }] : [], rowCount: w ? 1 : 0 };

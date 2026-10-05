@@ -1060,6 +1060,8 @@ const guardStore = ({ claims = [], identities = { alpha: "hh:alpha-house", beta:
           return { rows: [{ id }], rowCount: 1 };
         }
         // The docket half a mark-class row reaches on the same client.
+        // The candle's lock (POS-404), shared before the window read; no clearing runs here.
+        if (/^SELECT pg_advisory_xact_lock_shared\(/i.test(sql.trim())) return { rows: [{}] };
         if (/FROM windows/i.test(sql)) return { rows: [{ id: 1 }] };
         // THE DOCKET RECEIVES THE ROW, it does not swallow it. A stub that
         // acknowledged the INSERT and kept nothing would let "the door filed a

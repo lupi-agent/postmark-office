@@ -206,6 +206,8 @@ const ROSTER = {
   "world2/tools/falsifier-pen-flip.mjs": { args: ["--help"], env: NO_PG, code: 0, needle: "usage" },
   "world2/tools/falsifier-projection-equality.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: falsifier-projection-equality.mjs" },
   "world2/tools/falsifier-review-closure.mjs": { args: [], env: NO_PG, code: 2, needle: "WORLD2_PG_URL missing" },
+  // Read only (POS-404): no WORLD2_PG_URL stops before any Postgres connect.
+  "world2/tools/stranded-claims.mjs": { args: [], env: NO_PG, code: 2, needle: "WORLD2_PG_URL missing" },
   // No --base: stops on usage before any HTTP (POS-142).
   "world2/tools/falsifier-twins-equality.mjs": { args: [], env: NO_PG, code: 2, needle: "usage: falsifier-twins-equality.mjs" },
   // Behind its entry guard since 2026-10-01 (POS-142 S3): no --world-repo stops

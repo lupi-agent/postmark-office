@@ -25,6 +25,7 @@
 import { boxOf } from "../world2/tools/seed-import.mjs";
 import { ringOf, ringBox, ringAgrees } from "./ring-box.mjs"; // POS-322: the bbox of a ringed mark is its ring's
 import { houseOfVia, sessionKeysVia, sessionKeyString } from "./household-deriver.mjs";
+import { DOOR_SHARES_THE_CANDLE } from "../world2/tools/candle-lock.mjs"; // POS-404: see § openWindowFor
 // Phase 5.6's deferred act is released through world2-pen's insertAct, INSIDE
 // the promotion's own transaction (imported lazily there — R1, 2026-08-29).
 
@@ -330,6 +331,26 @@ export async function declaredKeys(client, household) {
 }
 
 /**
+ * THE WINDOW A CLAIM FILES INTO, read on the claim's own transaction after the
+ * candle's lock (POS-404, postmark-office#349; world2/tools/candle-lock.mjs).
+ *
+ * Read with no lock, a door filing during a clearing saw the closing window as
+ * open, waited on the clearing's row lock at its INSERT, and wrote into the
+ * window after it closed: pending for good, on no docket, judged by no clearing.
+ * The shared lock puts the door behind a running clearing and the clearing
+ * behind a filing door, so the read below always answers with a window that
+ * stays open until this transaction commits. Held to COMMIT, and taken BEFORE
+ * any write on the claim, so the clearing never waits on a door that waits on it.
+ */
+export async function openWindowFor(client, dark) {
+  await client.query(DOOR_SHARES_THE_CANDLE);
+  const { rows: [win] } = await client.query(
+    "SELECT id FROM windows WHERE status = 'open' ORDER BY id DESC LIMIT 1");
+  if (!win) throw new Error(dark);
+  return win;
+}
+
+/**
  * THE CANDLE HALF OF ONE ACT, ON ONE CLIENT — R1 of the pen-flip design
  * (2026-08-29): this used to be the body of a second queue on a second pool,
  * which is the two-pens disease reproduced inside Postgres (DESIGN §2 R1).
@@ -341,9 +362,8 @@ export async function declaredKeys(client, household) {
  */
 export async function claimTxFromJournal(client, row, seq, { household, actId = null, env = process.env } = {}) {
       const payload = row.payload == null ? {} : JSON.parse(row.payload);
-      const { rows: [win] } = await client.query(
-        "SELECT id FROM windows WHERE status = 'open' ORDER BY id DESC LIMIT 1");
-      if (!win) throw new Error("no open window — the candle is dark; bootstrap the next window before the docket can take claims");
+      const win = await openWindowFor(client,
+        "no open window — the candle is dark; bootstrap the next window before the docket can take claims");
 
       // -- withdraw ---------------------------------------------------------
       //
@@ -670,11 +690,16 @@ export async function promoteDraftOnStake({ actor, householdName, slug, stamps =
   if (!candleEnabled(env)) return { promoted: false, claim: null, window: null };
   const p = await pool(env);
   const household = await householdKeyFor(p, householdName ?? actor);
-  const { rows: [win] } = await p.query(
-    "SELECT id FROM windows WHERE status = 'open' ORDER BY id DESC LIMIT 1");
-  if (!win) throw new Error("no open window — the candle is dark; the stake cannot put this mark forward");
 
+  let windowId = null;
   const out = await withHousehold(p, household, async (c, keys) => {
+    // The window, read INSIDE the transaction after the candle's lock (POS-404,
+    // § openWindowFor). It was read on the pool before the transaction opened,
+    // and a draft composed in the window it is put forward in moves no
+    // window_id, so nothing waited: a stake during a clearing promoted the draft
+    // into the window the clearing was closing, after its pending list was read.
+    const win = await openWindowFor(c, "no open window — the candle is dark; the stake cannot put this mark forward");
+    windowId = win.id;
     // The spelling set, for `readDraftClaims`' reason: a stake on a draft the
     // house composed under its old key must find that draft, or the stake is
     // read as a stake on an already-public mark and the draft never goes
@@ -749,12 +774,12 @@ export async function promoteDraftOnStake({ actor, householdName, slug, stamps =
       [win.id, Number(stamps) || 0, draft.id, releasedActId == null ? null : String(releasedActId)]);
     return { ...draft, lateFrom };
   });
-  if (!out) return { promoted: false, claim: null, window: win.id, late_from: null };
+  if (!out) return { promoted: false, claim: null, window: windowId, late_from: null };
   state.submitted += 1;
   // `late_from` — the crossing the draft was composed in, present ONLY when the
   // pen restamped the released deed into this window. The door says it in
   // words; a null here means the ordinary same-window promotion.
-  return { promoted: true, claim: out.id, window: win.id, late_from: out.lateFrom ?? null };
+  return { promoted: true, claim: out.id, window: windowId, late_from: out.lateFrom ?? null };
 }
 
 /**

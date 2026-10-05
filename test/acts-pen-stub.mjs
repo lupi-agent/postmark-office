@@ -268,6 +268,9 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
       return { rows: [{ keys: state.householdKeys.length ? state.householdKeys : null }], rowCount: 1 };
     }
     if (/^UPDATE claims/i.test(q)) return { rows: [], rowCount: 0 };
+    // The candle's lock (POS-404): the door shares it before it reads the open
+    // window. No clearing runs against a stub, so it is granted at once.
+    if (/^SELECT pg_advisory_xact_lock_shared\(/i.test(q)) return { rows: [{}], rowCount: 1 };
 
     // The registry, as `registry-store.mjs`'s three fixed SELECTs ask for it.
     if (/FROM households/i.test(q)) return { rows: households.map((r) => ({ ...r })), rowCount: households.length };

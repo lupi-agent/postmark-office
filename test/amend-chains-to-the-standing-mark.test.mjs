@@ -28,6 +28,7 @@ function scriptedClient({ pendingPrior = null, standing = null } = {}) {
     async query(sql, params = []) {
       const text = String(sql).replace(/\s+/g, " ");
       log.push({ text, params });
+      if (text.startsWith("SELECT pg_advisory_xact_lock_shared(")) return { rows: [{}], rowCount: 1 }; // the candle's lock (POS-404)
       if (text.includes("FROM windows")) return { rows: [{ id: 188 }], rowCount: 1 };
       if (text.includes("FROM claims WHERE window_id") && text.includes("status = 'pending'"))
         return { rows: pendingPrior ? [{ id: pendingPrior }] : [], rowCount: pendingPrior ? 1 : 0 };

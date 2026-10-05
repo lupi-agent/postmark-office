@@ -66,6 +66,8 @@ import { computeStanding, gistContainment } from "./standing.mjs";
 // THE SEAL (POS-357, R1): a pure SQL copy of the World this window leaves, in
 // this transaction. The module imports nothing; see its header and step 8.
 import { sealSnapshot } from "./world-snapshot-seal.mjs";
+// THE CANDLE'S LOCK (POS-404): the clearing and the claim door take turns. Taken right after BEGIN.
+import { CLEARING_TAKES_THE_CANDLE } from "./candle-lock.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const arg = (n) => { const i = process.argv.indexOf(n); return i === -1 ? null : process.argv[i + 1]; };
@@ -106,6 +108,11 @@ const OVERLAP = "a.bbox && b.bbox";
 
 try {
   await q("BEGIN");
+
+  // THE CANDLE'S LOCK, before anything else (POS-404, candle-lock.mjs): a claim
+  // door mid-filing finishes first and its claim is in the pending read below;
+  // a door that arrives now waits, then files into the window this one opens.
+  await q(CLEARING_TAKES_THE_CANDLE);
 
   // The window, locked against a concurrent close (one clearing at a time).
   const { rows: [win] } = await q(
