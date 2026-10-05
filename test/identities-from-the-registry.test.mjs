@@ -86,3 +86,13 @@ test("the store fold's households: handle -> declared slug, from the registry", 
     /lists a resident in two houses: x \(a and b\)/);
   assert.deepEqual(householdsFromRegistry({ households: {} }), {});
 });
+
+test("the office's store fold is handed those households, read through its own queryable", async () => {
+  // officeStoreFold needs the blessed engine and a world clone to run; its wiring
+  // is read as text, and the FLIP is putting the WORLD/households.json read back.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/world2-fold.mjs", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("export async function officeStoreFold"));
+  assert.match(body, /householdsFromRegistry\(registryFromRows\(await registryRowsVia\(p\)\)\)/);
+  assert.doesNotMatch(body.slice(0, body.indexOf("return foldFromStore")), /WORLD\/households\.json"\)/, "never the blessed ref's file");
+});
