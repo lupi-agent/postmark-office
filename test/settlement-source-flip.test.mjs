@@ -425,11 +425,18 @@ test("F-git · SETTLEMENT_SOURCE=git matches the open train and runs the ghost s
     "the rollback must issue every command the train's chain issues — anything missing here is behaviour the "
     + "rollback silently dropped, and the rollback is the hatch reached for when the store path has already gone wrong");
 
-  const explained = [...GHOST_SWEEP, ...REGISTRY_REFRESH];
+  // POS-352 (2026-10-04): the crossing records its receipt in the store
+  // (crossing_receipts, 061) right after it writes the file. Bookkeeping beside
+  // the crossing, declared here by name like the two repairs above.
+  const CROSSING_RECEIPT = [
+    /^node crossing-receipt\.mjs --receipt <root>\/harbor\/settlement-auto\.json --attempt .*$/,
+  ];
+
+  const explained = [...GHOST_SWEEP, ...REGISTRY_REFRESH, ...CROSSING_RECEIPT];
   const unexplained = added.filter((c) => !explained.some((re) => re.test(c)));
   assert.deepEqual(unexplained, [],
-    "every command the rollback adds must belong to the ghost sweep (repair 1) or to the registry refresh "
-    + `(2026-09-09). An addition this test cannot name is a change to the crossing nobody declared: ${JSON.stringify(unexplained)}`);
+    "every command the rollback adds must belong to the ghost sweep (repair 1), the registry refresh "
+    + `(2026-09-09) or the crossing receipt's record (POS-352). An addition this test cannot name is a change to the crossing nobody declared: ${JSON.stringify(unexplained)}`);
   // Presence is asserted on the crossing itself, never inferred from `added`.
   // Once a repair reaches the open train it correctly vanishes from the delta, but
   // the git-source path must still run it and the store-source path must not.

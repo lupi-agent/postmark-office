@@ -95,13 +95,14 @@ before(async () => {
   writeFileSync(join(clone, "tools", "github-ids.json"), JSON.stringify({
     wright: { login: "keeminlee", id: 999, pinned: "2026-07-05" },
   }));
-  // SIGN-IN READS THE STORE'S PINS (POS-343), and refuses when it cannot, so
-  // this office is pointed at a store holding the same pin.
-  IX = await indexStore(dbPath);
-  await seedRegistry(IX.store, null, { wright: { login: "keeminlee", id: 999, pinned: "2026-07-05" } });
   const g = (...a) => execFileSync("git", ["-C", clone, ...a], { encoding: "utf8" });
   g("init", "-q"); g("add", "-A");
   g("-c", "user.name=fixture", "-c", "user.email=fixture@test.invalid", "commit", "-q", "-m", "fixture town");
+  // SIGN-IN READS THE STORE'S PINS (POS-343), and refuses when it cannot, so
+  // this office is pointed at a store holding the same pin. The same store
+  // holds the gangway rows the frozen section writes (POS-353).
+  IX = await indexStore(dbPath);
+  await seedRegistry(IX.store, null, { wright: { login: "keeminlee", id: 999, pinned: "2026-07-05" } });
 
   // one mock GitHub: OAuth login/user AND the pen's repo API
   ghServer = createServer(async (req, res) => {
@@ -159,10 +160,11 @@ before(async () => {
   await new Promise((ok) => ghServer.listen(0, "127.0.0.1", ok));
   GH_PORT = ghServer.address().port;
 
-  const boot = (oauthDb, recordEnv) => bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port),
+  const spawnOffice = (oauthDb, extra) => bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port),
     "--db", dbPath, "--oauth-db", join(tmp, oauthDb)], {
     env: {
-      ...process.env, ...recordEnv,
+      ...process.env,
+      ...extra,
       OFFICE_KEYS: "statickey=keemin:wright",
       TOWN_CLONE: clone, TOWN_PUSH: "",
       PUBLIC_BASE: `http://127.0.0.1:${port}`,
@@ -179,23 +181,54 @@ before(async () => {
   }));
   // Only the RECORD's keys: the town index stays this suite's fixture office.db,
   // exactly as before, so a test that writes a resident into it is read live.
-  ({ child, port: PORT } = await boot("oauth.db", { WORLD2_PG: IX.env.WORLD2_PG, WORLD2_PG_URL: IX.env.WORLD2_PG_URL }));
-  BASE = `http://127.0.0.1:${PORT}`;
+  const RECORD = { WORLD2_PG: IX.env.WORLD2_PG, WORLD2_PG_URL: IX.env.WORLD2_PG_URL };
+  bootWith = async (extra = {}) => {
+    ({ child, port: PORT } = await spawnOffice("oauth.db", { ...RECORD, ...extra }));
+    BASE = `http://127.0.0.1:${PORT}`;
+  };
+  await bootWith();
   // THE OFFICE THAT CANNOT REACH THE RECORD — its env names no store at all.
-  const unpointed = { TOWN_INDEX_READS: undefined, WORLD2_PG: undefined, WORLD2_PG_URL: undefined };
-  ({ child: bare, port: BARE } = await boot("bare-oauth.db", unpointed));
+  ({ child: bare, port: BARE } = await spawnOffice("bare-oauth.db", { TOWN_INDEX_READS: undefined, WORLD2_PG: undefined, WORLD2_PG_URL: undefined }));
 });
+
+// THE GANGWAY IS A STORE ROW (POS-353). The frozen section writes a frozen
+// gangway row into the suite's own store (the record the office reads, since
+// POS-343 points it there for sign-in) and reboots the office; the reopening
+// test writes the open row after it. The house-aware boarding assertions live in
+// join-pr-at-the-cosign.test.mjs, where the record is stubbed.
+let bootWith;
+let gangwayStore = null;
+const stopChild = async () => {
+  if (child && child.exitCode === null) { const gone = new Promise((ok) => child.on("exit", ok)); child.kill(); await gone; }
+};
+async function gangwayRow(state, reason) {
+  const c = await IX.store.connect("office_api");
+  try {
+    await c.query("INSERT INTO gangway_acts (state, since, reason, by_who, source) VALUES ($1, '2026-08-06', $2, 'founder', 'door')", [state, reason]);
+  } finally { await c.end(); }
+}
+async function bootFrozen() {
+  await gangwayRow("frozen", "the town froze arrivals at one hundred");
+  await stopChild();
+  await bootWith();
+}
+async function bootUnfrozen() {
+  await gangwayRow("open", "the gangway lowered");
+  await stopChild();
+  await bootWith();
+}
 
 after(async () => {
   ghServer?.close();
-  for (const c of [child, bare]) {
-    if (c && c.exitCode === null) {
-      const gone = new Promise((ok) => c.on("exit", ok));
-      c.kill();
-      await gone;
-    }
-  }
+  await stopChild();
+  await gangwayStore?.stop();
+  if (bare && bare.exitCode === null) { const gone = new Promise((ok) => bare.on("exit", ok)); bare.kill(); await gone; }
   await IX?.stop();
+  if (child && child.exitCode === null) {
+    const gone = new Promise((ok) => child.on("exit", ok));
+    child.kill();
+    await gone;
+  }
   rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
@@ -580,13 +613,12 @@ test("after merge, the same token resolves to the new household with no re-auth"
   assert.ok((await after.json()).letter_id);
 });
 
-// ── the harbor (gangway frozen) — kept LAST: these write HARBOR/ into the
-// clone, and the door reads the gangway live per request (the pins pattern).
+// ── the harbor (gangway frozen) — kept LAST: the office is rebooted against a
+// store whose gangway is frozen (§ THE GANGWAY IS A STORE ROW, above), and the
+// door reads it per request.
 
 test("gangway frozen: request_residency boards the ship — a berth, not an address", async () => {
-  mkdirSync(join(clone, "HARBOR"), { recursive: true });
-  writeFileSync(join(clone, "HARBOR", "GANGWAY.md"),
-    "---\nstate: frozen\nsince: 2026-08-06\n---\n\n# The gangway\n");
+  await bootFrozen();
   captured = { trees: [], commits: [], refs: [], pulls: [] }; openPulls = [];
   ghIdentity = { id: 515151, login: "late-arrival" };
   const token = await visitorToken();
@@ -655,11 +687,11 @@ test("gangway frozen: already aboard → idempotent refusal, no second berth", a
   assert.equal(captured.pulls.length, 0, "no second berth for a passenger already on the manifest");
 });
 
-// AMENDED 2026-10-04 (POS-343): this office reads the record now (sign-in
-// needs it), so the reopened gangway's join is the ordinary one and is not
-// refused; the "no record" half is the sign-in refusal above.
+// AMENDED 2026-10-04 (POS-343): this office reads the record (sign-in needs
+// it), so the reopened gangway's join is the ordinary one and is not refused;
+// the "no record" half is the sign-in refusal above.
 test("gangway reopens: the door stops boarding", async () => {
-  rmSync(join(clone, "HARBOR"), { recursive: true, force: true });
+  await bootUnfrozen();
   captured = { trees: [], commits: [], refs: [], pulls: [] }; openPulls = [];
   ghIdentity = { id: 616161, login: "after-thaw-gh" };
   const token = await visitorToken();

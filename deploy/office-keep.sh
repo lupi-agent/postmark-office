@@ -63,6 +63,11 @@ REGISTRY_FILE="$SNAP/registry.json"
   # one tick behind, and the next tick asks again.
   node /srv/postmark-office/tools/standing-drain.mjs --apply --clone "$TOWN_CLONE" \
     || echo "[office-keep] standing drain FAILED (non-fatal) — the line above names why; the doors read the store and are unaffected" >&2
+  # gangway-on-tick (POS-353): the same shape for HARBOR/GANGWAY.md — a
+  # founder commit to the file is adopted, then the file is rendered from the
+  # store. Non-fatal: every arrival road reads the store, not the file.
+  node /srv/postmark-office/tools/gangway-drain.mjs --apply --clone "$TOWN_CLONE" \
+    || echo "[office-keep] gangway drain FAILED (non-fatal) — the line above names why; the arrival roads read the store and are unaffected" >&2
   # mint-on-tick (2026-08-06): a MANUAL crossing delivers without minting (the
   # key is box custody), opening an owed-window that used to last until the
   # next automated crossing — and a settlement landing inside it refuses

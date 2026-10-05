@@ -874,7 +874,7 @@ export async function callTool(name, args, ctx) {
       // `worldWriteBudget` is the live bouncer's own read, injected by the
       // server (POS-139): the standing read states the world-write budget
       // rather than leaving the 429 to be the only place it is ever said.
-      return householdApex(args, key, { db, clone, odb, dbPath, pen, canWrite, meta, asOf, slim: true, schemas: flatPropsMap(), schemaRequired: flatRequiredMap(), strictFields: true, worldWriteBudget });
+      return householdApex(args, key, { db, clone, odb, dbPath, pen, rdb, canWrite, meta, asOf, slim: true, schemas: flatPropsMap(), schemaRequired: flatRequiredMap(), strictFields: true, worldWriteBudget });
     }
     case "town": {
       // `call` is this very dispatcher, handed back to the apex. The town verb

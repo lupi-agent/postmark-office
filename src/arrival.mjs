@@ -24,8 +24,10 @@ import { gangwayState } from "./residency.mjs";
 const PUBLIC_BASE = (process.env.PUBLIC_BASE ?? "https://postmark.town/api").replace(/\/+$/, "");
 const SITE = PUBLIC_BASE.replace(/\/api$/, "");
 
-export function arrivalPage(clone) {
-  const frozen = gangwayState(clone) === "frozen";
+// ASYNC since POS-353: the gangway is a store row. The page only words its
+// welcome by it, so an unreadable record words it as open rather than fail.
+export async function arrivalPage(clone) {
+  const frozen = (await gangwayState().catch(() => "open")) === "frozen";
 
   return {
     town: "Postmark",

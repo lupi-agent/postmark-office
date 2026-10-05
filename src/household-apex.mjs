@@ -209,11 +209,25 @@ const OPERATOR_ACTS = {
       required: ["act", "handle", "reason"],
     },
   },
+  // POS-353: the founder's lever on arrivals. The store is the record; the
+  // town's HARBOR/GANGWAY.md is rendered from it in the same pen commit. The
+  // gate is the principal role (src/ops.mjs), read from the registry now.
+  "gangway": {
+    tool: null, residue: null,
+    may: async (key, ctx) => (await import("./gangway-door.mjs")).callerMayGangway(key, ctx),
+    fields: {
+      properties: {
+        state: { type: "string", description: "open or frozen" },
+        reason: { type: "string", description: "why, in the words chosen — every arrival it holds reads it" },
+      },
+      required: ["state", "reason"],
+    },
+  },
 };
 
-async function operatorAct(act, key) {
+async function operatorAct(act, key, ctx = {}) {
   const op = Object.prototype.hasOwnProperty.call(OPERATOR_ACTS, act) ? OPERATOR_ACTS[act] : null;
-  return op && (await op.may(key)) ? op : null;
+  return op && (await op.may(key, ctx)) ? op : null;
 }
 
 // ── the apex-only acts' own schemas ─────────────────────────────────────────
@@ -1589,7 +1603,7 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
 
   // ── the act ───────────────────────────────────────────────────────────────
   const act = String(args.do).trim();
-  const spec = ACTS[act] ?? (await operatorAct(act, key));
+  const spec = ACTS[act] ?? (await operatorAct(act, key, { rdb: ctx?.rdb ?? null }));
   if (!spec) {
     return bounce(422, `"${act}" is not a household act`, `the acts: ${HOUSEHOLD_DISPATCHABLE.join(", ")} — the bare call carries each one's card`);
   }
@@ -1814,6 +1828,11 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
       case "standing": {
         const { standingAtOffice } = await import("./standing-door.mjs");
         result = await standingAtOffice(fields, key, { clone });
+        break;
+      }
+      case "gangway": {
+        const { gangwayAtOffice } = await import("./gangway-door.mjs");
+        result = await gangwayAtOffice(fields, key, { clone, rdb: ctx?.rdb ?? null });
         break;
       }
     }

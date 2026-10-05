@@ -9,14 +9,69 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execUnderTownLock, lockTimedOut, LOCK_BUSY } from "./town-lock.mjs";
+import { listRoles, roleCheck } from "./roles.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-// Principal = the request's VERIFIED GitHub id matches the pinned PRINCIPAL_GH_ID.
+// ── THE PRINCIPAL IS A ROLE ROW (POS-352, Darko 2026-10-04) ─────────────────
+//
+// Principal = the request's VERIFIED GitHub id holds the `principal` role in
+// the role registry (`office_roles` in the store since POS-271's switch 1).
+// Until POS-352 it was the env line `PRINCIPAL_GH_ID` in
+// /etc/postmark-office.env: an identity fact kept in a file the store never
+// saw. The store is the record now, so the env line is retired; the role is
+// granted once by the operator's desk:
+//
+//   node tools/roles.mjs grant --gh-id <the founder's id> --role principal \
+//     --note "POS-352: the principal leaves the env file"
+//
 // Static keys carry no ghId → never principal (the OAuth GitHub sign-in is the
-// gate). Single id in v1 (a list is a one-line change when reality asks).
-export function isPrincipal(key, principalId = process.env.PRINCIPAL_GH_ID) {
-  return !!principalId && key?.ghId != null && String(key.ghId) === String(principalId);
+// gate), exactly as before.
+//
+// TWO READS, BY WHAT THEY GUARD. The one door that SPENDS on the principal's
+// word (POST /ops/gift) asks the registry per call (`principalNow`): a revoke
+// lands at the next call. The flags that only DESCRIBE a session (`/me`'s and
+// whoami's `principal: true`, read synchronously by composed reads) read a set
+// the office reloads from the same registry every minute (`loadPrincipals`);
+// before the first load it is empty, so nobody is described as principal.
+export const ROLE_PRINCIPAL = "principal";
+
+let principals = new Set();
+
+/** The subjects (gh_id digit strings) holding the principal role, as last loaded. */
+export const principalSubjects = () => principals;
+
+/** Reload the set from the registry. A failed read keeps the last good set. */
+export async function loadPrincipals(rdb) {
+  const rows = await listRoles(rdb, { role: ROLE_PRINCIPAL });
+  principals = new Set((rows ?? []).map((r) => String(r.subject)));
+  return principals;
+}
+
+/** Load now and every `everyMs`; answers the stop function. Never throws. */
+export function startPrincipalRefresher(rdb, { everyMs = 60_000 } = {}) {
+  const tick = () => loadPrincipals(rdb).catch(() => { /* keep the last good set */ });
+  tick();
+  const t = setInterval(tick, everyMs);
+  t.unref?.();
+  return () => clearInterval(t);
+}
+
+/** Test seam: hand the module a set of subjects. Never used by the office. */
+export function __setPrincipalsForTest(subjects) { principals = new Set([...(subjects ?? [])].map(String)); }
+
+/**
+ * Is this key the principal's? Against `subjects` (default: the loaded set;
+ * a single id or a list is accepted, for a caller that knows the answer).
+ */
+export function isPrincipal(key, subjects = principals) {
+  const set = subjects instanceof Set ? subjects : new Set(subjects == null ? [] : [].concat(subjects).map(String));
+  return key?.ghId != null && set.has(String(key.ghId));
+}
+
+/** The authoritative answer, read from the registry now (the spending door's). */
+export async function principalNow(rdb, key) {
+  return (await roleCheck(rdb, key?.ghId ?? null, ROLE_PRINCIPAL)).ok === true;
 }
 
 export function townDay() {

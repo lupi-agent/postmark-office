@@ -125,10 +125,10 @@ export async function planTownDrain(odb, clone, { date }) {
       settle: [], waiting: rows.filter((r) => r.act === "declare-household" || r.act === "request-residency")
         .map((row) => ({ row, why: UNREACHABLE_RECORD })),
       skipped: [], plans: [], registry: null, unreachable: true,
-      gangway: { state: gangwayState(clone), held: 0 },
+      gangway: { state: await gangwayState().catch(() => "unknown"), held: 0 },
       head: rows.length ? rows[rows.length - 1].seq : await townDrainCursor(odb),
     };
-  const gangway = gangwayState(clone);
+  const gangway = await gangwayState();
   const gangwayOpen = gangway === "open";
 
   const settle = [], waiting = [], skipped = [];
