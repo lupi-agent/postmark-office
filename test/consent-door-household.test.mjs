@@ -488,6 +488,16 @@ test("THE PEN'S REFUSAL SURVIVES THE FOLD — an unreachable pen bounces 503 thr
   process.env.WORLD2_PG = "1";
   process.env.WORLD2_PG_URL = "postgres://nobody:nothing@127.0.0.1:1/absent";
   process.env.W2_PEN = "stance";
+  // THE STANDING GATE STILL ANSWERS (POS-347). It reads the record before the
+  // act, and a record it cannot read refuses with its own 503 — which would
+  // answer this test before the pen is ever reached. This test is about the
+  // PEN's refusal, so the gate's one read is answered (nobody suspended) and
+  // every other read on that pool fails as a dead server does.
+  const { __setPoolForTest: setActsPool } = await import("../src/world2-acts.mjs");
+  setActsPool({ query: async (q) => {
+    if (/FROM standing_acts/i.test(q)) return { rows: [] };
+    throw Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1"), { code: "ECONNREFUSED" });
+  } });
   try {
     const refused = await door({ do: ACTION_STANCE, args: { on: "beta/on-wrights-edge", stance: "welcomed" } });
     assert.equal(refused.code, 503, `expected the ruled refusal, got ${JSON.stringify(refused).slice(0, 300)}`);
