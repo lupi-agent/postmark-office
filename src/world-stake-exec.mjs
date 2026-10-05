@@ -15,7 +15,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
+import { penTransaction } from "./write.mjs";
+import { landStamped } from "./stamp-lines.mjs"; // POS-341: the ledger's lines are recorded in the store in the commit's transaction
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -38,7 +39,7 @@ async function main() {
 
   // WHOLE OR NOTHING (POS-296), stake-exec's shape: a stake or unstake the pen
   // cannot land leaves no line and no commit behind.
-  const result = await penTransaction(CLONE, () => {
+  const result = await penTransaction(CLONE, async () => {
     if (process.env.TOWN_PUSH === "1")
       execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
 
@@ -53,10 +54,10 @@ async function main() {
     }
 
     if (result.applied > 0) {
-      const commit = landOrRefuse(() => penCommit(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
+      const commit = await landStamped(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
         verb === "unstake"
           ? `unstake: ${payload.handle} <- world-mark/${payload.mark} · ${result.applied}`
-          : `stake: ${payload.handle} -> world-mark/${payload.mark} · ${result.applied} (via ${payload.via ?? "api"})`));
+          : `stake: ${payload.handle} -> world-mark/${payload.mark} · ${result.applied} (via ${payload.via ?? "api"})`);
       if (commit?.error) return commit;
       result.commit = commit;
     }

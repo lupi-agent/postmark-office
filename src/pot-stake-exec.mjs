@@ -26,7 +26,8 @@ import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
+import { penTransaction } from "./write.mjs";
+import { landStamped } from "./stamp-lines.mjs"; // POS-341: the ledger's lines are recorded in the store in the commit's transaction
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -105,8 +106,8 @@ async function main() {
       appendSigned(CLONE, [potStakeLine({
         date: payload.date, handle: payload.handle, pot: payload.pot, n: result.applied, via: payload.via ?? "api",
       })], keyPem);
-      const commit = landOrRefuse(() => penCommit(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
-        `keeping stake: ${payload.handle} -> pot/${payload.pot} · ${result.applied} (via ${payload.via ?? "api"})`));
+      const commit = await landStamped(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
+        `keeping stake: ${payload.handle} -> pot/${payload.pot} · ${result.applied} (via ${payload.via ?? "api"})`);
       if (commit?.error) return commit;
       result.commit = commit;
     }

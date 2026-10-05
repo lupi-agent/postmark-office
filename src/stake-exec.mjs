@@ -17,7 +17,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
+import { penTransaction } from "./write.mjs";
+import { landStamped } from "./stamp-lines.mjs"; // POS-341: the ledger's lines are recorded in the store in the commit's transaction
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -35,7 +36,7 @@ async function main() {
   // WHOLE OR NOTHING (POS-296): a stake the pen cannot land leaves no line and
   // no commit behind. It carries the resident's request and cannot be
   // re-derived, so a refused one is gone — which is what they were told.
-  const result = await penTransaction(CLONE, () => {
+  const result = await penTransaction(CLONE, async () => {
     if (process.env.TOWN_PUSH === "1")
       execFileSync("git", ["-C", CLONE, "pull", "--rebase", "-q"], { encoding: "utf8" });
 
@@ -48,8 +49,8 @@ async function main() {
     }
 
     if (result.applied > 0) {
-      const commit = landOrRefuse(() => penCommit(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
-        `stake: ${payload.handle} -> ${payload.topic}/${payload.candidate} · ${result.applied} (via ${payload.via})`));
+      const commit = await landStamped(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
+        `stake: ${payload.handle} -> ${payload.topic}/${payload.candidate} · ${result.applied} (via ${payload.via})`);
       if (commit?.error) return commit;
       result.commit = commit;
     }

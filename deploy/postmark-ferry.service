@@ -31,6 +31,21 @@ WorkingDirectory=/srv/postmark-office
 # (chain + signatures + replay + conservation), and only a green verify
 # commits. A failed verify leaves the mint owed — the verifier names that
 # state "not a tamper" and the next crossing retries; fail-loud, never silent.
+# THE MINT DECIDES FROM THE STORE (POS-341, ruled by Darko 2026-10-04). Between
+# the ferry and the mint, the town-index ingest reads the ferry's commit into
+# the store (Q2: the deliveries and rooms the mint reads, town_mail_lines and
+# town_rooms, 065), and the mint pass is world2/tools/stamp-mint-run.mjs: the
+# town's own --append derivation over the store's inputs, its lines recorded in
+# stamp_lines (064) and committed in one store transaction ("mint: crossing
+# pass"), so the diff check below it finds nothing left to commit. The ballot
+# pass still commits from the shell, so its lines are recorded after its push
+# (stamp-lines.mjs --sync: the store reads git). The ingest is the office
+# tree's own deploy/town-index-ingest.sh, the script the timer's unit runs from
+# its installed copy: it keeps its own clone and the law pen's credentials, and
+# its advisory lock serialises it with the timer's run. A failed ingest stops
+# nothing: the store's deliveries are a prefix of the mail, so the mint only
+# owes more, and the keep tick (or the next crossing) pays it. The runner verifies the
+# appended ledger before it commits (only a green verify commits, as before).
 # Then the ballot pass (gold plan postmark-ballot): mailed ballots in the
 # office inbox go through the SAME clip engine the live stake_vote door uses
 # (tools/ballot.mjs) — sealed STAKE lines + receipt letters into the office
@@ -93,7 +108,9 @@ ExecStart=/usr/bin/flock -w 300 /srv/postmark-office/town.lock /bin/sh -c ' \
   /usr/bin/node /srv/postmark-office/tools/town-drain-run.mjs && \
   git -C "$TOWN_CLONE" push -q && \
   cd "$TOWN_CLONE" && node tools/ferry.mjs && \
-  node tools/stamp-mint.mjs --append --key /srv/postmark-office/stamp-key.pem && \
+  { /bin/bash /srv/postmark-office/deploy/town-index-ingest.sh || \
+      echo "[ferry] the town-index ingest did not run: the mint decides from the store as it stands, and the keep tick mints what this crossing delivered" >&2; } && \
+  node /srv/postmark-office/world2/tools/stamp-mint-run.mjs --append --key /srv/postmark-office/stamp-key.pem --clone "$TOWN_CLONE" && \
   node tools/stamp-verify.mjs && \
   { git diff --quiet -- WHITE_PAGES/stamp-ledger.md || { \
       git add WHITE_PAGES/stamp-ledger.md && \
@@ -102,6 +119,7 @@ ExecStart=/usr/bin/flock -w 300 /srv/postmark-office/town.lock /bin/sh -c ' \
   node tools/stamp-verify.mjs && \
   { git add -A -- WHITE_PAGES && { git diff --quiet --cached || { \
       git commit -qm "ballot: crossing pass" && git push -q; }; }; } && \
+  node /srv/postmark-office/world2/tools/stamp-lines.mjs --sync --clone "$TOWN_CLONE" && \
   node tools/quest-progress.mjs --snapshot && \
   { git diff --quiet -- TOWN_BULLETIN/quests.md || { \
       git add TOWN_BULLETIN/quests.md && \

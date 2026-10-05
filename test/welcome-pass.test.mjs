@@ -256,7 +256,7 @@ test("the day comes from the town's clock, not the box's", () => {
 // already there. Nothing in a unit test can observe a shell script's order.
 test("the tick runs the welcome pass after the append and before the verify", () => {
   const sh = readFileSync(new URL("../deploy/office-keep.sh", import.meta.url), "utf8");
-  const append = sh.indexOf("stamp-mint.mjs --append");
+  const append = sh.indexOf("stamp-mint-run.mjs --append"); // POS-341: the mint pass decides from the store
   const pass = sh.indexOf("deploy/welcome-pass.mjs");
   // POS-295: the tick now verifies TWICE, once on arrival (before anything is
   // written) and once after the pass. The pin is on the one after the pass.

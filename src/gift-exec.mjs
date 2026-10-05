@@ -20,7 +20,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
-import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
+import { penTransaction } from "./write.mjs";
+import { landStamped } from "./stamp-lines.mjs"; // POS-341: the ledger's lines are recorded in the store in the commit's transaction
 import { lastLedgerLine } from "./stamp-tail.mjs";
 import { heldFor } from "./stamps-preview.mjs";
 
@@ -75,8 +76,8 @@ async function main() {
 
     // Commit + push the sealed ledger (the pen's ceremony — same push path letters
     // and stakes use). The gift line is the tail; any catch-up mints ride along.
-    const commit = landOrRefuse(() => penCommit(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
-      `gift: ${by} → ${handle} · ${amount} · gift:${slug} (via postmark-office ops desk)`));
+    const commit = await landStamped(CLONE, [join(CLONE, "WHITE_PAGES", "stamp-ledger.md")],
+      `gift: ${by} → ${handle} · ${amount} · gift:${slug} (via postmark-office ops desk)`);
     if (commit?.error) return commit;
 
     // Read back the signed gift line + the recipient's new balance from the town's

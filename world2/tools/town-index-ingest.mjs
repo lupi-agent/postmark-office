@@ -56,6 +56,7 @@ import {
   ledgerLines, mailStateRows, stampFold, stampTipOf, fundingRows, questRows, atlasRows,
 } from "../../src/town-index.mjs";
 import { isResidentHandle } from "../../src/residency.mjs";
+import { writeMintInputs } from "../../src/mint-inputs.mjs";
 
 export const HEAD_KEY = "town-index";                     // projection_heads.repo
 export const SEAL_SUBJECT = "seal: re-seal at the crossing";
@@ -189,6 +190,28 @@ async function recordSnapshot(client, repo, sha, kind) {
   return counts;
 }
 
+// ── the mint's inputs (065, POS-341) ─────────────────────────────────────────
+
+/**
+ * town_rooms and town_mail_lines, written in the index's own transaction from
+ * the same checkout (src/mint-inputs.mjs § writeMintInputs). `whole` replaces
+ * both, as the seed replaces every table. A store without 065 is skipped and
+ * logged, so the index never stops on a migration not yet applied; the mint
+ * runner refuses on its own when the tables are absent.
+ */
+async function mintInputs(client, townRepo, tally, { whole = false } = {}) {
+  const has = (await client.query("SELECT to_regclass('town_rooms') AS r, to_regclass('town_mail_lines') AS m")).rows[0];
+  if (!has.r || !has.m) { console.error("[town-index] 065_town_mint_inputs.sql is not applied: the mint's rooms and mail lines were not written"); return; }
+  let deleted = { rooms: 0, mail_lines: 0 };
+  if (whole) {
+    deleted.rooms = (await client.query("DELETE FROM town_rooms")).rowCount;
+    deleted.mail_lines = (await client.query("DELETE FROM town_mail_lines")).rowCount;
+  }
+  const w = await writeMintInputs(client, townRepo);
+  tally.rooms = { inserted: w.rooms.inserted, deleted: w.rooms.deleted + deleted.rooms };
+  tally.mail_lines = { inserted: w.mail_lines.inserted, deleted: deleted.mail_lines };
+}
+
 // ── the seed ─────────────────────────────────────────────────────────────────
 
 /** The whole derivation, every table replaced, the seed snapshot. The one history walk. */
@@ -203,6 +226,7 @@ export async function seed(client, { townRepo, sha, log = quiet }) {
     tally[name] = { inserted: 0, deleted: r.rowCount };
     await insertRows(client, name, tables[name], tally);
   }
+  await mintInputs(client, townRepo, tally, { whole: true });
   ms.write = Date.now() - t0; t0 = Date.now();
   const counts = await recordSnapshot(client, townRepo, sha, "seed");
   ms.snapshot = Date.now() - t0;
@@ -395,6 +419,9 @@ export async function applyDelta(client, { townRepo, head, sha, log = quiet }) {
   if (q) metaRows.push(["quest_day", q.questDay], ["quest_registry", q.questRegistry]);
   await diffTable(client, "meta", metaRows, tally);
   lap("bulletin+atlas+meta");
+
+  await mintInputs(client, townRepo, tally);
+  lap("mint inputs");
 
   await setHead(client, sha);
   return { mode: "delta", head, sha, tally, commits, changed: changed.length, ms };

@@ -141,6 +141,23 @@ test("seed, then the crossing as a snapshot, then a delta: every table equals hy
   assert.equal(await readHead(c), sha.after);
 });
 
+// POS-341: the mint's two store inputs ride the same ingest (065,
+// src/mint-inputs.mjs). After the seed, the crossing and the delta above they
+// hold the checkout's rooms (dee's arrival included, the `_archived` shelf not)
+// and its mail ledger's lines, raw and in order.
+test("the mint's inputs ride the ingest: every room with its ADDRESS login, and the mail ledger's lines raw", async (t) => {
+  if (skip) return t.skip(skip);
+  at(await readHead(c));
+  const { roomRows, mailLineRows } = await import("../src/mint-inputs.mjs");
+  const rooms = (await c.query(`SELECT handle, github FROM town_rooms ORDER BY handle COLLATE "C"`)).rows.map((r) => [r.handle, r.github]);
+  assert.deepEqual(rooms, roomRows(town));
+  assert.deepEqual(rooms.map((r) => r[0]), ["ada", "bex", "cyd", "dee"], "the shelf is not a room; dee arrived in the delta");
+  assert.deepEqual(rooms[0], ["ada", "fixture"], "the login as the mint reads it");
+  const lines = (await c.query("SELECT seq, line FROM town_mail_lines ORDER BY seq")).rows.map((r) => [r.seq, r.line]);
+  assert.deepEqual(lines, mailLineRows(town));
+  assert.equal(lines.length, 2);
+});
+
 test("a delta writes only what moved: one bulletin edit writes the bulletin row, the head's meta and its history rows, nothing else", async (t) => {
   if (skip) return t.skip(skip);
   at(sha.after);

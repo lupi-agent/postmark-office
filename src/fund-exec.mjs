@@ -32,7 +32,8 @@ import { existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
+import { penTransaction } from "./write.mjs";
+import { landStamped } from "./stamp-lines.mjs"; // POS-341: the ledger's lines are recorded in the store in the commit's transaction
 import { lastLedgerLine } from "./stamp-tail.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -98,10 +99,10 @@ async function main() {
       return refusal(code, defect, hint);
     }
 
-    const commit = landOrRefuse(() => penCommit(CLONE, [
+    const commit = await landStamped(CLONE, [
       join(CLONE, "WHITE_PAGES", "stamp-ledger.md"),
       join(CLONE, "WHITE_PAGES", `pot-${pot}.json`),
-    ], `fund: $${usd} witnessed for ${from} → pot ${pot} (${rail} rail, via ${via})`));
+    ], `fund: $${usd} witnessed for ${from} → pot ${pot} (${rail} rail, via ${via})`);
     // A payer reads this, so it says what happened to the MONEY: nothing. The
     // receipt was not kept, and the same transaction verifies once when retried.
     if (commit?.error) return refusal(commit.error.code, commit.error.defect,

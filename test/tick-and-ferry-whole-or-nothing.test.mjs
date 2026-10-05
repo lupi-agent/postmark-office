@@ -156,6 +156,36 @@ if (process.env.STUB_WELCOME_MAKES) {
 process.exit(Number(process.env.STUB_WELCOME_EXIT || 0));
 `,
   "tools/town-drain-run.mjs": `process.exit(Number(process.env.STUB_DRAIN_EXIT || 0));\n`,
+  // POS-341: the mint pass is the office's runner, deciding from the store. Its
+  // shell-facing contract: append the owed rows, verify, and only a green verify
+  // commits and pushes them (with --message's subject); a red one leaves the
+  // export as it arrived and exits 1. It records "mint --append" as the town's
+  // CLI did, so the call trail reads the same.
+  "world2/tools/stamp-mint-run.mjs": `
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+const a = process.argv;
+const clone = a[a.indexOf("--clone") + 1];
+const msg = a.includes("--message") ? a[a.indexOf("--message") + 1] : "mint: crossing pass";
+if (process.env.STUB_CALLS) appendFileSync(process.env.STUB_CALLS, "mint --append\\n");
+const ledger = join(clone, "${LEDGER}");
+if (process.env.STUB_APPEND) {
+  const arrived = readFileSync(ledger, "utf8");
+  for (const r of process.env.STUB_APPEND.split("|")) appendFileSync(ledger, r + "\\n");
+  if (readFileSync(ledger, "utf8").split("\\n").some((l) => l.includes("RED"))) {
+    writeFileSync(ledger, arrived);
+    console.error("FATAL: stamp-verify is red over the appended ledger; nothing committed");
+    process.exit(1);
+  }
+  execFileSync("git", ["-C", clone, "add", "${LEDGER}"]);
+  execFileSync("git", ["-C", clone, "commit", "-qm", msg]);
+  execFileSync("git", ["-C", clone, "push", "-q"]);
+}
+`,
+  // the store's catch-up of lines a shell committed, and the ferry's ingest: no-ops here
+  "world2/tools/stamp-lines.mjs": `process.exit(0);\n`,
+  "deploy/town-index-ingest.sh": `exit 0\n`,
   "world2/tools/settlements-backfill.mjs": `console.log("0 rows written");\n`,
   "src/hydrate.mjs": `
 import { writeFileSync } from "node:fs";
@@ -313,7 +343,10 @@ test("tick · a ledger that arrives red gets nothing appended, and the journal s
   assert.ok(existsSync(join(fx.office, "panes-published")), "the tick's real work still ran");
 });
 
-test("tick · a verify that fails after the write restores the ledger and removes what the pass created, and nothing else", { skip }, () => {
+// POS-341: the mint pass commits its own verified rows in its store transaction
+// (world2/tools/stamp-mint-run.mjs), so a later refusal no longer takes them
+// back: what the tick restores is what the welcome pass wrote after them.
+test("tick · a verify that fails after the welcome pass restores what the pass wrote, keeps the mint's committed rows, and nothing else", { skip }, () => {
   const fx = fixture(["row 1", "row 2"]);
   // A resident's untracked file that was there before the tick: not the pass's to remove.
   mkdirSync(join(fx.town, "WHITE_PAGES", "someone"), { recursive: true });
@@ -328,23 +361,25 @@ test("tick · a verify that fails after the write restores the ledger and remove
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(calls(fx), ["settle", "verify", "mint --append", "welcome", "verify"]);
   assert.equal(tracked(fx), "", "no tracked file left modified: every pull and pen write can proceed");
-  assert.equal(ledgerAt(fx), before, "the ledger is back to its arrival bytes");
+  assert.equal(ledgerAt(fx), before + "mint row 3\n", "the ledger is back to the mint's committed rows: the welcome's are gone");
   assert.equal(existsSync(join(fx.town, "WHITE_PAGES", "made-by-the-pass.md")), false, "the path the pass created is gone");
   assert.equal(readFileSync(join(fx.town, "WHITE_PAGES", "someone", "draft.md"), "utf8"), "a draft that predates the tick\n",
     "an untracked file that was there before the pass is left alone");
-  assert.equal(head(fx), at, "no commit");
-  assert.equal(originHead(fx), pushed, "no push");
+  assert.equal(fx.g("-C", fx.town, "rev-parse", "HEAD~1").trim(), at, "one commit: the mint's own");
+  assert.equal(fx.g("-C", fx.town, "log", "-1", "--format=%s").trim(), "mint: tick catch-up pass");
+  assert.notEqual(originHead(fx), pushed, "the mint's commit reached origin");
+  assert.equal(originHead(fx), head(fx), "and nothing past it");
   assert.match(r.stderr, /mint catch-up ROLLED BACK/);
   assert.match(r.stderr, /mint catch-up FAILED \(non-fatal\)/);
 });
 
-test("tick · a tick killed during the post-write verify restores the ledger too", { skip }, () => {
+test("tick · a tick killed during the post-write verify restores what the welcome pass wrote too", { skip }, () => {
   const fx = fixture(["row 1", "row 2"]);
   const before = ledgerAt(fx);
   const r = runKilled(fx, [tickScript(fx)], { STUB_APPEND: "mint row 3", STUB_WELCOME: "welcome row 4", STUB_VERIFY_HANG: "2" });
   assert.ok(existsSync(join(fx.root, "hanging")), `the kill never happened: ${r.stdout} ${r.stderr}`);
   assert.match(r.stdout, /rc=(143|130|129)/, `the tick died of the signal: ${r.stdout}`);
-  assert.equal(ledgerAt(fx), before, `the killed tick's rows are gone: ${r.stdout} ${r.stderr}`);
+  assert.equal(ledgerAt(fx), before + "mint row 3\n", `the welcome's row is gone, the mint's committed row stays: ${r.stdout} ${r.stderr}`);
   assert.match(r.stderr, /mint catch-up ROLLED BACK/, "the trap says what it did");
   assert.equal(status(fx), "", "and the clone is clean");
 });
@@ -432,12 +467,14 @@ test("ferry · a refusing seal verify puts the re-seal back", { skip }, () => {
   assert.equal(readFileSync(join(fx.town, "PROJECTS", "the-town-seal", "seal.json"), "utf8"), "{\"seal\":\"founding\"}\n");
 });
 
-test("ferry · a crossing stopped mid-pass restores too", { skip }, () => {
+test("ferry · a crossing stopped mid-pass restores too (the mint's committed rows stay)", { skip }, () => {
   const fx = fixture(["row 1"]);
   const r = runKilled(fx, ["-c", ferryScript(fx)], { STUB_APPEND: "mint row 2", STUB_VERIFY_HANG: "1" });
   assert.ok(existsSync(join(fx.root, "hanging")), `the kill never happened: ${r.stdout} ${r.stderr}`);
   assert.match(r.stdout, /rc=(143|130|129)/, `the crossing died of the signal: ${r.stdout}`);
-  assert.equal(status(fx), "", `the stopped crossing's mint row is gone: ${r.stderr}`);
+  assert.equal(status(fx), "", `the stopped crossing left the clone clean: ${r.stderr}`);
   assert.match(r.stderr, /\[ferry\] a gate refused \(exit (143|130|129)\)/, "the trap says what it did");
-  assert.equal(ledgerAt(fx), "row 1\n");
+  // POS-341: the stop lands on the verify AFTER the mint runner, which committed
+  // its verified row in its own store transaction, so the row stays.
+  assert.equal(ledgerAt(fx), "row 1\nmint row 2\n");
 });
