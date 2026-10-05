@@ -217,64 +217,18 @@ export const HUMAN_TOKEN_DIR = () => process.env.POSTMARK_HUMAN_TOKENS ?? "/atel
  * A human's SHOWN name. The credential is not the name — the MCP door has said
  * so in prose since it opened ("the founder goes by DARKO in town; the
  * keeminlee GitHub account is his credential, not his name"), and this makes
- * that sentence real where labels are composed. A login with no name shows as
- * itself. DISPLAY ONLY: the record's hand (`human-of-<household>`) and every id
- * keyed on the login are untouched — renaming a record orphans its readers.
- *
- * THE NAME IS THE REGISTRY'S (POS-352, Darko 2026-10-04: the store is the
- * record). Each household row already carries its human's name (`households.
- * human`, 019: "DARKO", "Cadaeic", …), and the env line POSTMARK_HUMAN_NAMES
- * (login=Name pairs, hand-kept on the box) was a second copy of that fact. It
- * is retired: the name is looked up by the caller's login among a house's
- * `accounts`, or by the house's own slug (a static key's household), in a map
- * the office reloads from the store every minute (`refreshHumanNames`).
+ * that sentence real where labels are composed. POSTMARK_HUMAN_NAMES holds
+ * comma-separated login=Name pairs; a login with no pair shows as itself.
+ * DISPLAY ONLY: the record's hand (`human-of-<household>`) and every id keyed
+ * on the login are untouched — renaming a record orphans its readers.
  */
-let humanNames = new Map();
-
-/** login (or house slug) → the house's human name, from the registry's rows. */
-export function humanNamesFromRegistry(rows) {
-  const out = new Map();
-  for (const h of rows?.households ?? []) {
-    const name = typeof h.human === "string" ? h.human.trim() : "";
-    if (!name) continue;
-    if (h.slug) out.set(String(h.slug), name);
-    for (const a of Array.isArray(h.accounts) ? h.accounts : []) if (a?.login) out.set(String(a.login), name);
-  }
-  return out;
-}
-
-/**
- * Reload the names from the store's registry. Not pointed at the record, or a
- * failed read: the last good map stays. On a switched office
- * (TOWN_INDEX_READS=store) the read rides the town index's own read, the pool
- * every read worker already holds, rather than open the record's second pool
- * in every worker on a cluster dev and prod share.
- */
-export async function refreshHumanNames(env = process.env) {
-  const { loadRegistryRows, registryRowsVia } = await import("./registry-store.mjs");
-  const { townIndexReads, readTownIndex } = await import("./town-index-store.mjs");
-  const rows = townIndexReads(env)
-    ? (await readTownIndex((c) => registryRowsVia(c), { env })).out
-    : await loadRegistryRows(env);
-  if (rows) humanNames = humanNamesFromRegistry(rows);
-  return humanNames;
-}
-
-/** Load now and every `everyMs`; answers the stop function. Never throws. */
-export function startHumanNamesRefresher({ everyMs = 60_000, env = process.env } = {}) {
-  const tick = () => refreshHumanNames(env).catch(() => { /* keep the last good map */ });
-  tick();
-  const t = setInterval(tick, everyMs);
-  t.unref?.();
-  return () => clearInterval(t);
-}
-
-/** Test seam: hand the module a map. Never used by the office. */
-export function __setHumanNamesForTest(map) { humanNames = new Map(map ?? []); }
-
-export const humanDisplayName = (login, names = humanNames) => {
+export const humanDisplayName = (login) => {
   if (!login) return login;
-  return names.get(String(login)) || login;
+  for (const pair of String(process.env.POSTMARK_HUMAN_NAMES ?? "").split(",")) {
+    const i = pair.indexOf("=");
+    if (i > 0 && pair.slice(0, i).trim() === login) return pair.slice(i + 1).trim() || login;
+  }
+  return login;
 };
 
 /**
