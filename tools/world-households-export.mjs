@@ -37,7 +37,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-import { householdsOf, loginKeys, readPins, sketchbookKeys, oneKeyPerHouse } from "../src/household-logins.mjs";
+import { sketchbookKeys, worldHouseholdsAt } from "../src/household-logins.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -46,36 +46,24 @@ const TOWN = resolve(opt("--town", process.env.TOWN_CLONE ?? join(HERE, "..", "t
 const WORLD = resolve(opt("--world", process.env.WORLD_CLONE ?? join(HERE, "..", "world-clone")));
 
 const { currentHouseholds } = await import(pathToFileURL(join(TOWN, "tools", "stamp-mint.mjs")));
+
+// The derivation itself lives in src/household-logins.mjs § worldHouseholdsAt
+// (moved 2026-10-05, POS-410, so a settlement snapshot derives the same map from
+// its own register rows). Its steps, unchanged from when they lived here:
+//
 // currentHouseholds, not householdKeys: the base is from-genesis truth, and a
 // household re-key rides the stamp ledger as a dated registry: line — reading
 // the bare base made a ledger-only re-key invisible to the parcel cap
 // (caught 2026-08-07, the cadaeic.space unification).
-const map = currentHouseholds(TOWN);
-
-// The two projections moved into src/household-logins.mjs on 2026-08-27, when
-// the card rail became the third reader of the twelve lines that used to live
-// here. Same derivation, same order, same last-wins — this file's emission does
-// not move, and a falsifier holds it to that. What it buys is that a login
-// means the same household on the World's fold, on the PR lane's wall, and on
-// the office's card rail, because there is now one place where that is decided.
 //
-// logins: lowercased GitHub login → household key. The PR lane's branch-name
-// binding (draft/<login> is WHOSE sketchbook?) and the Settlement sweep's
-// authorship wall both resolve through this — same pins, same resolver, one
-// more projection of the ONE vocabulary. Pinned handles contribute their pin's
-// login; login-keyed households bind their own name by construction.
-const ledgerHouseholds = householdsOf(map);
-const pins = readPins(TOWN);
-const { logins: ledgerLogins } = loginKeys(pins, ledgerHouseholds);
-
-// ONE KEY PER DECLARED HOUSE (src/household-logins.mjs § oneKeyPerHouse, which
-// carries the reasoning): the ledger spells a house by who joined how, and the
-// wall needs the house. tools/households.json is printed from the store; a
-// town with none keeps the ledger's keys exactly.
-const declared = (() => {
-  try { return JSON.parse(readFileSync(join(TOWN, "tools", "households.json"), "utf8")); } catch { return null; }
-})();
-const one = oneKeyPerHouse(ledgerHouseholds, ledgerLogins, declared);
+// logins: lowercased GitHub login → household key, from the pins, through the
+// same resolver (the PR lane's branch binding and the sweep's authorship wall).
+//
+// ONE KEY PER DECLARED HOUSE (§ oneKeyPerHouse, which carries the reasoning):
+// the ledger spells a house by who joined how, and the wall needs the house.
+// tools/households.json is printed from the store; a town with none keeps the
+// ledger's keys exactly.
+const one = worldHouseholdsAt(TOWN, { currentHouseholds });
 const households = one.households;
 const logins = one.logins;
 

@@ -496,8 +496,12 @@ try {
   //     moves `data.tier`, which the fold reads), so the copy is of the register
   //     as the window leaves it. A failed seal throws like any other step and the
   //     window rolls back whole: a clearing without its snapshot does not happen.
+  //
+  //     AND THE HOUSEHOLD REGISTER BESIDE IT (POS-410, 064; Darko 2026-10-05:
+  //     the snapshot keeps the atomic upstream sources). The register rows as
+  //     they stand at the seal, so a past World folds with the past's houses.
   const sealed = await sealSnapshot(q, { windowId });
-  console.log(`  ⚑ snapshot: ${sealed.marks} standing mark(s), ${sealed.new_versions} new version(s), digest ${sealed.digest.slice(0, 12)}`);
+  console.log(`  ⚑ snapshot: ${sealed.marks} standing mark(s), ${sealed.new_versions} new version(s), register ${sealed.register_rows} row(s) (${sealed.new_register_versions} new), digest ${sealed.digest.slice(0, 12)}`);
 
   // Close, pin, open the successor.
   //
@@ -527,7 +531,7 @@ try {
       ...(capSeen ? { parcel_cap: capSeen } : {}),
       ...(revived.length ? { revived } : {}),
       // The seal's own account: which snapshot this window wrote.
-      snapshot: { id: sealed.id, digest: sealed.digest, marks_digest: sealed.marks_digest, marks: sealed.marks, new_versions: sealed.new_versions },
+      snapshot: { id: sealed.id, digest: sealed.digest, marks_digest: sealed.marks_digest, marks: sealed.marks, new_versions: sealed.new_versions, register_digest: sealed.register_digest, register_rows: sealed.register_rows },
       standing: {
         recomputed: standing.length, moved: moved.length,
         // Capped, because the receipt is evidence and not an export: the first

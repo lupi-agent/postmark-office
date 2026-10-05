@@ -312,3 +312,22 @@ export function townLoginHands(clone, engine) {
   if (typeof engine?.currentHouseholds !== "function") return new Map();
   return loginHands(engine.currentHouseholds(clone), readPins(clone));
 }
+
+/**
+ * THE WORLD'S HOUSEHOLD MAPS, for a town clone: `{ households, logins, names }`,
+ * exactly what tools/world-households-export.mjs publishes as
+ * WORLD/households.json (its `households` is what the fold reads). The town's
+ * own resolver (`engine.currentHouseholds`: the pins, the ADDRESS logins and the
+ * ledger's dated `registry:` lines), the pins' logins, then one key per declared
+ * house (tools/households.json). Moved here from the export on 2026-10-05
+ * (POS-410) so a settlement snapshot derives the same map from its own register
+ * rows; the export's emission does not move.
+ */
+export function worldHouseholdsAt(clone, engine) {
+  const ledgerHouseholds = householdsOf(engine.currentHouseholds(clone));
+  const { logins: ledgerLogins } = loginKeys(readPins(clone), ledgerHouseholds);
+  const declared = (() => {
+    try { return JSON.parse(readFileSync(join(clone, "tools", "households.json"), "utf8")); } catch { return null; }
+  })();
+  return oneKeyPerHouse(ledgerHouseholds, ledgerLogins, declared);
+}

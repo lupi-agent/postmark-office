@@ -94,6 +94,8 @@ export const LANDED = {
   "062_gangway_acts.sql":          { probe: `${rel("gangway_acts")} AND ${trig("gangway_acts_append_only")}` },
   // 063 (POS-392): each resident's note to their returning self, in the office's record.
   "063_resident_notes.sql":        { probe: `${rel("resident_notes")} AND ${col("resident_notes", "written_at")}` },
+  // 064 (POS-410): the snapshot keeps the household register it was sealed against.
+  "064_snapshot_register.sql":     { probe: `${rel("register_versions")} AND ${rel("world_snapshot_register")} AND ${col("world_snapshots", "register_digest")} AND EXISTS (SELECT 1 FROM registry WHERE object = 'world_snapshot_register')` },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */

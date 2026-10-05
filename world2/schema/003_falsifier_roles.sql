@@ -158,6 +158,10 @@ lawful AS (
     ('clearing_job', 'mark_versions',        'INSERT'),
     ('clearing_job', 'world_snapshot_marks', 'INSERT'),
     ('clearing_job', 'world_snapshots',      'INSERT'),
+    -- 064_snapshot_register.sql (POS-410). The register rows the snapshot was
+    -- sealed against, copied beside the marks; INSERT only, the same reason.
+    ('clearing_job', 'register_versions',       'INSERT'),
+    ('clearing_job', 'world_snapshot_register', 'INSERT'),
     ('law_ingester', 'law_projection',   'INSERT'),
     ('law_ingester', 'law_projection',   'DELETE'),
     ('law_ingester', 'stamp_projection', 'INSERT'),
