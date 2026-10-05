@@ -1964,7 +1964,13 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       // GET /votes and /votes/{topic} — the ballot box, public. With a key,
       // /votes/{topic} adds your household's remaining headroom per candidate.
       if (path === "/votes" || (m = /^\/votes\/([a-z0-9-]+)$/.exec(path))) {
-        if (!canWrite || !votesAvailable(TOWN_CLONE))
+        // A READ, SO IT ASKS ONLY FOR THE ENGINE, NEVER FOR THE PEN (#3383).
+        // Since POS-266 every GET is answered by a read worker, and a worker
+        // is never `canWrite` (see the note at `canWrite`), so the old
+        // `!canWrite ||` here answered 409 to the whole town while the
+        // worker's clone held the engine. The stake (POST /votes/stake) is a
+        // write and keeps its `canWrite` gate.
+        if (!votesAvailable(TOWN_CLONE))
           return bounce(res, 409, "not-yet-open", "the office has no town clone with the ballot engine");
         const p = path === "/votes"
           ? voteList(TOWN_CLONE).then((v) => j(res, 200, v))
