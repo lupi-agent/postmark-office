@@ -28,7 +28,7 @@ import { judgeRoute, withRenamed, PATCH_PAPER_DOORS } from "./one-contract.mjs";
 import { sendAtDoor } from "./send-at-door.mjs";
 import { TOWN_TOOL, townDispatchToolFor } from "./town-apex.mjs";
 import { householdApex, APEX_ONLY_FIELDS } from "./household-apex.mjs"; // the third door (2026-08-15)
-import { handleOauth, oauthLookup, oauthSchema, mintHouseholdKey, keyLookup, mintBerth, berthLookup, berthTaken, acknowledgeVisitorRules, BERTH_SLUG, FROM_TOWN, mintClaim, claimLookup, claimState, claimCosignUrlFor, claimStateUrlFor, sweepClaims } from "./oauth.mjs";
+import { handleOauth, oauthLookup, oauthSchema, mintHouseholdKey, keyLookup, mintBerth, berthLookup, berthTaken, acknowledgeVisitorRules, BERTH_SLUG, FROM_TOWN, mintClaim, claimLookup, claimState, claimCosignUrlFor, claimStateUrlFor, sweepClaims, SignInUnreadable } from "./oauth.mjs";
 import { requestResidency, isReservedHandle } from "./residency.mjs";
 import { declareViaOffice, SETTLING_ASHORE } from "./declare.mjs";
 import { uploadMedia } from "./media.mjs";
@@ -2646,6 +2646,12 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
 // just means "anonymous": a stale token never locks someone out of a public
 // read; only writes require a valid key. A static key answers from memory and
 // never waits; every other shape is a read of the paperwork.
+//
+// ONE FAILURE IS NOT ANONYMOUS (POS-343): a live credential whose household
+// the store's pins could not be read for. That is not "this token is stale",
+// it is "the office cannot say who you are", and serving it as nobody would
+// hand a signed-in resident a visitor's answer with no word why. It is refused
+// with a 503 that names it.
 const resolveBearer = async (token) =>
   (await oauthLookup(odb, db, TOWN_CLONE, token)) ?? (await keyLookup(odb, db, TOWN_CLONE, token))
   ?? (await claimLookup(odb, db, TOWN_CLONE, token)) ?? (await berthLookup(odb, db, TOWN_CLONE, token)) ?? null;
@@ -2656,8 +2662,8 @@ const handle = (req, res) => {
   if (!auth) return route(req, res, null, t0);
   const fixed = KEYS.get(auth[1]);
   if (fixed) return route(req, res, fixed, t0);
-  resolveBearer(auth[1]).catch(() => null)
-    .then((key) => route(req, res, key, t0))
+  resolveBearer(auth[1]).then((key) => key, (e) => (e instanceof SignInUnreadable ? e : null))
+    .then((key) => (key instanceof SignInUnreadable ? bounce(res, 503, key.defect, key.hint) : route(req, res, key, t0)))
     .catch((e) => { if (!res.headersSent) bounce(res, 500, "the office tripped", String(e?.message ?? e).slice(0, 200)); });
 };
 

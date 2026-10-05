@@ -84,7 +84,7 @@ export async function carryHomePictures({ clone, householdFor, upload, keep, has
     const file = leadPicture(clone, handle);
     if (!file) { skipped.none.push(handle); continue; }
     if (await has(handle)) { skipped.chosen.push(handle); onEntry({ handle, ok: true, chosen: true }); continue; }
-    const key = householdFor(handle);
+    const key = await householdFor(handle);
     if (!key?.household || !key.handles?.has(handle)) {
       skipped.noHousehold.push(handle);
       onEntry({ handle, ok: false, why: "the door's resolver knows no household holding this handle" });
@@ -153,7 +153,7 @@ if (isMain) {
   const doorHouseholdFor = (handle) => {
     const pin = pins[handle];
     const ghId = pin?.id ?? null, ghLogin = pin?.login ?? loginOf(handle);
-    return ghId == null && !ghLogin ? null : householdFor(TOWN, idx, ghId, ghLogin);
+    return ghId == null && !ghLogin ? null : householdFor(idx, ghId, ghLogin);
   };
 
   let dbPath = OAUTH_DB, tmp = null;

@@ -70,7 +70,7 @@ export async function backfillHomeShelf({
 
   for (const handle of Object.keys(images).sort()) {
     const rec = images[handle];
-    const block = householdFor(handle);
+    const block = await householdFor(handle);
     if (!block?.household) { skipped.noHousehold.push({ handle, why: "the door's resolver knows no household for this handle — the town's pins do not carry it" }); continue; }
     if (!block.handles?.has(handle)) { skipped.noHousehold.push({ handle, household: block.household, why: `the resolved household does not hold "${handle}" — the door would refuse this upload 403` }); continue; }
 
@@ -244,7 +244,7 @@ if (isMain) {
     const ghId = pin?.id ?? null;
     const ghLogin = pin?.login ?? loginOf(handle);
     if (ghId == null && !ghLogin) return null;
-    return householdFor(TOWN, idx, ghId, ghLogin);
+    return householdFor(idx, ghId, ghLogin);
   };
 
   if (!DRY && !mediaConfigured()) {

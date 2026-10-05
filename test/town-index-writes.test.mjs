@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { fixtureDb, tempClone } from "./fixture.mjs";
 import { startStore } from "./helpers/embedded-store.mjs";
 import { copyIndexToStore } from "./helpers/index-to-store.mjs";
+import { seedRegistry, recordInProcess } from "./helpers/office-under-test.mjs";
 import { officeProbe, holdStoreProbe, UNREACHABLE_DEFECT } from "../src/index-probe.mjs";
 import * as store from "../src/town-index-store.mjs";
 import { validateLetter } from "../src/write.mjs";
@@ -36,7 +37,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tmp = mkdtempSync(join(tmpdir(), "town-index-writes-"));
 const dbPath = join(tmp, "office.db");
 const KEY = "writes-test-key";
-let s = null, skip = false, api, db, empty, rows, clone;
+let s = null, skip = false, api, db, empty, rows, clone, unrecord = null;
 const offices = {};
 
 before(async () => {
@@ -64,6 +65,10 @@ before(async () => {
   clone = tempClone();
   mkdirSync(join(clone, "tools"), { recursive: true });
   writeFileSync(join(clone, "tools", "github-ids.json"), JSON.stringify({ ghost: { id: 999 } }));
+  // sign-in's pins are the STORE's (POS-343): the same pin, in household_pins,
+  // and this process's record pointed at it for the in-process checks below
+  await seedRegistry(s, null, { ghost: { login: "ghost-gh", id: 999 } });
+  unrecord = await recordInProcess(s);
 
   for (const [name, env] of [["plain", { WORLD2_PG: "1", WORLD2_PG_URL: s.url("office_api") }],
     ["switched", { TOWN_INDEX_READS: "store", WORLD2_PG: "1", WORLD2_PG_URL: s.url("office_api") }],
@@ -90,6 +95,7 @@ before(async () => {
 });
 
 after(async () => {
+  if (unrecord) await unrecord();
   for (const { child } of Object.values(offices)) if (child.exitCode === null) { const gone = new Promise((ok) => child.on("exit", ok)); child.kill(); await gone; }
   if (api) await api.end().catch(() => {});
   if (s?.stop) await s.stop();
@@ -103,16 +109,17 @@ async function post(office, path, body, auth = null) {
 }
 
 // what a check answers, or what it throws in the bounce vocabulary
-const outcome = (fn) => {
-  try { const v = fn(); return JSON.stringify(v instanceof Set ? [...v] : v, (k, x) => (x instanceof Set ? [...x] : x)); }
+// Async since householdFor reads the store's pins (POS-343); a sync check is awaited the same.
+const outcome = async (fn) => {
+  try { const v = await fn(); return JSON.stringify(v instanceof Set ? [...v] : v, (k, x) => (x instanceof Set ? [...x] : x)); }
   catch (e) { return JSON.stringify({ threw: e?.code ?? e?.name, defect: e?.defect ?? e?.message, hint: e?.hint ?? null }); }
 };
 
-function withSwitch(probe, fn) {
+async function withSwitch(probe, fn) {
   const keep = process.env.TOWN_INDEX_READS;
   process.env.TOWN_INDEX_READS = "store";
   holdStoreProbe(probe);
-  try { return fn(); } finally { holdStoreProbe(null); if (keep === undefined) delete process.env.TOWN_INDEX_READS; else process.env.TOWN_INDEX_READS = keep; }
+  try { return await fn(); } finally { holdStoreProbe(null); if (keep === undefined) delete process.env.TOWN_INDEX_READS; else process.env.TOWN_INDEX_READS = keep; }
 }
 
 test("the store's probe answers every question as office.db's does", async (t) => {
@@ -134,6 +141,7 @@ test("the store's probe answers every question as office.db's does", async (t) =
 // at all: the switched answers can only have come from the store.
 const LIMEN = { household: "keemin", handles: new Set(["limen"]) };
 const RETURN = { id: "limen-2026-07-03-to-wright-the-return", file: "WHITE_PAGES/limen/outbox/letter-2026-07-03-to-wright-the-return.md" };
+const runAll = async (fns) => { const out = []; for (const fn of fns) out.push(await outcome(fn)); return out; };
 const checks = (ix) => [
   () => validateLetter({ from: "limen", to: "nobody", title: "Hi", body: "x" }, LIMEN, ix),
   () => validateLetter({ from: "limen", to: "wright", title: "Hi", body: "x", thread: "no-such-letter" }, LIMEN, ix),
@@ -145,31 +153,31 @@ const checks = (ix) => [
   () => validateResidencyRequest({ handle: "newcomer", card: "me" }, ix),
   () => handleTaken("zed-two", { db: ix, registry: null, clone }),
   () => handleTaken("newcomer", { db: ix, registry: null, clone }),
-  () => householdFor(clone, ix, 1, "ZED-gh"),
-  () => householdFor(clone, ix, 2, "keeminlee"),
-  () => householdFor(clone, ix, 3, "fallback"),
-  () => householdFor(clone, ix, 4, "never-read"),
-  () => householdFor(clone, ix, 999, null),
-  () => householdFor(clone, ix, 5, "stranger"),
+  () => householdFor(ix, 1, "ZED-gh"),
+  () => householdFor(ix, 2, "keeminlee"),
+  () => householdFor(ix, 3, "fallback"),
+  () => householdFor(ix, 4, "never-read"),
+  () => householdFor(ix, 999, null),
+  () => householdFor(ix, 5, "stranger"),
 ];
 
 test("every check answers the same over the store as over office.db", async (t) => {
   if (skip) return t.skip(skip);
-  const plain = checks(db).map(outcome);
+  const plain = await runAll(checks(db));
   assert.ok(plain.some((o) => o.includes('"threw":409')) && plain.some((o) => o.includes('"threw":422')), "the asks exercise both refusals");
   assert.ok(plain.some((o) => o.includes('"harbor":true')), "and the harbor stamp");
-  const switched = withSwitch(store.probeOver(rows), () => checks(empty).map(outcome));
+  const switched = await withSwitch(store.probeOver(rows), async () => await runAll(checks(empty)));
   for (const [i, o] of plain.entries()) assert.equal(switched[i], o, `check ${i}`);
   // the reply hint, off the row the send read
   const mail = new Map([["wright", (await api.query("SELECT json FROM town_mail_state WHERE handle = 'wright'")).rows[0].json]]);
   const hint = threadlessReplyHint(db, { from: "wright", to: "limen" });
   assert.ok(hint, "the fixture's wright has an unanswered letter from limen");
-  assert.equal(withSwitch(store.probeOver(rows), () => threadlessReplyHint(store.probeOver(rows, { mail }), { from: "wright", to: "limen" })), hint);
+  assert.equal(await withSwitch(store.probeOver(rows), () => threadlessReplyHint(store.probeOver(rows, { mail }), { from: "wright", to: "limen" })), hint);
 });
 
 test("switched with no snapshot, every check refuses with the store's 503, and the hint says nothing", async (t) => {
   if (skip) return t.skip(skip);
-  const outs = withSwitch(null, () => checks(db).map(outcome));
+  const outs = await withSwitch(null, async () => await runAll(checks(db)));
   for (const [i, o] of outs.entries()) {
     if (i === 14) continue; // below
     const r = JSON.parse(o);
@@ -178,7 +186,7 @@ test("switched with no snapshot, every check refuses with the store's 503, and t
   }
   // a pinned household whose settled test cannot be read is never stamped harbor: an unreadable index never widens the gate
   assert.equal(outs[14], JSON.stringify({ household: "999", handles: ["ghost"] }));
-  assert.equal(withSwitch(null, () => threadlessReplyHint(db, { from: "wright", to: "limen" })), null);
+  assert.equal(await withSwitch(null, () => threadlessReplyHint(db, { from: "wright", to: "limen" })), null);
   assert.equal(await store.refreshStoreProbe({ env: { WORLD2_PG: "1", WORLD2_PG_URL: "postgres://office_api:x@127.0.0.1:9/none" } }), false);
 });
 

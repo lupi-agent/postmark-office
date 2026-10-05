@@ -109,3 +109,53 @@ export async function indexStoreFromTown(townRepo, { sha = null, db: name = "off
   finally { await w.end(); }
   return { env: { TOWN_INDEX_READS: "store", WORLD2_PG: "1", WORLD2_PG_URL: s.url("office_api") }, store: s, stop: () => s.stop() };
 }
+
+/**
+ * THE REGISTRY, IN THE STORE (POS-342/343): replace a started store's
+ * `households`, `household_pins` and `registry_meta` with the two documents a
+ * town clone would print (`tools/households.json`, `tools/github-ids.json`).
+ *
+ * The household block and sign-in read these rows, never the clone's files, so
+ * a suite that used to write the pins file into its temp clone states the same
+ * pins here instead. Written as the store's owner, because the office's own
+ * role holds no DELETE and a suite re-states its registry between tests.
+ */
+export async function seedRegistry(store, households = null, pins = null) {
+  const { rowsFromRegistry } = await import("../../src/registry-rows.mjs");
+  const rows = rowsFromRegistry(households ?? { schema_version: 1, households: {} }, pins ?? {});
+  const c = await store.connect("world2_owner");
+  const json = new Set(["accounts", "home_images"]);
+  const insert = async (table, row) => {
+    const cols = Object.keys(row);
+    await c.query(`INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(", ")})`,
+      cols.map((k) => (json.has(k) ? JSON.stringify(row[k]) : row[k])));
+  };
+  try {
+    await c.query("TRUNCATE household_pins, households, registry_meta");
+    for (const [key, value] of Object.entries(rows.meta)) await c.query("INSERT INTO registry_meta (key, value) VALUES ($1, $2)", [key, JSON.stringify(value)]);
+    for (const r of rows.households) await insert("households", r);
+    for (const r of rows.pins) await insert("household_pins", r);
+  } finally { await c.end(); }
+}
+
+/**
+ * Point THIS process's record (`world2-acts.mjs § actsQuery`, the pool every
+ * registry read uses) at a started store, as the office's own role. Answers a
+ * function that puts the environment and the pool back.
+ */
+export async function recordInProcess(store) {
+  const { default: pg } = await import("pg");
+  const { __setPoolForTest } = await import("../../src/world2-acts.mjs");
+  const pool = new pg.Pool({ connectionString: store.url("office_api"), max: 2 });
+  pool.on("error", () => {});
+  const was = { on: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL };
+  __setPoolForTest(pool);
+  process.env.WORLD2_PG = "1";
+  process.env.WORLD2_PG_URL = store.url("office_api");
+  return async () => {
+    __setPoolForTest(null);
+    await pool.end().catch(() => {});
+    if (was.on === undefined) delete process.env.WORLD2_PG; else process.env.WORLD2_PG = was.on;
+    if (was.url === undefined) delete process.env.WORLD2_PG_URL; else process.env.WORLD2_PG_URL = was.url;
+  };
+}

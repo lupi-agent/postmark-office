@@ -31,8 +31,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { asPaper } from "./paperwork.mjs";
 import { probeOf } from "./index-probe.mjs";
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { loadPins } from "./registry-store.mjs";
 
 const PUBLIC_BASE = (process.env.PUBLIC_BASE ?? "https://postmark.town/api").replace(/\/+$/, "");
 const GH_AUTH = process.env.GITHUB_AUTH_URL ?? "https://github.com/login/oauth/authorize";
@@ -130,9 +129,19 @@ export const sweepClaims = (odb) =>
   asPaper(odb).run("DELETE FROM key_claims WHERE expires < ?", now());
 
 // ── the registry mapping (GitHub ID -> handles) ──────────────────────────────
-// Pinned immutable IDs win (tools/github-ids.json); ADDRESS.md login strings
-// cover handles not yet pinned. Read fresh — tiny file, low volume, and it
-// means a new resident is recognized the moment the clone updates.
+// Pinned immutable IDs win; ADDRESS.md login strings cover handles not yet
+// pinned. The pins are the STORE's (`household_pins`, 019), read fresh on every
+// lookup, so a resident the ceremony binds signs in the moment the row lands —
+// not when the drain has printed tools/github-ids.json and the clone has pulled
+// it (POS-343, w42 "Everything Reads the Store": the store is the record, and
+// the file is its printout).
+//
+// A STORE THAT CANNOT BE ASKED IS A REFUSAL, never a fallback. Sign-in used to
+// fall through to the logins when the pins file was unreadable, and a bearer
+// whose lookup threw was served as anonymous. Neither the file nor "nobody" is
+// the answer to "which handles does this account hold" when the record could
+// not be read, so `householdFor` throws `SignInUnreadable` (code 503) and the
+// door refuses the request by name (server.mjs § handle).
 
 // THE LOGIN INDEX (the Snug night, 2026-09-27): matching a login used to parse
 // every resident's row on every authenticated request, ~10% of the office's
@@ -161,18 +170,29 @@ function loginIndex(db, pinnedHandles) {
   return map;
 }
 
-export function householdFor(clone, db, ghId, ghLogin) {
+/** The store's pins could not be read: sign-in refuses rather than guessing (POS-343). */
+export class SignInUnreadable extends Error {
+  constructor(why) {
+    super("sign-in cannot read the town's record");
+    this.code = 503;
+    this.defect = "sign-in cannot read the town's record";
+    this.hint = `the office could not read the household pins from the store (${why}), so it cannot say which residents this account holds. Nothing was decided; try again shortly.`;
+  }
+}
+
+async function storePins(env) {
+  let pins;
+  try { pins = await loadPins(env); } catch (e) { throw new SignInUnreadable(String(e?.message ?? e).slice(0, 120)); }
+  if (pins === null) throw new SignInUnreadable("the office is not pointed at the store");
+  return pins;
+}
+
+export async function householdFor(db, ghId, ghLogin, env = process.env) {
   const handles = new Set();
-  const pinsPath = join(clone, "tools", "github-ids.json");
   const pinnedHandles = new Set();
-  if (existsSync(pinsPath)) {
-    try {
-      const pins = JSON.parse(readFileSync(pinsPath, "utf8"));
-      for (const [handle, rec] of Object.entries(pins)) {
-        pinnedHandles.add(handle);
-        if (rec && rec.id === ghId) handles.add(handle);
-      }
-    } catch { /* unreadable pins -> fall through to logins */ }
+  for (const [handle, rec] of Object.entries(await storePins(env))) {
+    pinnedHandles.add(handle);
+    if (rec && rec.id === ghId) handles.add(handle);
   }
   const login = (ghLogin ?? "").toLowerCase();
   if (login) for (const h of loginIndex(db, pinnedHandles).get(login) ?? []) handles.add(h);
@@ -202,7 +222,7 @@ export async function oauthLookup(odb, db, clone, token) {
   const row = await asPaper(odb).get("SELECT * FROM tokens WHERE token_hash = ? AND kind = 'access'", sha256(token));
   if (!row || row.expires < now()) return null;
   const verified = { ghId: row.gh_id, ghLogin: row.gh_login };
-  const hh = householdFor(clone, db, row.gh_id, row.gh_login);
+  const hh = await householdFor(db, row.gh_id, row.gh_login);
   if (hh) return { ...hh, ...verified };
   return { household: row.gh_login ?? String(row.gh_id), handles: new Set(), visitor: true, ...verified };
 }
@@ -307,7 +327,7 @@ export async function keyLookup(odb, db, clone, token) {
     ? { heldBy: row.held_by, claimedHandle: row.claimed_handle ?? null,
         cosignedBy: row.cosigned_gh_id ? { login: row.cosigned_gh_login ?? null, id: row.cosigned_gh_id } : null }
     : {};
-  const hh = householdFor(clone, db, row.gh_id, row.gh_login);
+  const hh = await householdFor(db, row.gh_id, row.gh_login);
   if (hh) return { ...hh, ...verified, ...custody };
   return { household: row.gh_login ?? String(row.gh_id), handles: new Set(), visitor: true, ...verified, ...custody };
 }
@@ -351,8 +371,8 @@ export async function berthLookup(odb, db, clone, token) {
   // household — the agent never fetches a new credential, its standing simply
   // grows. Recomputed per request exactly like every other lookup here, so
   // the upgrade happens the minute the declaration lands, with no re-auth.
-  if (row.cosigned_gh_id && db && clone) {
-    const hh = householdFor(clone, db, row.cosigned_gh_id, row.cosigned_gh_login);
+  if (row.cosigned_gh_id && db) {
+    const hh = await householdFor(db, row.cosigned_gh_id, row.cosigned_gh_login);
     // A HARBOR household keeps the quay voice (berth + slug ride along, so
     // worldSay's berth branch speaks as berth-<slug>, label intact); a SETTLED
     // household sheds the berth marker entirely — its residents speak embodied,
@@ -570,7 +590,7 @@ export async function claimLookup(odb, db, clone, token) {
   if (!token.startsWith("pmc_")) return null;
   const row = await asPaper(odb).get("SELECT * FROM key_claims WHERE token_hash = ?", sha256(token));
   if (!row || row.expires < now() || !row.cosigned_gh_id) return null;
-  const hh = householdFor(clone, db, row.cosigned_gh_id, row.cosigned_gh_login);
+  const hh = await householdFor(db, row.cosigned_gh_id, row.cosigned_gh_login);
   if (!hh || !hh.handles.has(row.handle)) return null;
   return {
     ...hh,
@@ -878,7 +898,7 @@ async function handleOauthRoute(req, res, ctx) {
       const claim = await odb.get("SELECT * FROM key_claims WHERE ask_hash = ?", pending.ask_hash);
       if (!claim || claim.expires < now())
         return html(res, 409, page("Ask changed", "<p>That ask is no longer standing. Your agent can make a fresh one.</p>"));
-      const asked = householdFor(clone, db, ghUser.id, ghUser.login);
+      const asked = await householdFor(db, ghUser.id, ghUser.login);
       if (!asked || !asked.handles.has(pending.handle))
         return html(res, 403, page("Not this household's account", `
           <p>You signed in as <strong>@${esc(ghUser.login)}</strong>, and the town's record does not
@@ -917,7 +937,7 @@ async function handleOauthRoute(req, res, ctx) {
         </form>`));
     }
 
-    const hh = householdFor(clone, db, ghUser.id, ghUser.login);
+    const hh = await householdFor(db, ghUser.id, ghUser.login);
 
     const nonce = rand(16);
     await odb.run("UPDATE pending SET json = ? WHERE id = ?", JSON.stringify({
@@ -980,7 +1000,7 @@ async function handleOauthRoute(req, res, ctx) {
       // RE-CHECKED AT APPROVAL, not trusted from the parked pending row. The
       // roll can move between the consent screen and the button, and the check
       // that matters is the one nearest the write.
-      const asked = householdFor(clone, db, pending.gh_id, pending.gh_login);
+      const asked = await householdFor(db, pending.gh_id, pending.gh_login);
       if (!asked || !asked.handles.has(claim.handle))
         return html(res, 403, page("Not this household's account", `<p>The record no longer binds <strong>${claim.handle}</strong> to <strong>@${esc(pending.gh_login)}</strong>. Nothing was changed.</p>`));
       // THE WITNESS IS THE CREDENTIAL'S OWN CUSTODY COLUMNS AND THE PUBLIC READ
@@ -1124,6 +1144,11 @@ export async function handleOauth(req, res, ctx) {
     return await handleOauthRoute(req, res, ctx);
   } catch (e) {
     if (res.headersSent || !browserFacing(req)) throw e;
+    // The store's pins could not be read (POS-343): say so, by name.
+    if (e instanceof SignInUnreadable)
+      return html(res, 503, page("Sign-in cannot read the town's record", `
+      <p>${esc(e.hint)}</p>
+      <p><strong>Nothing was authorized.</strong></p>`));
     console.error("[oauth] unexpected route failure", e?.stack ?? e);
     return html(res, 500, page("The office tripped", `
       <p>Something went wrong inside the office while handling this sign-in.</p>

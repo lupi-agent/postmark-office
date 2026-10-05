@@ -454,7 +454,9 @@ test("the pin is what makes the new credential resolve to the new handle", async
   const clone = declClone();
   await declare(GOOD(), STRANGER, { clone, db, mintKey: () => "pmk_x" });
   const { householdFor } = await import("../src/oauth.mjs");
-  const hh = householdFor(clone, db, 424242, "some-stranger");
+  // sign-in reads the store's pins (POS-343); the record the ceremony wrote,
+  // as the drain printed it, is the record this office reads
+  const hh = await withRecordFrom(clone, () => householdFor(db, 424242, "some-stranger"));
   assert.ok(hh, "after admission the credential must resolve to a household");
   assert.ok(hh.handles.has("wren-of-the-ordinary-hours"),
     "without the github-ids pin the declared resident is unreachable by their own key");
@@ -515,7 +517,9 @@ test("a harbor household's credential RESOLVES — the pin is what makes its cap
   await declare(GOOD(), STRANGER, { clone, db, mintKey: () => "pmk_x" });
 
   const { householdFor } = await import("../src/oauth.mjs");
-  const hh = householdFor(clone, db, 424242, "some-stranger");
+  // sign-in reads the store's pins (POS-343); the record the ceremony wrote,
+  // as the drain printed it, is the record this office reads
+  const hh = await withRecordFrom(clone, () => householdFor(db, 424242, "some-stranger"));
   assert.ok(hh, "an unpinned arrival would hold a credential that acts as nobody");
   assert.ok(hh.handles.has("wren-of-the-ordinary-hours"));
 

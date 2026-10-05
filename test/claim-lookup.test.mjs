@@ -31,7 +31,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
-import { indexStore } from "./helpers/office-under-test.mjs";
+import { indexStore, seedRegistry, recordInProcess } from "./helpers/office-under-test.mjs";
 import { openOauthDb, claimLookup, householdFor, mintClaim, cosignClaim, claimByAsk } from "../src/oauth.mjs";
 
 const OWNER = { id: 999, login: "keeminlee" };      // holds `wright`
@@ -55,14 +55,17 @@ async function bench() {
   }));
   const clone = join(tmp, "town-clone");
   mkdirSync(join(clone, "tools"), { recursive: true });
-  writeFileSync(join(clone, "tools", "github-ids.json"), JSON.stringify({
-    wright: { login: OWNER.login, id: OWNER.id, pinned: "2026-07-05" },
-    "other-resident": { login: OTHER.login, id: OTHER.id, pinned: "2026-08-01" },
-  }));
   const odb = openOauthDb(join(tmp, "oauth.db"));
   const ix = await indexStore(db);
   const restore = await ix.useInProcess();
-  return { tmp, db, odb, clone, done: async () => { await restore(); await ix.stop(); db.close(); odb.close(); rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
+  // The pins are the STORE's (POS-343): sign-in reads household_pins, never
+  // the clone's tools/github-ids.json, so the bench states them there.
+  await seedRegistry(ix.store, null, {
+    wright: { login: OWNER.login, id: OWNER.id, pinned: "2026-07-05" },
+    "other-resident": { login: OTHER.login, id: OTHER.id, pinned: "2026-08-01" },
+  });
+  const unrecord = await recordInProcess(ix.store);
+  return { tmp, db, odb, clone, store: ix.store, done: async () => { await unrecord(); await restore(); await ix.stop(); db.close(); odb.close(); rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
 }
 
 test("THE BINDING: a claim co-signed by a real household that does not hold the handle resolves to nothing", async () => {
@@ -76,7 +79,7 @@ test("THE BINDING: a claim co-signed by a real household that does not hold the 
     await grant(b.odb, ask, OTHER);
 
     // the co-signer is nobody's stranger — householdFor genuinely answers for them
-    const theirs = householdFor(b.clone, b.db, OTHER.id, OTHER.login);
+    const theirs = await householdFor(b.db, OTHER.id, OTHER.login);
     assert.ok(theirs, "the wrong co-signer really does keep a household (or this test proves nothing)");
     assert.ok(!theirs.handles.has("wright"), "and it is not the claimed handle's");
 
@@ -109,33 +112,35 @@ test("THE CO-SIGN GATE leans on householdFor answering null for no account — a
     // there is no reachable row with a household and no co-signer. What keeps an
     // un-co-signed claim dead if that guard were ever removed is THIS, and it is
     // a promise another function makes:
-    assert.equal(householdFor(b.clone, b.db, null, null), null,
+    assert.equal(await householdFor(b.db, null, null), null,
       "no account resolves to no household — the day this returns something, an un-co-signed claim goes live");
-    assert.equal(householdFor(b.clone, b.db, undefined, ""), null);
+    assert.equal(await householdFor(b.db, undefined, ""), null);
   } finally { await b.done(); }
 });
 
-test("THE NULL-ID PIN: the register itself can make householdFor answer for no account", async () => {
+test("THE NULL-ID PIN: the record refuses the pin that would make householdFor answer for no account", async () => {
   // The assertion above is true of CLEAN pins and says nothing about the live
   // register, which is the reviewer's repair 7 and a fair hit: the guard is
   // watched against a fixture that cannot produce the hazard. householdFor
-  // compares `rec.id === ghId` strictly, so a pin whose id is null matches an
-  // un-co-signed claim's null account and hands back a household for nobody.
-  // All 156 live pins carry numeric ids today, so this is latent — and latent
-  // is exactly what a test is for.
+  // compares `rec.id === ghId` strictly, so a pin whose id is null would match
+  // an un-co-signed claim's null account and hand back a household for nobody.
+  //
+  // AMENDED 2026-10-04 (POS-343): sign-in reads the STORE's pins now, and
+  // `household_pins.gh_id` is NOT NULL (019). The hazard this test used to
+  // reproduce through a hand-written pins file cannot enter the record at all,
+  // so what is asserted is the wall that keeps it out — and that the co-sign
+  // gate still answers for an un-co-signed claim on its own.
   const b = await bench();
   try {
-    writeFileSync(join(b.clone, "tools", "github-ids.json"), JSON.stringify({
-      wright: { login: OWNER.login, id: null, pinned: "2026-09-08" },
-    }));
-    assert.deepEqual(
-      { ...householdFor(b.clone, b.db, null, null), handles: [...(householdFor(b.clone, b.db, null, null)?.handles ?? [])] },
-      { household: "null", handles: ["wright"] },
-      "with a null-id pin present, householdFor DOES answer for no account — this is the hazard, reproduced");
+    await assert.rejects(
+      seedRegistry(b.store, null, { wright: { login: OWNER.login, id: null, pinned: "2026-09-08" } }),
+      /null value in column "gh_id"/,
+      "the store refuses a pin with no id — the hazard cannot be written into the record sign-in reads");
+    assert.equal(await householdFor(b.db, null, null), null, "so no account still resolves to no household");
 
     const { key } = (await mintClaim(b.odb, "wright"));
     assert.equal((await claimLookup(b.odb, b.db, b.clone, key)), null,
-      "and the co-sign gate is what keeps the un-co-signed claim dead anyway — it is load-bearing, not decorative");
+      "and the co-sign gate keeps the un-co-signed claim dead — it is load-bearing, not decorative");
   } finally { await b.done(); }
 });
 

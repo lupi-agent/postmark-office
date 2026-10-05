@@ -15,13 +15,13 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
-import { indexStore } from "./helpers/office-under-test.mjs";
+import { indexStore, seedRegistry } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
 
 // The town index this file's offices read: a store seeded from each fixture
 // office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
 const STORES = [];
-const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x; };
 test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -51,9 +51,8 @@ before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-office-oauth-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
-  // (wright stands in no house in this suite's store, so the household block
-  // the office adds to /me — POS-342 — is the honest solo one)
-  const IX_ENV = await storeFor(dbPath);
+  const IX = await storeFor(dbPath);
+  const IX_ENV = IX.env;
 
   // a minimal town clone: just the pins file the household mapping reads
   const clone = join(tmp, "town-clone");
@@ -62,6 +61,10 @@ before(async () => {
   writeFileSync(join(clone, "tools", "github-ids.json"), JSON.stringify({
     wright: { login: "keeminlee", id: 999, pinned: "2026-07-05" },
   }));
+  // Sign-in reads the STORE's pins (POS-343), so the same pin is stated there.
+  // wright stands in no house in this registry, so the household block the
+  // office adds to /me (POS-342) is the honest solo one.
+  await seedRegistry(IX.store, null, { wright: { login: "keeminlee", id: 999, pinned: "2026-07-05" } });
 
   // mock GitHub: authorize redirects straight back; token + user are canned
   ghServer = createServer((req, res) => {
