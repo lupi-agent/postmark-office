@@ -81,6 +81,13 @@ const SH_OK = has("sh -c 'true'");
 // from a real red crossing, a test that removed it would destroy the evidence
 // an operator was about to read.
 const LITTER = join(OFFICE, "settlement-last-suite.log");
+// THE STORE the crossing's household export renders (POS-350): the export reads
+// the registry from the store, never the fixture town's printouts, so each
+// crossing re-states the store from the town seed first.
+import { registryStoreForTowns } from "./helpers/office-under-test.mjs";
+const REG = await registryStoreForTowns({ db: "suite_red_test" });
+after(() => REG.stop());
+
 let litterBefore = null;
 before(() => { try { litterBefore = existsSync(LITTER) ? readFileSync(LITTER) : null; } catch { litterBefore = null; } });
 after(() => {
@@ -223,6 +230,7 @@ function crossing(label, env = {}, { redSuite = true, gate = true } = {}) {
   g(townSeed, "push", "-q", "origin", "main");
   execFileSync("git", ["clone", "-q", townOrigin, townClone], { stdio: "ignore" });
 
+  REG.seedFromSync(townSeed);
   const res = spawnSync("sh", [SCRIPT], {
     encoding: "utf8",
     env: {
@@ -241,6 +249,7 @@ function crossing(label, env = {}, { redSuite = true, gate = true } = {}) {
       SWEEP_SAW_OUT: join(root, "sweep-saw.json"),
       // § AND IT CANNOT REACH GITHUB, above.
       SETTLEMENT_ESCALATE_CRED: join(root, "no-such-credential-file"),
+      ...REG.env,
       ...env,
     },
   });
