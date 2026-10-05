@@ -70,6 +70,10 @@ const PUBLISHED = [
   // standing on no parcel, and an ordinary parcel of the same neighbour's.
   { id: "neighbour/the-big-house", by: "neighbour", kind: "sited", tier: "market", at: { x: 300, y: -300 }, extent: { w: 60, h: 60 }, body: "a painted house, standing on no parcel of anyone's" },
   { id: "neighbour/the-neighbour-parcel", by: "neighbour", kind: "parcel", tier: "home", at: { x: -300, y: 300 }, extent: { w: 25, h: 25 }, body: "the ground neighbour holds" },
+  // POS-406's ground, kinofire's shape: alpha's home stands on a HOUSEMATE's
+  // parcel (one household, gh:1), so the parcel is not the home's parent by id.
+  { id: "alphamate/the-mates-parcel", by: "alphamate", kind: "parcel", tier: "home", at: { x: -200, y: -200 }, extent: { w: 25, h: 25 }, body: "the ground alpha's household holds, in alphamate's name" },
+  { id: "alpha/the-manor", by: "alpha", kind: "sited", tier: "home", at: { x: -200, y: -200 }, extent: { w: 8, h: 8 }, body: "alpha's home, on the household's parcel" },
 ];
 
 // THE ENGINE, in miniature, on main — the office materialises `tools/` at the
@@ -170,7 +174,7 @@ export function containmentParents(marks) {
 // it, not merely survive its absence: with the retired sovereignty guard
 // restored, this line is what reds #3025 LEG 1 at the end of this file.
 put("seeding/manifest.json", JSON.stringify({ homes: [{ household: "neighbour", home_id: "the-big-house", title: "the Big House" }] }));
-put("WORLD/households.json", JSON.stringify({ households: { alpha: "gh:1", beta: "gh:2", neighbour: "gh:3" } }));
+put("WORLD/households.json", JSON.stringify({ households: { alpha: "gh:1", alphamate: "gh:1", beta: "gh:2", neighbour: "gh:3" } }));
 put("WORLD/marks/let-there-be-light/mark.md", record("the-town", "the world frame"));
 put("WORLD/marks/let-there-be-light/town-square/mark.md", record("the-town", "the square"));
 put("WORLD/marks/let-there-be-light/published-note/mark.md", record("alpha", "alpha published this"));
@@ -1311,4 +1315,36 @@ test("#3025 LEG 3 · NON-REGRESSION: a parcel claim over a neighbour's PARCEL is
   assert.equal(out.ok, true,
     `unchanged by #3025: this door carries no overlap check, before or after. Got ${JSON.stringify(out)}`);
   assert.equal(out.id, "alpha/over-the-neighbour");
+});
+
+// ── POS-406: A DETAIL ON A HOME IS TOLD WHAT THE ACT RULED ──────────────────
+//
+// kinofire's report (town bug post kinofire/predicated-home-features-
+// misclassified-as-commons-and-requir): a predicated detail on her own home,
+// left with stamps: 0, was told it was commons and needed escrow, and she
+// staked 1✦ on each of two. The act had ruled it own ground and put it forward
+// at ✦0 (state log seq 12932, 12933: `put_forward: true`). The sentence came from
+// a second rule: the publish note knew own ground only as "the parent IS your
+// household's parcel", and her home stands on a housemate's parcel. The note
+// now reads the ground the act read.
+test("POS-406 — a detail on a home on your household's ground is not told it is commons", async () => {
+  process.env.WORLD_SINGLE_LOG = "1";
+  const { leaveMarkViaOffice } = await import("../src/world.mjs");
+  const detail = { kind: "predicated", parent_id: "alpha/the-manor", slot: "feature", value: "a big fireplace", body: "a fireplace in alpha's home" };
+
+  const store = guardStore();
+  const forward = await withGuardsFlipped(store, () => leaveMarkViaOffice(repo, { slug: "pos406-fireplace", ...detail, stamps: 0 }, houseA));
+  assert.equal(forward.put_forward, true, "the act rules it own ground, ✦0 puts it forward (true before this fix too)");
+  assert.equal(forward.publishing, undefined,
+    `and nothing tells the author it is commons or asks for a stake: ${JSON.stringify(forward.publishing)}`);
+
+  const draft = await withGuardsFlipped(guardStore(), () => leaveMarkViaOffice(repo, { slug: "pos406-firepit", ...detail }, houseA));
+  assert.equal(draft.put_forward, false, "left unstaked, it is a private draft");
+  assert.equal(draft.publishing, undefined, `an unstaked draft on own ground gets no commons note either: ${JSON.stringify(draft.publishing)}`);
+  assert.match(draft.to_publish, /stamps: 0 is enough/, "its way forward is the own-ground one");
+
+  // THE CONTROL: the same detail on a mark on no one's parcel still hears the law.
+  const commons = await withGuardsFlipped(guardStore(), () => leaveMarkViaOffice(repo,
+    { slug: "pos406-on-commons", ...detail, parent_id: "alpha/published-note" }, houseA));
+  assert.ok(commons.publishing?.heads_up, "a detail on commons ground is still told escrow publishes it");
 });

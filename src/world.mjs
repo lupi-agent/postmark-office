@@ -3416,6 +3416,12 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
     const staking = clean.stamps !== undefined && clean.stamps !== null;
     const stakeN = staking ? Number(clean.stamps) : 0;
     const ground = staking || amending ? await groundMinimumStake(clean, canon) : null;
+    // THE PUBLISH NOTE READS THIS SAME GROUND (POS-406). It used to ask a second
+    // rule of its own, "is the parent your household's parcel", and so told
+    // kinofire that a detail on her home (a sited mark on a housemate's parcel)
+    // was commons and wanted 1✦, over an act this line had just put forward at
+    // ✦0. Asked for an unstaked leave too, because the note rides those as well.
+    const groundMin = (ground ?? await groundMinimumStake(clean, canon)).min;
     const escrowBehind = amending ? await escrowBehindMark(id) : 0;
     const verdict = putForwardVerdict({
       staking, stamps: stakeN, amending, escrowBehind, groundMin: ground?.min ?? 1 });
@@ -3452,6 +3458,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
         dir: String(landing).replace(/^WORLD[/]marks[/]/, "").replace(/[/]mark[.]md$/, ""),
         branch: draftBranch(household), put_forward: putForward,
         ...(amending ? { amended: true, moved: false, _verdict: verdict } : {}),
+        _ground_min: groundMin,
         nothing_written: "a preview: no draft, no journal row, no stake — leave the mark without preview: true to write it",
       };
     }
@@ -3549,6 +3556,9 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
         // rather than published, because a hotfix is no place to add a word to
         // the door's grammar.
         _verdict: verdict } : {}),
+      // INTERNAL the same way: the ground's minimum this act was ruled on, so
+      // the publish note says what the act did (POS-406, § disclosePublishing).
+      _ground_min: groundMin,
       // ── which side of the boundary this act left the mark on ──────────────
       put_forward: putForward,
       ...(ground?.ground ? { on_your_ground: ground.ground } : {}),
@@ -4153,8 +4163,16 @@ export function overhangOf({ id, kind, parent, at, extent, standing, spine }) {
 // note rides — over-noting is safe by construction, because a stake on ground
 // the crossing judges sovereign after all is simply extra weight behind your
 // own mark, never wasted. Pure, so it can be falsified without a clone.
-export function publishNoteFor({ id, parent, by, marks, residentsOf, kind = null }) {
+//
+// `ownGround` is the act's own answer when the door has one (POS-406): `true`
+// when the ground rule the act was ruled on (`groundMinimumStake`) found the
+// author's household ground, so the note says nothing, whatever the parent is.
+// A detail on a home, or a mark in a home on a housemate's parcel, has a parent
+// that is not the parcel, and the parcel line below could not see it. `null`
+// (the git executor, which rules no ground) falls back to that line.
+export function publishNoteFor({ id, parent, by, marks, residentsOf, kind = null, ownGround = null }) {
   if (kind === "parcel") return null; // a parcel is its own ground — it publishes free (Keemin 2026-09-27, POS-233)
+  if (ownGround === true) return null; // the act's own ground rule found your household's ground
   const parentBy = parent ? String(parent).split("/")[0] : null;
   if (parent && parentBy !== "the-town") {
     const pm = (marks ?? []).find((m) => m.id === parent);
@@ -4172,6 +4190,10 @@ export function publishNoteFor({ id, parent, by, marks, residentsOf, kind = null
 
 // The I/O half: a courtesy that must never fail the write it rides on.
 async function disclosePublishing(result, by) {
+  // The act's ground minimum (POS-406), internal like `_verdict` and stripped
+  // first, so no early return below can let it reach the answer.
+  const groundMin = result?._ground_min;
+  if (result) delete result._ground_min;
   try {
     if (!result?.id) return;
     // ── ONE VERDICT, ONE SENTENCE (#2614, hotfix w38.3) ───────────────────
@@ -4210,6 +4232,7 @@ async function disclosePublishing(result, by) {
     const w = await world();
     const note = publishNoteFor({
       id: result.id, parent: result.parent ?? null, by, kind: result.kind ?? null,
+      ownGround: groundMin === 0 ? true : null,
       marks: w?.marks ?? [],
       residentsOf: (h) => householdOf(h)?.residents ?? null,
     });
