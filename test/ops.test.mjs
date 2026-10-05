@@ -13,7 +13,9 @@ import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { giftViaOffice, isPrincipal } from "../src/ops.mjs";
+import { giftViaOffice, isPrincipal, principalNow, loadPrincipals, __setPrincipalsForTest, ROLE_PRINCIPAL } from "../src/ops.mjs";
+import { openPaper } from "../src/paperwork.mjs";
+import { rolesSchema, grantRole, revokeRole } from "../src/roles.mjs";
 import { identityOf } from "../src/queries.mjs";
 import { fixtureDb } from "./fixture.mjs";
 import { indexStore } from "./helpers/office-under-test.mjs";
@@ -80,22 +82,48 @@ const bounceOf = async (fn) => { try { await fn(); } catch (e) { return e; } ass
 
 // ── the principal gate ───────────────────────────────────────────────────────
 
-test("isPrincipal: only the pinned GitHub id passes; static keys never do", () => {
+test("isPrincipal: only a principal subject's verified GitHub id passes; static keys never do", () => {
   assert.equal(isPrincipal(principalKey, PRINCIPAL_ID), true);
   assert.equal(isPrincipal(strangerKey, PRINCIPAL_ID), false, "a different verified id is not the principal");
   assert.equal(isPrincipal(staticKey, PRINCIPAL_ID), false, "a static key has no verified id — never principal");
-  assert.equal(isPrincipal(principalKey, undefined), false, "no PRINCIPAL_GH_ID configured → nobody is principal");
+  assert.equal(isPrincipal(principalKey, undefined), false, "no principal subject → nobody is principal");
   assert.equal(isPrincipal(null, PRINCIPAL_ID), false);
 });
 
 test("/me carries principal: true only for the principal's session", () => {
-  const prev = process.env.PRINCIPAL_GH_ID;
-  process.env.PRINCIPAL_GH_ID = PRINCIPAL_ID;
+  __setPrincipalsForTest([PRINCIPAL_ID]);
   try {
     assert.equal(identityOf(principalKey).principal, true);
     assert.equal(identityOf(strangerKey).principal, false);
     assert.equal(identityOf(staticKey).principal, false);
-  } finally { if (prev === undefined) delete process.env.PRINCIPAL_GH_ID; else process.env.PRINCIPAL_GH_ID = prev; }
+  } finally { __setPrincipalsForTest([]); }
+});
+
+test("THE PRINCIPAL IS A ROLE ROW (POS-352): the env line is not read; the registry is, now and on reload", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "postmark-principal-"));
+  const rdb = await openPaper(join(dir, "roles.db"), { schema: rolesSchema });
+  const prev = process.env.PRINCIPAL_GH_ID;
+  process.env.PRINCIPAL_GH_ID = PRINCIPAL_ID; // the retired env line: it must grant nothing
+  try {
+    assert.equal(await principalNow(rdb, principalKey), false, "the env line alone makes nobody principal");
+    assert.equal((await loadPrincipals(rdb)).size, 0);
+    assert.equal(identityOf(principalKey).principal, false);
+
+    await grantRole(rdb, { subject: principalKey.ghId, role: ROLE_PRINCIPAL, actor: "test" });
+    assert.equal(await principalNow(rdb, principalKey), true, "the role row makes the principal, at the next call");
+    assert.equal(await principalNow(rdb, strangerKey), false);
+    assert.equal(await principalNow(rdb, staticKey), false, "a static key with no id still never is");
+    await loadPrincipals(rdb);
+    assert.equal(identityOf(principalKey).principal, true, "and the describing flag follows the reload");
+
+    await revokeRole(rdb, { subject: principalKey.ghId, role: ROLE_PRINCIPAL, actor: "test" });
+    assert.equal(await principalNow(rdb, principalKey), false, "a revoke lands at the spending door's next call");
+  } finally {
+    if (prev === undefined) delete process.env.PRINCIPAL_GH_ID; else process.env.PRINCIPAL_GH_ID = prev;
+    __setPrincipalsForTest([]);
+    rdb.close?.();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 });
 
 // ── the gift mint mechanics (giftViaOffice → gift-exec → the town's CLI) ──────
@@ -157,8 +185,9 @@ before(async () => {
   fixtureDb(dbPath).close();
   const IX_ENV = await storeFor(dbPath);
   ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath], {
-    // a static key (no ghId → never principal) + the principal pin + no clone
-    env: { ...process.env, ...IX_ENV, OFFICE_KEYS: "shellkey=keemin:wright", PRINCIPAL_GH_ID: PRINCIPAL_ID, TOWN_CLONE: join(tmp, "no-clone"), TOWN_PUSH: "" },
+    // a static key (no ghId → never principal) + no clone. The principal is a
+    // role row now (POS-352), and this office's registry holds none.
+    env: { ...process.env, ...IX_ENV, OFFICE_KEYS: "shellkey=keemin:wright", TOWN_CLONE: join(tmp, "no-clone"), TOWN_PUSH: "" },
     stdio: ["ignore", "pipe", "pipe"],
   })));
   BASE = `http://127.0.0.1:${PORT}`;

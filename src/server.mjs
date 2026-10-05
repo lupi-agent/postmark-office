@@ -45,7 +45,7 @@ import { probeOf, isUnreachable } from "./index-probe.mjs"; // the write path's 
 const { townIndexReads } = townIndexStore;
 import { votesAvailable, voteList, voteView, stakeViaOffice } from "./votes.mjs";
 import { doorstepBundle } from "./doorstep-bundle.mjs"; // the doorstep, finished — one implementation, three doors
-import { giftViaOffice, isPrincipal } from "./ops.mjs";
+import { giftViaOffice, isPrincipal, principalNow, startPrincipalRefresher } from "./ops.mjs";
 import { fundVerifyViaOffice, intakeDisclosure, POT_RE as FUND_POT_RE, INTAKE as FUND_INTAKE } from "./fund.mjs";
 import { channelOf, countAct, actsByChannel } from "./channel.mjs";
 import { logAccess } from "./telemetry.mjs";
@@ -1686,6 +1686,15 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       }
       // keyless identity probe — read-side: powers the viewer's dev-dials gate + stand-at filter
       if (path === "/ops/whoami") return j(res, 200, whoami(key));
+      // POS-352: the crossings' receipts, from the store (crossing_receipts, 061).
+      if (path === "/crossings/receipts") {
+        const { receiptsRead } = await import("./crossing-receipts.mjs");
+        try { return j(res, 200, await receiptsRead(url.searchParams)); }
+        catch (e) {
+          if (e.code) return bounce(res, e.code, e.defect, e.hint);
+          return bounce(res, 503, "the office cannot read the crossings' receipts right now", "nothing about the crossings changed; ask again shortly");
+        }
+      }
 
       // ── THE ROSTER DOOR PAGES (2026-09-10, the 10x read's third row) ──────
       //
@@ -2339,7 +2348,9 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
     // under the flock. The office is the WALL: principal-only, checked here (the
     // /ops/ site page is only presentation). by: + date are server-derived.
     if (req.method === "POST" && path === "/ops/gift") {
-      if (!isPrincipal(key))
+      // The spending door asks the role registry NOW (POS-352): a revoke lands
+      // at the next call, never at the next refresh.
+      if (!(await principalNow(rdb, key)))
         return bounce(res, 403, "the ops desk is the principal's", "this desk mints founder gifts and answers only to Keemin's GitHub sign-in");
       if (!canWrite)
         return bounce(res, 409, "not-yet-open", "the office has no town clone configured; the desk is dark");
@@ -2673,6 +2684,9 @@ const handle = (req, res) => {
 };
 
 import("./world-refresher.mjs").then((m) => m.startWorldRefresher(WORLD_CLONE)); // POS-263: the world clone's git answered off the request path
+// POS-352: the principal is a role row; the describing flags read this set,
+// reloaded from the registry every minute in every process.
+startPrincipalRefresher(rdb);
 // POS-270: the class layer from law_projection at the newest blessing, off the
 // request path. The main thread polls and announces a move; a read worker loads
 // once at boot and again on each announcement, so every process serves one law.
