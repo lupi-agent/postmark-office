@@ -30,6 +30,7 @@ import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
 import { conformance, planDeclaration, readRegisters, LANDING_GROUND } from "./declare.mjs";
 import { gangwayState } from "./residency.mjs";
 import { mintHousehold, joinHousehold, collectingDrain, NO_DRAIN } from "./ceremony.mjs";
+import { planHouseKey, appendHouseKey, registryWith } from "./house-key.mjs";
 import { heardAnswer, recordHeard, heardReceipt } from "./arrival-heard.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -140,6 +141,16 @@ async function main() {
     // `penCommit` below. The guarantee the paragraph above bought for free is
     // unchanged: all or none, and there is no window in which a household holds
     // an address and no registry row.
+    //
+    // THE HOUSE'S KEY, IN THE SAME ACT (#3429). The founder's pin lands with
+    // their signed `registry: <handle> = hh:<slug>` line, judged here before
+    // the first row and appended into the one commit below
+    // (src/house-key.mjs), so a house is keyed `hh:<slug>` from its first day
+    // and a later join never has to re-key it.
+    const keyed = planHouseKey(CLONE, [{ handle: decl.handle, slug: plan.slug, residents: [decl.handle] }],
+      { date: plan.date, registry: registryWith(plan.registry, plan.slug, [decl.handle]) });
+    if (keyed?.refusal) return refusal(keyed.refusal.code, keyed.refusal.field, keyed.refusal.defect, `${keyed.detail} — ${keyed.refusal.hint}`);
+
     const { drain, paths: drainedPaths } = collectingDrain({ clone: CLONE });
     let registryOutcome = { rendered: true };
     try {
@@ -170,6 +181,8 @@ async function main() {
       return refusal(e.code ?? 500, e.field ?? null, e.defect ?? String(e?.message ?? e), e.hint ?? null);
     }
     paths.push(...drainedPaths);
+    const ledger = appendHouseKey(CLONE, keyed?.signed);
+    if (ledger) paths.push(ledger);
 
     // The subject line says which of the two things happened, because the town
     // repo's log is read by people looking for when a household came ashore.

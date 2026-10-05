@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ideasTank } from "./world-classes.mjs";
-import { signedRegistryLines } from "./town-drain.mjs";
+import { signedRegistryLines } from "./ledger-pen.mjs";
 
 export const FIRST_IDEA_WINDOW_END = "2026-09-30";
 

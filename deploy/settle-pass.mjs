@@ -34,6 +34,7 @@ import { penTransaction } from "../src/write.mjs";
 import { loadRegistryRows } from "../src/registry-store.mjs";
 import { pinsFromRows } from "../src/registry-rows.mjs";
 import { joinOfMergedPR, settleUnderLock, PEN_GH_ID, SETTLE_REFUSALS } from "../src/settle-join.mjs";
+import { HOUSE_KEY_REFUSALS } from "../src/house-key.mjs";
 import { ghFetch } from "../src/residency.mjs";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -60,7 +61,10 @@ const readCursor = (path) => {
 
 // A refusal that asking again cannot change is the join's answer; anything
 // else (the record, GitHub, a push that did not land, the lock) is the weather.
-const TRANSIENT = new Set([SETTLE_REFUSALS.NO_RECORD.defect, SETTLE_REFUSALS.GITHUB.defect]);
+// A house whose residents already earned stamps today under the key the join
+// replaces is the weather too: the day turns, and the next tick settles it
+// (src/house-key.mjs § THE DATING RULE, #3429).
+const TRANSIENT = new Set([SETTLE_REFUSALS.NO_RECORD.defect, SETTLE_REFUSALS.GITHUB.defect, HOUSE_KEY_REFUSALS.TODAY.defect]);
 const transient = (e) => typeof e?.code !== "number" || e.code >= 500 || TRANSIENT.has(e.defect);
 
 /** The merged PRs since `since`, oldest merge first. Null when GitHub did not answer. */

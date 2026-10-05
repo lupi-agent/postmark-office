@@ -59,7 +59,9 @@ import { fileURLToPath } from "node:url";
 import { loadRegistryRows } from "./registry-store.mjs";
 import { registryFromRows, pinsFromRows } from "./registry-rows.mjs";
 import { HANDLE_RE, joinBranch, houseForName, houseForAccount, planRegistryJoin, ghFetch } from "./residency.mjs";
-import { mintHousehold, joinHousehold, NO_DRAIN } from "./ceremony.mjs";
+import { mintHousehold, joinHousehold, collectingDrain, NO_DRAIN } from "./ceremony.mjs";
+import { planHouseKey, appendHouseKey, houseKeyBounce, registryWith } from "./house-key.mjs";
+import { penCommit, landOrRefuse } from "./write.mjs";
 
 // ── WHO MAY CALL IT ─────────────────────────────────────────────────────────
 //
@@ -238,7 +240,7 @@ function alreadySettled(handle, pin, registry) {
  * Every check that decides is made HERE, against the record and the clone as
  * they stand now; the door's earlier reads were courtesy.
  */
-export async function settleUnderLock({ handle, ghId, ghLogin, pr, road = "pen", cardLogin = null, clone, env = process.env, date, drain, drainOptions = {}, adopt } = {}) {
+export async function settleUnderLock({ handle, ghId, ghLogin, pr, road = "pen", cardLogin = null, clone, env = process.env, date, adopt } = {}) {
   const h = String(handle ?? "").trim().toLowerCase();
   if (!existsSync(join(clone, "WHITE_PAGES", h, "ADDRESS.md"))) throw refuse(SETTLE_REFUSALS.NO_ADDRESS, `WHITE_PAGES/${h}/ADDRESS.md`);
 
@@ -252,7 +254,7 @@ export async function settleUnderLock({ handle, ghId, ghLogin, pr, road = "pen",
   const card = readFileSync(join(clone, "WHITE_PAGES", h, "ADDRESS.md"), "utf8");
   const line = cardHousehold(card);
   const coSign = { ghId, ghLogin };
-  let slug, founded = null;
+  let slug, founded = null, mint = null;
 
   if (road === "hand") {
     // THE CARD ON MAIN IS THE CARD THAT WAS RESOLVED, read again under the lock.
@@ -269,11 +271,12 @@ export async function settleUnderLock({ handle, ghId, ghLogin, pr, road = "pen",
       const siblings = Object.entries(pins).filter(([, p]) => Number(p.id) === Number(ghId)).map(([k]) => k);
       const plan = planRegistryJoin(registry, { handle: h, household: named, ghId, ghLogin, siblings, date });
       if (plan?.action !== "created") throw refuse(SETTLE_REFUSALS.NO_HOUSE, `the card says household: ${line ?? "(nothing)"}`);
-      await mintHousehold({
+      // The house is minted below, after its key is judged (§ THE HOUSE'S KEY).
+      mint = {
         slug: plan.slug, name: plan.houseLine, coSign, residents: [...plan.siblings], since: date,
         declaredBy: `admission of ${h} by hand-written join PR #${pr} (${date}), settled by the office`,
         drain: NO_DRAIN, env, ...(adopt ? { adopt } : {}),
-      });
+      };
       slug = plan.slug;
       founded = plan.name;
     }
@@ -290,11 +293,30 @@ export async function settleUnderLock({ handle, ghId, ghLogin, pr, road = "pen",
     if (!listed) throw refuse(SETTLE_REFUSALS.NOT_VOUCHED, `${slug} lists ${(house.accounts ?? []).map((a) => `@${a.login}`).join(", ") || "no account"}, not @${ghLogin} (id ${ghId})`);
   }
 
+  // THE HOUSE'S KEY, JUDGED BEFORE THE FIRST ROW (#3429): the pin lands with
+  // the joiner's `registry: <handle> = hh:<slug>` line and one for every
+  // housemate still off that key (src/house-key.mjs). A settlement that would
+  // leave the house split, or rewrite stamps already counted today, refuses
+  // before the store holds anything; the tick's pass holds a TODAY for its
+  // next tick (deploy/settle-pass.mjs § TRANSIENT).
+  const residents = [...new Set([...(mint ? mint.residents : registry.households[slug]?.residents ?? []), h])];
+  const keyed = planHouseKey(clone, [{ handle: h, slug, residents }], {
+    date, registry: registryWith(registry, slug, residents, mint ? { accounts: [{ login: ghLogin, id: ghId }] } : {}),
+  });
+  if (keyed?.refusal) throw houseKeyBounce(keyed.refusal, keyed.detail);
+
+  // ONE COMMIT: the two printed registers and the ledger's key lines, the
+  // join-bind shape. The drain collects instead of committing on its own.
+  if (mint) await mintHousehold(mint);
+  const { drain, paths } = collectingDrain({ clone, env });
   const joined = await joinHousehold({
-    slug, handle: h, coSign, pinnedOn: date, env,
-    ...(drain ? { drain } : {}), drainOptions: { clone, ...drainOptions },
+    slug, handle: h, coSign, pinnedOn: date, env, drain,
     ...(adopt ? { adopt } : {}),
   });
+  const ledger = appendHouseKey(clone, keyed?.signed);
+  const commit = landOrRefuse(() => penCommit(clone, [...paths, ...(ledger ? [ledger] : [])],
+    `address: ${h} settled · bound to ${slug} at the merge of #${pr} (via postmark-office, settle-join)`));
+  if (commit?.error) return commit;
   const name = founded ?? registry.households[slug]?.name ?? slug;
   return {
     settled: true,
@@ -303,7 +325,7 @@ export async function settleUnderLock({ handle, ghId, ghLogin, pr, road = "pen",
     pin: { handle: h, login: ghLogin, gh_id: ghId, pinned: date },
     house: { slug, name },
     pr,
-    commit: joined.drained?.commit ?? null,
+    commit,
     registry: joined.registry,
     note: `${h} is bound to @${ghLogin} (id ${ghId}) and is a resident of ${name}; both files are re-rendered from the record`,
   };

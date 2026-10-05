@@ -48,7 +48,8 @@ import { loadRegistryRows, renameHousehold } from "../src/registry-store.mjs";
 import { registryFromRows, pinsFromRows, renderRegistry } from "../src/registry-rows.mjs";
 import { slugIsWellFormed, collectingDrain } from "../src/ceremony.mjs";
 import { isHouseholdName } from "../src/declare.mjs";
-import { registryLine, signedRegistryLines } from "../src/town-drain.mjs";
+import { registryLine } from "../src/house-key.mjs";
+import { signedRegistryLines } from "../src/ledger-pen.mjs";
 import { penCommit, penTransaction, landOrRefuse } from "../src/write.mjs";
 import { REGISTRY_PATH, PINS_PATH } from "../src/residency.mjs";
 

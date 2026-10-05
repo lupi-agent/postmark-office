@@ -19,11 +19,13 @@ import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
 import { appendTownJournal, ensureTownJournal, townDrainCursor } from "../src/town-journal.mjs";
-import { planTownDrain, writeTownDrain, registryLine } from "../src/town-drain.mjs";
+import { planTownDrain, writeTownDrain } from "../src/town-drain.mjs";
+import { registryLine } from "../src/house-key.mjs";
 import { runTownDrain } from "../src/town-bridge.mjs";
 import { REGISTRY_PATH } from "../src/residency.mjs";
 import { NO_TOWN, townClone, townModuleUrl } from "./fixture-paths.mjs";
-import { withRecordFrom } from "./registry-pool-stub.mjs";
+import { withRecordFrom, poolFromClone, RECORD_ON } from "./registry-pool-stub.mjs";
+import { __setPoolForTest } from "../src/world2-acts.mjs";
 
 const TOWN = townClone();
 // The predicate is the town's, so the clone must carry it (town d95e81c1c+).
@@ -182,5 +184,47 @@ test("the same crossing through the real planner lands, and the house mints unde
   assert.ok(!report.refused, `the crossing did not refuse: ${report.refused} ${report.skipped ?? ""}`);
   assert.deepEqual(appended(town.dir).length, 3);
   assert.deepEqual(VERIFY.verifyStampLedger(town.dir).problems ?? [], []);
+  rmSync(town.dir, { recursive: true, force: true });
+});
+
+// A ROW THAT STALLS DROPS ITS LINES, AND THE KEPT ONES ARE SIGNED AGAIN (#3429).
+// Each signature binds the whole prefix before it, so the lines of a row that
+// landed, signed after a stalled row's lines, no longer verify once those are
+// dropped. The town's stamp-verify is the oracle.
+test("a crossing whose first join stalls at the store appends the second join's lines re-signed, and the ledger verifies", { skip: SKIP }, async () => {
+  const town = sealedTown({
+    houses: {
+      ...SPLIT_PRONE().houses,
+      others: { name: "Others", accounts: [{ login: "other-gh", id: 777 }], residents: ["gamma"] },
+    },
+    pins: { ...SPLIT_PRONE().pins, gamma: { id: 777 } },
+    rooms: ["alpha", "beta", "gamma"],
+  });
+  const db = odb();
+  await appendTownJournal(db, joinRow({ household: "others", handle: "stalled", ghId: "777", ghLogin: "other-gh", payload: { household: "Others", card: "s" } }));
+  await appendTownJournal(db, joinRow());
+  const seeded = poolFromClone(town.dir);
+  const refusesTheStalled = {
+    ...seeded,
+    async query(text, params) {
+      if (/^\s*(INSERT|UPDATE)/i.test(text) && JSON.stringify(params ?? []).includes("stalled")) throw new Error("permission denied for table households");
+      return seeded.query(text, params);
+    },
+  };
+  const touched = await withEnv({ STAMP_KEY: town.keyFile, STAMP_ENGINE_DIR: join(TOWN, "tools"), ...RECORD_ON }, async () => {
+    __setPoolForTest(refusesTheStalled);
+    try {
+      const plan = await planTownDrain(db, town.dir, { date: "2026-10-04" });
+      return await writeTownDrain(town.dir, plan, { date: "2026-10-04" });
+    } finally { __setPoolForTest(null); }
+  });
+  assert.equal(touched.stalled?.length, 1, "the first join stalled");
+  assert.equal(touched.stalled[0].row.handle, "stalled");
+  assert.deepEqual(appended(town.dir), [
+    registryLine("2026-10-04", "tester", "testers"),
+    registryLine("2026-10-04", "alpha", "testers"),
+    registryLine("2026-10-04", "beta", "testers"),
+  ], "only the landed join's lines");
+  assert.deepEqual(VERIFY.verifyStampLedger(town.dir).problems ?? [], [], "and they verify: signed over the ledger as it stands");
   rmSync(town.dir, { recursive: true, force: true });
 });
