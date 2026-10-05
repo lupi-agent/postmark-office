@@ -278,9 +278,13 @@ export function chooseStandpoint(args, key) {
   if (hasCoords) return { stance: "spectator", coords: { x, y, from: "coords" } };
 
   if (named) {
+    // handle: picks which of YOUR residents stands here; it is not how you find
+    // someone else. Where a resident stands is public, standing as them is not
+    // (Office Hours 2026-10-02 Q5, dom-pidgey: the bounce read as "positions are
+    // private"), so the hint names the read that looks a resident up.
     if (!key?.handles?.has(named))
       return { bounce: { error: "bounce", defect: `"${named}" is not one of your residents`,
-        hint: handles.length ? `this key stands as: ${handles.join(", ")}` : "no residents on this key — sign in, or use a household key" } };
+        hint: `${handles.length ? `handle: picks which of your own residents you stand as (this key stands as: ${handles.join(", ")})` : "no residents on this key — sign in, or use a household key"}. To look someone up, read: "walk", args: { who: ${JSON.stringify(named)} }: where a resident stands is public, standing as them is not.` } };
     return { stance: "embodied", handle: named };
   }
   if (handles.length > 1)
@@ -4336,6 +4340,24 @@ export function unwalkableTarget(mark, within = null) {
     return { defect, hint: "a parcel holds sited marks and those are what you arrive at — open your eyes nearby to see which, and walk to one of them" };
   if (!within.length)
     return { defect, hint: "and nothing is sited within it yet, so there is nothing inside to arrive at — give x/y if you mean to stand on the ground itself" };
+  // WHAT STANDS ON IT FIRST (POS-335, Office Hours 2026-10-02 Q12). A walk to
+  // wright/the-trueing-house-parcel was answered with eleven sited marks in the
+  // record's file order: the house, then its desk, its kettle ring and its
+  // keystone, and the house led only by luck. The record already says which
+  // marks stand on the parcel's own ground: their `placementParent` is the
+  // parcel. Those are the destinations (the house, a gift at its door), so the
+  // hint names them and counts what stands inside them. No new read: `within`
+  // is the same list, and a mark with no placementParent falls back to it.
+  const onIt = within.filter((m) => m.placementParent === mark.id);
+  if (onIt.length) {
+    const named = onIt.slice(0, PARCEL_HINT_MAX).map((m) => m.id);
+    const more = onIt.length - named.length;
+    const inside = within.length - onIt.length;
+    return {
+      defect,
+      hint: `walk to what stands on it — that is also the neighbourly way to arrive: ${named.join(", ")}${more > 0 ? `, and ${more} more` : ""}${inside > 0 ? ` (${inside} more stand${inside === 1 ? "s" : ""} inside ${onIt.length === 1 ? "it" : "those"})` : ""}`,
+    };
+  }
   const named = within.slice(0, PARCEL_HINT_MAX).map((m) => m.id);
   const rest = within.length - named.length;
   return {
