@@ -17,6 +17,7 @@
 // REFS; the draft-branch writes below use leased worktrees of it (world-pool.mjs,
 // tier 1) so two households do not queue behind one working tree.
 
+import { onePerResidentDefect, onePerResidentHint, capHint, residentParcels, isPriorEstate } from "./parcel-law.mjs";
 import { worldFreezeBounce } from "./freeze.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -354,8 +355,14 @@ export async function homeCoords(handle, w) {
   const { homeOf } = await whereMod();
   const home = homeOf(handle, w);
   if (home.placed) {
-    return { x: home.x, y: home.y, from: `your ground (${home.mark_id})`,
-             parcel: { id: home.parcel.id, at: home.parcel.at, extent: home.parcel.extent } };
+    // per resident (POS-368): a declared house is named as the home, the
+    // household's parcel says it is the household's
+    const from = home.via === "declared" ? `your declared home (${home.mark_id})`
+      : home.via === "household" ? `your household's ground (${home.mark_id})`
+      : `your ground (${home.mark_id})`;
+    return { x: home.x, y: home.y, from,
+             parcel: { id: home.parcel.id, at: home.parcel.at, extent: home.parcel.extent },
+             ...(home.home_mark ? { home_mark: home.home_mark } : {}) };
   }
   return { ...ORIGIN, from: `${handle} has no ground on the map yet — the Origin`,
            placeholder: true, placeholder_note: NO_GROUND_NEIGHBOURHOOD };
@@ -2714,8 +2721,22 @@ export async function worldBlockForHandle(handle, key = null) {
   // only when the painting named nothing; it is the whole function now.
   const home = homeOf(handle, w);
   const transport = await doorstepTransportFor(handle, w);
-  if (!home.placed) return { mark_id: null, x: null, y: null, sited: false, ...(transport ? { transport } : {}) };
-  return { mark_id: home.mark_id, x: home.x, y: home.y, sited: true, ...(transport ? { transport } : {}) };
+  if (!home.placed) return { mark_id: null, x: null, y: null, sited: false,
+    ...(home.declaration_refused ? { declaration_refused: home.declaration_refused } : {}),
+    ...(transport ? { transport } : {}) };
+  // HOMES ARE PER RESIDENT (Darko 2026-10-04; POS-368). The four keys are
+  // unchanged; what rides beside them says WHICH home and HOW: `via` is
+  // "declared" (the resident's own home word), "own" (their parcel) or
+  // "household" (the household's first, in claim order); `parcel_id` is the
+  // ground; `home_mark` is the house they declared, when they named one. A
+  // world clone older than the law answers none of these, and they are absent.
+  return { mark_id: home.mark_id, x: home.x, y: home.y, sited: true,
+    ...(home.via ? { via: home.via } : {}),
+    ...(home.parcel_id ? { parcel_id: home.parcel_id } : {}),
+    ...(home.home_mark ? { home_mark: home.home_mark } : {}),
+    ...(home.declaration ? { declaration: home.declaration } : {}),
+    ...(home.declaration_refused ? { declaration_refused: home.declaration_refused } : {}),
+    ...(transport ? { transport } : {}) };
 }
 
 /**
@@ -3270,7 +3291,21 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
       // would still lose a slot to its own amendment.
       if (!amending && mine >= cap)
         throw bounce(403, `your household already holds ${mine} parcel${mine === 1 ? "" : "s"}`,
-          `parcel claiming is capped at ${cap} per household (ruled ${PARCEL_CAP_LAW_DATE ?? "2026-07-30"}; prior holdings stand) — new ground for this household is the founder's word, not the door's`);
+          capHint(cap, PARCEL_CAP_LAW_DATE ?? "2026-07-30"));
+
+      // ── ONE PARCEL PER RESIDENT, at the door (Darko 2026-10-04; POS-368) ──
+      //
+      // The law mark the-town/one-per-resident: each parcel belongs to exactly
+      // one resident, and a resident holds at most one. The fold refuses a
+      // second at the settlement (marks-fold § admissibility); this door used to
+      // let it through as a draft, so the resident learned the rule from a
+      // quarantine. The sentence is the fold's own (parcel-law.mjs). An amend of
+      // the parcel they hold is a relocation, never a second claim, and prior
+      // estate (Sol's Driftlight, 10-02) stands by the founder's word.
+      const fold = await foldConstants();
+      const theirs = residentParcels(held.values(), clean.by, id);
+      if (!amending && theirs.length && !isPriorEstate(fold, id))
+        throw bounce(409, onePerResidentDefect(fold), onePerResidentHint(theirs[0].id));
 
       // ── the sovereignty guard is GONE, and it was refusing nothing ───────
       //
@@ -3649,7 +3684,7 @@ async function refuseHeldParcel(by, household, bounce) {
   const live = await guardedLiveMarks(null, { household });
   const held = [...canonForGuards().marks, ...live].find((m) => m.kind === "parcel" && (m.by ?? String(m.id).split("/")[0]) === by);
   if (held) throw bounce(409, `"${by}" already holds a parcel: ${held.id}`,
-    "a placement on a resident's behalf is their first parcel only — that ground is theirs to amend or withdraw");
+    "a placement on a resident's behalf is their first parcel only — that ground is theirs to amend or withdraw (one parcel per resident: the-town/one-per-resident)");
 }
 
 // ── the write verb (credentialed) ────────────────────────────────────────────
@@ -4646,8 +4681,15 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
     toward = { x: px, y: py }; targetFrom = "coordinates";
   } else {
     toward = { x: home.x, y: home.y };
-    targetFrom = home.parcel ? `home — your ground (${home.parcel.id})` : "home — the Origin (no ground yet)";
-    if (home.parcel) {
+    // HOME IS PER RESIDENT (POS-368): the house the resident declared, when
+    // they named one; else their ground (own, or the household's)
+    const house = home.home_mark ? (w?.marks ?? []).find((m) => m.id === home.home_mark) : null;
+    targetFrom = house ? `home — your declared home (${house.id})`
+      : home.parcel ? `home — your ground (${home.parcel.id})` : "home — the Origin (no ground yet)";
+    if (house?.extent) {
+      targetExtent = { w: house.extent.w, h: house.extent.h };
+      targetMarkId = house.id;
+    } else if (home.parcel) {
       targetExtent = { w: home.parcel.extent.w, h: home.parcel.extent.h };
       targetMarkId = home.parcel.id;
     }
