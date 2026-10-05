@@ -4,7 +4,8 @@
 // box: `flock -w 30 town.lock`, the lane `src/declare-exec.mjs` takes), so a
 // settlement never races a crossing or a declaration. It pulls the clone,
 // re-checks everything against the record and the fresh clone, and runs the
-// ceremony; the registry drain makes the one pen commit. Prints one JSON line.
+// ceremony; the settle makes the one pen commit (the printed registers and the
+// house's key lines, src/house-key.mjs). Prints one JSON line.
 //
 // Env: TOWN_CLONE, TOWN_PUSH=1, BOT_NAME/BOT_EMAIL (penCommit's), TOWN_TZ.
 // argv[2]: JSON { handle, ghId, ghLogin, pr, road, cardLogin } — the join the door read back.

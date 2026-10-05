@@ -36,8 +36,7 @@
 // row. Ground is the world's, drained on the world's own cadence, and a join has
 // never implied a parcel.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import {
@@ -53,6 +52,8 @@ import {
   ensureTownJournal, pendingRows, rowIsSettleable, townDrainCursor, TOWN_DRAIN_CURSOR, SETTLE_THRESHOLD,
 } from "./town-journal.mjs";
 import { asPaper } from "./paperwork.mjs";
+import { currentKeysOf, houseKeyLines, appendHouseKey } from "./house-key.mjs";
+import { signedRegistryLines } from "./ledger-pen.mjs";
 
 // ── THE GANGWAY REACHES THE SETTLEMENT ROAD ────────────────────────────────
 //
@@ -190,155 +191,27 @@ export async function planTownDrain(odb, clone, { date }) {
   };
 }
 
-/** The dated ledger line an appended registry row carries. APPEND ONLY. */
-export const registryLine = (date, handle, householdSlug) =>
-  `- ${date} · registry: ${handle} = hh:${householdSlug}`;
-
 // ── ONE HOUSEHOLD, ONE MINT KEY (Darko, 2026-10-04) ─────────────────────────
 //
-// The mint caps a household by the key the town's `currentHouseholds` gives each
-// handle. This drain used to write ONE line per join, for the joiner, so the
-// residents already in the house kept whatever key they had (usually their
-// human's `gh:<id>`) and the house minted as two households with two daily
-// caps. Measured 2026-10-04: nine houses split, Kev's minting 10 sends on 10-03
-// (repaired by hand at town 07fa74d6a and 7a5ba94cf).
-//
-// So a join writes the joiner's line AND one for every current resident of the
-// house whose current key is not `hh:<slug>`, in the same signed block. The
-// current keys are the TOWN'S fold over the clone being written (the same
-// subprocess shape as the signer below), so the writer and the mint read one
-// fold and this file re-derives none of it.
+// A crossing that settles a join writes the joiner's `registry:` line AND one
+// for every current resident of the house whose key is not `hh:<slug>`, in the
+// same signed block (measured 2026-10-04: nine houses split, Kev's minting 10
+// sends on 10-03). Since #3429 the lines are written by src/house-key.mjs, the
+// one writer every admission road calls; this is the crossing's adapter from
+// its plans to that writer's joins.
 
-/** handle -> current mint key, from the clone's own `currentHouseholds`. */
-export function currentKeysOf(clone) {
-  const engineDir = process.env.STAMP_ENGINE_DIR ?? join(clone, "tools");
-  const script = [
-    "const [clone, engineDir] = process.argv.slice(1);",
-    "const { pathToFileURL } = await import('node:url');",
-    "const { currentHouseholds } = await import(pathToFileURL(engineDir + '/stamp-mint.mjs'));",
-    "const out = {};",
-    "for (const [h, v] of currentHouseholds(clone)) out[h] = v.key;",
-    "process.stdout.write(JSON.stringify(out));",
-  ].join("\n");
-  return new Map(Object.entries(JSON.parse(execFileSync(process.execPath,
-    ["--input-type=module", "-e", script, clone, engineDir], { encoding: "utf8" }))));
-}
+/** A crossing's plans as house-key joins: each row's handle, house and residents. */
+export const joinsOfPlans = (plans) => plans.map(({ row, plan: p }) => {
+  const slug = p?.slug ?? row.payload?.slug ?? row.household;
+  return { seq: row.seq, handle: row.handle, slug, residents: p?.registry?.households?.[slug]?.residents ?? [] };
+});
 
 /**
  * The bare registry lines a crossing appends, in signing order, each carrying
- * the seq of the row it belongs to (so a row that stalls drops its lines and
- * only its lines). Returns { lines: [{ seq, handle, key, line }], keys } where
- * `keys` is the current-key map with these lines folded in.
+ * the seq of the row it belongs to. Returns { lines: [{ seq, handle, key,
+ * line }], keys } (src/house-key.mjs § houseKeyLines).
  */
-export function plannedRegistryLines(plans, { date, keys }) {
-  const now = new Map(keys);
-  const lines = [];
-  const add = (seq, handle, slug) => {
-    const key = `hh:${slug}`;
-    lines.push({ seq, handle, key, line: registryLine(date, handle, slug) });
-    now.set(handle, key);
-  };
-  for (const { row, plan: p } of plans) {
-    const slug = p?.slug ?? row.payload?.slug ?? row.household;
-    add(row.seq, row.handle, slug);
-    // Residents the fold does not know (no room yet) mint nothing; their own
-    // join writes their line.
-    for (const h of p?.registry?.households?.[slug]?.residents ?? [])
-      if (h !== row.handle && now.has(h) && now.get(h) !== `hh:${slug}`) add(row.seq, h, slug);
-  }
-  return { lines, keys: now };
-}
-
-/**
- * THE REFUSAL'S PREDICATE is the TOWN'S tools/household-keys.mjs, run in a
- * subprocess against the clone being written (never restated here): the
- * planned lines folded over the clone's roll by the town's own `rollWith`,
- * judged against the registry this crossing will render. Scoped to the houses
- * these lines touch: a split elsewhere is the alarm's to raise, and stalling
- * every join over it would fix nothing. One sentence per defect, the town's.
- */
-export function householdKeySplits(clone, lines, registry) {
-  const engineDir = process.env.STAMP_ENGINE_DIR ?? join(clone, "tools");
-  const script = [
-    "const [clone, engineDir] = process.argv.slice(1);",
-    "const { readFileSync } = await import('node:fs');",
-    "const { pathToFileURL } = await import('node:url');",
-    "const { currentHouseholds } = await import(pathToFileURL(engineDir + '/stamp-mint.mjs'));",
-    "const { householdKeySplits, rollWith, describe } = await import(pathToFileURL(engineDir + '/household-keys.mjs'));",
-    "const { lines, houses, touched } = JSON.parse(readFileSync(0, 'utf8'));",
-    "const r = householdKeySplits({ roll: rollWith(currentHouseholds(clone), lines), houses });",
-    "const t = new Set(touched);",
-    "process.stdout.write(JSON.stringify(describe({",
-    "  split: r.split.filter((s) => t.has(s.house)),",
-    "  shared: r.shared.filter((s) => s.houses.some((h) => t.has(h))),",
-    "})));",
-  ].join("\n");
-  const touched = [...new Set(lines.map((l) => l.key.slice("hh:".length)))];
-  return JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", script, clone, engineDir],
-    { input: JSON.stringify({ lines: lines.map((l) => l.line), houses: registry?.households ?? {}, touched }), encoding: "utf8" }));
-}
-
-// ── THE DRAIN SIGNS WHAT IT WRITES (#2040, the third unsigned line) ─────────
-//
-// The stamp-ledger's grammar has required an office-pen signature on every
-// assertion line since the Ember fold (town tools/stamp-mint.mjs § SEAL +
-// SIGNATURE: "seal_n = sha256(seal_{n-1} + canonical(line_n))", "sig_n =
-// ed25519.sign(utf8(seal_n))", "Signing the running seal means every signature
-// binds the entire prefix"). This drain was the ONE ledger writer in the office
-// that appended bare — fund/gift/stake/pot all sign — and each native join
-// minted a line stamp-verify refuses: zeno 08-27, errant 08-28, each repaired
-// by hand. On the native path the signature is the line's only authentication:
-// every box commit rides one shared git credential, so the seal chain is what
-// says the office's authorized writer emitted this line at this position.
-//
-// The seal arithmetic is the TOWN's, not ours — computed by importing the
-// clone's own tools/stamp-mint.mjs in a subprocess (the same subprocess-pen
-// shape the fund/gift/stake execs already are), so there is exactly one
-// authority for canonical + chain and this file duplicates none of it.
-// STAMP_ENGINE_DIR overrides the tools dir for fixtures whose throwaway clones
-// carry no tools/ (the fund.test.mjs precedent).
-export const DRAIN_KEY_PATH = () => process.env.STAMP_KEY ?? "/srv/postmark-office/stamp-key.pem";
-
-export function signedRegistryLines(clone, bareLines) {
-  const keyPath = DRAIN_KEY_PATH();
-  if (!existsSync(keyPath)) {
-    const e = new Error(`the ledger pen's key is absent (${keyPath}) — the drain refuses to append an unsigned registry line`);
-    e.code = "pen-key-absent";
-    throw e;
-  }
-  const engineDir = process.env.STAMP_ENGINE_DIR ?? join(clone, "tools");
-  const script = [
-    "const [clone, engineDir, keyPath] = process.argv.slice(1);",
-    "const { readFileSync } = await import('node:fs');",
-    "const { createPrivateKey, sign } = await import('node:crypto');",
-    "const { pathToFileURL } = await import('node:url');",
-    "const { parseStampLedger, sealChain } = await import(pathToFileURL(engineDir + '/stamp-mint.mjs'));",
-    "const bare = JSON.parse(readFileSync(0, 'utf8'));",
-    "const prior = parseStampLedger(readFileSync(clone + '/WHITE_PAGES/stamp-ledger.md', 'utf8')).map((e) => e.canonical);",
-    "const seals = sealChain([...prior, ...bare]);",
-    "const key = createPrivateKey(readFileSync(keyPath, 'utf8'));",
-    "const out = bare.map((line, i) => line + ' · sig: ' + sign(null, Buffer.from(seals[prior.length + i], 'utf8'), key).toString('base64url'));",
-    "process.stdout.write(JSON.stringify(out));",
-  ].join("\n");
-  const stdout = execFileSync(process.execPath, ["--input-type=module", "-e", script, clone, engineDir, keyPath],
-    { input: JSON.stringify(bareLines), encoding: "utf8" });
-  const signed = JSON.parse(stdout);
-  if (!Array.isArray(signed) || signed.length !== bareLines.length)
-    throw new Error("the signing subprocess answered a shape that is not one signed line per bare line");
-  return signed;
-}
-
-/**
- * Is the ledger pen ready to sign this clone's registry appends? The drain's
- * caller asks BEFORE writing anything, so a missing key is a refusal that
- * leaves every row queued and the cursor unmoved — refuse, never degrade: an
- * unsigned line is not a lesser record, it is a red the whole ledger wears.
- */
-export function drainPenReady(clone) {
-  if (!existsSync(join(clone, "WHITE_PAGES", "stamp-ledger.md"))) return { ready: true, note: "no ledger in this clone — nothing to sign" };
-  if (!existsSync(DRAIN_KEY_PATH())) return { ready: false, why: `pen key absent at ${DRAIN_KEY_PATH()}` };
-  return { ready: true };
-}
+export const plannedRegistryLines = (plans, { date, keys }) => houseKeyLines(joinsOfPlans(plans), { date, keys });
 
 /**
  * Write the crossing. Returns the paths touched, for the ferry's scoped commit.
@@ -366,10 +239,11 @@ export async function writeTownDrain(clone, plan, { date, drainWith = collecting
   let signedLedgerLines = null;
   let planned = null;
   if (plan.plans.length && existsSync(ledgerAbs)) {
-    // `plan.ledger` is what runTownDrain already judged (§ ONE HOUSEHOLD, ONE
-    // MINT KEY); a caller that hands a bare plan gets the same computation.
+    // `plan.ledger` and `plan.signed` are what runTownDrain already judged and
+    // signed (src/house-key.mjs § judgeHouseKey); a caller that hands a bare
+    // plan gets the same lines, signed here.
     planned = plan.ledger ?? plannedRegistryLines(plan.plans, { date, keys: currentKeysOf(clone) });
-    signedLedgerLines = signedRegistryLines(clone, planned.lines.map((l) => l.line));
+    signedLedgerLines = plan.signed ?? signedRegistryLines(clone, planned.lines.map((l) => l.line));
   }
 
   // ── THE RECORD FIRST, THE CARDS SECOND (POS-158, review 2/6) ────────
@@ -501,14 +375,17 @@ export async function writeTownDrain(clone, plan, { date, drainWith = collecting
     // next crossing. Each planned line carries the seq of the row it belongs to
     // (a join's own line plus its housemates' re-keys, § ONE HOUSEHOLD, ONE
     // MINT KEY), in the order they were signed.
+    //
+    // A SUBSET IS SIGNED AGAIN. Each signature binds the whole prefix before
+    // it (the seal chain), so once a stalled row's lines are dropped the
+    // signatures after them no longer verify. The kept lines are re-signed
+    // over the ledger as it stands; the pen key was checked before any write.
     if (signedLedgerLines) {
       const keep = new Set(landed.map(({ row }) => row.seq));
-      const lines = signedLedgerLines.filter((_, i) => keep.has(planned.lines[i].seq));
-      if (lines.length) {
-        const prior = readFileSync(ledgerAbs, "utf8");
-        writeFileSync(ledgerAbs, prior.replace(/\s*$/, "\n") + lines.join("\n") + "\n");
-        touched.push(ledgerRel);
-      }
+      const kept = planned.lines.filter((l) => keep.has(l.seq));
+      const lines = kept.length === planned.lines.length ? signedLedgerLines
+        : kept.length ? signedRegistryLines(clone, kept.map((l) => l.line)) : [];
+      if (appendHouseKey(clone, lines)) touched.push(ledgerRel);
     }
   }
   // The stalled rows ride OUT, on the array, for the same reason `refused`

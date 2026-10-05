@@ -35,6 +35,7 @@ import {
   updateProfileAvatar, updateHomeImage,
 } from "../src/edit.mjs";
 import { indexStore } from "./helpers/office-under-test.mjs";
+import { townClone as houseKeyTown, townModuleUrl as houseKeyModule, NO_TOWN as HOUSE_KEY_NO_TOWN } from "./fixture-paths.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sh = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -471,6 +472,21 @@ export async function joinHousehold({ handle }) {
   return { registry: { rendered: true } };
 }
 `;
+// The house-key writer (#3429), stubbed like its neighbours: it judges nothing
+// and appends one key line, so a push that cannot land must take the ledger
+// back too.
+const STUB_HOUSE_KEY = `
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
+export const registryWith = (registry) => registry;
+export const planHouseKey = (clone, joins) => ({ lines: joins, signed: joins.map((j) => "- 2026-09-28 · registry: " + j.handle + " = hh:" + j.slug + " · sig: stub"), refusal: null });
+export function appendHouseKey(clone, signed) {
+  if (!signed?.length) return null;
+  const abs = join(clone, "WHITE_PAGES", "stamp-ledger.md");
+  appendFileSync(abs, signed.join("\\n") + "\\n");
+  return abs;
+}
+`;
 const STUB_SETTLE = `
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -493,7 +509,7 @@ function stubbedTown() {
   const register = join(stubDir, "register.mjs");
   writeFileSync(register, REGISTER(hooks));
   const stubs = {
-    "declare-exec.mjs": { "./declare.mjs": put("declare.mjs", STUB_DECLARE), "./residency.mjs": put("residency.mjs", STUB_RESIDENCY), "./ceremony.mjs": put("ceremony.mjs", STUB_CEREMONY) },
+    "declare-exec.mjs": { "./declare.mjs": put("declare.mjs", STUB_DECLARE), "./residency.mjs": put("residency.mjs", STUB_RESIDENCY), "./ceremony.mjs": put("ceremony.mjs", STUB_CEREMONY), "./house-key.mjs": put("house-key.mjs", STUB_HOUSE_KEY) },
     "settle-join-exec.mjs": { "./settle-join.mjs": put("settle-join.mjs", STUB_SETTLE) },
   };
   const dbPath = join(t.dir, "office.db");
@@ -538,3 +554,49 @@ for (const [exec, payloadFor] of RECORD_EXECS) {
     assert.deepEqual(snapshot(t.clone), before);
   });
 }
+
+// P16 · THE DECLARATION ROAD KEYS ITS HOUSE (#3429). The same stubbed exec, with
+// the REAL house-key writer and the town's own engine: the founder's pin and
+// their signed `registry: <handle> = hh:<slug>` line land in the declaration's
+// one commit, and the town's stamp-verify reads the ledger green.
+
+const HK_TOWN = houseKeyTown();
+const HK_ENGINE = HK_TOWN && existsSync(join(HK_TOWN, "tools", "household-keys.mjs"));
+test("P16 · declare-exec.mjs: the founder's house-key line rides the declaration's own commit", {
+  skip: !HK_TOWN ? HOUSE_KEY_NO_TOWN : (!HK_ENGINE && "the town clone predates tools/household-keys.mjs"),
+}, async () => {
+  const { generateKeyPairSync, createPrivateKey, sign } = await import("node:crypto");
+  const engine = await import(houseKeyModule("tools", "stamp-mint.mjs"));
+  const { verifyStampLedger } = await import(houseKeyModule("tools", "stamp-verify.mjs"));
+  const t = stubbedTown();
+  delete t.stubs["declare-exec.mjs"]["./house-key.mjs"];
+  for (const [rel, text] of Object.entries(REGISTRY_SEED)) writeFileSync(join(t.clone, rel), text);
+  // a sealed ledger the town's verifier accepts, under a key this test holds
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const genesis = "- 2026-06-12 · rules: stamps-v1";
+  const seal = engine.sealChain([genesis])[0];
+  writeFileSync(join(t.clone, "WHITE_PAGES", "stamp-ledger.md"),
+    `# the stamp ledger\n\n${genesis} · sig: ${sign(null, Buffer.from(seal, "utf8"), privateKey).toString("base64url")}\n`);
+  writeFileSync(join(t.clone, "tools", "stamp-pubkey.pem"), publicKey.export({ type: "spki", format: "pem" }));
+  const keyFile = join(t.dir, "real-stamp-key.pem");
+  writeFileSync(keyFile, privateKey.export({ type: "pkcs8", format: "pem" }));
+  sh(t.clone, "add", "-A"); sh(t.clone, ...BOT, "commit", "-qm", "sealed ledger"); sh(t.clone, "push", "-q");
+
+  const was = { key: process.env.STAMP_KEY, dir: process.env.STAMP_ENGINE_DIR };
+  process.env.STAMP_KEY = keyFile;
+  process.env.STAMP_ENGINE_DIR = join(HK_TOWN, "tools");
+  let out;
+  try { out = runStubbed(t, "declare-exec.mjs", { args: { handle: "newcomer" }, key: {}, dbPath: t.dbPath }); }
+  finally {
+    if (was.key === undefined) delete process.env.STAMP_KEY; else process.env.STAMP_KEY = was.key;
+    if (was.dir === undefined) delete process.env.STAMP_ENGINE_DIR; else process.env.STAMP_ENGINE_DIR = was.dir;
+  }
+  assert.equal(out.error, undefined, JSON.stringify(out));
+  const files = sh(t.clone, "show", "--name-only", "--format=", "HEAD").split("\n");
+  assert.ok(files.includes("WHITE_PAGES/stamp-ledger.md"), `the ledger rides the declaration's commit: ${files.join(", ")}`);
+  assert.ok(files.includes("WHITE_PAGES/newcomer/ADDRESS.md"), "beside the card");
+  const tail = readFileSync(join(t.clone, "WHITE_PAGES", "stamp-ledger.md"), "utf8").trim().split("\n").at(-1);
+  assert.equal(tail.replace(/ · sig: \S+$/, ""), "- 2026-09-28 · registry: newcomer = hh:newcomers");
+  assert.deepEqual(verifyStampLedger(t.clone).problems ?? [], [], "the town's verifier reads it green");
+  assert.equal(sh(t.clone, "rev-parse", "HEAD"), sh(t.clone, "rev-parse", "origin/main"), "and it landed");
+});

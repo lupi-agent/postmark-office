@@ -144,9 +144,10 @@ import {
   pendingRows, townDrainCursor, townJournalHead, townLogEnabled, TOWN_CLASSES,
 } from "./town-journal.mjs";
 import {
-  advanceTownCursor, drainPenReady, planTownDrain, writeTownDrain,
-  currentKeysOf, plannedRegistryLines, householdKeySplits,
+  advanceTownCursor, planTownDrain, writeTownDrain, plannedRegistryLines,
 } from "./town-drain.mjs";
+import { drainPenReady } from "./ledger-pen.mjs";
+import { currentKeysOf, judgeHouseKey } from "./house-key.mjs";
 import { planFirstIdeaSweep, writeFirstIdeaSweep } from "./first-idea-sweep.mjs";
 import { replayPaperAct } from "./town-updates.mjs";
 import { replayLetter } from "./town-mail.mjs";
@@ -317,7 +318,7 @@ export async function runTownDrain(odb, {
       remaining: 0, note: "nothing pending" });
 
   // ── the joins, folded once over the whole crossing ───────────────────────
-  const plan = await planTownDrain(odb, clone, { date: stamp });
+  let plan = await planTownDrain(odb, clone, { date: stamp });
   // planTownDrain computes its head over the SAME pending read, so a mismatch
   // means the log moved under us — which, under the lock, cannot happen. It is
   // asserted rather than assumed because the cursor is about to be set from it.
@@ -459,16 +460,29 @@ export async function runTownDrain(odb, {
   // cursor does not move, every row is still here, and this sentence names the
   // house. Refusing holds the ferry's chain the way the pen gate above does.
   // `planLines` is injectable so the refusal is a branch a falsifier can reach.
+  //
+  // The judgment is the one every admission road makes (src/house-key.mjs §
+  // judgeHouseKey, #3429), so the crossing also signs here, once, and asks
+  // whether lines dated today would rewrite stamps already recorded today
+  // (§ THE DATING RULE). That one, and a ledger whose tail is dated ahead, do
+  // NOT refuse the crossing: its joins are held, nothing is written for them
+  // and the cursor stays, exactly as for a row that could not reach the
+  // record, while the mail still sails. (An absent pen key refused above.)
+  let heldUnkeyed = [];
   if (plan.plans.length && existsSync(join(clone, "WHITE_PAGES", "stamp-ledger.md"))) {
     plan.ledger = planLines(plan.plans, { date: stamp, keys: currentKeysOf(clone) });
-    const splits = householdKeySplits(clone, plan.ledger.lines, plan.registry);
-    if (splits.length)
+    const judged = judgeHouseKey(clone, plan.ledger, { date: stamp, registry: plan.registry });
+    if (judged.splits?.length)
       return done({ ran: false, refused: "household-split", drained: 0, counts, head,
         cursor: (await townDrainCursor(odb)), ...gangwayFields,
-        skipped: `the crossing would leave a household minting under more than one key — ${splits.join(" · ")}. `
+        skipped: `the crossing would leave a household minting under more than one key — ${judged.splits.join(" · ")}. `
           + `Nothing was written and the cursor did not move: every row is still here. (one household, one key: Darko, 2026-10-04)`,
         settled: [], waiting: plan.settle.map((r) => ({ handle: r.handle, why: "household split" })),
-        splits, updates: [], letters: [], remaining: rows.length });
+        splits: judged.splits, updates: [], letters: [], remaining: rows.length });
+    if (judged.refusal) {
+      heldUnkeyed = plan.plans.map(({ row }) => ({ row, why: `${judged.refusal.defect} (${judged.detail}) — the row is still pending and settles at a later crossing; nothing is lost by waiting` }));
+      plan = { ...plan, plans: [], ledger: null };
+    } else plan.signed = judged.signed;
   }
 
   const touched = await writeTownDrain(clone, plan, { date: stamp });
@@ -498,9 +512,11 @@ export async function runTownDrain(odb, {
   // while the report prints the word that promises it was kept. So the cursor
   // does not move at all while any row stalled, exactly as it does not while
   // the gangway holds one.
-  const stalledRows = touched.stalled ?? [];
-  if (stalledRows.length)
-    log(`drain: ${stalledRows.length} row(s) could not reach the record and are still pending — the cursor is held`);
+  const stalledRows = [...heldUnkeyed, ...(touched.stalled ?? [])];
+  if (heldUnkeyed.length)
+    log(`drain: ${heldUnkeyed.length} join row(s) cannot be keyed to their house at this crossing and are held — the cursor is held`);
+  if (touched.stalled?.length)
+    log(`drain: ${touched.stalled.length} row(s) could not reach the record and are still pending — the cursor is held`);
 
   // The join files are the only bytes the bridge itself put on disk, so they
   // are the only ones it commits. Every door below commits its own work through

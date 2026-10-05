@@ -34,6 +34,7 @@ import { validateResidencyRequest, planRegistryJoin, buildJoinFiles } from "./re
 import { handleTaken } from "./declare.mjs";
 import { mintHousehold, joinHousehold, collectingDrain, NO_DRAIN, REFUSALS } from "./ceremony.mjs";
 import { penCommit, landOrRefuse } from "./write.mjs";
+import { planHouseKey, appendHouseKey, houseKeyBounce, registryWith } from "./house-key.mjs";
 
 export const BIND_REFUSALS = Object.freeze({
   NO_RECORD: Object.freeze({
@@ -119,6 +120,16 @@ export async function bindUnderLock({ args, key, clone, db, env = process.env, d
     paths.push(abs);
   }
 
+  // THE HOUSE'S KEY, JUDGED BEFORE THE FIRST ROW (#3429). The pin below lands
+  // with the joiner's `registry: <handle> = hh:<slug>` line and one for every
+  // housemate still off that key, in this same commit (src/house-key.mjs). A
+  // join that would leave the house split, or rewrite stamps already counted
+  // today, refuses here, before the store holds anything.
+  const residents = [...new Set([...(plan.registry?.households?.[plan.slug]?.residents ?? []), handle])];
+  const keyed = planHouseKey(clone, [{ handle, slug: plan.slug, residents }],
+    { date, registry: registryWith(plan.registry, plan.slug, residents) });
+  if (keyed?.refusal) throw houseKeyBounce(keyed.refusal, keyed.detail);
+
   // The house, when this request founds or names it, drains nothing: between
   // the two calls the record holds a house whose resident has no pin, and that
   // half state is never printed (ceremony.mjs § NO_DRAIN).
@@ -142,6 +153,8 @@ export async function bindUnderLock({ args, key, clone, db, env = process.env, d
     throw relay(e);
   }
   paths.push(...printed);
+  const ledger = appendHouseKey(clone, keyed?.signed);
+  if (ledger) paths.push(ledger);
 
   const commit = landOrRefuse(() => penCommit(clone, paths,
     `address: ${handle} joins · bound to ${plan.slug} at admission (via postmark-office)`));
