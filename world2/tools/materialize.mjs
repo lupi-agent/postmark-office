@@ -21,7 +21,7 @@
 // materialization that could commit on its own would be a second candle.
 
 import { computeStanding, admissionNotes, gistContainment } from "./standing.mjs";
-import { houseKeyOfVia, houseKeysOf, houseRowsVia } from "../../src/household-deriver.mjs";
+import { houseKeyOfVia, houseRowsVia, liveHouseOfVia as liveHouseOfStore } from "../../src/household-deriver.mjs";
 import { REFUSALS, refuse } from "../../src/ceremony.mjs";
 
 /**
@@ -235,16 +235,11 @@ export async function ownerHouseholdFor(q, owner) {
  * The same deriver `ownerHouseholdFor` asks, over the same registry, so the
  * standing rows and the candidates they are judged against speak one key per
  * house. A spelling no house claims maps to itself: a `solo:<handle>` that is
- * nobody's resident is its own household, as it always was.
+ * nobody's resident is its own household, as it always was. The rule is
+ * `household-deriver.mjs § liveHouseOf`; this is that, over `q`.
  */
 export async function liveHouseOfVia(q) {
-  const rows = await houseRowsVia(queryableFor(q));
-  const live = new Map();
-  for (const slug of Object.keys(rows?.registry?.households ?? {})) {
-    const keys = houseKeysOf(`hh:${slug}`, rows.registry, rows.pins);
-    for (const k of keys) if (!live.has(k)) live.set(k, keys[0]);
-  }
-  return (key) => live.get(key) ?? key;
+  return liveHouseOfStore(queryableFor(q));
 }
 
 export async function materializeClaims(q, { claims, amends = new Map(), revives = new Map(), windowId, label }) {
@@ -320,7 +315,8 @@ export async function recomputeStanding(q) {
   // — the reader refuses to run its pair query unindexed precisely because
   // unindexed it is slower than the walk it would replace.
   const containment = await gistContainment(q);
-  const tiers = computeStanding(standing, { containment, houseOf: await liveHouseOfVia(q) });
+  const houseOf = await liveHouseOfVia(q);
+  const tiers = computeStanding(standing, { containment, houseOf });
   const moved = [];
   for (const m of standing) {
     const next = tiers.get(m.slug);
@@ -345,7 +341,7 @@ export async function recomputeStanding(q) {
   // loose set growing (rows whose `bbox` does not bound them, which the walk
   // must keep scanning). Both are counts a reader can watch move.
   return {
-    standing, moved, notes: admissionNotes(standing),
+    standing, moved, notes: admissionNotes(standing, { houseOf }),
     containment: containment
       ? { indexed: true, covered: containment.covered.size, loose: containment.loose.length,
           ...(containment.loose.length ? { loose_marks: containment.loose.slice(0, 10) } : {}) }
