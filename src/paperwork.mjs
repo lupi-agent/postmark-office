@@ -202,6 +202,9 @@ class Paper {
         return id;
       },
     };
+    // A ROLLBACK that fails may leave the connection inside the transaction; it
+    // is discarded, never handed to the next caller (POS-370, the pen's rule).
+    let discard = false;
     try {
       await client.query("BEGIN");
       const out = await fn(t);
@@ -209,9 +212,9 @@ class Paper {
       this.#mirror(steps);
       return out;
     } catch (e) {
-      try { await client.query("ROLLBACK"); } catch { /* connection already gone */ }
+      try { await client.query("ROLLBACK"); } catch { discard = true; }
       throw e;
-    } finally { client.release(); }
+    } finally { client.release(discard ? true : undefined); }
   }
 
   /** The file's own DDL, on the file only. The store's shape is 031/032's. */
@@ -262,7 +265,9 @@ async function storePool(env) {
   const url = env.WORLD2_PG_URL;
   if (!pools.has(url)) {
     const { default: pg } = await import("pg");
-    const pool = new pg.Pool({ connectionString: url, max: 4, types: storeTypes(pg) });
+    // POS-370: the acquire timeout and the server's idle-transaction limit, as every office pool
+    const { storePoolOptions } = await import("./store-pool.mjs");
+    const pool = new pg.Pool(storePoolOptions(env, { name: "paperwork", max: 4, connectionString: url, types: storeTypes(pg) }));
     pool.on("error", (e) => console.error(`[paperwork] idle store client: ${e.message}`));
     pools.set(url, pool);
   }
