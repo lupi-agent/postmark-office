@@ -1,39 +1,50 @@
 #!/usr/bin/env node
-// world-snapshot.mjs — THE CLEARING'S SNAPSHOT, CHECKED (POS-357; 054_world_snapshots.sql).
+// world-snapshot.mjs — THE CLEARING'S SNAPSHOT, CHECKED (POS-357, POS-410;
+// 054_world_snapshots.sql, 064_snapshot_register.sql).
 //
 //   node world2/tools/world-snapshot.mjs --verify
-//        [--window <N>]            the snapshot of window N (default: the newest)
-//        [--world-repo <checkout>] also fold it: the world's own fold over the snapshot,
-//                                  against the fold of the store's standing rows (and against
-//                                  the cached fold, when world_snapshot_folds holds one)
-//        [--pg-url <url>]          else WORLD2_PG_URL
+//        [--window <N>]              the snapshot of window N (default: the newest)
+//        [--world-repo <checkout>]   derive its World: the world's engine at the snapshot's
+//                                    law_sha, over the snapshot's SOURCES (below)
+//        [--town-repo <checkout>]    a town checkout AT the snapshot's town_sha: the stakes
+//                                    replayed from that ledger (else the store's
+//                                    escrow_projection at that sha, said so)
+//        [--published <world-state.json>]  compare the derived World with a published one
+//        [--pg-url <url>]            else WORLD2_PG_URL
 //
 //   Read-only, inside BEGIN READ ONLY, rolled back. Any role that can SELECT the
-//   four tables (054 grants office_api, clearing_job, law_ingester, snapshot_reader).
+//   snapshot tables (office_api, clearing_job, law_ingester, snapshot_reader).
 //
 //   EXIT: 0 sound · 1 a DIFFERENCE (each named) · 2 cannot run (no store, no 054, no snapshot)
 //
 // WHAT IT CHECKS, in order, every one naming what it found:
-//   1. THE DIGESTS (src/world-snapshot.mjs § checkSnapshot): each version hashes to
-//      its digest, the list to its marks_digest, the header to its digest. A
-//      second computation in JS of what the seal computed in SQL.
-//   2. THE STORE (§ compareToStore), for the NEWEST snapshot: every standing mark in
-//      the store is in the snapshot with the same bytes. A dropped mark reds and is
-//      named by slug. Exact right after the clearing; the review lane,
-//      marks-ingest and retire-unpublished write `marks` between clearings, so a
-//      later run that differs says whether the store has moved since (a review
-//      ruling on the open window, or a world-marks ingest after the seal).
-//   3. THE FOLD, with --world-repo: the world's `fold` at the snapshot's world_sha
-//      (else the checkout's blessed ref, said so) over the snapshot's versions,
-//      against the same fold over the store's standing rows read the office's way
-//      (`marksFromRows` with the real uuids), and against a cached fold if one is
-//      kept. The first difference is named by mark id and key.
+//   1. THE DIGESTS (src/world-snapshot.mjs § checkSnapshot): each mark and register
+//      version hashes to its digest, each list to its digest, the header to its
+//      digest. A second computation in JS of what the seal computed in SQL.
+//   2. THE STORE (§ compareToStore), for the NEWEST snapshot: every standing mark and
+//      every register row in the store is in the snapshot with the same bytes. A
+//      dropped one reds and is named. Exact right after the clearing; the review
+//      lane, marks-ingest, retire-unpublished and the registry's own doors write
+//      between clearings, so a later run that differs says whether the store has
+//      moved since.
+//   3. THE WORLD, with --world-repo, DERIVED FROM THE SNAPSHOT'S SOURCES ALONE
+//      (POS-410, Darko 2026-10-05): the marks' versions, the register at the seal,
+//      the ledger position, the law and terrain at law_sha, and the marks in the
+//      order derived from their filings (src/world-filing-order.mjs). The git
+//      reads are at law_sha: the engine's code, the freeze manifest and the tree's
+//      filings. Then, for the newest snapshot, the same fold over the store's own
+//      standing rows (the office's read, real uuids), and against a cached fold
+//      and a --published file. Folds are compared VALUE-EQUAL, as canonical JSON
+//      (keys sorted, every array in order; Wright, 2026-10-05). jsonb keeps no key
+//      order, so a key order is never a difference, and an array order always is.
+//      A difference names its first key, and says when only an order differs.
 
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  snapshotHeader, snapshotRows, standingRowsNow, checkSnapshot, compareToStore,
-  foldOfSnapshot, snapshotFoldInputs, foldDifference,
+  snapshotHeader, snapshotRows, snapshotRegisterRows, standingRowsNow, registerRowsNow,
+  checkSnapshot, compareToStore, foldOfSnapshot, snapshotFoldInputs, foldDifference, foldComparison,
 } from "../../src/world-snapshot.mjs";
 
 const flag = (name) => process.argv.includes(`--${name}`);
@@ -43,13 +54,15 @@ function arg(name) {
 }
 
 if (!flag("verify")) {
-  console.error("usage: world-snapshot.mjs --verify [--window <N>] [--world-repo <checkout>] [--pg-url <url>]");
+  console.error("usage: world-snapshot.mjs --verify [--window <N>] [--world-repo <checkout>] [--town-repo <checkout at town_sha>] [--published <world-state.json>] [--pg-url <url>]");
   process.exit(2);
 }
 const url = arg("pg-url") ?? process.env.WORLD2_PG_URL;
 if (!url) { console.error("no store: pass --pg-url or set WORLD2_PG_URL"); process.exit(2); }
 const windowArg = arg("window");
 const worldRepo = arg("world-repo");
+const townRepo = arg("town-repo");
+const publishedPath = arg("published");
 
 const { default: pg } = await import("pg");
 const client = new pg.Client({ connectionString: url });
@@ -58,6 +71,18 @@ await client.connect();
 let exit = 0;
 const red = (line) => { exit = 1; console.log(`  ✗ ${line}`); };
 const ok = (line) => console.log(`  ✓ ${line}`);
+
+/**
+ * Two folds, compared canonically. On a difference: the keys whose values differ
+ * (the first difference named), and apart from them the keys that differ only in
+ * ARRAY ORDER, which the fold reads (it is first-in-order-wins).
+ */
+function compareFolds(label, a, b) {
+  const c = foldComparison(a, b);
+  if (!c.orderOnly.length && !c.values.length) { ok(`${label}: VALUE-EQUAL (canonical JSON: keys sorted, every array in order; ${c.equal.length} keys)`); return; }
+  if (c.values.length) red(`${label}: VALUES differ in ${c.values.join(", ")} (first: ${foldDifference(a, b) ?? c.values[0]})`);
+  if (c.orderOnly.length) red(`${label}: the same values in another ORDER in ${c.orderOnly.join(", ")}${c.values.length ? "" : " — nothing else differs"}`);
+}
 
 try {
   await client.query("BEGIN READ ONLY");
@@ -69,13 +94,14 @@ try {
   const newest = await snapshotHeader(client);
   const isNewest = newest && newest.id === header.id;
   console.log(`snapshot ${header.id} · window ${header.window_id ?? "∅"} · ${header.marks} mark(s) · digest ${header.digest.slice(0, 12)} · taken ${new Date(header.taken_at).toISOString()}${isNewest ? " (the newest)" : ""}`);
-  console.log(`  law ${header.law_sha?.slice(0, 12) ?? "∅"} · town ${header.town_sha?.slice(0, 12) ?? "∅"} · world ${header.world_sha?.slice(0, 12) ?? "∅"}`);
+  console.log(`  law ${header.law_sha?.slice(0, 12) ?? "∅"} · town ${header.town_sha?.slice(0, 12) ?? "∅"} · world ${header.world_sha?.slice(0, 12) ?? "∅"} · register ${header.register_digest?.slice(0, 12) ?? "∅ (sealed before 064)"}`);
 
   // 1 · the digests
   const rows = await snapshotRows(client, header.marks_digest);
-  const problems = checkSnapshot(header, rows);
+  const registerRows = header.register_digest ? await snapshotRegisterRows(client, header.register_digest) : null;
+  const problems = checkSnapshot(header, rows, registerRows);
   if (problems.length) for (const p of problems) red(`digest: ${p}`);
-  else ok(`digests: ${rows.length} version(s), the list and the header all hash to what they say`);
+  else ok(`digests: ${rows.length} mark version(s), ${registerRows?.length ?? 0} register row(s), both lists and the header hash to what they say`);
 
   // 2 · the store, for the newest snapshot
   if (!isNewest) {
@@ -83,55 +109,57 @@ try {
   } else {
     const now = await standingRowsNow(client);
     const { dropped, extra, changed } = compareToStore(rows, now);
-    if (!dropped.length && !extra.length && !changed.length) ok(`store: the ${now.length} standing mark(s) are the snapshot's, byte for byte`);
-    else {
-      for (const s of dropped) red(`store: DROPPED ${s} — standing in the store, absent from the snapshot`);
-      for (const s of extra) red(`store: EXTRA ${s} — in the snapshot, not standing in the store`);
-      for (const s of changed) red(`store: CHANGED ${s} — the store's row is not the snapshot's version`);
-      const moved = [];
+    let moved = dropped.length + extra.length + changed.length;
+    if (!moved) ok(`store: the ${now.length} standing mark(s) are the snapshot's, byte for byte`);
+    for (const s of dropped) red(`store: DROPPED ${s} — standing in the store, absent from the snapshot`);
+    for (const s of extra) red(`store: EXTRA ${s} — in the snapshot, not standing in the store`);
+    for (const s of changed) red(`store: CHANGED ${s} — the store's row is not the snapshot's version`);
+    if (registerRows) {
+      const regNow = await registerRowsNow(client);
+      const r = compareToStore(registerRows.map((x) => ({ slug: x.key, digest: x.digest })), regNow.map((x) => ({ slug: x.key, digest: x.digest })));
+      const n = r.dropped.length + r.extra.length + r.changed.length;
+      moved += n;
+      if (!n) ok(`register: the ${regNow.length} register row(s) are the snapshot's, byte for byte`);
+      for (const k of r.dropped) red(`register: DROPPED ${k} — in the store's register, absent from the snapshot`);
+      for (const k of r.extra) red(`register: EXTRA ${k} — in the snapshot, not in the store's register`);
+      for (const k of r.changed) red(`register: CHANGED ${k} — the store's row is not the snapshot's version`);
+    }
+    if (moved) {
+      const since = [];
       const { rows: [open] } = await client.query(
         "SELECT id, receipts FROM windows WHERE id > $1 ORDER BY id LIMIT 1", [header.window_id ?? 0]);
       if (Array.isArray(open?.receipts?.review_rulings) && open.receipts.review_rulings.length)
-        moved.push(`window ${open.id} carries ${open.receipts.review_rulings.length} review ruling(s)`);
+        since.push(`window ${open.id} carries ${open.receipts.review_rulings.length} review ruling(s)`);
       const { rows: [wm] } = await client.query("SELECT ingested_at FROM projection_heads WHERE repo = 'world-marks'");
-      if (wm?.ingested_at && new Date(wm.ingested_at) > new Date(header.taken_at)) moved.push(`world-marks was ingested at ${new Date(wm.ingested_at).toISOString()}, after the seal`);
-      console.log(moved.length
-        ? `  · the store HAS moved since the seal (${moved.join("; ")}), so a difference may be that movement and not the seal`
-        : "  · nothing the office records moved the store since the seal: these differences are the seal's");
+      if (wm?.ingested_at && new Date(wm.ingested_at) > new Date(header.taken_at)) since.push(`world-marks was ingested at ${new Date(wm.ingested_at).toISOString()}, after the seal`);
+      console.log(since.length
+        ? `  · the store HAS moved since the seal (${since.join("; ")}), so a difference may be that movement and not the seal`
+        : "  · nothing the office records about marks moved since the seal (a register change is a door's act and is not recorded here)");
     }
   }
 
-  // 3 · the fold
+  // 3 · the World, from the sources
   if (worldRepo) {
-    const { blessed, materializeAtRef, readJsonAtRef } = await import("../../src/world-branches.mjs");
-    let ref = header.world_sha;
-    let said = `the snapshot's world ${ref?.slice(0, 12)}`;
-    try { if (!ref) throw new Error("none named"); readJsonAtRef(worldRepo, ref, "WORLD/skeleton.json"); }
-    catch { ref = blessed(worldRepo).ref; said = `the checkout's blessed ref ${ref} (the snapshot's world ${header.world_sha?.slice(0, 12) ?? "∅"} is not in it)`; }
-    const tools = materializeAtRef(worldRepo, ref, "tools");
+    if (!header.law_sha) throw new Error("the snapshot names no law sha, so there is no engine to derive its World with");
+    const { materializeAtRef } = await import("../../src/world-branches.mjs");
+    const tools = materializeAtRef(worldRepo, header.law_sha, "tools");
     const { fold } = await import(pathToFileURL(join(tools, "tools", "marks-fold.mjs")).href);
-    const terrain = readJsonAtRef(worldRepo, ref, "WORLD/skeleton.json");
-    let households = null;
-    try { households = readJsonAtRef(worldRepo, ref, "WORLD/households.json")?.households ?? null; } catch { households = null; }
-    console.log(`  · fold: the engine, terrain and households at ${said}`);
-
-    const snapFold = await foldOfSnapshot(client, header, { fold, terrain, households });
+    const { filingAt, inFilingOrder } = await import("../../src/world-filing-order.mjs");
+    const filing = filingAt(worldRepo, header.law_sha);
+    const { state: derived, stakesSource, householdsSource } = await foldOfSnapshot(client, header, { fold, townRepo, filing });
+    console.log(`  · world: derived from the snapshot's sources — the engine, class marks and terrain at law ${header.law_sha.slice(0, 12)}; stakes ${stakesSource}; households ${householdsSource}; the marks in their filing order (${filing.frozen.size} frozen, ${filing.filed.size} filed at that sha, the rest by the write-down's rule)`);
     if (isNewest) {
       const { marksFromRows } = await import("../../src/world2-fold.mjs");
       const { rows: storeRows } = await client.query(
         "SELECT id, slug, kind, owner, household, body, geometry, status, locked_window, parent, data FROM marks WHERE status = 'standing' ORDER BY slug");
-      const { lawRows, stakes } = await snapshotFoldInputs(client, header);
-      const storeFold = fold({ marks: marksFromRows(storeRows, lawRows), terrain, stakes, households });
-      const diff = foldDifference(snapFold, storeFold);
-      if (diff) red(`fold: the snapshot's fold and the store rows' fold differ — ${diff}`);
-      else ok(`fold: the snapshot's fold equals the store rows' fold (${snapFold.marks?.length ?? 0} records)`);
+      const inputs = await snapshotFoldInputs(client, header, { townRepo });
+      const storeFold = fold({ marks: inFilingOrder(marksFromRows(storeRows, inputs.lawRows), filing), terrain: inputs.terrain, stakes: inputs.stakes, households: inputs.households });
+      compareFolds("world vs the store rows' fold", derived, storeFold);
     }
     const { rows: [cached] } = await client.query("SELECT state FROM world_snapshot_folds WHERE digest = $1", [header.digest]);
-    if (cached) {
-      const diff = foldDifference(snapFold, JSON.parse(cached.state));
-      if (diff) red(`fold: the cached fold of ${header.digest.slice(0, 12)} is not the snapshot's fold — ${diff}`);
-      else ok("fold: the cached fold equals the snapshot's fold");
-    } else console.log("  · fold: no cached fold kept for this digest (built by the office on first read, POS-359)");
+    if (cached) compareFolds(`world vs the cached fold of ${header.digest.slice(0, 12)}`, derived, JSON.parse(cached.state));
+    else console.log("  · world: no cached fold kept for this digest (built by the office on first read, POS-359)");
+    if (publishedPath) compareFolds(`world vs the published ${publishedPath}`, derived, JSON.parse(readFileSync(publishedPath, "utf8")));
   }
 
   console.log(exit ? "VERIFY: DIFFERENCE" : "VERIFY: SOUND");
