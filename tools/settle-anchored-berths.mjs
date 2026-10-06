@@ -125,7 +125,7 @@ export function rowFor(registry, handle) {
 // reported as `ashore` rather than omitted — a sweep that silently drops the
 // rows it had no opinion about cannot be checked against the manifest's count.
 export async function planSweep(clone, { only = null } = {}) {
-  const gangway = gangwayState(clone);
+  const gangway = await gangwayState();
   // THE REGISTRY AND THE PINS COME FROM THE RECORD (POS-158). These two lines
   // used to parse the clone's `tools/households.json` and `tools/github-ids.json`
   // — the files this sweep has never written and only ever READ, to refuse a

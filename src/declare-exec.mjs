@@ -94,7 +94,7 @@ async function main() {
     // outside the lock is a breaker a race can walk past: the founder's commit
     // raising the gangway may have arrived in the pull above. Same reason
     // conformance runs twice — the check inside the lock is the one that decides.
-    const plan = planDeclaration(registry, pins, decl, { gangway: gangwayState(CLONE) });
+    const plan = planDeclaration(registry, pins, decl, { gangway: await gangwayState() });
 
     // Berth + registry entry + identity pin — and, for a household settling at
     // the door, its white-pages file set — go down together and are staged

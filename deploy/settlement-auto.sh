@@ -315,6 +315,17 @@ report() { # status detail
   if [ "$DRY" = "1" ]; then return 0; fi
   node "$OFFICE/deploy/settlement-history.mjs" \
     --receipt "$OUT" --history "$HISTORY" --attempt "${SETTLEMENT_ATTEMPT:-}" >/dev/null 2>&1 || true
+  record_receipt "${SETTLEMENT_ATTEMPT:-}"
+}
+
+# THE RECEIPT IN THE STORE (POS-352). The file above is the box's copy of the
+# newest receipt; the record is a `crossing_receipts` row (061), written with
+# the same bytes for every DECIDED crossing (the recorder keeps the history's
+# isDecision rule). Bookkeeping beside a crossing, so it never fails one: a
+# receipt that could not be recorded says so on stderr and the crossing goes on.
+record_receipt() { # [attempt]
+  node "$OFFICE/world2/tools/crossing-receipt.mjs" --receipt "$OUT" --attempt "${1:-}" \
+    || echo "[settlement-auto] the receipt was NOT recorded in the store (non-fatal) — the line above names why; the file at $OUT still holds it" >&2
 }
 
 # THE ESCALATION, in one place. A crossing is never failed by its own alarm, so
@@ -375,6 +386,7 @@ if [ -z "${SETTLEMENT_ATTEMPT:-}" ]; then
     "$OUT" "raced on all $SETTLEMENT_RACE_ATTEMPTS attempts — a door write is landing on every pass, so this is contention and not a transient. The crossing published nothing; the next scheduled crossing will try again, and an operator wanting it sooner can run the unit by hand once the writes quiet down" \
     || true
   node "$OFFICE/deploy/settlement-history.mjs" --receipt "$OUT" --history "$HISTORY" --attempt "" >/dev/null 2>&1 || true
+  record_receipt ""
   echo "[settlement-auto] RACED OUT after $SETTLEMENT_RACE_ATTEMPTS attempts — publishing nothing" >&2
   escalate --class race --receipt "$OUT"
   exit 2

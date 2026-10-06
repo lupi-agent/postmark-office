@@ -38,14 +38,14 @@ import { standingBounce, standingOf, isSuspended, bounceSentence, STANDING_BOUNC
 import { rolesSchema, roleGate, roleGatesOn, ROLE_SUBSCRIBER } from "./roles.mjs";
 import { openPaper, paperworkStoreOn } from "./paperwork.mjs"; // POS-271: sign-in, roles, the media ledger and the town log, one door
 import { arrivalPage } from "./arrival.mjs";
-import { townSummary, residentList, residentPage, resident, mailList, letter, search, bulletinList, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, regionOne, home, identityOf, repoLog } from "./queries.mjs";
+import { townSummary, residentList, residentPage, resident, mailList, letter, search, bulletinList, bulletinEntry, townLedger, townDocs, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, regionOne, home, identityOf, repoLog } from "./queries.mjs";
 import { householdOf } from "./households.mjs";
 import * as townIndexStore from "./town-index-store.mjs"; // the office.db readers moved to the store (POS-268)
 import { probeOf, isUnreachable } from "./index-probe.mjs"; // the write path's questions of the index, office.db's or the store's (POS-268)
 const { townIndexReads } = townIndexStore;
 import { votesAvailable, voteList, voteView, stakeViaOffice } from "./votes.mjs";
 import { doorstepBundle } from "./doorstep-bundle.mjs"; // the doorstep, finished — one implementation, three doors
-import { giftViaOffice, isPrincipal } from "./ops.mjs";
+import { giftViaOffice, isPrincipal, principalNow, startPrincipalRefresher } from "./ops.mjs";
 import { fundVerifyViaOffice, intakeDisclosure, POT_RE as FUND_POT_RE, INTAKE as FUND_INTAKE } from "./fund.mjs";
 import { channelOf, countAct, actsByChannel } from "./channel.mjs";
 import { logAccess } from "./telemetry.mjs";
@@ -1289,7 +1289,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       // GET /join — the arrival page, machine-readable. Deliberately the very
       // first read: it is the one door an agent finds before it has anything,
       // and it must answer with no key, no sign-in and no prior knowledge.
-      if (path === "/join") return j(res, 200, arrivalPage(TOWN_CLONE));
+      if (path === "/join") return j(res, 200, await arrivalPage(TOWN_CLONE));
       if (path === "/town") {
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.townSummary(c));
         return j(res, 200, townSummary(db, meta));
@@ -1673,6 +1673,15 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       }
       // keyless identity probe — read-side: powers the viewer's dev-dials gate + stand-at filter
       if (path === "/ops/whoami") return j(res, 200, whoami(key));
+      // POS-352: the crossings' receipts, from the store (crossing_receipts, 061).
+      if (path === "/crossings/receipts") {
+        const { receiptsRead } = await import("./crossing-receipts.mjs");
+        try { return j(res, 200, await receiptsRead(url.searchParams)); }
+        catch (e) {
+          if (e.code) return bounce(res, e.code, e.defect, e.hint);
+          return bounce(res, 503, "the office cannot read the crossings' receipts right now", "nothing about the crossings changed; ask again shortly");
+        }
+      }
 
       // ── THE ROSTER DOOR PAGES (2026-09-10, the 10x read's third row) ──────
       //
@@ -2003,6 +2012,17 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         return j(res, 200, bulletinList(db));
       }
 
+      // POS-351: the town's mail ledger and docs, so the site's ledger.json and
+      // docs.json come through the office and never from a town checkout.
+      if (path === "/town/ledger") {
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.townLedger(c));
+        return j(res, 200, townLedger(db));
+      }
+      if (path === "/town/docs") {
+        if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.townDocs(c));
+        return j(res, 200, townDocs(db));
+      }
+
       if ((m = /^\/bulletin\/([a-z0-9-]+)$/.exec(path))) {
         const slug = m[1];
         const missing = () => bounce(res, 404, `no bulletin entry "${slug}"`, "slugs come from GET /bulletin");
@@ -2232,7 +2252,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           // A visitor's act, decided by the verb it resolves to — the same
           // decision and the same words as the MCP door (postmark#2816 sweep).
           if (visitorBounces("household", payload, key)) return bounce(res, 403, VISITOR_BOUNCE.defect, VISITOR_BOUNCE.hint);
-          const r = await householdApex(payload, key, { db, clone: TOWN_CLONE, odb, dbPath: DB_PATH, pen: PEN, canWrite, meta, asOf: AS_OF, schemas: flatPropsFromTools(), schemaRequired: flatRequiredFromTools(), channel, strictFields: true, worldWriteBudget: (household) => bouncer.worldWriteBudget(household) });
+          const r = await householdApex(payload, key, { db, clone: TOWN_CLONE, odb, dbPath: DB_PATH, pen: PEN, rdb, canWrite, meta, asOf: AS_OF, schemas: flatPropsFromTools(), schemaRequired: flatRequiredFromTools(), channel, strictFields: true, worldWriteBudget: (household) => bouncer.worldWriteBudget(household) });
           return j(res, r?.error ? (r.code ?? 400) : 200, r);
         } catch (e) {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"do": "begin", "args": { "household": "…", "card": "…" }}');
@@ -2326,7 +2346,9 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
     // under the flock. The office is the WALL: principal-only, checked here (the
     // /ops/ site page is only presentation). by: + date are server-derived.
     if (req.method === "POST" && path === "/ops/gift") {
-      if (!isPrincipal(key))
+      // The spending door asks the role registry NOW (POS-352): a revoke lands
+      // at the next call, never at the next refresh.
+      if (!(await principalNow(rdb, key)))
         return bounce(res, 403, "the ops desk is the principal's", "this desk mints founder gifts and answers only to Keemin's GitHub sign-in");
       if (!canWrite)
         return bounce(res, 409, "not-yet-open", "the office has no town clone configured; the desk is dark");
@@ -2660,6 +2682,9 @@ const handle = (req, res) => {
 };
 
 import("./world-refresher.mjs").then((m) => m.startWorldRefresher(WORLD_CLONE)); // POS-263: the world clone's git answered off the request path
+// POS-352: the principal is a role row; the describing flags read this set,
+// reloaded from the registry every minute in every process.
+startPrincipalRefresher(rdb);
 // POS-270: the class layer from law_projection at the newest blessing, off the
 // request path. The main thread polls and announces a move; a read worker loads
 // once at boot and again on each announcement, so every process serves one law.

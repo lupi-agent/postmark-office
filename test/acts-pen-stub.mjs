@@ -276,6 +276,8 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
     // The standing gate (POS-347) asks the record before every act: this
     // record has suspended nobody.
     if (/FROM standing_acts/i.test(q)) return { rows: [], rowCount: 0 };
+    // …and has never raised the gangway (POS-353).
+    if (/FROM gangway_acts/i.test(q)) return { rows: [], rowCount: 0 };
 
     for (const [matcher, handler] of also) {
       const hit = typeof matcher === "function" ? matcher(q, params) : matcher.test(q);

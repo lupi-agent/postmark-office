@@ -207,6 +207,10 @@ export function bulletinRows(town) {
   return out.rows();
 }
 
+/** The town's docs as one meta value: `{ README: { body, path }, … }`, keys sorted, JSON. */
+export const townDocsValue = (town) =>
+  JSON.stringify(Object.fromEntries(Object.entries(town.docs ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
+
 /** The mail ledger, unnumbered: `[kind, date, id, from_h, to_h, json]` per line, in ledger order. */
 export function ledgerLines(town) {
   return town.ledger.map((e) => [e.kind, e.date ?? null, e.id ?? null, e.from ?? null, e.to ?? null, JSON.stringify(e)]);
@@ -261,8 +265,22 @@ export async function stampFold(TOWN, { entries = null } = {}) {
   if (!existsSync(stampTool) || !existsSync(stampLedger)) return null;
   const { parseStampLedger, foldBalances, foldMintCount, foldStaked } = await import(pathToFileURL(stampTool));
   const all = entries ?? parseStampLedger(readFileSync(stampLedger, "utf8"));
-  return { entries: all.length, balance: foldBalances(all), mintCount: foldMintCount(all), staked: foldStaked(all) };
+  return { entries: all.length, tip: stampTipOf(all), balance: foldBalances(all), mintCount: foldMintCount(all), staked: foldStaked(all) };
 }
+
+/**
+ * THE TIP (POS-314, Snapshot 7): the ledger's last line as the fold above saw
+ * it, kept in town_meta as `stamps_tip`, so a stamp door can add only the lines
+ * after it to town_stamps instead of re-folding the whole file. Only a SIGNED
+ * line is a tip: its signature is over the seal chain of every line before it,
+ * so finding the same line in a ledger proves that ledger's past is the past
+ * town_stamps was folded from. An unsigned last line (the verifier's to flag)
+ * gives "", and every door then folds the whole file, as it did before.
+ */
+export const stampTipOf = (entries) => {
+  const last = entries.at(-1);
+  return last?.sig ? last.raw : "";
+};
 
 /** A fold's rows: every account but MINT and BURN, and the minted total. */
 export function stampRows(fold) {
@@ -438,6 +456,10 @@ export async function deriveTownIndex(TOWN, { log = console } = {}) {
       threads: town.threads.length, ledger: town.ledger.length,
       bulletin: (town.bulletin ?? []).length,
     })],
+    // THE TOWN'S DOCS (POS-351): README / JOINING / TOWN-RULES / MAIL /
+    // CONTRIBUTING, as the vendored reader keeps them, so the site's docs.json
+    // comes through the office (GET /town/docs) and never from a checkout.
+    ["docs", townDocsValue(town)],
   ];
   const history = readHistory(TOWN, { log });
   const t = {};
@@ -454,7 +476,7 @@ export async function deriveTownIndex(TOWN, { log = console } = {}) {
   if (fold) {
     const s = stampRows(fold);
     t.stamps = s.rows;
-    meta.push(["stamps_minted", s.minted]);
+    meta.push(["stamps_minted", s.minted], ["stamps_tip", fold.tip]);
   }
   Object.assign(t, await fundingRows(TOWN, { log }));
 
