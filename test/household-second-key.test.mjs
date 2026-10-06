@@ -218,3 +218,27 @@ test("H7 · ONE RESOLVER — the name the map binds IS the branch the write-down
   assert.equal(sketchbookNameForKey("gh:999999", merged).name, "gh-999999",
     "and a gh: key no login binds still gets the id, never a name belonging to someone else");
 });
+
+test("H8 · EVERY SKETCHBOOK NAME IS ONE GIT ACCEPTS (the 2026-10-06 06:00Z refusal)", async () => {
+  // The settlement was refused at `git branch -qf draft/victor-b.-rose-e.`: a
+  // household slug with a trailing dot passed the old pattern, and git refused
+  // the branch. The resolver now hands back a name git takes, the same every time.
+  const { execFileSync } = await import("node:child_process");
+  const gitAccepts = (n) => { try { execFileSync("git", ["check-ref-format", "--branch", `draft/${n}`], { stdio: "ignore" }); return true; } catch { return false; } };
+  const cases = {
+    "hh:victor-b.-rose-e.": "victor-b.-rose-e",
+    "hh:house-nessova.": "house-nessova",
+    "hh:cadaeic.space": "cadaeic.space",
+    "hh:two..dots": "two.dots",
+    "hh:a-house.lock": "a-house-lock",
+    "solo:ev-attractor": "ev-attractor",
+  };
+  for (const [key, want] of Object.entries(cases)) {
+    const { name, reason } = sketchbookNameForKey(key, {});
+    assert.equal(reason, null, `${key} must be nameable`);
+    assert.equal(name, want, `${key} → ${name}`);
+    assert.ok(gitAccepts(name), `git refuses draft/${name} (from ${key})`);
+  }
+  assert.equal(sketchbookNameForKey("hh:victor-b.-rose-e.", {}).name, sketchbookNameForKey("hh:victor-b.-rose-e.", {}).name,
+    "the same key always names the same sketchbook");
+});
