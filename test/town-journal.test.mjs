@@ -34,7 +34,8 @@ import { indexStore } from "./helpers/office-under-test.mjs";
 // retyped — a hand-copied table in a test is a second definition of the shape
 // the code under test writes into.
 const WORLD_JOURNAL_DDL = /CREATE TABLE IF NOT EXISTS journal[\s\S]*?\);/.exec(DYNAMIC_SCHEMA)[0];
-import { planTownDrain as REAL_planTownDrain, writeTownDrain as REAL_writeTownDrain, registryLine, advanceTownCursor } from "../src/town-drain.mjs";
+import { planTownDrain as REAL_planTownDrain, writeTownDrain as REAL_writeTownDrain, advanceTownCursor } from "../src/town-drain.mjs";
+import { registryLine } from "../src/house-key.mjs";
 import { buildJoinFiles, REGISTRY_PATH } from "../src/residency.mjs";
 import { handleTaken } from "../src/declare.mjs";
 

@@ -97,6 +97,10 @@ export function currentHouseholds(repo) {
   for (const r of registryRevisions(entries)) map.set(r.handle, { key: r.key, provisional: false });
   return map;
 }
+// THE DATING RULE (#3429) asks who was active on the line's day: the ledger's
+// lines, and the witnessed mail. These fixtures carry no mail ledger, so the
+// town's parseDeliveries would read none either.
+export function parseDeliveries(repo) { return []; }
 `, { flag: "a" });
 writeFileSync(join(engineDir, "household-keys.mjs"), `
 // Transcribed from the town's tools/household-keys.mjs (town d95e81c1c).
