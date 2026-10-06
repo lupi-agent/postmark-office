@@ -44,6 +44,7 @@ const workers = [];
 async function bootWorker(townClone) {
   const env = {
     ...process.env,
+    WORLD_GRAPH_NONE: "1",
     OFFICE_KEYS: `${KEY}=keemin:wright`,
     WORLD_DYNAMIC_DB: join(tmp, "dynamic.db"),
     TOWN_CLONE: townClone,
