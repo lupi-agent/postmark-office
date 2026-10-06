@@ -120,8 +120,23 @@ export function loginKeys(pins, households) {
 // EXPORTED map in `tools/world-households-export.mjs` and nowhere else, so the
 // money surface reads exactly the map it read yesterday.
 
-/** A legal git branch component — the sketchbook name has to be one. */
-export const SKETCHBOOK_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/**
+ * A legal git branch component — the sketchbook name has to be one. Git refuses
+ * a component that ends in "." or ".lock", or that holds "..". The 2026-10-06
+ * 06:00Z settlement was refused on `draft/victor-b.-rose-e.`, a household slug
+ * with a trailing dot (declared 08-24), because this pattern used to accept it.
+ */
+export const SKETCHBOOK_COMPONENT = /^(?!.*\.\.)(?!.*\.lock$)[A-Za-z0-9][A-Za-z0-9._-]*(?<!\.)$/i;
+
+/**
+ * A household's name as a git-safe sketchbook name, the same every time, so the
+ * write-down and the wall's logins map (both through `sketchbookNameForKey`)
+ * agree. A name git already accepts comes back unchanged. If the trimmed name
+ * meets another house's, `sketchbookKeys` reports the collision; nothing merges
+ * silently.
+ */
+export const gitSafeComponent = (name) =>
+  String(name).replace(/\.{2,}/g, ".").replace(/\.lock$/i, "-lock").replace(/\.+$/, "");
 
 /**
  * THE ONE RESOLVER: household key → the sketchbook name the world repo speaks.
@@ -157,6 +172,7 @@ export function sketchbookNameForKey(householdKey, logins = {}) {
     else name = `gh-${rest}`;
   }
 
+  name = gitSafeComponent(name);
   if (!SKETCHBOOK_COMPONENT.test(name)) return { name, reason: "unnameable", bound: [] };
   return { name, reason: null, bound: [] };
 }
