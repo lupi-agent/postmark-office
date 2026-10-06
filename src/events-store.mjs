@@ -32,6 +32,7 @@
 
 import { officeRead, officeWrite, insertAct, PenUnreachableError } from "./world2-pen.mjs";
 import { householdKeyFor } from "./world2-claims.mjs";
+import { sessionKeysVia } from "./household-deriver.mjs";
 import { currentCrossing } from "./crossings.mjs";
 import { wakesNote, earpieceEnabled } from "./earpiece.mjs";
 import { WORLD_ANCHOR } from "./world-journal.mjs";
@@ -181,10 +182,16 @@ async function updatePost(client, r) {
      r.starts, r.ends, r.state, JSON.stringify(r.fields ?? {}), r.revised, r.last_act]);
 }
 
-/** May this resident change this event? Anyone in the host's household. */
+/**
+ * May this resident change this event? Anyone in the host's household.
+ *
+ * The house, whichever spelling the post was written under (RULING 4): the row
+ * keeps its spelling for life, so a house renamed after its host posted reaches
+ * the post through its spelling set, the one 024's policies compare against.
+ */
 async function mayChange(client, prev, handle) {
   const hh = await householdKeyFor(client, handle);
-  if (prev.author !== handle && (prev.household == null || prev.household !== hh))
+  if (prev.author !== handle && (prev.household == null || !(await sessionKeysVia(client, hh)).includes(prev.household)))
     throw refuse(403, `"${prev.id}" is not yours to change`, `its host is ${prev.author}; only the host's household may amend or cancel it`);
 }
 
