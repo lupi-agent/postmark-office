@@ -93,7 +93,7 @@ const SWEEP_RULE = 'the settlement unpublishes a registry-class "commons" mark h
  * adds no reader. Making the copy current inside the act is POS-341 (the
  * ledger's lines in the store, appended in the act's own transaction).
  */
-export const LATER_STAKES = 'a stake or unstake made after escrow_ingested_at is on the ledger but not in this copy yet: it shows here at catches_up_at, when the next clearing copies the ledger into the store. world { read: "stake", args: { mark: "<by>/<slug>" } } reads the ledger itself and shows it now';
+export const LATER_STAKES = 'a stake or unstake made after escrow_ingested_at shows here at catches_up_at, the next clearing; world { read: "stake", args: { mark } } shows it now';
 
 /** The act that takes a mark off the at-risk list — the stake envelope, by name. */
 export const stakeEnvelope = (mark) => `world { do: "stake", args: { mark: "${mark}", stamps: 1 } }`;

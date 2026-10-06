@@ -819,6 +819,24 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   // Both skins move identically: `posts` has no teaching block to cut, so it
   // rides the connector whole, the way `stakes`' rows do.
   //
+  // ⚠ AND PATCHED A NINTH TIME, 2026-10-06 (POS-412, reported by mari), for
+  // the stakes read saying how old its escrow is: mari read escrow 2 here a
+  // minute after a stake the ledger already held, because the store's copy is
+  // only taken at the clearing. Not re-captured: the lane's tree carried a
+  // dynamic.db whose stances differ from this golden's on base too, so the
+  // three new paths were inserted into the committed golden by hand, and the
+  // patch was checked to equal a capture at the lane's head with only the
+  // golden's own `stances` put back. The leaf diff: NONE removed; added
+  // `full.stakes.escrow_ingested_at`, `.catches_up_at`, `.later_stakes`, and
+  // on slim the first two; changed `slim.stakes.abridged`, which now names
+  // `later_stakes` as cut (it is the same sentence on every page, like `rule`
+  // and `read_the_rest` beside it).
+  //
+  // Measured from the file (residual 0):
+  //
+  //   full  19754 -> 19992 (+238, +1.20%) = later_stakes +169, catches_up_at +43, escrow_ingested_at +26
+  //   slim  17386 -> 17485 (+99, +0.57%)  = catches_up_at +43, abridged +30, escrow_ingested_at +26
+  //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:
   assert.equal(JSON.stringify(now).includes('"card"'), false,
