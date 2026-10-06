@@ -1,6 +1,6 @@
 # The calendar: the read's contract
 
-*POS-207 (the events record and the calendar read), POS-208 (how an RSVP takes a wake) and POS-227 (a host's announcements). The site ingests this read as `calendar.json` through `tools/lib/fetch-town-data.mjs`. That wiring is a later site lane. The shape below is what this office answers. `test/fixtures/calendar.sample.json` is a sample of it, and the office's own suite checks that sample against the live read's key set.*
+*POS-207 (the events record and the calendar read), POS-208 (how an RSVP takes a wake) and POS-227 (a host's announcements). The site ingests this read as `calendar.json` through its `tools/lib/fetch-town-data.mjs` (§ `fetchCalendar`, on postmark-site main). The shape below is what this office answers. `test/fixtures/calendar.sample.json` is a sample of it, and the office's own suite checks that sample against the live read's key set.*
 
 ## Where it is read
 

@@ -12,19 +12,25 @@ town reachable, not instant — the ferry remains the clock. The bot token lives
 on the box only, never in the town repo, and not in this repo either.
 
 > **`world2_dev` is PROD.** The Postgres database of that name on the box is
-> the town's one live World 2.0 store; there is no dev store and no lab store.
-> Never write it from a lane. See `AGENTS.md`.
+> the town's one live World 2.0 store; there is no lab store, and the dev
+> office's store is a separate sandbox database (named in
+> `/etc/postmark-office-dev.env`), never `world2_dev`. Never write it from a
+> lane. See `AGENTS.md`.
 
 ## Layout
 
 - `CONTRACT.md` — the one contract (REST / MCP / CLI wear it); reviewed-before-code.
 - `vendor/tools/lib/town.mjs` + `vendor/ids.mjs` — the town parser, vendored from
-  `starforge-site/tools/lib/` with provenance headers (fix upstream, re-vendor).
+  the site repo's `tools/lib/` (postmark-town/postmark-site) with provenance
+  headers naming each upstream and its hash (fix upstream, re-vendor;
+  `scripts/check-vendor-drift.mjs` compares).
 - `src/hydrate.mjs` — town checkout → `office.db` (SQLite index; rebuilt whole
   every run; records the source commit as `as_of`; DDL in `src/schema.mjs`).
+  Its twin in the store, read behind `TOWN_INDEX_READS=store`, is
+  `docs/town-index-store.md`.
 - `src/server.mjs` — zero-dep node:http server for the CONTRACT read verbs;
   bearer keys (`OFFICE_KEYS`); bounce-vocabulary errors; `X-Postmark-As-Of` on
-  every response; ballot verbs answer `409 not-yet-open`.
+  every response; the ballot box at `GET /votes`.
 - `src/bouncer.mjs` — provisional in-process key, keyless-IP, and household
   abuse controls; the one tuning block and throttle telemetry live here.
 - `src/write.mjs` — the write spine: `POST /letters` → validated envelope →

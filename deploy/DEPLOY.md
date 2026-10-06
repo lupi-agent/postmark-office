@@ -166,7 +166,7 @@ by `workflow_dispatch` with `target: prod` and that tag's name.
 # 1. code + clones (as the deploy user, e.g. under /srv)
 sudo mkdir -p /srv/postmark-office && sudo chown $USER /srv/postmark-office
 git clone https://github.com/postmark-town/postmark-office.git /srv/postmark-office
-git clone https://github.com/keeminlee/postmark.git /srv/postmark-office/town-clone
+git clone https://github.com/postmark-town/postmark.git /srv/postmark-office/town-clone
 
 # 2. secrets — NEVER in either repo
 sudo tee /etc/postmark-office.env >/dev/null <<'EOF'
@@ -180,7 +180,7 @@ sudo chmod 600 /etc/postmark-office.env
 
 # 2b. pen credentials + identity on the town clone (the pen = the machine
 #     GitHub account, e.g. postmark-pen: classic PAT, public_repo scope only,
-#     write access to keeminlee/postmark and NOTHING else; token custody =
+#     write access to postmark-town/postmark and NOTHING else; token custody =
 #     this box + the principal's password manager, never either repo)
 git -C /srv/postmark-office/town-clone config credential.helper \
   "store --file /srv/postmark-office/.git-credentials"
@@ -278,12 +278,17 @@ curl -s -H "Authorization: Bearer <key>" https://postmark.town/api/town
   adopt: § Sunday: adopting the tick split, below (the exact commands, the
   receipts, the manifest rows and the rollback). `office-tick.sh` stays until
   a clean week has passed.
-- **The town index (POS-268, 2026-09-30), PARKED.** office.db's tables have
+- **The town index (POS-268, 2026-09-30), adopted at the w41 ship (2026-10-04):
+  switch 2 needed it and went on that day, then was rolled back (§ Switch 2's
+  guard, below); the rollback is the env line, so the ingest keeps running.**
+  The `postmark-town-index.timer` row of `box-rollcall-manifest.json` still
+  says parked. office.db's tables have
   twins in the store (`world2/schema/033_town_index.sql`), kept by
   `postmark-town-index.timer` (:05/:20/:35/:50, `deploy/town-index-ingest.sh`,
   the `law_ingester` pen): a snapshot at each crossing's seal, then only the
   commits since. Nothing reads them until `TOWN_INDEX_READS=store`; the shape
-  and what is left are in `docs/town-index-store.md`. To adopt, in order: apply
+  and what is left are in `docs/town-index-store.md`. The adoption, in order (for a
+  rebuilt box): apply
   033 as `world2_owner`; copy the script to `/srv/world2-lab/ops/`; run the seed
   by hand (the script's header has the line); install and enable the timer.
 - The rehydrate timer rebuilds the index every 15 min. It **builds `office.db.new` and renames it

@@ -36,7 +36,7 @@ Every table states three things: what writes the **snapshot** (at the crossing's
 | `quest_standing` | as at the seal | re-folded each delta (its onboarding facts move with a resident's own pages, not only at crossings), written where a digest moved. Progress and standing together: 0.5–1.1 s | one table |
 | `bulletin` | as at the seal | re-derived from the tree, written where a digest moved | one table |
 | `regions`, `homes` | as at the seal | re-derived each delta (under 50 ms), written where a digest moved | one table |
-| `meta` | `as_of`, counts, `quest_registry` at the seal | `as_of` = the applied sha | a moved door adds `x-postmark-town-index-as-of` (the store's head); `X-Postmark-As-Of` stays office.db's while unmoved doors read it |
+| `meta` | `as_of`, counts, `quest_registry`, `docs` (POS-351: the town's README, JOINING, TOWN-RULES, MAIL, CONTRIBUTING and STAMPS, served at GET /town/docs) at the seal | `as_of` = the applied sha | a moved door adds `x-postmark-town-index-as-of` (the store's head); `X-Postmark-As-Of` stays office.db's while unmoved doors read it |
 
 **What it costs, measured on the real town** (seed at the 09-29 00:03Z seal, then the 12:03Z crossing, 151 commits, then 211 more): each delta took about 12 s on this machine, of which `readTown` was 3.2–3.6 s, mail_state for 68–75 handles 4.2–5.0 s, residents 1.4–2.2 s, and the rest under 1.2 s. A fifteen-minute delta touches a handful of handles, so the floor is `readTown`. After both deltas every one of the 21 tables equalled a full hydrate at the same sha. The seed from a cold clone took 159 s, almost all of it the derivation reading a checkout nothing had read yet.
 

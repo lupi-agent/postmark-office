@@ -591,7 +591,11 @@ The root fix is boolean support in `parseRecord`, which is a world-repo change
 with a wide blast radius — every boolean-shaped field in the town changes shape
 at once — and wants doing deliberately rather than as a side effect.
 
-### What stands today
+### What stood on 2026-08-09
+
+*A dated receipt. Today's acts are the bare `world` call's `actions:`, read
+from the class marks where you stand; `docs/MCP-ROSTER.md` renders the
+dispatch table.*
 
 At world `0428141`, exactly **one** subverb is exposed: `say`, from
 `the-town/sound`, ambient, and it dispatches. L6 is GREEN.
