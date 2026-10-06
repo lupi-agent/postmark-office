@@ -312,7 +312,7 @@ const jsonSafe = (v) => JSON.parse(JSON.stringify(v ?? null));
  * falsifier-projection-equality.mjs: green means "the DB matches the repo", not
  * "the parse is right".)
  */
-export async function deriveSeed({ worldRepo, lawSha, townSha = null }) {
+export async function deriveSeed({ worldRepo, lawSha, townSha = null, window: given = null }) {
   const repo = resolve(worldRepo);
   const { loadMarks, fold } = await readersOf(repo);
 
@@ -338,7 +338,10 @@ export async function deriveSeed({ worldRepo, lawSha, townSha = null }) {
   // So this no longer reads households.json directly. One question, one answerer.
   const oracle = foldOracle({ repo, records, fold });
 
-  const window = genesisWindow({ repo, lawSha, townSha });
+  // `window`: a caller that wants the marks and not the seed's window hands one
+  // in (snapshot-backfill.mjs: a settlement tag before STATE/log existed has no
+  // town clock to read, and the snapshot never reads a window id).
+  const window = given ?? genesisWindow({ repo, lawSha, townSha });
   const byId = new Map(records.map((r) => [r.id, r]));
 
   const claims = [];

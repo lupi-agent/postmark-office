@@ -275,11 +275,24 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
       verdict = "CONFLICT";
       console.error(`${NL}REFUSED: ${conflicts.length} tag(s) moved — ${conflicts.map((r) => `S${r.number}`).join(", ")}. A blessing is canon; a moved tag is a person's finding, not a row to rewrite.`);
     } else if (apply) {
+      // THE SETTLEMENT NAMES ITS SNAPSHOT (POS-358, 065): the snapshot the seal
+      // took at the window this crossing closed, written with the row, since no
+      // pen may UPDATE a settlement. A store without 065 has no column, and the
+      // row is written exactly as before.
+      const { rows: [linkable] } = await client.query(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'settlements' AND column_name = 'snapshot_id') AS ok");
       await client.query("BEGIN");
       for (const r of fresh) {
-        await client.query(
-          "INSERT INTO settlements (number, tag_sha, published_at, window_id, blessed_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (number) DO NOTHING",
-          [r.number, r.tag_sha, r.published_at, r.window_id, r.blessed_at]);
+        if (linkable.ok) {
+          await client.query(
+            `INSERT INTO settlements (number, tag_sha, published_at, window_id, blessed_at, snapshot_id)
+             VALUES ($1, $2, $3, $4, $5, (SELECT id FROM world_snapshots WHERE window_id = $4)) ON CONFLICT (number) DO NOTHING`,
+            [r.number, r.tag_sha, r.published_at, r.window_id, r.blessed_at]);
+        } else {
+          await client.query(
+            "INSERT INTO settlements (number, tag_sha, published_at, window_id, blessed_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (number) DO NOTHING",
+            [r.number, r.tag_sha, r.published_at, r.window_id, r.blessed_at]);
+        }
         wrote++;
       }
       await client.query("COMMIT");
