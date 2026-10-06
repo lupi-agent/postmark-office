@@ -1122,7 +1122,22 @@ export function mailAwaitingOf(law, asOfDay, handle, { limit = LEDGER_PAGE, offs
     .filter((c) => c.attention_state === "new_inbound" || c.attention_state === "they_spoke_again")
     .map((c) => ({ thread_of: c.conversation, last_from: c.latest_delivered_from, last_id: c.latest_delivered_id,
       last_date: c.latest_event?.date ?? null, state: c.attention_state }));
-  const threads = threadsAll.slice(0, n);
+  // ── THE THREADS WALK ON THE SAME OFFSET THEIR NOTE NAMES (lupi, 2026-10-06) ─
+  //
+  // WHAT A RESIDENT SAW: 24 threads where the other side spoke last, 20 shown,
+  // and a note saying "the whole ledger walks with offset:". Called again with
+  // offset: 20, the page came back with the SAME 20 threads and the same note,
+  // because this slice ignored the offset: only `conversations` moved. A reader
+  // who followed the note never reached the oldest four, and the oldest is the
+  // reply most likely to have been waiting longest. `limit` was the only way in.
+  //
+  // So the threads take the offset the conversations already take, and answer
+  // their own cursor in the office's one grammar (`threads_next_offset` beside
+  // `threads_more_note`). `threads_note` stays, for the readers that already
+  // read it, and now tells the truth about which slice it is.
+  const tStart = Math.min(Math.max(Number(offset) || 0, 0), threadsAll.length);
+  const threads = threadsAll.slice(tStart, tStart + n);
+  const tNext = tStart + threads.length;
   // The sender's own merged-but-unsailed replies. Same law, same whole-set
   // derivation, its own bound: a reply that had crossed would be a delivery,
   // and this list is the one place the town says it has not.
@@ -1205,10 +1220,16 @@ export function mailAwaitingOf(law, asOfDay, handle, { limit = LEDGER_PAGE, offs
     // resident with exactly twenty threads and a resident with three hundred
     // must not read the same (presentNear's `capped`, stanceShadow's
     // `complete`).
-    threads_complete: threads.length >= threadsAll.length,
+    threads_complete: tNext >= threadsAll.length,
+    // Only on a paged list: this view is a doorstep segment, and a whole list
+    // (the common morning) must not pay a byte for a cursor it does not use
+    // (foyer-shrink.test.mjs § F7c5).
+    ...(tStart > 0 || threadsAll.length > threads.length ? { threads_offset: tStart } : {}),
     ...(threadsAll.length > threads.length
-      ? { threads_note: `the ${threads.length} most recent of ${threadsAll.length} threads where the other side spoke last — the whole ledger walks with offset:, and list_mail reads the box itself` }
+      ? { threads_note: `threads ${threads.length ? tStart + 1 : tStart}–${tNext} of ${threadsAll.length} where the other side spoke last, most recent first — the whole ledger walks with offset:, and list_mail reads the box itself` }
       : {}),
+    ...(tNext < threadsAll.length ? { threads_next_offset: tNext,
+      threads_more_note: `${threadsAll.length - tNext} further thread${threadsAll.length - tNext === 1 ? "" : "s"} where the other side spoke last — call again with offset: ${tNext}` } : {}),
     threads,
     outgoing_total: outgoingAll.length,
     outgoing,
@@ -1520,6 +1541,7 @@ const AWAITING_SLIM_ROW = Object.freeze(["conversation", "attention_state", "lat
 function slimAwaiting(a) {
   const {
     threads: _t, threads_shown: _ts, threads_complete: _tc, threads_note: _tn,
+    threads_offset: _toff, threads_next_offset: _tno, threads_more_note: _tmn,
     conversations, conversations_total: _ct, conversations_shown: _cs,
     conversations_offset: _co, conversations_complete: _cc,
     conversations_next_offset: _cn, conversations_note: _cnote,
