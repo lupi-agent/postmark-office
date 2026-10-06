@@ -390,7 +390,7 @@ export async function applyDelta(client, { townRepo, head, sha, log = quiet }) {
       threads: town.threads.length, ledger: town.ledger.length,
       bulletin: (town.bulletin ?? []).length,
     })],
-    ["docs", townDocsValue(town)], // POS-351, in the seed's position (src/town-index.mjs)
+    ["docs", townDocsValue(town, townRepo)], // POS-351, in the seed's position (src/town-index.mjs)
   ];
   if (hasStamps) metaRows.push(["stamps_minted", minted], ["stamps_tip", tip]);
   if (q) metaRows.push(["quest_day", q.questDay], ["quest_registry", q.questRegistry]);

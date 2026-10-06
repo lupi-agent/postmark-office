@@ -27,7 +27,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { readTown } from "../vendor/tools/lib/town.mjs";
+import { readTown, parseFrontmatter } from "../vendor/tools/lib/town.mjs";
 import { isResidentHandle, REGISTRY_PATH } from "./residency.mjs"; // one definition of what a handle is — the door's
 import { homePictureIn } from "./registry-rows.mjs"; // the house's picture, off the household's record (POS-219)
 import { readProfile } from "./profiles.mjs"; // PROFILE.md postdates the vendored reader — see that file
@@ -207,9 +207,24 @@ export function bulletinRows(town) {
   return out.rows();
 }
 
+/**
+ * The docs the office serves beyond the vendored reader's five. The reader is
+ * the site's (vendor/tools/lib/town.mjs says fix upstream, never here), so the
+ * office reads these itself, in the reader's own `{ body, path }` shape.
+ * STAMPS.md is the town's stamps explainer, and `household { read: "stamps" }`
+ * points here for it.
+ */
+export const OFFICE_DOCS = Object.freeze(["STAMPS.md"]);
+
 /** The town's docs as one meta value: `{ README: { body, path }, … }`, keys sorted, JSON. */
-export const townDocsValue = (town) =>
-  JSON.stringify(Object.fromEntries(Object.entries(town.docs ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
+export const townDocsValue = (town, TOWN) => {
+  const docs = { ...(town.docs ?? {}) };
+  for (const f of TOWN ? OFFICE_DOCS : []) {
+    const p = join(TOWN, f);
+    if (existsSync(p)) docs[f.replace(/\.md$/, "")] = { body: parseFrontmatter(readFileSync(p, "utf8")).body, path: f };
+  }
+  return JSON.stringify(Object.fromEntries(Object.entries(docs).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
+};
 
 /** The mail ledger, unnumbered: `[kind, date, id, from_h, to_h, json]` per line, in ledger order. */
 export function ledgerLines(town) {
@@ -457,9 +472,10 @@ export async function deriveTownIndex(TOWN, { log = console } = {}) {
       bulletin: (town.bulletin ?? []).length,
     })],
     // THE TOWN'S DOCS (POS-351): README / JOINING / TOWN-RULES / MAIL /
-    // CONTRIBUTING, as the vendored reader keeps them, so the site's docs.json
-    // comes through the office (GET /town/docs) and never from a checkout.
-    ["docs", townDocsValue(town)],
+    // CONTRIBUTING, as the vendored reader keeps them, plus OFFICE_DOCS
+    // (STAMPS), so the site's docs.json comes through the office (GET
+    // /town/docs) and never from a checkout.
+    ["docs", townDocsValue(town, TOWN)],
   ];
   const history = readHistory(TOWN, { log });
   const t = {};
