@@ -39,6 +39,7 @@ import { DatabaseSync } from "node:sqlite";
 import { renamedRow, DOOR_FIELDS } from "./one-contract.mjs"; // POS-70: the one rename shape; POS-246: the door's own fields
 import { actUnderNonce, nonceDefect } from "./act-nonce.mjs"; // POS-246: a world act's retry key
 import { existsSync, readFileSync } from "node:fs";
+import { refShaFromDisk } from "./world-branches.mjs";
 import { join } from "node:path";
 
 import {
@@ -1351,14 +1352,32 @@ registerTwin(HELD_ROWS, (g, idsJson) => nodesIn(g, idsJson)
 // UNREADABLE IS NULL, NOT A GUESS. `scopeAdmits` refuses on a null household
 // rather than admitting, so a missing registry closes the relation-scoped doors
 // instead of opening them to everyone. That direction is the whole point.
-let _hh = null;
+//
+// CACHED PER HEAD, NOT PER PROCESS (the Starling House, 2026-09-30). This used
+// to parse the file ONCE for the life of the process, and nothing in
+// production ever reset it: a settlement that re-derived the registry reached
+// this door only at the office's next restart, so a house split across two
+// keys stayed split here after the world had joined it. The parse is now keyed
+// on the clone's HEAD sha, read off disk (no git subprocess), so the checkout
+// moving is what re-reads it.
+function headShaOf(repo) {
+  try {
+    const head = readFileSync(join(repo, ".git", "HEAD"), "utf8").trim();
+    const sym = /^ref: (refs\/\S+)$/.exec(head);
+    return sym ? refShaFromDisk(repo, sym[1]) ?? null : head;
+  } catch { return null; }
+}
+let _hh = null; // { head, map }
 export function worldHouseholdOf(handle, { repo = WORLD_CLONE } = {}) {
   if (!handle) return null;
-  if (_hh === null) {
-    try { _hh = JSON.parse(readFileSync(join(repo, "WORLD", "households.json"), "utf8")).households ?? {}; }
-    catch { _hh = {}; }
+  const head = headShaOf(repo);
+  if (_hh === null || _hh.head !== head) {
+    let map = {};
+    try { map = JSON.parse(readFileSync(join(repo, "WORLD", "households.json"), "utf8")).households ?? {}; }
+    catch { map = {}; }
+    _hh = { head, map };
   }
-  return _hh[handle] ?? `solo:${handle}`;
+  return _hh.map[handle] ?? `solo:${handle}`;
 }
 export const resetHouseholdCache = () => { _hh = null; };
 

@@ -53,10 +53,11 @@ import { dirname, join } from "node:path";
 // Steps 6 and 7's law, extracted the day the REVIEW lane became a second tool
 // holding the same `clearing_job` pen (`review-rule.mjs`). One definition, two
 // callers — see materialize.mjs's header for why it is not a copy.
-import { materializeClaims, recomputeStanding, slugOf, ownerHouseholdFor } from "./materialize.mjs";
+import { materializeClaims, recomputeStanding, slugOf, ownerHouseholdFor, liveHouseOfVia } from "./materialize.mjs";
 // The escrow PRESENCE gate — the sweep's own rule, ported to the candle before
-// G1 deletes the path it lives on. See step 5.5.
-import { escrowAbsentAmong, escrowPresenceAt, escrowLines } from "./escrow-presence.mjs";
+// G1 deletes the path it lives on. See step 5.5. Step 3's sufficiency rule
+// lives there too (POS-411), reading the same escrow.
+import { escrowAbsentAmong, escrowPresenceAt, escrowLines, unbackedStakesAmong } from "./escrow-presence.mjs";
 // THE PARCEL CAP — the sweep's own gate, ported to the candle before the sweep
 // has to be the one to say no. The law itself is the WORLD's and is imported
 // from a checkout, never copied. See step 5.6.
@@ -191,17 +192,26 @@ try {
   // like is decided. Both halves read the same column; only the scope differs.
 
   // 3 · escrow sufficiency at town_sha (the pinned candle read).
-  //     LIQUID balance (merge ruling 2 in world2/tools/README.md).
-  const staked = new Map(); // claimant -> total stake this window
-  for (const c of pending) if (!outcomes.has(c.id)) staked.set(c.claimant, (staked.get(c.claimant) ?? 0) + (c.stake ?? 0));
-  for (const [claimant, total] of staked) {
-    if (total === 0) continue;
-    const { rows: [bal] } = await q(
-      "SELECT balance FROM stamp_projection WHERE town_sha = $1 AND handle = $2", [townSha, claimant]);
-    if ((bal?.balance ?? 0) < total) {
-      for (const c of pending)
-        if (c.claimant === claimant && !outcomes.has(c.id) && (c.stake ?? 0) > 0)
-          decide(c.id, "refused", `insufficient-stamps: staked ${total}, liquid ${bal?.balance ?? 0} at town ${townSha?.slice(0, 8) ?? "?"}`);
+  //     A STAKE IS JUDGED FROM ITS OWN RECORD (POS-411): the stamps open in
+  //     escrow on a claim's own mark back it, whoever staked them, and only the
+  //     part of the ask with no escrow behind it is judged against the
+  //     claimant's LIQUID balance (merge ruling 2 in world2/tools/README.md).
+  //     Window 231 refused a housemate-backed mark and two of lu-yu's stakes by
+  //     asking the author's liquid for stamps already in escrow. The rule and
+  //     its reasons are `escrow-presence.mjs § unbackedStakesAmong`.
+  {
+    const staked = pending.filter((c) => !outcomes.has(c.id) && (c.stake ?? 0) > 0);
+    if (staked.length) {
+      const escrowByMark = await escrowPresenceAt(q, { townSha });
+      const { rows: bals } = await q(
+        "SELECT handle, balance FROM stamp_projection WHERE town_sha = $1 AND handle = ANY($2)",
+        [townSha, [...new Set(staked.map((c) => c.claimant))]]);
+      const verdict = unbackedStakesAmong(
+        staked.map((c) => ({ id: c.id, slug: slugOf(c), claimant: c.claimant, stake: c.stake })),
+        { escrowByMark, liquidOf: new Map(bals.map((b) => [b.handle, Number(b.balance)])), townSha });
+      for (const r of verdict.refused) decide(r.id, "refused", r.check);
+      if (verdict.escrowUnread)
+        console.log(`  ⚑ stakes: escrow_projection cannot answer at town ${townSha.slice(0, 8)}, so every stake was judged against its claimant's liquid`);
     }
   }
 
@@ -308,7 +318,7 @@ try {
       //   these candidates.
       const containment = await gistContainment(q);
       const tiers = computeStanding([...standingRows, ...candidates],
-        { only: new Set(candidates.map((c) => c.slug)), containment });
+        { only: new Set(candidates.map((c) => c.slug)), containment, houseOf: await liveHouseOfVia(q) });
       const escrowByMark = await escrowPresenceAt(q, { townSha });
       const verdict = escrowAbsentAmong(
         undecidedNamed.map((c) => ({ id: c.id, slug: slugOf(c) })),

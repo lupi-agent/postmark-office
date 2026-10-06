@@ -21,7 +21,7 @@
 // materialization that could commit on its own would be a second candle.
 
 import { computeStanding, admissionNotes, gistContainment } from "./standing.mjs";
-import { houseKeyOfVia, houseRowsVia } from "../../src/household-deriver.mjs";
+import { houseKeyOfVia, houseRowsVia, liveHouseOfVia as liveHouseOfStore } from "../../src/household-deriver.mjs";
 import { REFUSALS, refuse } from "../../src/ceremony.mjs";
 
 /**
@@ -228,6 +228,20 @@ export async function ownerHouseholdFor(q, owner) {
   return key;
 }
 
+/**
+ * EVERY SPELLING A HOUSE HAS WORN → ITS LIVE KEY, as one function for the
+ * standing walk (standing.mjs § computeStanding's `houseOf`).
+ *
+ * The same deriver `ownerHouseholdFor` asks, over the same registry, so the
+ * standing rows and the candidates they are judged against speak one key per
+ * house. A spelling no house claims maps to itself: a `solo:<handle>` that is
+ * nobody's resident is its own household, as it always was. The rule is
+ * `household-deriver.mjs § liveHouseOf`; this is that, over `q`.
+ */
+export async function liveHouseOfVia(q) {
+  return liveHouseOfStore(queryableFor(q));
+}
+
 export async function materializeClaims(q, { claims, amends = new Map(), revives = new Map(), windowId, label }) {
   const named = claims.filter((c) => slugOf(c));   // a stake or escrow claim names no mark
   const ordered = orderByParent(named, { label: label ?? `window ${windowId}` });
@@ -301,7 +315,8 @@ export async function recomputeStanding(q) {
   // — the reader refuses to run its pair query unindexed precisely because
   // unindexed it is slower than the walk it would replace.
   const containment = await gistContainment(q);
-  const tiers = computeStanding(standing, { containment });
+  const houseOf = await liveHouseOfVia(q);
+  const tiers = computeStanding(standing, { containment, houseOf });
   const moved = [];
   for (const m of standing) {
     const next = tiers.get(m.slug);
@@ -326,7 +341,7 @@ export async function recomputeStanding(q) {
   // loose set growing (rows whose `bbox` does not bound them, which the walk
   // must keep scanning). Both are counts a reader can watch move.
   return {
-    standing, moved, notes: admissionNotes(standing),
+    standing, moved, notes: admissionNotes(standing, { houseOf }),
     containment: containment
       ? { indexed: true, covered: containment.covered.size, loose: containment.loose.length,
           ...(containment.loose.length ? { loose_marks: containment.loose.slice(0, 10) } : {}) }

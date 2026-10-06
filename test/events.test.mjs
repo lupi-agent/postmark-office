@@ -894,3 +894,22 @@ test("post machine · ONE FOLD, TWO VOCABULARIES: a log of 026 acts and post-mac
   assert.deepEqual(out.drift, []);
   assert.deepEqual(out.counts, { acts: 7, posts: 2, responses: 1 });
 });
+
+// POS-406 (found by amia-semper's refusal, 2026-10-05): a post's household is
+// the spelling it was written under, for life (RULING 4). A housemate reaches it
+// through the house's spelling set, never by matching that one string.
+test("amend · a housemate may change a post written under the house's account spelling; a stranger still may not", async () => {
+  const HARVEY = { slug: "house-of-harvey", ord: 0, name: "house-of-harvey", human: null,
+    accounts: [{ login: "generalroam-boop", id: 273009068 }], residents: ["amia-semper", "scout"],
+    since: "2026-08-29", member_of: null, declared_by: "t", formerly: null, provisional: null };
+  const { posts } = setup({ households: [HARVEY] });
+  const now = Date.now();
+  const AMIA = { household: "generalroam-boop", handles: new Set(["amia-semper"]) };
+  const SCOUT = { household: "generalroam-boop", handles: new Set(["scout"]) };
+  const { event } = await hostAtOffice(HOST(now), AMIA);
+  assert.equal(posts.get(event.id).household, "hh:house-of-harvey");
+  posts.get(event.id).household = "gh:273009068";   // as the account-grain rows are stored
+  const r = await hostAtOffice({ event: event.id, title: "Shrine Day" }, SCOUT);
+  assert.deepEqual(r.amended, ["title"]);
+  await refusedWith(hostAtOffice({ event: event.id, title: "mine now" }, ERRANT), 403, /not yours to change/);
+});

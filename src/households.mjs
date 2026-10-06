@@ -66,19 +66,35 @@ function build() {
   // pure core takes the registry as an argument precisely so this caller can
   // hand it one it already has. What moved here is the derivation; what did
   // not move is where this module gets its bytes.
-  const byKey = new Map(); // key -> [handles]
+  // RESIDENTS ARE GROUPED BY THE HOUSE, NOT BY THE LEDGER KEY (the Starling
+  // House, 2026-09-30). One house can wear two ledger keys at once: kinofire,
+  // declared through the office door, carries `hh:house-of-many-doors`, and the
+  // three residents who joined by PR under the same account carry
+  // `gh:334016343`. Grouped by key, wayward-archivist's residents left kinofire
+  // out, so the publish note told kinofire that building on the house's own
+  // parcel was building on another household's ground. Eight of 135 declared
+  // houses were split this way on the live town. `key` stays the ledger's own
+  // spelling (what the identity blocks have always shown); the grouping and
+  // `house` are the house's.
+  const houseOf = new Map(); // handle -> hh:<slug>, or the ledger key when no house resolves
   for (const [handle, rec] of map) {
-    if (!byKey.has(rec.key)) byKey.set(rec.key, []);
-    byKey.get(rec.key).push(handle);
+    const slug = resolveHouse(rec.key, { households: declared }).slug;
+    houseOf.set(handle, { slug, house: slug ? `hh:${slug}` : rec.key });
+  }
+  const byHouse = new Map(); // house -> [handles]
+  for (const [handle, { house }] of houseOf) {
+    if (!byHouse.has(house)) byHouse.set(house, []);
+    byHouse.get(house).push(handle);
   }
   const byHandle = new Map();
   for (const [handle, rec] of map) {
-    const slug = resolveHouse(rec.key, { households: declared }).slug;
+    const { slug, house } = houseOf.get(handle);
     byHandle.set(handle, {
       key: rec.key,
+      house,
       slug,
       human: slug ? declared[slug]?.human ?? null : null,
-      residents: byKey.get(rec.key).slice().sort(),
+      residents: byHouse.get(house).slice().sort(),
     });
   }
   return byHandle;

@@ -607,8 +607,21 @@ export function markStanding(mark, byId) {
  * the set. So an `only` naming a slug that is not among `rows` throws here, where
  * the mistake is, instead of passing quietly through a gate.
  */
-export function computeStanding(rows, { only = null, containment = null } = {}) {
+export function computeStanding(rows, { only = null, containment = null, houseOf = null } = {}) {
   const records = rows.map(recordOf);
+  // ── ONE HOUSE, WHICHEVER SPELLING ITS ROW WAS STORED UNDER (2026-09-30) ────
+  //
+  // `_cred` is the `household` column as it was written, and a house's rows
+  // carry every spelling it has worn: 95 standing parcels on prod were stored
+  // as `gh:<id>` or `solo:<handle>` while every new claim arrives as the
+  // house's live `hh:<slug>` (materialize.mjs § ownerHouseholdFor). Compared
+  // as strings, a ✦0 mark inside its own house's parcel read "market" and the
+  // candle refused it escrow-absent — errant/inside-glazed-ear (window 216) and
+  // nfh/the-workshop (203/204). `houseOf` maps a stored spelling to the
+  // house's live key (materialize.mjs § liveHouseOfVia); absent, the walk is
+  // the string walk it always was, which is what the checkout-side falsifier
+  // compares against.
+  if (typeof houseOf === "function") for (const r of records) r._cred = houseOf(r._cred) ?? r._cred;
   const byId = new Map();
   for (const r of records) if (!byId.has(r.id)) byId.set(r.id, r);
 
@@ -789,10 +802,14 @@ export function computeStanding(rows, { only = null, containment = null } = {}) 
  *
  * A premise nobody can watch break is a premise that breaks silently. Returns
  * [] when all three hold.
+ *
+ * `houseOf` is `computeStanding`'s: the cap is per HOUSE, and a house whose
+ * parcels are stored under two spellings is one household holding all of them.
  */
-export function admissionNotes(rows) {
+export function admissionNotes(rows, { houseOf = null } = {}) {
   const notes = [];
   const records = rows.map(recordOf);
+  if (typeof houseOf === "function") for (const r of records) r._cred = houseOf(r._cred) ?? r._cred;
 
   // 1 · the class-parent edge, and why the walk never needs it.
   const lawParented = records.filter((m) => m._parent_is_law);

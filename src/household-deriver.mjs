@@ -523,6 +523,28 @@ export function houseKeysOf(x, registry, pins = {}, opts = {}) {
 }
 
 /**
+ * EVERY SPELLING ANY HOUSE HAS WORN → THAT HOUSE'S LIVE KEY. PURE.
+ *
+ * The same sets `houseKeysOf` gives, inverted once, so a reader that groups
+ * stored rows by house (the standing walk's ground, `computeStanding`'s
+ * `houseOf`) compares houses and not spellings. Amia's parcel is stored
+ * `gh:273009068` and her shrines `hh:house-of-harvey`; both answer
+ * `hh:house-of-harvey` here, because the house lists that account.
+ *
+ * A spelling no house claims maps to ITSELF: `solo:the-town`, or a `solo:`
+ * handle nobody holds, is its own household, as it always was. The first house
+ * to claim a spelling keeps it, the same first-wins the set census measures.
+ */
+export function liveHouseOf(registry, pins = {}) {
+  const live = new Map();
+  for (const slug of Object.keys(housesOf(registry))) {
+    const keys = houseKeysOf(`hh:${slug}`, registry, pins);
+    for (const k of keys) if (!live.has(k)) live.set(k, keys[0]);
+  }
+  return (key) => live.get(key) ?? key;
+}
+
+/**
  * THE SET A SESSION DECLARES for the key it is acting under. PURE.
  *
  * `key` ALWAYS COMES FIRST AND IS ALWAYS PRESENT, whatever the registry says,
@@ -647,6 +669,12 @@ export async function houseKeyOfVia(q, x) {
 export async function houseKeysOfVia(q, x) {
   const rows = await houseRowsVia(q);
   return houseKeysOf(x, rows.registry, rows.pins);
+}
+
+/** Every spelling → its house's live key, from the caller's own store. */
+export async function liveHouseOfVia(q) {
+  const rows = await houseRowsVia(q);
+  return liveHouseOf(rows.registry, rows.pins);
 }
 
 /**
