@@ -802,10 +802,14 @@ export function computeStanding(rows, { only = null, containment = null, houseOf
  *
  * A premise nobody can watch break is a premise that breaks silently. Returns
  * [] when all three hold.
+ *
+ * `houseOf` is `computeStanding`'s: the cap is per HOUSE, and a house whose
+ * parcels are stored under two spellings is one household holding all of them.
  */
-export function admissionNotes(rows) {
+export function admissionNotes(rows, { houseOf = null } = {}) {
   const notes = [];
   const records = rows.map(recordOf);
+  if (typeof houseOf === "function") for (const r of records) r._cred = houseOf(r._cred) ?? r._cred;
 
   // 1 · the class-parent edge, and why the walk never needs it.
   const lawParented = records.filter((m) => m._parent_is_law);
