@@ -219,6 +219,28 @@ test("5 · after --apply the ledger holds exactly one signed post:<id>/confirmed
     } finally { rmSync(repo, { recursive: true, force: true }); }
   });
 
+test("7 · --quiet (the tick's): a run that pays prints the header and the owed rows only; a run with nothing owed prints nothing",
+  { skip: TOWN_HAS_VERB ? false : `the town at ${TOWN_SRC} has no --stage-mint yet; set STAGE_MINT_TOWN to a town tree that carries it` },
+  async () => {
+    setup();
+    await confirmed("carol", "The map drifts");
+    const { repo, keyFile } = syntheticTown();
+    try {
+      const argv = ["--town", repo, "--apply", "--quiet", "--key", keyFile, "--date", "2026-09-29"];
+      const first = [];
+      assert.equal(await main(argv, { facts: await storeFacts(), log: (s) => first.push(s), err: (s) => first.push(`ERR ${s}`) }), 0, first.join("\n"));
+      const said = first.join("\n");
+      assert.match(said, /1 owed \(2 stamps\)/);
+      assert.match(said, /OWED\n {2}carol\/the-map-drifts\/confirmed/);
+      assert.match(said, /minted 2 → carol/);
+      assert.doesNotMatch(said, /ALREADY PAID|PAYS NOTHING/);
+      const second = [];
+      assert.equal(await main(argv, { facts: await storeFacts(), log: (s) => second.push(s), err: (s) => second.push(`ERR ${s}`) }), 0, second.join("\n"));
+      assert.deepEqual(second, [], "a quiet tick with nothing owed says nothing");
+      assert.equal(stageLinesOf(repo).length, 1);
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  });
+
 test("5 · the pass refuses a town whose stamp-mint has no stage grammar, before reading anything", async () => {
   const repo = mkdtempSync(join(tmpdir(), "bug-stage-old-"));
   mkdirSync(join(repo, "tools"), { recursive: true });
