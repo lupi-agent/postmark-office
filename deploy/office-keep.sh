@@ -137,7 +137,9 @@ trap 'rm -rf "$SNAP"' EXIT
     # stage, ever; the cap and the meep law are the town's. The resident hears
     # what was paid and why from the Bug Catcher's next round, which reads these
     # post:<id>/<stage> lines (MEEPS/SKILLS/bugcatcher-round.md).
-    node /srv/postmark-office/tools/bug-stage-plan.mjs         --town "$TOWN_CLONE" --apply --quiet --key /srv/postmark-office/stamp-key.pem       || echo "[office-keep] bug stage pass had refusals (non-fatal) — the lines above name each one; the stage stays owed and the next tick pays it" >&2
+    node /srv/postmark-office/tools/bug-stage-plan.mjs \
+        --town "$TOWN_CLONE" --apply --quiet --key /srv/postmark-office/stamp-key.pem \
+      || echo "[office-keep] bug stage pass had refusals (non-fatal) — the lines above name each one; the stage stays owed and the next tick pays it" >&2
     if ! cmp -s "$LEDGER" "$HOLD/ledger.arrived"; then
       node tools/stamp-verify.mjs || exit 1
     fi
