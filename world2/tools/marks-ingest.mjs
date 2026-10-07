@@ -131,7 +131,7 @@ import { join, relative, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
-import { deriveSeed, canonicalJson, uuid5 } from "./seed-import.mjs";
+import { deriveSeed, canonicalJson, uuid5, boxOf } from "./seed-import.mjs";
 import { materializeClaims, retireMarks } from "./materialize.mjs";
 import { REFUSED_BY_NAME } from "./backfill-register.mjs";
 import { marksFromRows } from "../../src/world2-fold.mjs";
@@ -173,6 +173,52 @@ export function recordDiff(fileRec, storeRec) {
   return out.sort();
 }
 
+// ── AN AMEND CARRIES THE FILE'S CHANGE, NOT THE FILE (POS-441's read 2, 2026-10-07)
+//
+// The range gate asked whether a commit in (base, ref] touched a mark's file,
+// and then wrote the file's WHOLE record over the store's row. A commit that
+// touched the file without changing what the store differed in — the household
+// un-nesting renamed lupi/the-unworn-step's directory with its parent, 0 lines
+// changed — opened the gate for every older difference too, and her own door
+// amends (acts 7330 and 7470, windows 205 and 207), which the file never
+// received, would have been written back to the file's 08-10 text.
+//
+// So an amend carries only the fields the FILE changed across the range — the
+// file's record at the base against its record at the ref — and only where the
+// store differs. Every other field keeps the store's word. When `_parentMarkId`
+// is carried the frame bookkeeping it governs (`_fileAt`, `_origin`) comes with
+// it, because the printout (mark-render.mjs) reads the file's numbers from them.
+// A mark the base never held has no base record, so every field is the range's
+// — an ADD, or a door-made row whose file just appeared — exactly as before.
+
+const GEOMETRY_FIELDS = new Set(["at", "extent", "points"]);
+const OWNER_FIELDS = new Set(["by", "household"]);
+const FRAME_BOOKKEEPING = ["_fileAt", "_origin"];
+
+/**
+ * The row an amend writes: the ref's row where a field is carried, the store's
+ * row everywhere else. PURE. `carry` holds record-field names (recordDiff's).
+ */
+export function carriedRow(was, ref, carry) {
+  const row = { ...ref };
+  if (!carry.has("body")) row.body = was.body;
+  if (!carry.has("kind")) row.kind = was.kind;
+  if (![...OWNER_FIELDS].some((k) => carry.has(k))) { row.owner = was.owner; row.household = was.household; }
+  if (![...GEOMETRY_FIELDS].some((k) => carry.has(k))) {
+    row.geometry = was.geometry;
+    row.bbox = was.geometry?.at && was.geometry?.extent ? boxOf(was.geometry.at, was.geometry.extent) : (was.bbox ?? null);
+  }
+  const data = { ...(was.data ?? {}) };
+  const take = (k) => { if (ref.data && k in ref.data) data[k] = ref.data[k]; else delete data[k]; };
+  for (const k of carry) {
+    if (k === "body" || k === "kind" || k === "parent" || GEOMETRY_FIELDS.has(k) || OWNER_FIELDS.has(k) || k === "slug" || k === "id") continue;
+    take(k);
+  }
+  if (carry.has("_parentMarkId")) for (const k of FRAME_BOOKKEEPING) take(k);
+  row.data = data;
+  return row;
+}
+
 // ── the plan: ONE function, both arms ────────────────────────────────────────
 
 /**
@@ -185,13 +231,16 @@ export function recordDiff(fileRec, storeRec) {
  * @param {Map|null} o.pathAtBase  slug -> repo path at the base (null: no base, so no retire can be proven)
  * @param {Function} o.commitFor   ({ path, range, deleted }) -> { sha, author, at, subject } | null
  * @param {Set}      [o.held]      slugs held by name
+ * @param {object[]} [o.derivedAtBase] `deriveSeed` rows at the BASE: given, an amend carries only the
+ *                                 fields the file changed across the range (§ an amend carries the file's change)
  */
-export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, commitFor, held = REFUSED_BY_NAME }) {
+export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, commitFor, held = REFUSED_BY_NAME, derivedAtBase = null }) {
   const standing = storeRows.filter((r) => r.status === "standing");
   const bySlug = new Map(storeRows.map((r) => [r.slug, r]));
   const fileRecs = new Map(marksFromRows(derived, []).map((m) => [m.id, m]));
   const storeRecs = new Map(marksFromRows(standing, []).map((m) => [m.id, m]));
   const derivedBySlug = new Map(derived.map((r) => [r.slug, r]));
+  const baseRecs = derivedAtBase ? new Map(marksFromRows(derivedAtBase, []).map((m) => [m.id, m])) : null;
 
   const adds = [], amends = [], retires = [], skipped = [], heldOut = [], stops = [];
   const ruledAfter = (row, commit) => row.locked_at && commit?.at && new Date(row.locked_at) > new Date(commit.at);
@@ -217,6 +266,17 @@ export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, c
     const commit = commitFor({ path, range: true, deleted: false });
     if (!commit) { skipped.push({ slug, fields, why: "differs, but no commit since the head changed its file — not the file's change to carry (a door-made row the file has not caught up to, or drift that predates the head)" }); continue; }
     if (ruledAfter(was, commit)) { skipped.push({ slug, fields, why: `differs, but the store's row was ruled at window ${was.locked_window} (${new Date(was.locked_at).toISOString()}), after the file's last change ${commit.sha.slice(0, 9)} — the door's later word stands` }); continue; }
+    if (baseRecs) {
+      const baseRec = baseRecs.get(slug);
+      const changed = baseRec ? new Set(recordDiff(baseRec, fileRecs.get(slug))) : null;   // no base record: all of it is the range's
+      const carry = changed ? fields.filter((k) => changed.has(k)) : fields;
+      if (!carry.length) {
+        skipped.push({ slug, fields, why: `differs, but the file's change since the head (${commit.sha.slice(0, 9)}) touched none of these fields — not the file's change to carry (a moved filing, or an edit elsewhere in the record); the store's word stands` });
+        continue;
+      }
+      amends.push({ slug, row: carriedRow(was, row, new Set(carry)), was, fields: carry, differs: fields, commit, keepParent: carry.includes("parent") ? undefined : was.parent });
+      continue;
+    }
     amends.push({ slug, row, was, fields, commit });
   }
 
@@ -242,6 +302,7 @@ export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, c
   const addedSlugs = new Set(adds.map((a) => a.slug));
   for (const c of [...adds, ...amends]) {
     c.parent = null;
+    if (c.keepParent !== undefined) { c.parent = c.keepParent ?? null; delete c.keepParent; continue; }   // the parent is not this amend's to carry
     if (!c.row.parent) continue;
     const pslug = slugOfDerivedId.get(String(c.row.parent));
     const inStore = pslug ? bySlug.get(pslug) : null;
@@ -483,9 +544,10 @@ export async function ingest(client, { worldRepo, ref = "blessed", since = null,
       const ref_ = await pathsAt(atRef.dir);
       classMarks = ref_.classMarks;
       const pathAtBase = atBase ? (await pathsAt(atBase.dir)).paths : null;
+      const derivedAtBase = atBase ? (await deriveSeed({ worldRepo: atBase.dir, lawSha: base.sha })).marks : null;
       const { rows: storeRows } = await q(MARKS_SQL);
       plan = planIngest({
-        derived: derivedAll.marks, storeRows, pathAtRef: ref_.paths, pathAtBase,
+        derived: derivedAll.marks, storeRows, pathAtRef: ref_.paths, pathAtBase, derivedAtBase,
         commitFor: commitReader(repo, { base: base?.sha ?? null, target: target.sha }),
       });
     } finally {

@@ -502,3 +502,73 @@ test("recordDiff compares the record, not the store's stamps", () => {
   assert.equal(isRecordField("source", "LOGOS/classes.md"), true, "a resident's source line counts");
   assert.equal(isRecordField("source", { sha: "x" }), false, "the old stamp does not");
 });
+
+// ── AN AMEND CARRIES THE FILE'S CHANGE, NOT THE FILE (POS-441's read 2, 2026-10-07) ──
+//
+// The household un-nesting (postmark-world#157) re-filed 100 marks at their ids
+// and renamed their subtrees with them. lupi/the-unworn-step moved with its
+// parcel, 0 lines changed; her store row carries her own door amends (acts 7330
+// and 7470, windows 205/207), which the file never received. The old gate saw
+// "a commit touched the file" and wrote the file's whole record: her body and
+// date would have gone back to the 08-10 text.
+const base = (slug, over = {}) => row(slug, { body: "the file's 08-10 text", data: { date: "2026-08-08", tier: "home", _parentMarkId: "lupi/the-rootlight-den-parcel" }, ...over });
+const unnestingCase = () => {
+  const lupi = "lupi/the-unworn-step", mover = "lupi/the-rootlight-den-parcel";
+  return {
+    lupi, mover,
+    // the file at the base and at the ref: lupi's record is the same (a pure rename); the mover's frame changed
+    derivedAtBase: [base(lupi), row(mover, { data: { date: "2026-08-01", tier: "home", _parentMarkId: "sol-of-garrison/the-protected-grove", _fileAt: { x: 10, y: 20 }, _origin: { x: -1380, y: -2618 } } })],
+    derived: [base(lupi), row(mover, { data: { date: "2026-08-01", tier: "home", _fileAt: { x: -1370, y: -2598 }, _origin: { x: 0, y: 0 } } })],
+    storeRows: [
+      row(lupi, { body: "her own later word", locked_window: 207, locked_at: "2026-09-23T18:00:00.000Z", data: { date: "2026-09-23", tier: "home" } }),
+      row(mover, { data: { date: "2026-08-01", tier: "home", _parentMarkId: "sol-of-garrison/the-protected-grove", _fileAt: { x: 10, y: 20 }, _origin: { x: -1380, y: -2618 } } }),
+    ],
+    pathAtRef: new Map([[lupi, "p/lupi"], [mover, "p/mover"]]),
+    commitFor: ({ range }) => (range ? C("unnesting", "2026-10-07T20:24:56.000Z") : null),
+  };
+};
+
+test("THE CARRY OF A RENAME: lupi's step, renamed with its parcel and otherwise untouched, carries NOTHING — her own later body and date stand; the re-filed parcel carries its frame and nothing else", () => {
+  const fx = unnestingCase();
+  const plan = planIngest({ ...fx, pathAtBase: null });
+  assert.deepEqual(plan.amends.map((a) => [a.slug, a.fields]), [[fx.mover, ["_parentMarkId"]]],
+    "the parcel's filing moved, so its frame edge is the range's to carry, and only that");
+  const am = plan.amends[0];
+  assert.equal(am.row.data._parentMarkId, undefined, "re-filed at its id: no enclosing mark");
+  assert.deepEqual([am.row.data._fileAt, am.row.data._origin], [{ x: -1370, y: -2598 }, { x: 0, y: 0 }],
+    "the frame bookkeeping the printout reads comes with the frame edge");
+  assert.equal(am.row.body, "b", "and nothing else of the file's");
+  const skip = plan.skipped.find((s) => s.slug === fx.lupi);
+  assert.ok(skip, "lupi's step is not amended");
+  assert.deepEqual(skip.fields, ["_parentMarkId", "body", "date"], "it still says where the store and the file differ");
+  assert.match(skip.why, /touched none of these fields .* the store's word stands/);
+});
+
+test("THE FLIP: without the base's records the gate is the old one — the rename writes the file's whole record over lupi's own word", () => {
+  const fx = unnestingCase();
+  const { derivedAtBase: _drop, ...old } = fx;
+  const plan = planIngest({ ...old, pathAtBase: null });
+  const lupi = plan.amends.find((a) => a.slug === fx.lupi);
+  assert.ok(lupi, "the old gate amends her step");
+  assert.deepEqual(lupi.fields, ["_parentMarkId", "body", "date"]);
+  assert.equal(lupi.row.body, "the file's 08-10 text", "her body reverted");
+  assert.equal(lupi.row.data.date, "2026-08-08", "her date reverted");
+});
+
+test("a field the range DID change is carried, and the rest keep the store's word; a mark the base never held is carried whole", () => {
+  const slug = "a/edited", fresh = "a/door-made-then-filed";
+  const plan = planIngest({
+    derivedAtBase: [row(slug, { body: "old", data: { date: "2026-07-01", tier: "market", image: "x.png" } })],
+    derived: [row(slug, { body: "new", data: { date: "2026-07-01", tier: "market", image: "x.png" } }), row(fresh, { body: "file" })],
+    storeRows: [row(slug, { body: "old", data: { date: "2026-09-01", tier: "market", image: "y.png" } }), row(fresh, { body: "door" })],
+    pathAtRef: new Map([[slug, "p/e"], [fresh, "p/f"]]), pathAtBase: null, commitFor: ({ range }) => (range ? C("c") : null),
+  });
+  const ed = plan.amends.find((a) => a.slug === slug);
+  assert.deepEqual(ed.fields, ["body"], "the body changed in the file; the date and the image did not");
+  assert.equal(ed.row.body, "new");
+  assert.deepEqual([ed.row.data.date, ed.row.data.image], ["2026-09-01", "y.png"], "the store's later date and picture stand");
+  assert.equal(ed.parent, null, "the parent is the store's, untouched");
+  const fr = plan.amends.find((a) => a.slug === fresh);
+  assert.deepEqual(fr.fields, ["body"], "no base record: the whole difference is the range's, as before");
+  assert.equal(fr.row.body, "file");
+});
