@@ -131,6 +131,13 @@ trap 'rm -rf "$SNAP"' EXIT
     node /srv/postmark-office/deploy/welcome-pass.mjs \
         --town "$TOWN_CLONE" --key /srv/postmark-office/stamp-key.pem \
       || echo "[office-keep] welcome pass had refusals (non-fatal) — the lines above name each one; the household keeps its claim and the next crossing asks again" >&2
+    # The bug ladder's stage pass (Darko, 2026-10-07: payment "rides on the
+    # acceptance"). Every stage an advance recorded and the ledger has not paid
+    # is minted through the town's own --stage-mint verb, one line per post and
+    # stage, ever; the cap and the meep law are the town's. The resident hears
+    # what was paid and why from the Bug Catcher's next round, which reads these
+    # post:<id>/<stage> lines (MEEPS/SKILLS/bugcatcher-round.md).
+    node /srv/postmark-office/tools/bug-stage-plan.mjs         --town "$TOWN_CLONE" --apply --quiet --key /srv/postmark-office/stamp-key.pem       || echo "[office-keep] bug stage pass had refusals (non-fatal) — the lines above name each one; the stage stays owed and the next tick pays it" >&2
     if ! cmp -s "$LEDGER" "$HOLD/ledger.arrived"; then
       node tools/stamp-verify.mjs || exit 1
     fi

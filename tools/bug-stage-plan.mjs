@@ -2,7 +2,7 @@
 // bug-stage-plan.mjs — the bug stage stamps the town owes, and the reviewed pass that pays them.
 //
 //   node tools/bug-stage-plan.mjs --town <town-clone>                        the plan: writes nothing, needs no key
-//   node tools/bug-stage-plan.mjs --town <town-clone> --apply --key <pem> [--date YYYY-MM-DD]
+//   node tools/bug-stage-plan.mjs --town <town-clone> --apply --key <pem> [--date YYYY-MM-DD] [--quiet]
 //
 //   env: WORLD2_PG_URL (or PG*), the office's own store — the plan reads the
 //        bug class's acts from it, and nothing else.
@@ -15,8 +15,12 @@
 // size. It mints nothing. This tool reads those acts, prints every stage the
 // ladder pays with its amount and the reason, and — only with --apply, only
 // by hand — calls the town's own `stamp-mint.mjs --stage-mint` once per owed
-// row. IT NEVER RUNS ON THE TICK: nothing in deploy/ names it, and it stays
-// that way until Keemin says otherwise.
+// row. IT RUNS ON THE TICK since 2026-10-07 (Darko: "the payment should just
+// happen whenever it would naturally happen given it rides on the acceptance/
+// updating of the state"): deploy/office-keep.sh calls it with --apply --quiet
+// beside the welcome pass, so a stage pays within one tick of its advance. The
+// advance is the gate — the Bug Catcher's for confirmed and reproduced, the
+// founders' after — and the town's verb still refuses a second line per stage.
 //
 // ── WHAT DECIDES A ROW ──────────────────────────────────────────────────────
 //
@@ -244,12 +248,18 @@ export async function main(argv = process.argv.slice(2), { facts = null, spawn =
   const houseOf = (h) => store.houses.get(h) ?? null;
   const rows = planStages({ acts: store.acts, houseOf, isMeep: engine.isMeep, paid: engine.paid });
   const text = renderPlan(rows);
-  log(text.trimEnd());
+  // --quiet (the tick's): the header and what this run pays, never the paid
+  // past, which grows with every stage and would fill the journal each tick.
+  // The parse below always reads the whole plan.
+  if (argv.includes("--quiet")) {
+    const owedOnly = text.split("\n\nALREADY PAID")[0].split("\n\nPAYS NOTHING")[0];
+    if (rows.some((r) => r.owed)) log(owedOnly.trimEnd());
+  } else log(text.trimEnd());
   if (!apply) { log("[bug-stage-plan] the plan only — nothing written, nothing signed. Review it, then --apply."); return 0; }
 
   let parsed;
   try { parsed = parseStagePlan(text); } catch (e) { err(e.message); return 1; }
-  if (!parsed.owed.length) { log("[bug-stage-plan] nothing owed"); return 0; }
+  if (!parsed.owed.length) { if (!argv.includes("--quiet")) log("[bug-stage-plan] nothing owed"); return 0; }
   const date = arg("--date", argv) ?? townDate(Date.now());
   const refused = [];
   for (const r of parsed.owed) {

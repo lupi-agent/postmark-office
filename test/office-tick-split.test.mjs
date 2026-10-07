@@ -23,6 +23,8 @@ const KEEPING = [
   ['git -C "$WORLD_CLONE" fetch --prune', "the world fetch (it carries the keeper's tag)"],
   ["stamp-mint.mjs --append", "the mint catch-up"],
   ["deploy/welcome-pass.mjs", "the welcome pass"],
+  ["/srv/postmark-office/tools/bug-stage-plan.mjs", "the bug stage pass (Darko, 2026-10-07: payment rides the acceptance)"],
+  ["--apply --quiet --key /srv/postmark-office/stamp-key.pem", "the bug stage pass's apply, quiet, with the box's stamp key"],
   ["settlements-backfill.mjs --apply", "the settlements row"],
   ["deploy/publish-windows.mjs", "the panes"],
 ];
