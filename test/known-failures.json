@@ -46,9 +46,10 @@
     {
       "file": "test/one-contract.test.mjs",
       "name": "nonce · a world act's plain route still refuses a nonce by name, and points at the world door that keeps one",
-      "reason": "red on main only: a plain-route write met the key's write budget (429, 40) before its nonce refusal; green on the train. Measured once, in run 37706951861",
+      "reason": "a flake on main: a plain-route write met the key's write budget (429, 40) before its nonce refusal in run 37706951861, and passed in 37707445980; never red on the train",
       "owner": "POS-419",
-      "date": "2026-10-07"
+      "date": "2026-10-07",
+      "flaky": true
     },
     {
       "file": "test/refresher-blocked.test.mjs",
