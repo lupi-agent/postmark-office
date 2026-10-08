@@ -109,7 +109,7 @@ import { markRecord } from "./mark-record.mjs";
 import { WORLD_CLONE } from "./world-store.mjs";
 import { draftBranch, mainRef, materializeAtRef, readAtRef, refExists } from "./world-branches.mjs";
 import {
-  ACTION_WITHDRAW, CLASS_MARK, frozenFilingAt, journalHead, pathFor, readJournal,
+  ACTION_WITHDRAW, CLASS_MARK, frozenFilingAt, isNestedFiling, journalHead, pathFor, readJournal,
 } from "./world-journal.mjs";
 // Every name the enter/exit record has ever answered to. One home for that list
 // (`src/enter-exit-ledger.mjs`), read here so this filter cannot drift from it.
@@ -212,9 +212,7 @@ export function planDrain(rows, { publishedPathOf = null, toFileFrame = null } =
     }
     const p = row.payload ?? {};
     const path = pathOf(id);
-    const nested = path
-      && path.startsWith(`${ROOT_PREFIX}/`)
-      && path.slice(ROOT_PREFIX.length + 1).split("/").length > 2;
+    const nested = isNestedFiling(path);
     // THE ONE CONVERSION, and only where the file frame differs from the world
     // frame: a nested record's at/points are offsets from its parent's centre.
     // Today every sited/parcel draft lands on open ground at the root
@@ -758,7 +756,30 @@ export async function fileFramer(repo) {
   // nested, and needs no entry here — which is why an absent one is not a gap.
   let mainSha = null;
   try { mainSha = git(repo, ["rev-parse", mainRef(repo)]).trim(); } catch { /* named absent below */ }
-  const idOfMarkFile = mainSha ? idOfMarkFileFrom(frozenFilingAt(repo, mainSha)) : new Map();
+  const fromManifest = mainSha ? idOfMarkFileFrom(frozenFilingAt(repo, mainSha)) : new Map();
+  // ...EXCEPT WHEN IT HAS CHILDREN (POS-446, 2026-10-08). Since the household
+  // un-nesting (world 857dc401) 189 marks are filed under an id-keyed parent,
+  // and 64 of those parents are in no manifest row: born at their ids, given
+  // children later. Such an ancestor's id is its own `by:` and its directory,
+  // read at main — the way the sweep's `enclosingMarkId` reads it, so the two
+  // still agree about what an ancestor IS. Fossil paths stay the manifest's
+  // alone, as before.
+  const readIds = new Map();
+  const idOfMarkFile = {
+    get: (file) => {
+      const known = fromManifest.get(file);
+      if (known || !mainSha || file.startsWith(`${ROOT_PREFIX}/`)) return known;
+      if (!readIds.has(file)) {
+        let id = null;
+        try {
+          const by = readAtRef(repo, mainSha, file).match(/^by:\s*(\S+)\s*$/m)?.[1];
+          if (by) id = `${by}/${file.split("/").at(-2)}`;
+        } catch { /* no such file at main: no ancestor here */ }
+        readIds.set(file, id);
+      }
+      return readIds.get(file) ?? undefined;
+    },
+  };
 
   /**
    * The composed centre the FILE at `path` is framed on — the nearest enclosing

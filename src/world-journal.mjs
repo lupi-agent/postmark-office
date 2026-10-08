@@ -198,6 +198,27 @@ const MARK_ACTIONS = new Set([ACTION_LEAVE, ACTION_AMEND, ACTION_WITHDRAW]);
 // verbatim and must spell the root the same way.
 export const ROOT_PREFIX = "WORLD/marks/let-there-be-light";
 
+/**
+ * IS THIS FILE WRITTEN IN ITS PARENT'S FRAME? — the one nested-path test, for
+ * the store write-down and the drain both (POS-446, 2026-10-08).
+ *
+ * The world's loader frames a `mark.md` on the mark whose directory holds it,
+ * in EITHER layout: the fossil tree (`let-there-be-light/<a>/<b>/mark.md`) and
+ * the identity tree (`<household>/<slug>/<child>/mark.md`). The test used to
+ * be "under the fossil root and deeper than one level", which the identity
+ * layout never satisfies, so after the household un-nesting (world 857dc401,
+ * 2026-10-07: 189 marks filed under an id-keyed parent) a door amend of one
+ * was written with its WORLD numbers raw into a parent-relative file, and the
+ * fold moved it: lupi/the-unworn-step from (-1408, -3032) to (-2813, -6075).
+ *
+ * Both layouts say the same thing in segments: `WORLD/marks/` then two
+ * directories then `mark.md` is root-framed (the fossil root's direct child,
+ * or a household's own mark); anything deeper is framed on its parent.
+ */
+export const isNestedFiling = (path) =>
+  typeof path === "string" && path.startsWith(`${MARKS_PREFIX}/`)
+  && path.slice(MARKS_PREFIX.length + 1).split("/").length > 3;
+
 // THE FREEZE (founder-ruled 2026-08-25; LOGOS/state-and-time.md § "The freeze —
 // filing is static, and the tree is a fossil"):
 //

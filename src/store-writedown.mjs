@@ -69,7 +69,7 @@ import { resolve } from "node:path";
 
 import { sketchbookNameForKey } from "./household-logins.mjs";
 import { markRecord } from "./mark-record.mjs";
-import { ROOT_PREFIX, pathFor } from "./world-journal.mjs";
+import { isNestedFiling, pathFor } from "./world-journal.mjs";
 // The declared-parent law (postmark#3020) — the word, the predicate and the
 // sentence, minted once and shared with the amend door.
 import { OUTSIDE_DECLARED_PARENT, declaredParentRefusal, outsideParentDetail } from "./mark-declared-parent.mjs";
@@ -446,13 +446,13 @@ export function planStoreWriteDown(marks, { publishedPathOf = null, canonBytesAt
     // its bytes re-derived by `markRecord` — the same serializer, once. A
     // FILE-framed record (the seed's `_fileAt`) is the file's own numbers in
     // the file's own frame and is left as it is. The nested test is
-    // `planDrain`'s, verbatim. What this module will NOT do is write a world
+    // `planDrain`'s, one function (`world-journal.mjs § isNestedFiling`), and it
+    // knows both layouts since POS-446. What this module will NOT do is write a world
     // number raw at a nested path because nobody handed it a framer or a
     // frame: that is the bug, and it refuses instead — a stopped crossing is a
     // finding; a moved shop under a green suite is the thing this exists to
     // make impossible.
-    const nested = path.startsWith(`${ROOT_PREFIX}/`)
-      && path.slice(ROOT_PREFIX.length + 1).split("/").length > 2;
+    const nested = isNestedFiling(path);
     const rec = m.fileRec ?? null;
     // Bytes alone can still be SEEN to carry a position, even if they cannot be
     // framed: a bytes-only supplier at a nested path is refused below, not
