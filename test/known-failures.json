@@ -1,0 +1,248 @@
+{
+  "_doc": "The office suite's known reds on the train, as CI measures them (.github/workflows/suite.yml, POS-417). One row per test: file, name (the test's own name, exactly as node:test reports it), reason, owner, date. The CI summary fails on a red that is NOT here, and also on a row whose test passed (delete the row) or no longer exists. `flaky: true` is a flake: when it reds, its file runs once more, and green on that retry is allowed while red twice fails the run. Fixing the reds is POS-419.",
+  "failures": [
+    {
+      "file": "test/cli-guard.test.mjs",
+      "name": "cli-guard: tools/suite-baseline.mjs",
+      "reason": "suite-baseline's tail prints no 'cannot resolve 0000000 to a full sha here' (a known red on the w42 control and every train run since)",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/cli-guard.test.mjs",
+      "name": "test/cli-guard.test.mjs",
+      "reason": "the file's own after(): the office's file count changed across its run, because other suite files write into the tree while it counts (red locally too: office-16-train-plus-408, 10-07)",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/freshness-ladder.test.mjs",
+      "name": "F7 · ENV-INVARIANT: a FURNISHED decoy on TOWN_CLONE changes nothing about this suite's verdict",
+      "reason": "CI only (Node 22): F7 runs this file again as a child and parses the spec reporter's 'ℹ fail' lines; Node 22 prints TAP to a non-TTY, so the clean run reads as unparsed. Green on Node 25 (the operator's machine)",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/household-one-key.test.mjs",
+      "name": "the same crossing through the real planner lands, and the house mints under one key",
+      "reason": "red on main only: the real-planner crossing does not land the house under one key here; green on train/2026-w42 (CI runs 37692083332, 37693810179), so the ship carries the fix",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/household-posts.test.mjs",
+      "name": "6 · the doorstep segment deep-equals household { read: \"posts\" } at the same args",
+      "reason": "the fixture's doorstep posts segment carries no rows (red on the train tip 3097af3 locally too, 10-07)",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/office-tick-split.test.mjs",
+      "name": "the roll-call knows the new unit, parked until its files are installed",
+      "reason": "the roll-call manifest test (named in the brief; red locally too)",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/one-contract.test.mjs",
+      "name": "nonce · a world act's plain route still refuses a nonce by name, and points at the world door that keeps one",
+      "reason": "a flake on main: a plain-route write met the key's write budget (429, 40) before its nonce refusal in run 37706951861, and passed in 37707445980; never red on the train",
+      "owner": "POS-419",
+      "date": "2026-10-07",
+      "flaky": true
+    },
+    {
+      "file": "test/refresher-blocked.test.mjs",
+      "name": "test/refresher-blocked.test.mjs",
+      "reason": "CI only (Linux): hangs past the 180 s test timeout; its Linux arm (a FIFO as GIT_CONFIG_GLOBAL) had never run before CI. Cause not yet measured",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/rehydrate-world-store.test.mjs",
+      "name": "test/rehydrate-world-store.test.mjs",
+      "reason": "CI only (Linux): hangs past the 180 s test timeout before its first test reports (it drives sh scripts with stub curl/git). Cause not yet measured",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/server.test.mjs",
+      "name": "PATCH /profile/{handle}/avatar reaches the REST image door and keeps its bounce prose",
+      "reason": "the avatar flake: its spawned office has a 10 s listen timeout, missed under load (the w42 control); green in CI runs 37692083332 and 37693810179",
+      "owner": "POS-419",
+      "date": "2026-10-07",
+      "flaky": true
+    },
+    {
+      "file": "test/settlement-source-flip.test.mjs",
+      "name": "F-git · SETTLEMENT_SOURCE=git matches the open train and runs the ghost sweep",
+      "reason": "red on main only: F-git compares main's rollback chain with the NEWEST train's deploy/settlement-auto.sh (origin/train/*), and the open train's script issues commands main's chain doesn't yet; green on the train, so it clears at the ship",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/state-log-check.test.mjs",
+      "name": "B4 · the fractional walk crossing keeps its own file, exactly as the drain grouped it",
+      "reason": "the drain family (the control's known reds since w41c): the fixture's state-log checkout has no current branch",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/state-log-check.test.mjs",
+      "name": "C2 · the on-disk horizon is filtered on BOTH sides, and the count dropped is reported",
+      "reason": "the drain family (the control's known reds since w41c): the fixture's state-log checkout has no current branch",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/state-log-check.test.mjs",
+      "name": "C3 · --write twice is one diff of zero",
+      "reason": "the drain family (the control's known reds since w41c): the fixture's state-log checkout has no current branch",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/state-log-check.test.mjs",
+      "name": "C5b · the window's own horizon cannot be overridden by an argument",
+      "reason": "the drain family (the control's known reds since w41c): the fixture's state-log checkout has no current branch",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/state-log-check.test.mjs",
+      "name": "C6 · the writer refuses a crossing the DRAIN already photographed",
+      "reason": "the drain family (the control's known reds since w41c): the fixture's state-log checkout has no current branch",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/suite-baseline.test.mjs",
+      "name": "a file that fails to load is named by the file alone",
+      "reason": "CI only: the junit fixture names a file with a Windows separator, and Node 22's junit reporter carries no file attribute for the tool to prefix; green on Windows with Node 25",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/suite-baseline.test.mjs",
+      "name": "take runs the suite once, writes the receipt, and posts it on the tip",
+      "reason": "CI only: the junit fixture names a file with a Windows separator, and Node 22's junit reporter carries no file attribute for the tool to prefix; green on Windows with Node 25",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/thread-is-the-letter-id.test.mjs",
+      "name": "F13 · POST /letters — the REST skin hints too, and its own answer is otherwise the answer it was",
+      "reason": "a spawned office's first POST /letters runs cold and can hit the pen pool's 10 s acquire limit (503) under load: measured 10-07 on the plain train and on train + #376 (G:/Starstory/docs/2026-10-07/rail/POS-341/letters-503.md, POS-419). In CI it took 109-147 ms (F13) and 38-53 ms (F14) in runs 37692083332, 37693810179 and 37696624256",
+      "owner": "POS-419",
+      "date": "2026-10-07",
+      "flaky": true
+    },
+    {
+      "file": "test/thread-is-the-letter-id.test.mjs",
+      "name": "F14 · and POST /letters WITH a thread is byte-for-byte the receipt it always was — no key added when there is nothing to say",
+      "reason": "a spawned office's first POST /letters runs cold and can hit the pen pool's 10 s acquire limit (503) under load: measured 10-07 on the plain train and on train + #376 (G:/Starstory/docs/2026-10-07/rail/POS-341/letters-503.md, POS-419). In CI it took 109-147 ms (F13) and 38-53 ms (F14) in runs 37692083332, 37693810179 and 37696624256",
+      "owner": "POS-419",
+      "date": "2026-10-07",
+      "flaky": true
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "the stop set is the timetable's, and it names the vessel's own berth",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "the origin rule end to end: the second ride's distance changes only after the first has come due",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "exit AT OR AFTER the timer sets you down at the destination",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "#3019: a deposit that would carry the rider out of rooms they boarded from DECLARES the leaving",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "#3019: a boarding from open ground carries NO `exit` — the flag is the remainder's, not the deposit's",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "the exit's journal row carries set_down_at and arrived as FIELDS",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "the arrived notice ends when the exit does — the fold, end to end",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "a stop mark's card carries a derived annotation, and nothing is written on the resident's mooring",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "with NO origin the block measures from the stop being knocked at, and names it",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "a mark that is not a stop measures nothing — the nulls stay, and measured_from says so",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "can_ride_to lists the quay from every stop but the quay itself",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "the quay's deposit point is derived from the RING, so it does not wobble with the clock",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world-ride.test.mjs",
+      "name": "boarding her at the quay the ordinary way still names the door you came through",
+      "reason": "the ride family (the control's known reds since w41c): the pinned world has no current-the-reader/the-snug-mooring stop on the timetable this suite expects",
+      "owner": "POS-419",
+      "date": "2026-10-07"
+    },
+    {
+      "file": "test/world2-replay-ingest.test.mjs",
+      "name": "§9: one commit naming TWO windows gives two eras, and the first closes where it opens",
+      "reason": "ENOTEMPTY removing its scratch .git, once in two CI runs (37692083332; green in 37693810179): a teardown race",
+      "owner": "POS-419",
+      "date": "2026-10-07",
+      "flaky": true
+    }
+  ]
+}

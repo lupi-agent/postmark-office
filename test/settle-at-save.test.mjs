@@ -30,6 +30,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 import { openDynamic } from "../src/dynamic-store.mjs";
 import { CLASS_FRAME, CLASS_MOVE, readJournal } from "../src/world-journal.mjs";
@@ -301,7 +302,7 @@ function walkClone(label) {
 
 /** Run the walk pen as the office runs it: a subprocess, one JSON line out. */
 function runWalk(clone, payload, env) {
-  const out = execFileSync(process.execPath, [new URL("../src/walk-exec.mjs", import.meta.url).pathname.replace(/^\//, ""), JSON.stringify(payload)], {
+  const out = execFileSync(process.execPath, [fileURLToPath(new URL("../src/walk-exec.mjs", import.meta.url)), JSON.stringify(payload)], {
     encoding: "utf8",
     env: { ...process.env, WORLD_CLONE: clone, ...env },
     stdio: ["ignore", "pipe", "pipe"],

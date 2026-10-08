@@ -605,7 +605,8 @@ test("a push that did not land leaves the pin in the store; the same account's r
   git(clone, "remote", "add", "origin", origin);
   git(clone, "push", "-q", "-u", "origin", "main");
   const hook = join(origin, "hooks", "pre-receive");
-  writeFileSync(hook, "#!/bin/sh\necho refused by the fixture >&2\nexit 1\n");
+  // executable: Linux git ignores a hook without the bit (Windows git runs it anyway)
+  writeFileSync(hook, "#!/bin/sh\necho refused by the fixture >&2\nexit 1\n", { mode: 0o755 });
 
   const pool = makePool(rowsFromRegistry(REGISTRY(), PINS()));
   const was = { pg: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL, push: process.env.TOWN_PUSH };
