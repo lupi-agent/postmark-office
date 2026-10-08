@@ -1,0 +1,11 @@
+{
+  "_doc": "The town and world checkouts the office suite reads (town-clone/, world-clone/), pinned. CI (.github/workflows/suite.yml) fetches exactly these and nothing newer: HEAD, origin/main and the tags are all as they stood at the pin. A pin moves only by a PR that changes this file. Seeded 2026-10-07 from the w42 control (G:/Starstory/docs/2026-10-04/rail/w42-control/CONTROL.md), the shas every office pool tree's clones sit at. POS-417.",
+  "town": {
+    "repo": "https://github.com/postmark-town/postmark.git",
+    "sha": "8478b273a6647ecbb12cfc0e1e94a68689cb5a47"
+  },
+  "world": {
+    "repo": "https://github.com/postmark-town/postmark-world.git",
+    "sha": "53df97fee95b46279318a42a88c0c1fd6669fe0d"
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "_doc": "The office suite's known reds on the train, as CI measures them (.github/workflows/suite.yml, POS-417). One row per test: file, name (the test's own name, exactly as node:test reports it), reason, owner, date. The CI summary fails on a red that is NOT here, and also on a row whose test passed (delete the row) or no longer exists. `flaky: true` is a flake: when it reds, its file runs once more, and green on that retry is allowed while red twice fails the run. Fixing the reds is POS-419.",
+  "failures": []
+}

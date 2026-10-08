@@ -19,7 +19,7 @@
 // makes by hand. Every connection is built here; WORLD2_PG_URL and PG* are never
 // read, so no test can reach a real store by accident.
 
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:net";
@@ -149,6 +149,10 @@ async function ownServer() {
   const scratch = mkdtempSync(join(tmpdir(), "office-store-"));
   const data = join(scratch, "data");
   cpSync(join(floor, "data"), data, { recursive: true });
+  // Postgres refuses a data directory others can read (0700 or 0750 only), and
+  // the copy is made under the umask, 0755 on Linux. Windows has no such bits,
+  // so this went unseen until the suite ran in CI (POS-417).
+  chmodSync(data, 0o700);
   const port = await freePort();
   await pgStart(pkg.pgCtl, data, port);
   return {

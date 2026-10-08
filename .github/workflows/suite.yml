@@ -1,0 +1,224 @@
+name: Office suite (sharded)
+
+# THE FULL OFFICE SUITE ON EVERY PR INTO A TRAIN OR MAIN (POS-417, Darko
+# 2026-10-07: "it will save us considerable time"). Until this file, the suite
+# (~5,300 tests, 25-30 min) ran only on one Windows machine, one run at a time,
+# through G:/Postmark/pool/run-heavy.mjs; on 10-07 four full runs queued behind
+# one 90-minute probe. The repo is public, so these minutes are free.
+#
+# ── THE SHAPE ────────────────────────────────────────────────────────────────
+#
+#   prepare   installs node_modules and fetches the pinned clones, once, into
+#             the cache; prints the plan.
+#   shard×8   each restores both caches, asserts the clones sit at their pins,
+#             and runs its share of test/*.test.mjs (.github/scripts/
+#             suite-shard.mjs: every file in its own `node --test`, four at a
+#             time, dealt by each file's measured seconds). Uploads its TAP and
+#             events whatever they said; a shard does not judge.
+#   summary   reads every shard and gives the one verdict, with its
+#             denominator (.github/scripts/suite-summary.mjs).
+#
+# ── THE VERDICT, AND THE LIST IT READS ───────────────────────────────────────
+#
+# test/known-failures.json is the train's known reds: one row per test, each
+# with its reason, an owner and a date. The summary fails on a red that is not
+# on the list, and ALSO on a listed test that passed (delete its row: the list
+# only shrinks by being kept honest), a listed test that no longer exists, a
+# file that crashed, and a shard that never reported. A row marked `flaky` may
+# go either way. Fixing the reds themselves is POS-419, not this file.
+#
+# ── WHAT THE SUITE NEEDS OFF THE OPERATOR'S MACHINE ──────────────────────────
+#
+#   · the town and world checkouts at `town-clone/` and `world-clone/`, at the
+#     shas test/clone-pins.json names: HEAD, origin/main and the tags as they
+#     stood at the pin (.github/scripts/suite-clones.sh). The pins move only by
+#     a PR to that file.
+#   · Postgres: the suite starts its own, one per file, from the
+#     embedded-postgres devDependency (test/helpers/embedded-store.mjs), so no
+#     service container. The PGlite suites skip by name without
+#     PGLITE_MODULE_DIR, here as on the operator's machine.
+#   · the office's own `origin/main` and `origin/train/*` refs, which a pool
+#     tree's fetch holds and a PR checkout does not (one suite reads the open
+#     train's deploy script out of git).
+#   · node_modules from `npm ci` on Linux (sharp and embedded-postgres carry
+#     per-platform binaries), cached by the lockfile.
+#   · Node 22.22.1, prod's (the box's), so a red here is a red there.
+#   · nothing secret and nothing on the box: no secret is passed to this
+#     workflow, and a test that needs one skips by name (the summary lists
+#     every skip with its reason).
+#
+# ── ADVISORY ─────────────────────────────────────────────────────────────────
+#
+# Not a required check yet. Darko makes `office suite verdict` (the summary
+# job's name, which is the check's name) required by clicks once it has run
+# green and stable on a few PRs; the steps are in the PR that added this file.
+# The summary runs even when a shard or the prepare failed, and fails then: a
+# required check that is SKIPPED reads as passing, so it is never skipped.
+#
+# Pushes to main and to a train run it too, so the tips have a grade of their
+# own (the ship's "grade the merge tip" reads the train tip, main and the
+# ship PR's merge, three runs of this file).
+
+on:
+  pull_request:
+    branches: [main, "train/**"]
+  push:
+    branches: [main, "train/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: office-suite-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  NODE_VERSION: "22.22.1"
+  SHARDS: 8
+  SUITE_JOBS: 4
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: node_modules (cached by the lockfile)
+        id: nm
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: office-nm-${{ runner.os }}-node${{ env.NODE_VERSION }}-${{ hashFiles('package-lock.json') }}
+
+      - if: steps.nm.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: The pinned clones (cached by the pins)
+        id: clones
+        uses: actions/cache@v4
+        with:
+          path: |
+            town-clone
+            world-clone
+          key: office-clones-${{ hashFiles('test/clone-pins.json', '.github/scripts/suite-clones.sh') }}
+
+      - if: steps.clones.outputs.cache-hit != 'true'
+        run: bash .github/scripts/suite-clones.sh
+
+      - run: bash .github/scripts/suite-clones.sh --check
+
+      - name: The plan
+        run: node .github/scripts/suite-shard.mjs --plan "$SHARDS"
+
+  shard:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    env:
+      WORLD_CLONE: ${{ github.workspace }}/world-clone
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: node_modules
+          key: office-nm-${{ runner.os }}-node${{ env.NODE_VERSION }}-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            town-clone
+            world-clone
+          key: office-clones-${{ hashFiles('test/clone-pins.json', '.github/scripts/suite-clones.sh') }}
+          fail-on-cache-miss: true
+
+      - run: bash .github/scripts/suite-clones.sh --check
+
+      # The suite reads the open train out of the office's own refs
+      # (settlement-source-flip.test.mjs: the newest origin/train/*). A pool tree's
+      # fetch holds main and every train; a PR checkout holds neither.
+      - name: The office's main and trains, as a pool tree holds them
+        run: git fetch -q --no-tags --depth=1 origin '+refs/heads/main:refs/remotes/origin/main' '+refs/heads/train/*:refs/remotes/origin/train/*'
+
+      # Tests commit into scratch repos; a runner has no git identity of its own.
+      - name: Git identity for the suite's scratch repos
+        run: |
+          git config --global user.name "postmark-office-ci"
+          git config --global user.email "postmark-office-ci@users.noreply.github.com"
+
+      # The output goes OUTSIDE the checkout: cli-guard counts the office's files
+      # across its run and reds when one appears, and a shard's own TAP landing in
+      # the tree beside it is exactly that (CI's first run).
+      - name: Shard ${{ matrix.shard }} of ${{ env.SHARDS }}
+        run: node .github/scripts/suite-shard.mjs --shard ${{ matrix.shard }} --of "$SHARDS" --jobs "$SUITE_JOBS" --out "$RUNNER_TEMP/suite-out"
+
+      # A store that would not start says only "pg_ctl start exited 1" in the
+      # test; its own log is left in the temp dir (embedded-store.mjs keeps a
+      # failed server's directory). Print the first few.
+      - name: The store's own words, when one would not start
+        if: always()
+        run: |
+          shopt -s nullglob
+          TMP=$(node -p 'require("os").tmpdir()')
+          logs=("$TMP"/office-store-*/postgres.log "$TMP"/office-pg-floor-*/postgres.log)
+          echo "${#logs[@]} store logs left in $TMP"
+          for f in "${logs[@]:0:3}"; do echo "── $f"; tail -25 "$f"; done
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/suite-out/
+          retention-days: 14
+          if-no-files-found: warn
+
+  summary:
+    name: office suite verdict
+    needs: shard
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: suite-shard-*
+          path: suite-in
+          merge-multiple: true
+
+      - name: The verdict
+        run: node .github/scripts/suite-summary.mjs --in suite-in --of "$SHARDS" --timings-out timings.json
+
+      # The next plan's input. Commit it to .github/suite/timings.json by PR
+      # when the plan drifts (a shard far longer than the others).
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-timings
+          path: timings.json
+          retention-days: 30
+          if-no-files-found: ignore
