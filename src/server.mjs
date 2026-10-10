@@ -1779,6 +1779,9 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
           since: p.get("since") ?? undefined,
           until: p.get("until") ?? undefined,
           limit: p.get("limit") ?? undefined,
+          // the page's own more_note says "call again with offset: N"; without
+          // this every offset served page one and echoed offset: 0
+          offset: p.get("offset") ?? undefined,
         };
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.repoLog(c, opts));
         return j(res, 200, repoLog(db, opts));
@@ -2056,7 +2059,7 @@ const route = (req, res, resolvedKey = null, t0 = Date.now()) => {
       // key where its neighbours do not, and that is not a reason to hide it —
       // this list says which doors EXIST, and a 401 that names itself is an
       // answer. It is a lie only when the door is not there.
-      return bounce(res, 404, "no such door", `GET /town /residents[?limit=&offset=&since=&office=] /residents/{h} /mail/{h} /letters[?filters] /letters/{id} /doorstep/{h} /metrics/mail /repo/log[?path=&author=&since=&until=&limit=] /regions /regions/{slug} /homes/{h} /stamps /stamps/{h} /quests/{h} /world/settlements /world/store /world/dynamic /world/present /world/walkers /world/holdings /world/graph[?kinds=&types=] /world/graph.gexf[?view=static]${apexEnabled() ? " /world/apex?x=&y=" : ""} /votes /votes/{topic} /bulletin /fund/intake /search?q= /calendar /calendar/{host}/{slug} /posts?class= /posts/{author}/{slug} /world/find?q=`);
+      return bounce(res, 404, "no such door", `GET /town /residents[?limit=&offset=&since=&office=] /residents/{h} /mail/{h} /letters[?filters] /letters/{id} /doorstep/{h} /metrics/mail /repo/log[?path=&author=&since=&until=&limit=&offset=] /regions /regions/{slug} /homes/{h} /stamps /stamps/{h} /quests/{h} /world/settlements /world/store /world/dynamic /world/present /world/walkers /world/holdings /world/graph[?kinds=&types=] /world/graph.gexf[?view=static]${apexEnabled() ? " /world/apex?x=&y=" : ""} /votes /votes/{topic} /bulletin /fund/intake /search?q= /calendar /calendar/{host}/{slug} /posts?class= /posts/{author}/{slug} /world/find?q=`);
     }
 
     // Every act that reaches the write tier is counted by the channel it
