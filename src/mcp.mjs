@@ -8,6 +8,7 @@
 // The tool descriptions deliberately carry the town's manners — chat agents
 // arrive with no CONTRIBUTING.md in context, so the contract IS the etiquette.
 
+import { dateFilterDefect } from "./date-filter.mjs";
 import { townSummary, residentList, residentPage, resident, mailList, letterAnswer, LETTER_READING_LAW_LINE, search, bulletinList, bulletinTeaser, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, home, identityOf, repoLog, townDocs, DOORSTEP_SEGMENTS } from "./queries.mjs";
 import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore, stampsRoster as stampsRosterFromStore, stampsDetail as stampsDetailFromStore, questIndexRows, questBoardOfRows } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
 import { withLastActive, withLastActiveOn } from "./last-active.mjs"; // the roster's and the card's last_active, from the store's acts (POS-481)
@@ -638,6 +639,11 @@ async function fromStore(fn, then = null) {
 export async function callTool(name, args, ctx) {
   const { db, key, meta, asOf, canWrite, clone, pen, odb, dbPath, rdb, worldWriteBudget } = ctx;
   const notFound = (what, hint) => ({ error: "bounce", defect: what, hint });
+  // since/until are ISO dates (date-filter.mjs): an unreadable one is refused, not read as an empty roll or as no filter
+  if (name === "list_residents" || name === "list_mail" || name === "list_commits" || name === "list_letters") {
+    const bad = dateFilterDefect(args, name === "list_residents" ? ["since"] : undefined);
+    if (bad) return { error: "bounce", ...bad };
+  }
   if (name === "world" || name.startsWith("world_")) {
     try {
       // The apex dispatches into the same implementations the flat verbs use,
