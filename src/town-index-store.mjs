@@ -27,6 +27,7 @@
 // Every reader takes a client (anything with pg's `query`), so a caller runs it
 // inside `officeRead`'s READ ONLY transaction and a test runs it on its own.
 
+import { wholeNumber } from "./whole-number.mjs";
 import {
   repoLogPage, repoLogCommit, regionListing, regionPage, regionWhole,
   bulletinListing, bulletinTeaserOf, bulletinEntryOf,
@@ -110,8 +111,8 @@ export async function letterNotInCopy(db, { env = process.env } = {}) {
 
 /** queries.repoLog, from the store. The same filters, page, total and notes. */
 export async function repoLog(q, opts = {}) {
-  const limit = Math.min(Math.max(Number(opts.limit) || 30, 1), 200);
-  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const limit = Math.min(Math.max(wholeNumber(opts.limit) || 30, 1), 200);
+  const offset = Math.max(wholeNumber(opts.offset) || 0, 0);
   const where = [];
   const params = [];
   const p = (v) => { params.push(v); return `$${params.length}`; };
@@ -149,8 +150,8 @@ const REGIONS_PAGE = 25;
 
 /** queries.regionList, from the store. */
 export async function regionList(q, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || REGIONS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || REGIONS_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const total = Number((await q.query("SELECT COUNT(*) AS n FROM town_regions")).rows[0].n);
   const rows = (await q.query(`SELECT id, name, json FROM town_regions ORDER BY id COLLATE "C" LIMIT $1 OFFSET $2`, [n, start])).rows;
   return regionPage({ total, n, start }, rows.map(regionListing));
@@ -187,8 +188,8 @@ const STAMPS_PAGE = 50;
 
 /** queries.stampsRoster, from the store; the minted total is the store's own meta. */
 export async function stampsRoster(q, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || STAMPS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || STAMPS_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const accounts = Number((await q.query("SELECT COUNT(*) AS n FROM town_stamps")).rows[0].n);
   const balances = (await q.query(
     `SELECT handle, balance FROM town_stamps ORDER BY balance DESC, handle COLLATE "C" LIMIT $1 OFFSET $2`, [n, start])).rows;
@@ -411,8 +412,8 @@ export async function mailPage(q, handle, box, { since, until, limit, offset } =
   if (since) { params.push(since); where.push(`date COLLATE "C" >= $${params.length}`); }
   if (until) { params.push(until); where.push(`date COLLATE "C" <= $${params.length}`); }
   const clause = `WHERE ${where.join(" AND ")}`;
-  const n = Math.min(Math.max(Number(limit) || MAIL_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || MAIL_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const total = await count(q, `SELECT COUNT(*) AS n FROM town_letters ${clause}`, params);
   const rows = (await q.query(`SELECT ${LETTER_COLS} FROM town_letters ${clause} ORDER BY ${NEWEST} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     [...params, n, start])).rows;
@@ -664,8 +665,8 @@ export async function doorstep(q, handle, _asOf, opts = {}) {
 
 /** queries.letterList, from the store: the filtered list, newest first, paged. */
 export async function letterList(q, opts = {}) {
-  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), letterPageCap(opts));
-  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const limit = Math.min(Math.max(wholeNumber(opts.limit) || 50, 1), letterPageCap(opts));
+  const offset = Math.max(wholeNumber(opts.offset) || 0, 0);
   const asOf = await townIndexAsOf(q);
   const where = [];
   const params = [];
@@ -776,8 +777,8 @@ const like = (col, param) => likeAscii(col, param, "");
 /** queries.search, from the store. */
 export async function search(q, term, { limit, offset } = {}) {
   const pattern = `%${term}%`;
-  const n = Math.min(Math.max(Number(limit) || SEARCH_LETTERS, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || SEARCH_LETTERS, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const lettersTotal = await count(q, `SELECT COUNT(*) AS n FROM town_letters WHERE ${like("id", "$1")} OR ${like("json", "$1")}`, [pattern]);
   const residentsTotal = await count(q, `SELECT COUNT(*) AS n FROM town_residents WHERE ${like("handle", "$1")} OR ${like("json", "$1")}`, [pattern]);
   const residents = (await q.query(`SELECT handle FROM town_residents
