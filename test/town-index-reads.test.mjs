@@ -128,6 +128,21 @@ test("stampsRoster and stampsDetail answer as office.db does", async (t) => {
     await same(`stampsDetail ${h}`, await office.stampsDetail(db, h), store.stampsDetail(api, h));
 });
 
+test("a fractional or enormous limit/offset pages the store as it pages office.db, never a 500", async (t) => {
+  if (skip) return t.skip(skip);
+  const meta = Object.fromEntries(db.prepare("SELECT key, value FROM meta").all().map((r) => [r.key, r.value]));
+  // Postgres binds LIMIT/OFFSET as bigint: "2.5" and "1e+30" are not integers
+  // to it, and the door answered "nothing in your request caused it" (500).
+  const asks = [{ limit: 2.5 }, { offset: 1.5, limit: 2 }, { offset: 1e30 }, { limit: 1e30, offset: Infinity }, { limit: "2.9", offset: "1.1" }];
+  for (const a of asks) {
+    await same(`stampsRoster ${JSON.stringify(a)}`, office.stampsRoster(db, meta, a), store.stampsRoster(api, a));
+    await same(`repoLog ${JSON.stringify(a)}`, office.repoLog(db, a), store.repoLog(api, a));
+    await same(`regionList ${JSON.stringify(a)}`, office.regionList(db, a), store.regionList(api, a));
+  }
+  assert.equal(office.stampsRoster(db, meta, { limit: 2.5 }).limit, 2, "the echoed limit is the whole number that paged");
+  assert.equal(office.stampsRoster(db, meta, { limit: 2, offset: 1.5 }).offset, 1, "so is the offset");
+});
+
 test("the store's as-of is the index's own", async (t) => {
   if (skip) return t.skip(skip);
   assert.equal(await store.townIndexAsOf(api), office.indexAsOf(db));
