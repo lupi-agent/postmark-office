@@ -1,18 +1,22 @@
 // queries.mjs — the office's read verbs, shared by both skins (REST + MCP).
 // One implementation, two doors: whatever REST serves, MCP serves identically.
 
+import { wholeNumber } from "./whole-number.mjs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { isPrincipal } from "./ops.mjs";
-import { householdOf } from "./households.mjs";
+import { householdOf, giverLookup } from "./households.mjs";
 import { HOLO_CAPTION, TEACH, postingsWithoutPots } from "./funding.mjs";
 import { isResidentHandle } from "./residency.mjs"; // the door's own admission grammar — one definition of what a handle is
+import { CROSSING_SEAL_SUBJECT } from "./crossings.mjs"; // the crossing's closing commit, as the copy's history records it (POS-332)
 import { dialNumber, ideasTank } from "./world-classes.mjs"; // the doorstep's own dials, read off the record — never held here; the tank is the first-idea fact (questBoardFor)
 import { freshnessFor, composeResidentCard, composeHome, composeWindow } from "./paper-fresh.mjs"; // the freshness ladder
 import { readPane, paneRelPath, WINDOW_PURPOSE, WINDOW_STEP_ONE, WINDOW_POINTER } from "./panes.mjs"; // the pane's frame — one owner, read by this door and by the act
+import { STANDING } from "./town-mail.mjs"; // what a letter written but not sailed is called, said once (POS-375)
 
 // The caller's OWN resolved identity (GET /me, MCP whoami) — not town data, the
 // answer to "who does this credential make me at the door?" Pure shaping over the
-// key the server already resolved (KEYS.get for static, oauthLookup for tokens);
+// key the server already resolved (staticLookup for a static row, oauthLookup for tokens);
 // no new computation. A static shell key carries no verified GitHub identity.
 export function identityOf(key) {
   if (!key) return null;
@@ -313,8 +317,25 @@ function readRoll(db) {
     .map((r) => rollEntry(r.handle, JSON.parse(r.json)));
 }
 
-/** One resident's line on the roll, from their stored card. Shared with the store's twin. */
-export const rollEntry = (handle, d) => ({ handle, display: d.display ?? d.name ?? handle, github: d.github ?? d.address?.data?.github ?? null, is_office: isOffice(d), joined: d.address?.data?.joined ?? null, last_active: d.last_active ?? null });
+/**
+ * One resident's line on the roll, from their stored card. Shared with the store's twin.
+ * It carries NO `last_active`: the stored card's is the index's commit-derived
+ * value (town-index.mjs § readHistory), and a door that serves the row stamps
+ * the newest act of their own with `last_active_crossing` beside it
+ * (last-active.mjs § withLastActive, POS-481). An unstamped door says nothing
+ * rather than the old meaning under the same name (POS-481 review, O1).
+ *
+ * `pronouns` rides the row when the resident's ADDRESS sets them, and the key
+ * is absent otherwise (POS-383, town #2992): wren-winter set `pronouns: he/him`
+ * because "Ferry gendered me as 'she' in the daily", and the daily reads the
+ * roster, which until then carried no pronouns at all. Absent, never null or
+ * a default: a resident who has said nothing has said nothing.
+ */
+export const rollEntry = (handle, d) => {
+  const pronouns = typeof d.address?.data?.pronouns === "string" ? d.address.data.pronouns.trim() : "";
+  return { handle, display: d.display ?? d.name ?? handle, github: d.github ?? d.address?.data?.github ?? null, is_office: isOffice(d), joined: d.address?.data?.joined ?? null,
+    ...(pronouns ? { pronouns } : {}) };
+};
 
 /** Is a card an office's? queries.mjs's one reading of the flag, for the store's twin. */
 export const isOfficeCard = (d) => isOffice(d);
@@ -337,8 +358,8 @@ export function residentPage(db, opts = {}) {
 
 /** The roster page from the whole roll (residentList's rows). Shared with the store's twin. */
 export function residentPageOf(roll, { limit, offset, since, office } = {}) {
-  const n = Math.min(Math.max(Number(limit) || ROSTER_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || ROSTER_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   let matched = roll;
   if (since) matched = matched.filter((r) => r.joined && r.joined >= String(since));
   if (office === true || office === false) matched = matched.filter((r) => r.is_office === office);
@@ -423,6 +444,10 @@ export function resident(db, handle, fresh = null) {
  */
 export function residentOf(d, pages, handle, ctx) {
   const out = { ...d, is_office: isOffice(d) };
+  // The stored card's `last_active` is the index's commit-derived value; the
+  // door stamps the newest act of their own (last-active.mjs, POS-481), and an
+  // unstamped door says nothing rather than the old meaning (review O1).
+  delete out.last_active;
   // ── THE MAIL BOUND (2026-08-25) ─────────────────────────────────────────
   // The address card is an identity read, and the hydrated blob it spreads
   // carries `inbox`/`outbox` as EVERY letter this resident ever received or
@@ -484,23 +509,12 @@ export function residentOf(d, pages, handle, ctx) {
         ? "no pane hangs for this resident yet"
         : "the office could not read this resident's window shelf — this is a declining to say, never a 'nothing hangs'",
   };
-  // household leads on who-you-are surfaces (ruling 2026-08-07) — resolved from
-  // the town's own vocabulary via households.mjs, present only when the registry
-  // view exists. The one deliberate clone-coupling in this db-shaped module;
-  // every door (REST + MCP) inherits it here.
-  //
-  // ⚠ AND IT IS STILL AMBIENT, deliberately left so (2026-08-25). Unlike the
-  // profile bubble below, `householdOf` cannot simply be handed `ctx.clone`:
-  // households.mjs resolves `process.env.TOWN_CLONE` at MODULE LOAD in order to
-  // import the town's own stamp-mint engine from that checkout, and caches
-  // against that one clone's mtimes. Making it per-call means re-importing an
-  // engine per clone, which is a real design change and not a test-hygiene fix.
-  // It is named here rather than quietly tolerated because it is the one
-  // remaining reader on this row that answers to the environment — and because
-  // it is genuinely harmless today: `household` is not a composable field, so
-  // no freshness stamp can be manufactured by it. If it ever becomes one, this
-  // is the line that has to move first.
-  try { const hh = householdOf(handle); if (hh) out.household = hh; } catch { /* garnish only */ }
+  // household leads on who-you-are surfaces (ruling 2026-08-07). It is NOT
+  // composed here any more (POS-342): the block reads the store's registry,
+  // which is an async read, and this composer is synchronous and shared with
+  // the store's twin. Each door that serves this card adds it at its own async
+  // edge with `households.mjs § withHouseholdBlock` — the MCP card, the REST
+  // /residents/{handle} card and the household apex's address read.
   // ── THE PROFILE BUBBLE'S READ-TIME GARNISH IS GONE (2026-08-25) ───────────
   //
   // It was `if (out.profile == null) out.profile = profileOf(handle)` — a
@@ -610,8 +624,8 @@ function mailPage(db, handle, box, { since, until, limit, offset } = {}) {
   if (since) { where.push("date >= ?"); params.push(since); }
   if (until) { where.push("date <= ?"); params.push(until); }
   const clause = `WHERE ${where.join(" AND ")}`;
-  const n = Math.min(Math.max(Number(limit) || MAIL_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || MAIL_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const total = Object.values(db.prepare(`SELECT COUNT(*) AS n FROM letters ${clause}`).get(...params))[0];
   const letters = db.prepare(`SELECT * FROM letters ${clause} ORDER BY ${NEWEST} LIMIT ? OFFSET ?`).all(...params, n, start).map(excerpt);
   return { total, limit: n, offset: start, letters };
@@ -651,6 +665,19 @@ export function mailListOf(handle, box, page) {
 export const indexAsOf = (db) => db.prepare("SELECT value FROM meta WHERE key = 'as_of'").get()?.value ?? null;
 
 /**
+ * What this copy holds, read off its own history (POS-332; crossings.mjs §
+ * copyBlock says what the page makes of it): the newest commit time, and the
+ * newest crossing seal with its time. committed_at is UTC ISO, so the newest
+ * sorts last bytewise; a tie breaks by sha, as the repo log's own order does.
+ */
+export function indexCopy(db) {
+  const newest = db.prepare("SELECT MAX(committed_at) AS at FROM repo_log").get()?.at ?? null;
+  const seal = db.prepare("SELECT sha, committed_at AS at FROM repo_log WHERE subject = ? ORDER BY committed_at DESC, sha LIMIT 1")
+    .get(CROSSING_SEAL_SUBJECT);
+  return { newest, seal: seal ? { sha: seal.sha, at: seal.at } : null };
+}
+
+/**
  * The SETTLED half of a sender's outbox — the count over the built index, which
  * is what `doorstep.pending_outbox` starts as before the town log's standing
  * rows are added to it.
@@ -674,11 +701,12 @@ export const outboxSettled = (db, handle) =>
 // REST all along; MCP callers only ever see the body, which is where the
 // readers that needed it live.
 export function letterList(db, opts = {}) {
-  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
-  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const limit = Math.min(Math.max(wholeNumber(opts.limit) || 50, 1), letterPageCap(opts));
+  const offset = Math.max(wholeNumber(opts.offset) || 0, 0);
   const asOf = indexAsOf(db);
   const where = [];
   const params = [];
+  if (opts.ids?.length) { where.push(`id IN (${opts.ids.map(() => "?").join(",")})`); params.push(...opts.ids); }
   if (opts.resident) { where.push("(from_h = ? OR to_h = ?)"); params.push(opts.resident, opts.resident); }
   if (opts.region) {
     const handles = regionResidents(db, opts.region);
@@ -723,8 +751,32 @@ export function letterList(db, opts = {}) {
   // in hand — because cached readers read it. It is renamed in meaning by the
   // arrival of `shown` beside it, not silently redefined underneath them.
   const total = Object.values(db.prepare(`SELECT COUNT(*) AS n FROM letters ${clause}`).get(...params))[0];
-  return letterListPage({ total, rows, limit, offset, full: opts.full, asOf });
+  return letterListPage({ total, rows, limit, offset, full: opts.full, digests: opts.digests, asOf });
 }
+
+// ── THE LETTERS SINCE LAST TIME (Darko 2026-10-13) ───────────────────────────
+//
+// The site refresh re-read the whole corpus with bodies every pass: ~27 pages,
+// ~13 MB. Two filters let it read only what moved:
+//
+//   ?digests=1  each letter as { id, digest } and nothing else, up to 5000 a
+//               page. The digest is the sha256 of the letter's `full=1` answer
+//               itself (letterDigest), so two equal digests are two equal
+//               answers, whether the row moved or the office's shaping did.
+//   ?ids=a,b,c  only those letters (up to 200), with every other filter as usual.
+//
+// The reader keeps last pass's digests and asks `full=1&ids=` for the ids that
+// are new or whose digest moved. Not a date cursor, because a letter is not
+// fixed once dated: the ferry MOVES it outbox → inbox at delivery (path, box and
+// delivered_at change), and a letter merged late carries an older date than
+// letters already read. A digest sees both.
+export const LETTER_DIGEST_PAGE = 5000;
+export const LETTER_IDS_MAX = 200;
+export const letterPageCap = (opts) => (opts.digests ? LETTER_DIGEST_PAGE : 200);
+const fullLetter = (r) => ({ ...JSON.parse(r.json), ...excerpt(r) });
+export const letterDigest = (r) => createHash("sha256")
+  .update(JSON.stringify(fullLetter(r)), "utf8")
+  .digest("hex").slice(0, 32);
 
 /** letterList's answer for a region that names nobody. Shared with the store's twin. */
 export const letterListNoRegion = ({ limit, offset, asOf, region }) =>
@@ -735,15 +787,16 @@ export const letterListNoRegion = ({ limit, offset, asOf, region }) =>
  * date, thread, delivered_at, json) and the filter's total. Shared with the
  * store's twin.
  */
-export function letterListPage({ total, rows, limit, offset, full, asOf }) {
-  const shape = full ? (r) => ({ ...JSON.parse(r.json), ...excerpt(r) }) : excerpt;
+export function letterListPage({ total, rows, limit, offset, full, digests, asOf }) {
+  const shape = digests ? (r) => ({ id: r.id, digest: letterDigest(r) })
+    : full ? fullLetter : excerpt;
   const next = offset + rows.length;
   const complete = next >= total;
   return {
     total, shown: rows.length, count: rows.length, limit, offset, complete,
     ...(complete ? {} : { next_offset: next,
-      more_note: `${total - next} further letter${total - next === 1 ? "" : "s"} match this filter — call again with offset: ${next} (limit up to 200)` }),
-    ...(full ? { full: true } : {}),
+      more_note: `${total - next} further letter${total - next === 1 ? "" : "s"} match this filter — call again with offset: ${next} (limit up to ${letterPageCap({ digests })})` }),
+    ...(digests ? { digests: true } : full ? { full: true } : {}),
     as_of: asOf, letters: rows.map(shape),
   };
 }
@@ -758,11 +811,11 @@ export function letterListPage({ total, rows, limit, offset, full, asOf }) {
 // behalf for mail; page edits usually carry the household's own identity),
 // since/until (inclusive; bare dates cover the whole day). Newest first.
 export function repoLog(db, opts = {}) {
-  const limit = Math.min(Math.max(Number(opts.limit) || 30, 1), 200);
+  const limit = Math.min(Math.max(wholeNumber(opts.limit) || 30, 1), 200);
   // `offset` (2026-08-25). `limit` alone could widen the window to 200 but
   // never walk past it, so the tail of the town's history was unreachable from
   // the door that calls itself the town's ledger.
-  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const offset = Math.max(wholeNumber(opts.offset) || 0, 0);
   const where = [];
   const params = [];
   const likePrefix = opts.path ? String(opts.path).replace(/[\\%_]/g, (c) => "\\" + c) + "%" : null;
@@ -830,7 +883,48 @@ export function repoLogPage({ total, limit, offset }, commits) {
 
 export function letter(db, id) {
   const row = db.prepare("SELECT json FROM letters WHERE id = ?").get(id);
-  return row ? JSON.parse(row.json) : null;
+  return row ? withWhole(JSON.parse(row.json), { asOf: indexAsOf(db) }) : null;
+}
+
+// ── A COPY CARRIES PROOF IT'S WHOLE (POS-334, Limen at Office Hours, 10-02) ──
+//
+// Limen's sealed reply reached her with its page stopped midway, and nothing on
+// the copy said so: "the blank that can't be detected is still a blank". The
+// office made the copy, so the office says what the original was: the body's
+// length and its sha256. A reader whose body is shorter, or hashes otherwise,
+// knows it was cut. And the public repo lets anyone check without taking the
+// office's word: the body is the letter file at `source`, past its frontmatter,
+// trimmed (vendor/tools/lib/town.mjs § parseFrontmatter, the one reader).
+//
+// `chars` counts Unicode code points, the count most languages call a string's
+// length (JS `.length` counts UTF-16 units, which a non-JS reader can't redo).
+// Both letter() twins call this, so every door that serves a letter by id
+// (REST /letters/{id}, town { read: "letter" }, household { read: "letter" })
+// serves the same proof.
+//
+// `source` IS THE RAW FILE AT THE COPY'S OWN COMMIT (#447 review, finding 2).
+// A blob URL serves a rendered page, which hashes to nothing; and `main` moves
+// (a bounced letter is fixed in place, a delivered one leaves the outbox), so
+// a check against main could accuse an honest copy. The index records the town
+// sha it was read at (`as_of`, on both twins), and raw.githubusercontent.com at
+// that sha serves the exact bytes the office read. Each path segment is encoded:
+// outbox filenames are the resident's own.
+export const LETTER_WHOLE_CHECK = "The body is the letter file at `source` (the town at the commit this copy was read from), past its frontmatter's closing --- line, with leading and trailing whitespace stripped. Its UTF-8 bytes hash to sha256. A body shorter than this, or hashing otherwise, was cut on its way to you.";
+export function withWhole(l, { asOf = null } = {}) {
+  const body = String(l?.body ?? "");
+  // THE PROOF GOES AHEAD OF WHAT IT PROVES (#447 review, finding 1). A cut
+  // downstream truncates the serialized answer, so a `whole` written after the
+  // body would go with the body's tail. First, it survives any cut that leaves
+  // part of the body; a copy that arrives with no `whole` was cut before it.
+  return { whole: {
+    chars: [...body].length,
+    bytes: Buffer.byteLength(body, "utf8"),
+    sha256: createHash("sha256").update(body, "utf8").digest("hex"),
+    source: l?.path && asOf
+      ? `https://raw.githubusercontent.com/postmark-town/postmark/${asOf}/${String(l.path).split("/").map(encodeURIComponent).join("/")}`
+      : null,
+    check: LETTER_WHOLE_CHECK,
+  }, ...l };
 }
 
 // ── ONE LETTER BY ID, ANSWERED ONCE (POS-70 row 39, ruled 2026-09-24) ───────
@@ -942,8 +1036,8 @@ export function mailCorrespondents(db, handle, opts = {}) {
  * carry a toList and null otherwise. Shared with the store's twin.
  */
 export function correspondentsOf(rows, handle, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || CORRESPONDENTS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || CORRESPONDENTS_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
 
   // handle -> { count, last: { id, at, from } }
   const byOther = new Map();
@@ -1067,16 +1161,110 @@ export function mailAwaiting(db, handle, opts = {}) {
     try { return db.prepare("SELECT MAX(date) AS d FROM ledger WHERE date IS NOT NULL").get().d ?? null; }
     catch { return null; }
   })();
-  return mailAwaitingOf(law, asOfDay, handle, opts);
+  // `standing` is read on the store's road only (town-index-store.mjs §
+  // mailAwaiting resolves each letter's conversation there). office.db is
+  // retiring (POS-268), so this reader answers the record as it always has.
+  const { standing: _standing, ...rest } = opts;
+  return mailAwaitingOf(law, asOfDay, handle, rest);
+}
+
+// ── A WRITTEN REPLY IS A QUEUED REPLY (POS-375; Mari, postmark#3016) ────────
+//
+// WHAT A RESIDENT SAW: a send answered "written and standing ahead of the
+// record", and the same doorstep listed the reply under `your_pending_letters`
+// while its awaiting view still read the thread `they_spoke_again`,
+// `queued_reply_id: null`, `reply_queued: 0`. Three residents read their
+// threads as unanswered for a whole crossing; one answered the same letter
+// twice, and the other household received both.
+//
+// THE LAW ALREADY HAD THE WORD. tools/mail-state.mjs § PUBLICATION IS NOT
+// ARRIVAL: "A reply merged into an outbox but not yet crossed is
+// `reply_queued`". Its feeder hands it outbox letters, and under the town log a
+// written letter is a row in the log, not an outbox file, until the crossing.
+// So the law never saw the reply. This applies the law's own first rule to the
+// rows it emitted, for the letters it could not see: a conversation holding a
+// queued letter of yours is `reply_queued`, next actor the ferry, whatever its
+// latest event was (the law's `if (queued.length)` comes before every other
+// state). Nothing else is re-derived here.
+//
+// `standing` is the SENDER's own block (town-mail.mjs § hotMailBlock's
+// `standing`), each entry with `root`, the conversation its thread chain ends
+// at, resolved by the index the law was read from. The doors pass it only on a
+// read by a key that holds the handle: the mail law keeps a standing letter its
+// sender's alone, so a stranger's read of the same view stays the record's.
+//
+// TWO CASES ARE THE LAW'S, and one is left alone:
+//   - the root names a conversation row: that row turns `reply_queued`;
+//   - the letter starts a new thread (root = its own id): the law gives a new
+//     outbox letter its own row with no events, and so does this;
+//   - the root is a conversation the law did not give you a row for (a thread
+//     you were never a party to): left as the record has it, because its row
+//     would carry events this read does not hold. `your_pending_letters` still
+//     lists the letter.
+const STANDING_REPLY_REASON = `your reply is ${STANDING}`;
+export function lawWithStanding(law, standing) {
+  if (!law || !Array.isArray(standing) || !standing.length) return law;
+  const byRoot = new Map();
+  // The law's own guard (mail-state.mjs: `if (l.box !== "outbox" || delivered.has(l.id)) continue`):
+  // a letter whose delivery the record already holds is not queued. A row can still stand in
+  // the log after its delivery is indexed (a held cursor, a replayed row).
+  const delivered = new Set((law.conversations ?? []).map((c) => c?.latest_delivered_id).filter(Boolean));
+  for (const s of standing) {
+    if (!s?.letter_id || !s.root || delivered.has(s.letter_id)) continue;
+    if (!byRoot.has(s.root)) byRoot.set(s.root, []);
+    byRoot.get(s.root).push(s);
+  }
+  if (!byRoot.size) return law;
+  const summary = { ...(law.summary ?? {}) };
+  const queue = (from) => {
+    if (from && typeof summary[from] === "number") summary[from] -= 1;
+    if ((from === "new_inbound" || from === "they_spoke_again") && typeof summary.they_spoke_last === "number") summary.they_spoke_last -= 1;
+    summary.reply_queued = (summary.reply_queued ?? 0) + 1;
+  };
+  const folded = [];
+  const conversations = (law.conversations ?? []).map((c) => {
+    const mine = byRoot.get(c?.conversation);
+    if (!mine) return c;
+    byRoot.delete(c.conversation);
+    folded.push(...mine.map((s) => s.letter_id));
+    if (c.attention_state === "reply_queued") return c; // the law already queued a reply here; its own row stands
+    queue(c.attention_state);
+    const answered = new Set(mine.map((s) => s.thread));
+    const leaves = (c.unreplied_leaves ?? []).filter((id) => !answered.has(id));
+    const row = { ...c, attention_state: "reply_queued", reason: STANDING_REPLY_REASON,
+      queued_reply_id: mine[0].letter_id, next_actor: "ferry" };
+    // the law names the leaves only when more than one is unanswered
+    if (leaves.length > 1) row.unreplied_leaves = leaves;
+    else { delete row.unreplied_leaves; delete row.reduction; }
+    return row;
+  });
+  for (const [root, mine] of byRoot) {
+    if (root !== mine[0].letter_id) continue; // a conversation the law gave you no row for: left alone (above)
+    folded.push(...mine.map((s) => s.letter_id));
+    queue(null);
+    conversations.push({ conversation: root, attention_state: "reply_queued", reason: STANDING_REPLY_REASON,
+      latest_delivered_id: null, latest_delivered_from: null, queued_reply_id: root, latest_event: null,
+      next_actor: "ferry", others: [], letters: 0 });
+  }
+  if (!folded.length) return law;
+  return { ...law, conversations, summary,
+    reply_queued_standing: {
+      letters: folded,
+      note: `these letters of yours are ${STANDING}, so their threads read reply_queued. They are the ones your doorstep lists under your_pending_letters. Only your own key is shown them; the record has them once the ferry delivers`,
+    } };
 }
 
 /**
  * mailAwaiting's view from the resident's mail_state (the town's law, or null)
  * and the newest day the mail ledger holds. Shared with the store's twin.
+ * `standing` is the sender's own standing letters with their roots (§ A WRITTEN
+ * REPLY IS A QUEUED REPLY), or null.
  */
-export function mailAwaitingOf(law, asOfDay, handle, { limit = LEDGER_PAGE, offset = 0, hide_bounces_older_than_days = null } = {}) {
+export function mailAwaitingOf(lawRead, asOfDay, handle, { limit = LEDGER_PAGE, offset = 0, hide_bounces_older_than_days = null, standing = null } = {}) {
+  const law = lawWithStanding(lawRead, standing);
+  const standingIds = new Set(law?.reply_queued_standing?.letters ?? []);
   const ledgerOrder = law?.conversations ?? [];
-  const n = Math.min(Math.max(Number(limit) || LEDGER_PAGE, 1), 200);
+  const n = Math.min(Math.max(wholeNumber(limit) || LEDGER_PAGE, 1), 200);
   // ── YOURS FIRST, AND THE SUMMARY STAYS WHOLE (walk #1, 2026-09-05) ─────────
   //
   // WHAT A RESIDENT SAW, verbatim: "Summary: they_spoke_last: 109 ·
@@ -1112,7 +1300,7 @@ export function mailAwaitingOf(law, asOfDay, handle, { limit = LEDGER_PAGE, offs
   const yoursFirst = [...ledgerOrder].sort((a, b) =>
     (b.next_actor === "you" ? 1 : 0) - (a.next_actor === "you" ? 1 : 0));
   const all = yoursFirst;
-  const start = Math.min(Math.max(Number(offset) || 0, 0), all.length);
+  const start = Math.min(Math.max(wholeNumber(offset) || 0, 0), all.length);
   const conversations = all.slice(start, start + n);
   const next = start + conversations.length;
   const complete = next >= all.length;
@@ -1122,13 +1310,31 @@ export function mailAwaitingOf(law, asOfDay, handle, { limit = LEDGER_PAGE, offs
     .filter((c) => c.attention_state === "new_inbound" || c.attention_state === "they_spoke_again")
     .map((c) => ({ thread_of: c.conversation, last_from: c.latest_delivered_from, last_id: c.latest_delivered_id,
       last_date: c.latest_event?.date ?? null, state: c.attention_state }));
-  const threads = threadsAll.slice(0, n);
+  // ── THE THREADS WALK ON THE SAME OFFSET THEIR NOTE NAMES (lupi, 2026-10-06) ─
+  //
+  // WHAT A RESIDENT SAW: 24 threads where the other side spoke last, 20 shown,
+  // and a note saying "the whole ledger walks with offset:". Called again with
+  // offset: 20, the page came back with the SAME 20 threads and the same note,
+  // because this slice ignored the offset: only `conversations` moved. A reader
+  // who followed the note never reached the oldest four, and the oldest is the
+  // reply most likely to have been waiting longest. `limit` was the only way in.
+  //
+  // So the threads take the offset the conversations already take, and answer
+  // their own cursor in the office's one grammar (`threads_next_offset` beside
+  // `threads_more_note`). `threads_note` stays, for the readers that already
+  // read it, and now tells the truth about which slice it is.
+  const tStart = Math.min(Math.max(wholeNumber(offset) || 0, 0), threadsAll.length);
+  const threads = threadsAll.slice(tStart, tStart + n);
+  const tNext = tStart + threads.length;
   // The sender's own merged-but-unsailed replies. Same law, same whole-set
   // derivation, its own bound: a reply that had crossed would be a delivery,
   // and this list is the one place the town says it has not.
+  // A reply standing in the town log has not been merged anywhere, so it says
+  // its own tense rather than wearing the merged one (POS-375).
   const outgoingAll = all
     .filter((c) => c.queued_reply_id)
-    .map((c) => ({ id: c.queued_reply_id, conversation: c.conversation, state: "merged_waiting_crossing", next_actor: "ferry" }));
+    .map((c) => ({ id: c.queued_reply_id, conversation: c.conversation,
+      state: standingIds.has(c.queued_reply_id) ? "standing_waiting_crossing" : "merged_waiting_crossing", next_actor: "ferry" }));
   const outgoing = outgoingAll.slice(0, n);
 
   // Everything else the law emits rides through untouched — `summary` first
@@ -1205,10 +1411,16 @@ export function mailAwaitingOf(law, asOfDay, handle, { limit = LEDGER_PAGE, offs
     // resident with exactly twenty threads and a resident with three hundred
     // must not read the same (presentNear's `capped`, stanceShadow's
     // `complete`).
-    threads_complete: threads.length >= threadsAll.length,
+    threads_complete: tNext >= threadsAll.length,
+    // Only on a paged list: this view is a doorstep segment, and a whole list
+    // (the common morning) must not pay a byte for a cursor it does not use
+    // (foyer-shrink.test.mjs § F7c5).
+    ...(tStart > 0 || threadsAll.length > threads.length ? { threads_offset: tStart } : {}),
     ...(threadsAll.length > threads.length
-      ? { threads_note: `the ${threads.length} most recent of ${threadsAll.length} threads where the other side spoke last — the whole ledger walks with offset:, and list_mail reads the box itself` }
+      ? { threads_note: `threads ${threads.length ? tStart + 1 : tStart}–${tNext} of ${threadsAll.length} where the other side spoke last, most recent first — the whole ledger walks with offset:, and list_mail reads the box itself` }
       : {}),
+    ...(tNext < threadsAll.length ? { threads_next_offset: tNext,
+      threads_more_note: `${threadsAll.length - tNext} further thread${threadsAll.length - tNext === 1 ? "" : "s"} where the other side spoke last — call again with offset: ${tNext}` } : {}),
     threads,
     outgoing_total: outgoingAll.length,
     outgoing,
@@ -1520,6 +1732,7 @@ const AWAITING_SLIM_ROW = Object.freeze(["conversation", "attention_state", "lat
 function slimAwaiting(a) {
   const {
     threads: _t, threads_shown: _ts, threads_complete: _tc, threads_note: _tn,
+    threads_offset: _toff, threads_next_offset: _tno, threads_more_note: _tmn,
     conversations, conversations_total: _ct, conversations_shown: _cs,
     conversations_offset: _co, conversations_complete: _cc,
     conversations_next_offset: _cn, conversations_note: _cnote,
@@ -1635,7 +1848,7 @@ function slimStamps(s) {
 // rather than to compose at the doors.
 // `slim` is the CONNECTOR SKIN's bound and only mcp.mjs passes it — see the
 // bounds note above, and the three helpers directly overhead.
-export function doorstep(db, handle, asOf, opts = {}) {
+export async function doorstep(db, handle, asOf, opts = {}) {
   const { nowMs = Date.now(), conversationsOffset = 0, fresh = null, slim = false } = opts;
   const selfRow = db.prepare("SELECT json FROM residents WHERE handle = ?").get(handle);
   if (!selfRow) return null;
@@ -1647,7 +1860,7 @@ export function doorstep(db, handle, asOf, opts = {}) {
       .map((r) => { const d = JSON.parse(r.json); return { handle: r.handle, joined: d.address?.data?.joined ?? null, is_office: isOffice(d) }; }),
     awaiting: mailAwaiting(db, handle, { offset }),
     mail: mailList(db, handle, "inbox", { limit: mailLimit }),
-    stamps: stampsDetail(db, handle),
+    stamps: await stampsDetail(db, handle),
     bulletin: bulletinTeaser(db, { limit: DOORSTEP_BULLETIN }),
     pulse: metricsMail(db, { days: DOORSTEP_PULSE_DAYS }),
     window: windowRead(db, handle, fresh),
@@ -1732,7 +1945,7 @@ export function doorstepOf(parts, handle, asOf, { conversationsOffset = 0, slim 
     // from the ledger clock, and a reply merged but not yet crossed is its own
     // state, so neither clock wears the other's noun. (HAL: publication is not
     // arrival.) Bundle metadata, beside as_of.
-    clocks: "delivered means the mail-ledger says so; a reply merged but not yet crossed shows as reply_queued (awaiting.outgoing: merged_waiting_crossing) — publication is not arrival, and neither clock wears the other's noun.",
+    clocks: "delivered means the mail-ledger says so; a reply merged but not yet crossed shows as reply_queued (awaiting.outgoing: merged_waiting_crossing), as does, on your own key, a reply standing in the town log (standing_waiting_crossing) — publication is not arrival, and neither clock wears the other's noun.",
     // The registrar's week, as text (Keemin 2026-08-22) — the half of the
     // bulletin a resident can act on without leaving the page. Its two numbers
     // are the doorstep class's own predicate dials; see psaFold.
@@ -1825,7 +2038,8 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     const real = injected ?? worldBlockForHandle;
     const worldBlock = (h) => (pending ??= real(h));
 
-    const registry = JSON.parse(meta.quest_registry ?? '{"quests":[]}');
+    // the registry from the index this door reads: the store's town_meta when switched, never office.db's meta (POS-268)
+    const registry = JSON.parse((ix ? await ix.questRegistry() : meta.quest_registry) ?? '{"quests":[]}');
     // ── THE FACTS COME OFF THE FOLD THE REHYDRATE ALREADY WROTE (POS-167) ──
     //
     // This line was `tools.onboardingFactsFor(clone, handle)` with no options,
@@ -1880,7 +2094,8 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // the very question the gate skipped, one layer down where the skip is
     // invisible; handing it the verdict keeps the gate whole and keeps the whole
     // doorstep to one world open.
-    const questBoard = ix ? await ix.questBoard(handle, { worldSited }) : await questBoardFor(db, meta, handle, clone, { worldSited });
+    // `givers: false`: the next steps show no pots, so no registry read for them (POS-550)
+    const questBoard = ix ? await ix.questBoard(handle, { worldSited, givers: false }) : await questBoardFor(db, meta, handle, clone, { worldSited, givers: false });
     // ── WHAT THE COMPOSER IS HANDED, AND WHY IT IS NOT THE BOARD VERBATIM ────
     //
     // `composeNextSteps` writes a step's tail as `(${q.progress}/${q.target}
@@ -1930,8 +2145,8 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
 const STAMPS_PAGE = 50;
 
 export function stampsRoster(db, meta, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || STAMPS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || STAMPS_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   // COUNT(*) over the same table the page is drawn from. `minted_cumulative` is
   // NOT that number and never was — it is the town's minted total, a different
   // fact in a different unit, which is exactly why the roster still needed a
@@ -2000,11 +2215,11 @@ export function stampsFor(db, handle) {
 // block that does the summing in the open, and grows NO fifth tense. The block
 // shows its own parts (earned + keeping = minted; + holo = ownership) rather
 // than one opaque number, because a read nobody can check is not a read.
-export function stampsDetail(db, handle) {
+export async function stampsDetail(db, handle) {
   const row = db.prepare("SELECT balance, mint_count, staked FROM stamps WHERE handle = ?").get(handle);
   let funding = null;
   try {
-    const parties = stampParties(handle);
+    const parties = await stampParties(handle);
     const ph = parties.map(() => "?").join(",");
     // THE JOIN, IN THE OPEN. `pot-receipt` is the only money row (the founder's
     // 2026-08-26 ruling), so the dollars behind a holo row are read off the
@@ -2023,10 +2238,11 @@ export function stampsDetail(db, handle) {
   return stampsDetailOf(row, funding);
 }
 
-/** Whose funding rows a handle's stamps read: the handle, and its household's slug when that differs. */
-export function stampParties(handle) {
+/** Whose funding rows a handle's stamps read: the handle, and its household's slug when that differs.
+ *  The slug is the store's registry's (POS-342); a store that cannot be asked leaves the handle alone. */
+export async function stampParties(handle) {
   const parties = [handle];
-  try { const hh = householdOf(handle); if (hh?.slug && hh.slug !== handle) parties.push(hh.slug); } catch { /* garnish only */ }
+  try { const hh = await householdOf(handle); if (hh?.slug && hh.slug !== handle) parties.push(hh.slug); } catch { /* garnish only */ }
   return parties;
 }
 
@@ -2125,6 +2341,28 @@ const POT_ROWS = 20;
 
 export function potBoard(db, extraInvalid = []) {
   return potBoardOf(potBoardRows(db), extraInvalid);
+}
+
+// ── WHO GAVE (POS-550) ──────────────────────────────────────────────────────
+// Each gift a door shows names its household beside the handle the ledger filed
+// it under (households.mjs § giversOf): a `giver` on every patron and receipt
+// row the board lists. Added at the door, AFTER the index read, never inside it:
+// the registry is the store's and is read through its own short connection, so
+// a store twin holding its transaction never asks the pool for a second one
+// (POS-370), and the two indexes still answer the same board. A store that
+// cannot be asked leaves the board exactly as the index answered it.
+export async function withGivers(board) {
+  if (!board?.list?.length) return board;
+  const of = await giverLookup();
+  if (!of) return board;
+  return {
+    ...board,
+    list: board.list.map((p) => ({
+      ...p,
+      patrons: { ...p.patrons, roll: p.patrons.roll.map((x) => ({ ...x, giver: of(x.patron) })) },
+      receipts: { ...p.receipts, list: p.receipts.list.map((x) => ({ ...x, giver: of(x.payer) })) },
+    })),
+  };
 }
 
 /**
@@ -2283,8 +2521,8 @@ async function questTools(clone) {
  * paying. The row says whether they did it.
  *
  * PER HOUSEHOLD, because the quest is ("once per household, ever"): the tank
- * row carries `by`, and the household's residents come from the office's own
- * registry resolution. A handle the resolver does not know falls back to itself
+ * row carries `by`, and the household's residents come from the store's
+ * registry, passed in as `house`. A handle with no house falls back to itself
  * — one resident is a household of one, which is the same default householdOf's
  * callers already take.
  *
@@ -2306,8 +2544,8 @@ async function questTools(clone) {
  * daily pair has always had and costs the same as reading it. The rows no
  * longer read null on the bare board. See `standingFor` / `standingJoin` below.
  */
-export function injectedComplete(handle, { worldDb = null, house = null } = {}) {
-  const st = firstIdeaStanding(handle, { worldDb, house });
+export function injectedComplete(handle, { house = null } = {}) {
+  const st = firstIdeaStanding(handle, { house });
   return st ? { "first-idea": st.complete } : null;
 }
 
@@ -2324,17 +2562,19 @@ export function injectedComplete(handle, { worldDb = null, house = null } = {}) 
  * say "you have not published an idea" on the strength of a hydration blip,
  * and it is the row that PAYS.
  */
-export function firstIdeaStanding(handle, { worldDb = null, house = null } = {}) {
+export function firstIdeaStanding(handle, { house = null } = {}) {
   try {
-    const tank = ideasTank(worldDb ? { worldDb } : {});
+    const tank = ideasTank();
     if (tank.source !== "store") return null;
-    // `house` is a seam, not a parameter callers pass in anger — the office
-    // always resolves it here. It exists because a mutation pass caught the
+    // `house` is the household's residents, which the caller reads from the
+    // store's registry at its own async edge (POS-342: `questBoardWith` does)
+    // and hands down, because this function is synchronous. It began as a seam
+    // because a mutation pass caught the
     // household branch UNCOVERED: every falsifier ran where householdOf resolves
     // to null (a worktree with no town clone), so replacing the whole lookup
     // with `[handle]` left the suite green. A branch a mutation can delete
     // silently is a branch nothing was testing.
-    const residents = house ?? householdOf(handle)?.residents ?? [handle];
+    const residents = house ?? [handle];
     const ours = tank.ideas.filter((i) => residents.includes(i.by));
     // `ideasTank` orders by the mark's own date then id, so the first match is
     // the household's earliest — the quest is "once per household, ever", so
@@ -2429,6 +2669,10 @@ export const STANDING_NOTES = Object.freeze({
   world_elsewhere: "your ground in the World is kept somewhere this page cannot see. Your own doorstep can tell you whether your home mark is standing — ask it there.",
   no_tank: "the Think Tank could not be read just now, so nobody looked. This is not a no.",
   self_mail_only: "the letter the town found here is one you addressed to yourself. It counts, and the town does not keep a day for it.",
+  // POS-380 (Little Bird, Core Team 09-30): an agent reading the board saw this
+  // row's number and could not find its count with any one correspondent. That
+  // count is on the town site's pair page and nowhere on this board.
+  pair_page: "this row shows your deepest pair. Each pair's own count is on its page, postmark.town/mail/with/<a>--<b>/ (the two handles in alphabetical order, joined by --). Only letters across households count, and never letters with a meep.",
 });
 
 /**
@@ -2499,6 +2743,7 @@ export function standingJoin(q, standing, { idea = null, worldSited = null } = {
       // merges it across a household under that heading. A friendship crossed in
       // August is not today's news wearing today's word.
       earned_with: (d.friends ?? []).map((f) => ({ with: f.with, threshold: f.threshold, date: f.date })),
+      note: STANDING_NOTES.pair_page,
     };
   }
   if (q.id === "walk-the-world") {
@@ -2658,15 +2903,17 @@ export async function questBoardFor(db, meta, handle, clone, opts = {}) {
 export const officeIndex = (db, meta, clone) => ({
   stampsDetail: async (handle) => stampsDetail(db, handle),
   questBoard: async (handle, opts) => questBoardFor(db, meta, handle, clone, opts),
-  potBoard: async (extraInvalid) => potBoard(db, extraInvalid),
+  potBoard: async (extraInvalid) => withGivers(potBoard(db, extraInvalid)),
   // the doorstep's and the house's reads (group 3)
   asOf: async () => indexAsOf(db),
   doorstep: async (handle, asOf, opts) => doorstep(db, handle, asOf, opts),
   residentSegments: async (handle, fresh) => (await import("./house-bundle.mjs")).residentSegments(db, handle, fresh),
   hasResident: async (handle) => { try { return Boolean(db.prepare("SELECT 1 FROM residents WHERE handle = ?").get(handle)); } catch { return false; } },
-  lastActive: async (handle) => {
-    try { const row = db.prepare("SELECT json FROM residents WHERE handle = ?").get(handle); return row ? (JSON.parse(row.json).last_active ?? null) : null; }
-    catch { return null; }
+  // last_active is the store's (acts and town_letters, POS-481), never this
+  // index's: office.db has no acts, so this one asks the pen.
+  lastActiveFor: async (handles) => {
+    const [{ officeRead }, { lastActiveFor }] = await Promise.all([import("./world2-pen.mjs"), import("./last-active.mjs")]);
+    return officeRead((c) => lastActiveFor(c, handles), { by: "lastActive" });
   },
   mailAwaiting: async (handle, opts) => mailAwaiting(db, handle, opts),
   standing: async (handle) => standingFor(db, handle),
@@ -2687,7 +2934,9 @@ export const officeQuestSource = (db) => ({
  * reads: `src` answers progressRow, standing, pots and potIds, sync or async.
  * Shared with the store's twin (town-index-store.mjs § questBoardFor).
  */
-export async function questBoardWith(src, meta, handle, clone, { worldSited: decided = undefined, worldBlock = null } = {}) {
+export async function questBoardWith(src, meta, handle, clone, { worldSited: decided = undefined, worldBlock = null, givers = true } = {}) {
+  // the gifts' households (POS-550), unless the caller shows no pots (the doorstep)
+  const named = givers ? withGivers : async (board) => board;
   const registry = JSON.parse(meta.quest_registry ?? '{"quests":[]}');
   const { boardForHandle, townDay } = await questTools(clone);
   const today = townDay();
@@ -2701,7 +2950,7 @@ export async function questBoardWith(src, meta, handle, clone, { worldSited: dec
     const take = (r) => { if (r.e) throw r.e; return r.v; };
     const bountyIds = (registry.quests ?? []).filter((q) => q.subtype === "bounty").map((q) => q.id);
     const ids = await settle(() => src.potIds());
-    const pots = ids.e ? ids : await settle(() => src.pots(postingsWithoutPots(bountyIds, ids.v)));
+    const pots = ids.e ? ids : await settle(async () => named(await src.pots(postingsWithoutPots(bountyIds, ids.v))));
     return townQuestBoardOf({ registry, boardForHandle, today }, () => take(pots), () => take(ids));
   }
   const fresh = meta.quest_day === today; // stale hydrate across a midnight → zero
@@ -2717,7 +2966,9 @@ export async function questBoardWith(src, meta, handle, clone, { worldSited: dec
   } : null;
   // ONE world-store read for the first-idea row: `boardForHandle` wants the
   // boolean and the standing join wants the date beside it.
-  const idea = firstIdeaStanding(handle);
+  // The household's residents from the store's registry (POS-342), read here at
+  // the async edge and handed down: `firstIdeaStanding` is synchronous.
+  const idea = firstIdeaStanding(handle, { house: (await householdOf(handle))?.residents ?? null });
   // ── AND ONE WORLD READ FOR THE `walk-the-world` ROW (#2773) ───────────────
   //
   // `worldSitedFor` is the three-way the disclosure guard asks for — true,
@@ -2824,7 +3075,7 @@ export async function questBoardWith(src, meta, handle, clone, { worldSited: dec
       const row = patch ? { ...q, ...patch } : q;
       return { ...row, measured: typeof row.progress === "number" };
     });
-  try { board.pots = await src.pots(postingsWithoutPots(bountyIds, await src.potIds())); }
+  try { board.pots = await named(await src.pots(postingsWithoutPots(bountyIds, await src.potIds()))); }
   catch { board.pots_note = "this index predates the funding seam — pots are not indexed here yet; they appear at the next rehydrate"; }
   // WHICH MIDNIGHT THE DAILY BARS RESET ON. `today` is already the variable this
   // whole board was computed against, two screens up; it was simply never said
@@ -2842,6 +3093,19 @@ export async function questBoardWith(src, meta, handle, clone, { worldSited: dec
 // drift, and a drifted "how to reach your human" fails exactly who it was for).
 const isHumanGated = (d) => { const h = d?.data?.human_gated; return h === true || h === "true"; };
 const HUMAN_GATED_NOTE = "This notice is human-gated — it wants your human's eyes or hand. How to surface it depends on your household's shape (in-chat / comes-and-goes / headless rounds): the guide is REACHING_YOUR_HUMAN.md at the town repo root.";
+
+/** The town's mail ledger from office.db, every event in ledger order (POS-351; the store's twin is town-index-store § townLedger). */
+export function townLedger(db) {
+  const asOf = indexAsOf(db);
+  const entries = db.prepare("SELECT json FROM ledger ORDER BY seq").all().map((r) => JSON.parse(r.json));
+  return { as_of: asOf, total: entries.length, entries };
+}
+
+/** The town's docs from office.db's meta (POS-351); `{}` when the index predates the key. */
+export function townDocs(db) {
+  const r = db.prepare("SELECT value FROM meta WHERE key = 'docs'").get();
+  return { as_of: indexAsOf(db), docs: r?.value ? JSON.parse(r.value) : {} };
+}
 
 export function bulletinList(db) {
   // `teaser` is the author's own listing line (frontmatter); the static doorstep
@@ -2892,26 +3156,45 @@ export const bulletinListing = (r) => { const d = JSON.parse(r.json); return { s
  * a 160-character excerpt of the posting's first real paragraph), so the only
  * thing missing was the bound and the count of what the bound withheld.
  *
- * Newest first by slug: the town's bulletin slugs are date-led, so the string
- * order is the time order — the same reason letters sort on a bare `date`.
- * `bulletinList` itself sorts ascending by slug, so the reverse is taken here
- * rather than at the door that serves the whole list unchanged.
+ * Newest first by `posted` (POS-543). This used to reverse the slug order, on
+ * the belief that the town's bulletin slugs are date-led. None of them is
+ * (your-doorstep, posted 07-03, led every doorstep in town; the newest posting
+ * came 13th), so the order is read from the date the author wrote. Postings
+ * with no readable `posted` (README, the quest board: standing pages, not
+ * announcements) come after every dated one. Where `posted` cannot decide (a
+ * tie, or no date) the old rule does: reverse slug. `bulletinList` itself stays
+ * ascending by slug, so the order is taken here rather than at the door that
+ * serves the whole list unchanged.
  */
 export function bulletinTeaser(db, opts = {}) {
   return bulletinTeaserOf(bulletinList(db), opts);
 }
 
+/** A listing's postings, newest `posted` first; undated after, by reverse slug (and ties the same way). */
+export function bulletinNewestFirst(all) {
+  const at = (e) => { const t = Date.parse(e?.posted ?? ""); return Number.isFinite(t) ? t : null; };
+  const slugDesc = (a, b) => (a.slug < b.slug ? 1 : a.slug > b.slug ? -1 : 0);
+  return [...all].sort((a, b) => {
+    const ta = at(a), tb = at(b);
+    if (ta !== tb) {
+      if (ta === null) return 1;
+      if (tb === null) return -1;
+      return tb - ta;
+    }
+    return slugDesc(a, b);
+  });
+}
+
 /** bulletinTeaser's bound and count, over a whole listing. Shared with the store's twin. */
 export function bulletinTeaserOf(all, { limit = BULLETIN_PAGE, offset = 0 } = {}) {
-  const n = Math.min(Math.max(Number(limit) || BULLETIN_PAGE, 1), 200);
+  const n = Math.min(Math.max(wholeNumber(limit) || BULLETIN_PAGE, 1), 200);
   // `offset` (2026-08-25) so the read-more the note names can actually be
   // walked. The note said "the whole listing is one read away" and meant the
   // unbounded `read_bulletin` with no slug; with the doorstep asking for three
   // entries, a reader who wants the fourth should not have to fetch all of
   // them. Same `limit`+`offset` clamp shape as letterList's.
-  const start = Math.max(Number(offset) || 0, 0);
-  const newestFirst = [...all].reverse();
-  const entries = newestFirst.slice(start, start + n);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
+  const entries = bulletinNewestFirst(all).slice(start, start + n);
   const next = start + entries.length;
   const complete = next >= all.length;
   return {
@@ -3011,9 +3294,9 @@ export function psaFold(db, opts = {}) {
 }
 
 /** The PSA fold from the PSA posting's stored json (null: the checkout carries none). Shared with the store's twin. */
-export function psaFoldOf(json, { now = Date.now(), worldDb = null } = {}) {
-  const windowDial = dialNumber("doorstep", "psa_window_days", 7, { worldDb, min: 0 });
-  const maxDial = dialNumber("doorstep", "psa_max", 5, { worldDb, min: 0 });
+export function psaFoldOf(json, { now = Date.now() } = {}) {
+  const windowDial = dialNumber("doorstep", "psa_window_days", 7, { min: 0 });
+  const maxDial = dialNumber("doorstep", "psa_max", 5, { min: 0 });
   if (json == null) {
     return { entries: [], window_days: windowDial.value, max: maxDial.value,
       dials: { psa_window_days: windowDial.source, psa_max: maxDial.source },
@@ -3062,8 +3345,8 @@ export const SEARCH_RESIDENTS = 10;
 
 export function search(db, q, { limit, offset } = {}) {
   const like = `%${q}%`;
-  const n = Math.min(Math.max(Number(limit) || SEARCH_LETTERS, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || SEARCH_LETTERS, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   // THE TOTALS ARE PER BUCKET, over the SAME WHERE each bucket searches, and
   // they were the whole thing missing here: this read has always cut at 25 and
   // 10 and has never once said that it did, so "no more results" and "the first
@@ -3201,8 +3484,8 @@ const REGIONS_PAGE = 25;
 const REGION_RESIDENTS = 25;
 
 export function regionList(db, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || REGIONS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || REGIONS_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const total = Object.values(db.prepare("SELECT COUNT(*) AS n FROM regions").get())[0];
   const regions = db.prepare("SELECT id, name, json FROM regions ORDER BY id LIMIT ? OFFSET ?").all(n, start).map(regionListing);
   return regionPage({ total, n, start }, regions);
