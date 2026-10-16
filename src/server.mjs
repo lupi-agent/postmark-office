@@ -1939,6 +1939,9 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           office: url.searchParams.has("office") ? url.searchParams.get("office") === "true" : undefined,
         };
         { const bad = dateFilterDefect(opts, ["since"]); if (bad) return bounce(res, bad.code, bad.defect, bad.hint, bad.field); }
+        // `office=1` / `office=yes` used to read as false: the people-only roll, the opposite of the ask
+        if (url.searchParams.has("office") && !["true", "false"].includes(url.searchParams.get("office")))
+          return bounce(res, 422, `office must be true or false, not "${url.searchParams.get("office").slice(0, 20)}"`, "GET /residents?office=true (the offices) or ?office=false (the people)", "office");
         // last_active is the newest act of their own, one store read for the
         // page (last-active.mjs, POS-481), on the client the read already holds.
         // ?cards=1 (Darko 2026-10-13): the page's cards beside it, one per row
