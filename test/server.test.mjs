@@ -338,6 +338,18 @@ test("an unreadable since/until is a 422, never an empty roll marked complete or
   assert.equal((await get("/letters")).status, 200);
 });
 
+test("GET /residents?office= takes true or false and refuses the rest, instead of reading 1/yes as false", async () => {
+  for (const bad of ["1", "yes", "TRUE", ""]) {
+    const r = await get("/residents?office=" + bad);
+    assert.equal(r.status, 422, `office=${bad}`);
+    assert.equal((await r.json()).field, "office");
+  }
+  const offices = await (await get("/residents?office=true")).json();
+  const people = await (await get("/residents?office=false")).json();
+  const all = await (await get("/residents")).json();
+  assert.equal(offices.total + people.total, all.total);
+});
+
 test("GET /mail/{handle} answers a BARE ARRAY, honors since/until, and pages", async () => {
   // TRUED TO THE PANE CONTRACT, 2026-08-26, not deleted. This test asserted the
   // wrapper the 08-25 bounded-reads commit introduced, and that wrapper is what
