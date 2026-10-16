@@ -27,16 +27,20 @@
 // Every reader takes a client (anything with pg's `query`), so a caller runs it
 // inside `officeRead`'s READ ONLY transaction and a test runs it on its own.
 
+import { wholeNumber } from "./whole-number.mjs";
 import {
   repoLogPage, repoLogCommit, regionListing, regionPage, regionWhole,
   bulletinListing, bulletinTeaserOf, bulletinEntryOf,
   stampsRosterPage, stampsDetailOf, stampParties,
-  potBoardOf, questBoardWith,
-  excerpt, LETTER_READING_LAW_LINE, MAIL_PAGE, SEARCH_LETTERS, SEARCH_RESIDENTS,
-  mailListOf, letterListNoRegion, letterListPage, correspondentsOf, mailAwaitingOf, searchPage, metricsMailOf,
+  potBoardOf, questBoardWith, withGivers,
+  excerpt, LETTER_READING_LAW_LINE, withWhole, MAIL_PAGE, SEARCH_LETTERS, SEARCH_RESIDENTS,
+  mailListOf, letterListNoRegion, letterListPage, letterPageCap, correspondentsOf, mailAwaitingOf, searchPage, metricsMailOf,
+  indexCopy as officeIndexCopy,
   rollEntry, residentPageOf, townSummaryOf, residentOf, windowReadOf, psaFoldOf, doorstepOf, DOORSTEP_SIZES, PSA_SLUG, CARD_MAIL,
 } from "./queries.mjs";
 import { isResidentHandle } from "./residency.mjs"; // the door's admission grammar, as readRoll filters by it
+import { lastActiveFor } from "./last-active.mjs"; // a resident's newest act, from acts and town_letters (POS-481)
+import { CROSSING_SEAL_SUBJECT, copyCrossing, notInCopyDefect } from "./crossings.mjs"; // the crossing's closing commit, and its words (POS-332)
 import { holdStoreProbe, UNREACHABLE_DEFECT, UNREACHABLE_HINT } from "./index-probe.mjs";
 
 // The row SHAPES are queries.mjs's own exported functions, the ones its office.db
@@ -47,7 +51,7 @@ import { freshnessFor, composeHome } from "./paper-fresh.mjs"; // the freshness 
 export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home", "stampsRoster", "stampsDetail", "potBoard", "questBoardFor", "standingFor", "townQuestBoard",
   "letter", "letterAnswer", "letterList", "mailList", "mailCorrespondents", "mailAwaiting", "search", "metricsMail", "outboxSettled",
   "residentList", "residentPage", "resident", "townSummary", "officeHandles", "windowRead", "psaFold", "doorstep",
-  "hasResident", "hasLetter", "loginIndex", "unansweredFrom"]);
+  "hasResident", "hasLetter", "loginIndex", "unansweredFrom", "townLedger", "townDocs"]);
 
 /** Is the switch on? Only the exact value `store` turns it on. */
 export const townIndexReads = (env = process.env) => env.TOWN_INDEX_READS === "store";
@@ -56,16 +60,59 @@ const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ", LOWER = "abcdefghijklmnopqrstuvwxyz"
 /** sqlite's LIKE: ASCII case folded on both sides, nothing else. */
 const likeAscii = (col, param, escape = "\\") => `translate(${col}, '${UPPER}', '${LOWER}') LIKE translate(${param}, '${UPPER}', '${LOWER}') ESCAPE '${escape}'`;
 
+/**
+ * The town's mail ledger, every event in ledger order (POS-351: the site's
+ * ledger.json comes through the office). Each entry is the vendored reader's
+ * own object, stored whole in `town_ledger.json`.
+ */
+export async function townLedger(q) {
+  const asOf = await townIndexAsOf(q);
+  const entries = (await q.query("SELECT json FROM town_ledger ORDER BY seq")).rows.map((r) => JSON.parse(r.json));
+  return { as_of: asOf, total: entries.length, entries };
+}
+
+/** The town's docs (POS-351), from town_meta `docs`; `{}` when the index predates the key. */
+export async function townDocs(q) {
+  const asOf = await townIndexAsOf(q);
+  const r = (await q.query("SELECT value FROM town_meta WHERE key = 'docs'")).rows[0];
+  return { as_of: asOf, docs: r?.value ? JSON.parse(r.value) : {} };
+}
+
 /** The sha the store's index was last ingested at (town_meta `as_of`), or null. */
 export async function townIndexAsOf(q) {
   const r = await q.query("SELECT value FROM town_meta WHERE key = 'as_of'");
   return r.rows[0]?.value ?? null;
 }
 
+/** queries.indexCopy, from the store: the newest commit time and the newest crossing seal in town_repo_log. */
+export async function indexCopy(q) {
+  const newest = (await q.query("SELECT MAX(committed_at COLLATE \"C\") AS at FROM town_repo_log")).rows[0]?.at ?? null;
+  const seal = (await q.query(`SELECT sha, committed_at AS at FROM town_repo_log WHERE subject = $1
+      ORDER BY committed_at COLLATE "C" DESC, sha COLLATE "C" LIMIT 1`, [CROSSING_SEAL_SUBJECT])).rows[0];
+  return { newest, seal: seal ? { sha: seal.sha, at: seal.at } : null };
+}
+
+/**
+ * The 404 for a letter id the door's index does not hold (POS-332): the copy
+ * that was read, and the crossing it has caught up to, from the same index the
+ * lookup asked (office.db's repo_log, or the store's with the switch on). A
+ * history that cannot be read is said; it never turns the 404 into a 500.
+ */
+export async function letterNotInCopy(db, { env = process.env } = {}) {
+  let copy;
+  try {
+    if (townIndexReads(env)) {
+      const r = await storeAnswer((c) => indexCopy(c), { env });
+      copy = r.refused ? undefined : r.out;
+    } else copy = officeIndexCopy(db);
+  } catch { copy = undefined; }
+  return notInCopyDefect(copy === undefined ? undefined : copyCrossing(copy.seal));
+}
+
 /** queries.repoLog, from the store. The same filters, page, total and notes. */
 export async function repoLog(q, opts = {}) {
-  const limit = Math.min(Math.max(Number(opts.limit) || 30, 1), 200);
-  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const limit = Math.min(Math.max(wholeNumber(opts.limit) || 30, 1), 200);
+  const offset = Math.max(wholeNumber(opts.offset) || 0, 0);
   const where = [];
   const params = [];
   const p = (v) => { params.push(v); return `$${params.length}`; };
@@ -103,8 +150,8 @@ const REGIONS_PAGE = 25;
 
 /** queries.regionList, from the store. */
 export async function regionList(q, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || REGIONS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || REGIONS_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const total = Number((await q.query("SELECT COUNT(*) AS n FROM town_regions")).rows[0].n);
   const rows = (await q.query(`SELECT id, name, json FROM town_regions ORDER BY id COLLATE "C" LIMIT $1 OFFSET $2`, [n, start])).rows;
   return regionPage({ total, n, start }, rows.map(regionListing));
@@ -141,8 +188,8 @@ const STAMPS_PAGE = 50;
 
 /** queries.stampsRoster, from the store; the minted total is the store's own meta. */
 export async function stampsRoster(q, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || STAMPS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || STAMPS_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const accounts = Number((await q.query("SELECT COUNT(*) AS n FROM town_stamps")).rows[0].n);
   const balances = (await q.query(
     `SELECT handle, balance FROM town_stamps ORDER BY balance DESC, handle COLLATE "C" LIMIT $1 OFFSET $2`, [n, start])).rows;
@@ -153,7 +200,7 @@ export async function stampsRoster(q, { limit, offset } = {}) {
 /** queries.stampsDetail, from the store. */
 export async function stampsDetail(q, handle) {
   const row = (await q.query("SELECT balance, mint_count, staked FROM town_stamps WHERE handle = $1", [handle])).rows[0];
-  const parties = stampParties(handle);
+  const parties = await stampParties(handle);
   const holoRows = (await q.query(
     `SELECT h.party, h.pot, h.holo, h.epoch, h.date, h.receipt, r.usd AS usd
        FROM town_funding_holo h LEFT JOIN town_pot_receipts r ON r.receipt = h.receipt
@@ -273,10 +320,14 @@ export function questBoardAnswer(handle, clone, opts = {}, { env = process.env }
  */
 export const storeIndex = (q, clone) => ({
   stampsDetail: (handle) => stampsDetail(q, handle),
+  lastActiveFor: (handles) => lastActiveFor(q, handles),
   // rows first, then the board: a caller holding `q` inside a pen transaction
   // would still be holding it while the board asks the world (see above), and
   // the pen refuses that by name (store-pool.mjs § NestedStoreError)
   questBoard: async (handle, opts) => questBoardOfRows(await questIndexRows(q, handle), clone, opts),
+  // the index's board only: the gifts' households (POS-550) are a second read,
+  // and a caller holding `q` must not ask the pool for one. The door's
+  // storeIndexPooled adds them once its connection is back.
   potBoard: (extraInvalid) => potBoard(q, extraInvalid),
 });
 
@@ -307,15 +358,20 @@ export function storeIndexPooled(clone, { env = process.env } = {}) {
   return {
     stampsDetail: via((c, handle) => stampsDetail(c, handle)),
     questBoard: via((c, handle) => questIndexRows(c, handle), (rows, _handle, opts) => questBoardOfRows(rows, clone, opts)),
-    potBoard: via((c, extraInvalid) => potBoard(c, extraInvalid)),
+    // the givers' households after the connection is back (queries.mjs § withGivers)
+    potBoard: via((c, extraInvalid) => potBoard(c, extraInvalid), (board) => withGivers(board)),
     // the doorstep's and the house's reads (group 3)
     asOf: via((c) => townIndexAsOf(c)),
+    copy: via((c) => indexCopy(c)),
     doorstep: via((c, handle, asOf, opts) => doorstep(c, handle, asOf, opts)),
-    residentSegments: via((c, handle, fresh) => residentSegments(c, handle, fresh)),
+    residentSegments: via((c, handle, fresh, standing) => residentSegments(c, handle, fresh, standing)),
     hasResident: via((c, handle) => hasResident(c, handle)),
-    lastActive: via((c, handle) => lastActive(c, handle)),
+    // the house's last_active, every resident in one statement (POS-481)
+    lastActiveFor: via((c, handles) => lastActiveFor(c, handles)),
     mailAwaiting: via((c, handle, opts) => mailAwaiting(c, handle, opts)),
     standing: via((c, handle) => standingFor(c, handle)),
+    // the town's quest registry (town_meta `quest_registry`), as the doorstep's next steps read it; null when the index has none
+    questRegistry: via(async (c) => (await questMeta(c)).quest_registry ?? null),
     home: via((c, handle, fresh) => home(c, handle, fresh)),
     deliveredTo: via((c, handle) => deliveredTo(c, handle)),
     resident: via((c, handle, fresh) => resident(c, handle, fresh)),
@@ -334,7 +390,7 @@ const count = async (q, sql, params = []) => Number((await q.query(sql, params))
 /** queries.letter, from the store: one letter whole, or null. */
 export async function letter(q, id) {
   const row = (await q.query("SELECT json FROM town_letters WHERE id = $1", [id])).rows[0];
-  return row ? JSON.parse(row.json) : null;
+  return row ? withWhole(JSON.parse(row.json), { asOf: await townIndexAsOf(q) }) : null; // with queries § A COPY CARRIES PROOF IT'S WHOLE (POS-334)
 }
 
 /** queries.letterAnswer, from the store. */
@@ -356,8 +412,8 @@ export async function mailPage(q, handle, box, { since, until, limit, offset } =
   if (since) { params.push(since); where.push(`date COLLATE "C" >= $${params.length}`); }
   if (until) { params.push(until); where.push(`date COLLATE "C" <= $${params.length}`); }
   const clause = `WHERE ${where.join(" AND ")}`;
-  const n = Math.min(Math.max(Number(limit) || MAIL_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || MAIL_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const total = await count(q, `SELECT COUNT(*) AS n FROM town_letters ${clause}`, params);
   const rows = (await q.query(`SELECT ${LETTER_COLS} FROM town_letters ${clause} ORDER BY ${NEWEST} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     [...params, n, start])).rows;
@@ -436,14 +492,16 @@ export async function probeRows(q, { letters = true, logins = true } = {}) {
 // A question the snapshot was not loaded to answer is a programming error, named.
 const notLoaded = (what) => { throw new Error(`the store's probe was loaded without ${what}`); };
 
-/** The probe over a snapshot. `mail` holds the mail_state rows a caller read for this call (handle -> json|null). */
-export function probeOver(rows, { mail = null } = {}) {
+/** The probe over a snapshot. `mail` holds the mail_state rows a caller read for this call (handle -> json|null);
+ *  `standing` the sender's own standing letters with their roots (handle -> [{ letter_id, thread, root }]). */
+export function probeOver(rows, { mail = null, standing = null } = {}) {
   return Object.freeze({
     hasResident: (h) => rows.handles.has(h),
     hasLetter: (id) => (rows.letters ?? notLoaded("letter ids")).has(id),
     loginStamp: () => `store:${rows.asOf}`,
     loginRows: () => rows.logins ?? notLoaded("GitHub lines"),
     mailStateJson: (h) => (mail?.has(h) ? mail.get(h) : notLoaded(`${h}'s mail_state`)),
+    mailStanding: (h) => standing?.get(h) ?? [],
   });
 }
 
@@ -461,16 +519,24 @@ export async function refreshStoreProbe({ env = process.env, letters = true, log
   return !r.refused;
 }
 
+/** The store's as-of (town_meta `as_of`) the held probe was read at, or null before the first load. */
+export const storeProbeAsOf = () => _probeRows?.asOf ?? null;
+
 /**
  * The held probe with one resident's mail_state row read now, for the reply
  * hint a send draws. Throws when the store cannot answer; the send has already
  * gone by then, so its caller says nothing rather than refuse a sent letter.
+ * `standing` is the sender's own standing letters (a key that holds the
+ * sender only), rooted here so the hint reads them as replies (POS-375).
  */
-export async function probeWithMailState(handle, { env = process.env } = {}) {
+export async function probeWithMailState(handle, { env = process.env, standing = null } = {}) {
   if (!_probeRows) throw new TownIndexUnreachable();
-  const r = await storeAnswer(async (c) => (await c.query("SELECT json FROM town_mail_state WHERE handle = $1", [handle])).rows[0]?.json ?? null, { env });
+  const r = await storeAnswer(async (c) => ({
+    json: (await c.query("SELECT json FROM town_mail_state WHERE handle = $1", [handle])).rows[0]?.json ?? null,
+    standing: await standingRoots(c, standing),
+  }), { env });
   if (r.refused) throw new TownIndexUnreachable();
-  return probeOver(_probeRows, { mail: new Map([[handle, r.out]]) });
+  return probeOver(_probeRows, { mail: new Map([[handle, r.out.json]]), standing: new Map([[handle, r.out.standing]]) });
 }
 
 /** Test seam: forget the roster memo (a suite that rewrites rows under one head). */
@@ -534,12 +600,12 @@ export async function psaFold(q, opts = {}) {
 }
 
 /** house-bundle § residentSegments, from the store: one resident's own segments, at the house read's bounds. */
-export async function residentSegments(q, handle, fresh) {
+export async function residentSegments(q, handle, fresh, standing = null) {
   const { residentSegmentsOf, DOORSTEP_INBOX: HOUSE_INBOX } = await import("./house-bundle.mjs");
   const one = (sql, params) => count(q, sql, params);
   return residentSegmentsOf({
     mail: await mailList(q, handle, "inbox", { limit: HOUSE_INBOX }),
-    awaiting: await mailAwaiting(q, handle, { offset: 0 }),
+    awaiting: await mailAwaiting(q, handle, { offset: 0, standing }),
     stamps: await stampsDetail(q, handle),
     window: await windowRead(q, handle, fresh),
     pendingOutbox: await outboxSettled(q, handle),
@@ -553,11 +619,6 @@ export async function residentSegments(q, handle, fresh) {
 /** Is there a resident row for this handle? (house-bundle's ashore test) */
 export async function hasResident(q, handle) {
   return (await q.query("SELECT 1 FROM town_residents WHERE handle = $1", [handle])).rows.length > 0;
-}
-
-/** A resident's last_active from their card, or null (house-bundle § lastActiveOf). */
-export async function lastActive(q, handle) {
-  try { return (await card(q, handle))?.last_active ?? null; } catch { return null; }
 }
 
 /** unread-store § deliveredTo, from the store: the resident's deliveries, newest first. */
@@ -574,14 +635,14 @@ export async function deliveredTo(q, handle) {
  * whatever the caller passes: the segments came from this index.
  */
 export async function doorstep(q, handle, _asOf, opts = {}) {
-  const { nowMs = Date.now(), conversationsOffset = 0, fresh = null, slim = false } = opts;
+  const { nowMs = Date.now(), conversationsOffset = 0, fresh = null, slim = false, standing = null } = opts;
   if (!(await hasResident(q, handle))) return null;
   const asOf = await townIndexAsOf(q);
   const offset = Math.max(Number(conversationsOffset) || 0, 0);
   const one = (sql, params = []) => count(q, sql, params);
   const parts = {
     arrivals: (await roster(q)).map((e) => ({ handle: e.handle, joined: e.joined, is_office: e.is_office })),
-    awaiting: await mailAwaiting(q, handle, { offset }),
+    awaiting: await mailAwaiting(q, handle, { offset, standing }),
     mail: await mailList(q, handle, "inbox", { limit: slim ? DOORSTEP_SIZES.inboxSlim : DOORSTEP_SIZES.inbox }),
     stamps: await stampsDetail(q, handle),
     bulletin: await bulletinTeaser(q, { limit: DOORSTEP_SIZES.bulletin }),
@@ -604,12 +665,13 @@ export async function doorstep(q, handle, _asOf, opts = {}) {
 
 /** queries.letterList, from the store: the filtered list, newest first, paged. */
 export async function letterList(q, opts = {}) {
-  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
-  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const limit = Math.min(Math.max(wholeNumber(opts.limit) || 50, 1), letterPageCap(opts));
+  const offset = Math.max(wholeNumber(opts.offset) || 0, 0);
   const asOf = await townIndexAsOf(q);
   const where = [];
   const params = [];
   const p = (v) => { params.push(v); return `$${params.length}`; };
+  if (opts.ids?.length) where.push(`id = ANY(${p(opts.ids)}::text[])`);
   if (opts.resident) { const r = p(opts.resident); where.push(`(from_h = ${r} OR to_h = ${r})`); }
   if (opts.region) {
     const handles = await regionResidents(q, opts.region);
@@ -627,7 +689,7 @@ export async function letterList(q, opts = {}) {
   const fixed = params.slice();
   const rows = (await q.query(`SELECT ${LETTER_COLS} FROM town_letters ${clause} ORDER BY ${NEWEST} LIMIT ${p(limit)} OFFSET ${p(offset)}`, params)).rows;
   const total = await count(q, `SELECT COUNT(*) AS n FROM town_letters ${clause}`, fixed);
-  return letterListPage({ total, rows, limit, offset, full: opts.full, asOf });
+  return letterListPage({ total, rows, limit, offset, full: opts.full, digests: opts.digests, asOf });
 }
 
 /** queries.mailCorrespondents, from the store. */
@@ -646,13 +708,67 @@ async function ledgerNewest(q) {
   return (await q.query(`SELECT MAX(date COLLATE "C") AS d FROM town_ledger WHERE date IS NOT NULL`)).rows[0]?.d ?? null;
 }
 
-/** queries.mailAwaiting, from the store. */
+// How far up a thread chain the root walk goes before it calls the chain bent.
+const THREAD_WALK_MAX = 500;
+
+/**
+ * The conversation a letter's thread chain ends at, as the town's law roots it
+ * (tools/mail-state.mjs § rootOf): follow `thread` while it names a letter; the
+ * last letter is the root, or, when the last `thread` names no letter, that
+ * name is (the law's broken edge). null when the chain does not end inside the
+ * walk (a cycle), which the caller leaves alone rather than guessing a root.
+ */
+async function threadRoot(q, id) {
+  const last = (await q.query(`WITH RECURSIVE up(id, thread, n) AS (
+      SELECT id, thread, 0 FROM town_letters WHERE id = $1
+      UNION ALL
+      SELECT l.id, l.thread, up.n + 1 FROM town_letters l JOIN up ON l.id = up.thread WHERE up.n < $2)
+    SELECT id, thread, n FROM up ORDER BY n DESC LIMIT 1`, [id, THREAD_WALK_MAX])).rows[0];
+  if (!last) return id;
+  if (Number(last.n) >= THREAD_WALK_MAX) return null;
+  return last.thread && last.thread !== "new" ? last.thread : last.id;
+}
+
+/**
+ * queries.mailAwaiting, from the store. `opts.standing` is the sender's own
+ * standing letters (town-mail.mjs § hotMailBlock's `standing`), passed only on
+ * a read by a key that holds `handle`: each is given its conversation root here
+ * and the view reads them as the law reads a queued reply (queries.mjs § A
+ * WRITTEN REPLY IS A QUEUED REPLY, POS-375).
+ */
 export async function mailAwaiting(q, handle, opts = {}) {
   const row = (await q.query("SELECT json FROM town_mail_state WHERE handle = $1", [handle])).rows[0];
   // a bent law is no law, exactly as office.db's reader answers it
   let law = null;
   try { law = row ? JSON.parse(row.json) : null; } catch { law = null; }
-  return mailAwaitingOf(law, await ledgerNewest(q), handle, opts);
+  const standing = law ? await standingRoots(q, opts.standing) : [];
+  return mailAwaitingOf(law, await ledgerNewest(q), handle, { ...opts, standing });
+}
+
+/** The sender's standing letters (hotMailBlock's `standing`), each with the conversation root its thread chain ends at. */
+async function standingRoots(q, standing) {
+  const mine = new Map((standing ?? []).filter((s) => s?.letter_id).map((s) => [s.letter_id, s]));
+  const roots = new Map();
+  // A reply to your own standing reply (#446 review, finding 3): the letter it
+  // names is a log row, not in town_letters, so it roots through that letter,
+  // as the law roots an outbox letter through another. A loop among them roots
+  // nowhere (null), as threadRoot leaves a cycle.
+  const rootOf = async (s, seen = new Set()) => {
+    if (roots.has(s.letter_id)) return roots.get(s.letter_id);
+    const thread = s.thread && s.thread !== "new" ? s.thread : null;
+    let root;
+    if (!thread) root = s.letter_id;
+    else if (mine.has(thread)) root = seen.has(thread) ? null : await rootOf(mine.get(thread), seen.add(s.letter_id));
+    else root = await threadRoot(q, thread);
+    roots.set(s.letter_id, root);
+    return root;
+  };
+  const out = [];
+  for (const s of mine.values()) {
+    const thread = s.thread && s.thread !== "new" ? s.thread : null;
+    out.push({ letter_id: s.letter_id, thread, root: await rootOf(s) });
+  }
+  return out;
 }
 
 // sqlite's LIKE with no ESCAPE clause: ASCII case folded, no escape character
@@ -661,8 +777,8 @@ const like = (col, param) => likeAscii(col, param, "");
 /** queries.search, from the store. */
 export async function search(q, term, { limit, offset } = {}) {
   const pattern = `%${term}%`;
-  const n = Math.min(Math.max(Number(limit) || SEARCH_LETTERS, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || SEARCH_LETTERS, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const lettersTotal = await count(q, `SELECT COUNT(*) AS n FROM town_letters WHERE ${like("id", "$1")} OR ${like("json", "$1")}`, [pattern]);
   const residentsTotal = await count(q, `SELECT COUNT(*) AS n FROM town_residents WHERE ${like("handle", "$1")} OR ${like("json", "$1")}`, [pattern]);
   const residents = (await q.query(`SELECT handle FROM town_residents
