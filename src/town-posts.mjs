@@ -72,6 +72,7 @@
 // chain yet (before 066, or before its first sync) says so in `unavailable`
 // and answers stamps_paid null, rather than calling every stage unpaid.
 
+import { wholeNumber } from "./whole-number.mjs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -110,8 +111,8 @@ export const BUG_PAGE = 50;
 
 /** One page of the bug list, in the paged-read grammar (queries.mjs § regionPage's shape). */
 function bugPageOf(all, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || BUG_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || BUG_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const page = all.slice(start, start + n);
   const next = start + page.length;
   const complete = next >= all.length;
