@@ -1,6 +1,7 @@
 // queries.mjs — the office's read verbs, shared by both skins (REST + MCP).
 // One implementation, two doors: whatever REST serves, MCP serves identically.
 
+import { wholeNumber } from "./whole-number.mjs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { isPrincipal } from "./ops.mjs";
@@ -357,8 +358,8 @@ export function residentPage(db, opts = {}) {
 
 /** The roster page from the whole roll (residentList's rows). Shared with the store's twin. */
 export function residentPageOf(roll, { limit, offset, since, office } = {}) {
-  const n = Math.min(Math.max(Number(limit) || ROSTER_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || ROSTER_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   let matched = roll;
   if (since) matched = matched.filter((r) => r.joined && r.joined >= String(since));
   if (office === true || office === false) matched = matched.filter((r) => r.is_office === office);
@@ -623,8 +624,8 @@ function mailPage(db, handle, box, { since, until, limit, offset } = {}) {
   if (since) { where.push("date >= ?"); params.push(since); }
   if (until) { where.push("date <= ?"); params.push(until); }
   const clause = `WHERE ${where.join(" AND ")}`;
-  const n = Math.min(Math.max(Number(limit) || MAIL_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || MAIL_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const total = Object.values(db.prepare(`SELECT COUNT(*) AS n FROM letters ${clause}`).get(...params))[0];
   const letters = db.prepare(`SELECT * FROM letters ${clause} ORDER BY ${NEWEST} LIMIT ? OFFSET ?`).all(...params, n, start).map(excerpt);
   return { total, limit: n, offset: start, letters };
@@ -700,8 +701,8 @@ export const outboxSettled = (db, handle) =>
 // REST all along; MCP callers only ever see the body, which is where the
 // readers that needed it live.
 export function letterList(db, opts = {}) {
-  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), letterPageCap(opts));
-  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const limit = Math.min(Math.max(wholeNumber(opts.limit) || 50, 1), letterPageCap(opts));
+  const offset = Math.max(wholeNumber(opts.offset) || 0, 0);
   const asOf = indexAsOf(db);
   const where = [];
   const params = [];
@@ -810,11 +811,11 @@ export function letterListPage({ total, rows, limit, offset, full, digests, asOf
 // behalf for mail; page edits usually carry the household's own identity),
 // since/until (inclusive; bare dates cover the whole day). Newest first.
 export function repoLog(db, opts = {}) {
-  const limit = Math.min(Math.max(Number(opts.limit) || 30, 1), 200);
+  const limit = Math.min(Math.max(wholeNumber(opts.limit) || 30, 1), 200);
   // `offset` (2026-08-25). `limit` alone could widen the window to 200 but
   // never walk past it, so the tail of the town's history was unreachable from
   // the door that calls itself the town's ledger.
-  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const offset = Math.max(wholeNumber(opts.offset) || 0, 0);
   const where = [];
   const params = [];
   const likePrefix = opts.path ? String(opts.path).replace(/[\\%_]/g, (c) => "\\" + c) + "%" : null;
@@ -1035,8 +1036,8 @@ export function mailCorrespondents(db, handle, opts = {}) {
  * carry a toList and null otherwise. Shared with the store's twin.
  */
 export function correspondentsOf(rows, handle, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || CORRESPONDENTS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || CORRESPONDENTS_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
 
   // handle -> { count, last: { id, at, from } }
   const byOther = new Map();
@@ -1263,7 +1264,7 @@ export function mailAwaitingOf(lawRead, asOfDay, handle, { limit = LEDGER_PAGE, 
   const law = lawWithStanding(lawRead, standing);
   const standingIds = new Set(law?.reply_queued_standing?.letters ?? []);
   const ledgerOrder = law?.conversations ?? [];
-  const n = Math.min(Math.max(Number(limit) || LEDGER_PAGE, 1), 200);
+  const n = Math.min(Math.max(wholeNumber(limit) || LEDGER_PAGE, 1), 200);
   // ── YOURS FIRST, AND THE SUMMARY STAYS WHOLE (walk #1, 2026-09-05) ─────────
   //
   // WHAT A RESIDENT SAW, verbatim: "Summary: they_spoke_last: 109 ·
@@ -1299,7 +1300,7 @@ export function mailAwaitingOf(lawRead, asOfDay, handle, { limit = LEDGER_PAGE, 
   const yoursFirst = [...ledgerOrder].sort((a, b) =>
     (b.next_actor === "you" ? 1 : 0) - (a.next_actor === "you" ? 1 : 0));
   const all = yoursFirst;
-  const start = Math.min(Math.max(Number(offset) || 0, 0), all.length);
+  const start = Math.min(Math.max(wholeNumber(offset) || 0, 0), all.length);
   const conversations = all.slice(start, start + n);
   const next = start + conversations.length;
   const complete = next >= all.length;
@@ -1322,7 +1323,7 @@ export function mailAwaitingOf(lawRead, asOfDay, handle, { limit = LEDGER_PAGE, 
   // their own cursor in the office's one grammar (`threads_next_offset` beside
   // `threads_more_note`). `threads_note` stays, for the readers that already
   // read it, and now tells the truth about which slice it is.
-  const tStart = Math.min(Math.max(Number(offset) || 0, 0), threadsAll.length);
+  const tStart = Math.min(Math.max(wholeNumber(offset) || 0, 0), threadsAll.length);
   const threads = threadsAll.slice(tStart, tStart + n);
   const tNext = tStart + threads.length;
   // The sender's own merged-but-unsailed replies. Same law, same whole-set
@@ -2144,8 +2145,8 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
 const STAMPS_PAGE = 50;
 
 export function stampsRoster(db, meta, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || STAMPS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || STAMPS_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   // COUNT(*) over the same table the page is drawn from. `minted_cumulative` is
   // NOT that number and never was — it is the town's minted total, a different
   // fact in a different unit, which is exactly why the roster still needed a
@@ -3186,13 +3187,13 @@ export function bulletinNewestFirst(all) {
 
 /** bulletinTeaser's bound and count, over a whole listing. Shared with the store's twin. */
 export function bulletinTeaserOf(all, { limit = BULLETIN_PAGE, offset = 0 } = {}) {
-  const n = Math.min(Math.max(Number(limit) || BULLETIN_PAGE, 1), 200);
+  const n = Math.min(Math.max(wholeNumber(limit) || BULLETIN_PAGE, 1), 200);
   // `offset` (2026-08-25) so the read-more the note names can actually be
   // walked. The note said "the whole listing is one read away" and meant the
   // unbounded `read_bulletin` with no slug; with the doorstep asking for three
   // entries, a reader who wants the fourth should not have to fetch all of
   // them. Same `limit`+`offset` clamp shape as letterList's.
-  const start = Math.max(Number(offset) || 0, 0);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const entries = bulletinNewestFirst(all).slice(start, start + n);
   const next = start + entries.length;
   const complete = next >= all.length;
@@ -3344,8 +3345,8 @@ export const SEARCH_RESIDENTS = 10;
 
 export function search(db, q, { limit, offset } = {}) {
   const like = `%${q}%`;
-  const n = Math.min(Math.max(Number(limit) || SEARCH_LETTERS, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || SEARCH_LETTERS, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   // THE TOTALS ARE PER BUCKET, over the SAME WHERE each bucket searches, and
   // they were the whole thing missing here: this read has always cut at 25 and
   // 10 and has never once said that it did, so "no more results" and "the first
@@ -3483,8 +3484,8 @@ const REGIONS_PAGE = 25;
 const REGION_RESIDENTS = 25;
 
 export function regionList(db, { limit, offset } = {}) {
-  const n = Math.min(Math.max(Number(limit) || REGIONS_PAGE, 1), 200);
-  const start = Math.max(Number(offset) || 0, 0);
+  const n = Math.min(Math.max(wholeNumber(limit) || REGIONS_PAGE, 1), 200);
+  const start = Math.max(wholeNumber(offset) || 0, 0);
   const total = Object.values(db.prepare("SELECT COUNT(*) AS n FROM regions").get())[0];
   const regions = db.prepare("SELECT id, name, json FROM regions ORDER BY id LIMIT ? OFFSET ?").all(n, start).map(regionListing);
   return regionPage({ total, n, start }, regions);
