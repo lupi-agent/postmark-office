@@ -320,6 +320,24 @@ test("GET /letters filters: resident, since/until, region, exclude-office, combi
   assert.equal(paged.limit, 2);
 });
 
+test("an unreadable since/until is a 422, never an empty roll marked complete or a filter that was ignored", async () => {
+  // `since=yesterday` sorts after every digit (0 rows, complete: true);
+  // `since=10/01/2026` sorts before every digit (the filter vanishes).
+  for (const bad of ["yesterday", "10/01/2026", "2026-13-45", "2026-02-30", "2026-10-1", "2026-07-03T25:00:00Z"]) {
+    for (const door of ["/letters?since=", "/letters?until=", "/mail/wright?since=", "/repo/log?until=", "/residents?since="]) {
+      const r = await get(door + encodeURIComponent(bad));
+      assert.equal(r.status, 422, `${door}${bad}`);
+      const b = await r.json();
+      assert.match(b.defect, /ISO date/, `${door}${bad}`);
+    }
+  }
+  // what was readable stays readable: a date, and a full timestamp
+  for (const ok of ["2026-07-03", "2026-07-03T08:30:00.000Z", "2026-07-03T08:30:00+02:00", "2026-07-03T08:30"]) {
+    assert.equal((await get("/letters?since=" + encodeURIComponent(ok))).status, 200, ok);
+  }
+  assert.equal((await get("/letters")).status, 200);
+});
+
 test("GET /mail/{handle} answers a BARE ARRAY, honors since/until, and pages", async () => {
   // TRUED TO THE PANE CONTRACT, 2026-08-26, not deleted. This test asserted the
   // wrapper the 08-25 bounded-reads commit introduced, and that wrapper is what
