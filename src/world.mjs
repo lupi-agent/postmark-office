@@ -17,6 +17,7 @@
 // REFS; the draft-branch writes below use leased worktrees of it (world-pool.mjs,
 // tier 1) so two households do not queue behind one working tree.
 
+import { wholeNumber } from "./whole-number.mjs";
 import { worldFreezeBounce } from "./freeze.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -2678,7 +2679,7 @@ const MARKS_PAGE = 20;
  * what `world { read: "leave-mark", args: { mark: <id> } }` takes.
  */
 export function markPage(rows, offset = 0) {
-  const start = Math.min(Math.max(Number(offset) || 0, 0), Math.max(rows.length - 1, 0));
+  const start = Math.min(Math.max(wholeNumber(offset) || 0, 0), Math.max(rows.length - 1, 0));
   const page = rows.slice(start, start + MARKS_PAGE);
   const rest = [...rows.slice(0, start), ...rows.slice(start + page.length)].map((m) => m.id);
   return { page, rest, offset: start, complete: rest.length === 0 };
