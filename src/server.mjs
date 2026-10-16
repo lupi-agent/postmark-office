@@ -17,6 +17,7 @@
 // tokens table since POS-352: OFFICE_KEYS='devkey1=keemin:wright,postmaster'
 // node tools/static-keys-import.mjs writes it (src/static-keys.mjs).
 
+import { dateFilterDefect } from "./date-filter.mjs";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { resolve, dirname } from "node:path";
@@ -1937,6 +1938,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           since: url.searchParams.get("since") ?? undefined,
           office: url.searchParams.has("office") ? url.searchParams.get("office") === "true" : undefined,
         };
+        { const bad = dateFilterDefect(opts, ["since"]); if (bad) return bounce(res, bad.code, bad.defect, bad.hint, bad.field); }
         // last_active is the newest act of their own, one store read for the
         // page (last-active.mjs, POS-481), on the client the read already holds.
         // ?cards=1 (Darko 2026-10-13): the page's cards beside it, one per row
@@ -1994,6 +1996,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           until: p.get("until") ?? undefined,
           limit: p.get("limit") ?? undefined,
         };
+        { const bad = dateFilterDefect(opts); if (bad) return bounce(res, bad.code, bad.defect, bad.hint, bad.field); }
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.repoLog(c, opts));
         return j(res, 200, repoLog(db, opts));
       }
@@ -2080,6 +2083,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           limit: p.get("limit") ?? undefined,
           offset: p.get("offset") ?? undefined,
         };
+        { const bad = dateFilterDefect(opts); if (bad) return bounce(res, bad.code, bad.defect, bad.hint, bad.field); }
         if (opts.ids && (!opts.ids.length || opts.ids.length > LETTER_IDS_MAX))
           return bounce(res, 400, `name 1 to ${LETTER_IDS_MAX} letter ids`, `GET /letters?full=1&ids=a,b,c (at most ${LETTER_IDS_MAX})`);
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.letterList(c, opts));
@@ -2120,6 +2124,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           limit: url.searchParams.get("limit") ?? undefined,
           offset: url.searchParams.get("offset") ?? undefined,
         };
+        { const bad = dateFilterDefect(opts); if (bad) return bounce(res, bad.code, bad.defect, bad.hint, bad.field); }
         if (townIndexReads()) return fromTownIndex(res, async (c) => (await townIndexStore.mailList(c, handle, box, opts)).letters);
         return j(res, 200, mailList(db, handle, box, opts).letters);
       }
